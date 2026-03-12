@@ -884,25 +884,40 @@ class SubstituteTeacherApp {
         const tbody = document.getElementById('records-tbody');
 
         if (records.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="8" class="empty-message">查無調課紀錄</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="8" class="empty-message">查無調代課紀錄</td></tr>';
             return;
         }
 
-        tbody.innerHTML = records.map(record => `
-            <tr>
-                <td>${record.date}</td>
-                <td>${record.className}</td>
-                <td>${record.weekday} ${record.period}</td>
-                <td>${record.subject}</td>
-                <td>${record.originalTeacher}</td>
-                <td>${record.substituteTeacher}</td>
-                <td>${record.reason}</td>
-                <td>
-                    <button class="btn btn-sm btn-primary reprint-btn" data-id="${record.id}">重印</button>
-                    <button class="btn btn-sm btn-danger delete-record-btn" data-id="${record.id}">刪除</button>
-                </td>
-            </tr>
-        `).join('');
+        tbody.innerHTML = records.map(record => {
+            const leaveTypeName = record.leaveTypeName || this.getLeaveTypeName(record.leaveType) || '-';
+            return `
+                <tr>
+                    <td>${record.date}</td>
+                    <td>${record.className}</td>
+                    <td>${record.weekday} ${record.period}</td>
+                    <td>${record.subject}</td>
+                    <td>${record.originalTeacher}</td>
+                    <td>${record.substituteTeacher}</td>
+                    <td>${leaveTypeName}</td>
+                    <td>
+                        <button class="btn btn-sm btn-more detail-btn" data-id="${record.id}">更多</button>
+                        <button class="btn btn-sm btn-primary reprint-btn" data-id="${record.id}">重印</button>
+                        <button class="btn btn-sm btn-danger delete-record-btn" data-id="${record.id}">刪除</button>
+                    </td>
+                </tr>
+            `;
+        }).join('');
+
+        // 綁定更多/詳細按鈕
+        tbody.querySelectorAll('.detail-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const id = e.target.dataset.id;
+                const record = records.find(r => r.id === id);
+                if (record) {
+                    this.showRecordDetail(record);
+                }
+            });
+        });
 
         // 綁定重印按鈕
         tbody.querySelectorAll('.reprint-btn').forEach(btn => {
@@ -918,7 +933,7 @@ class SubstituteTeacherApp {
         // 綁定刪除按鈕
         tbody.querySelectorAll('.delete-record-btn').forEach(btn => {
             btn.addEventListener('click', (e) => {
-                if (confirm('確定要刪除此筆調課紀錄嗎？')) {
+                if (confirm('確定要刪除此筆調代課紀錄嗎？')) {
                     const id = e.target.dataset.id;
                     this.dataManager.removeSubstituteRecord(id);
                     this.saveDataToStorage();
@@ -926,6 +941,98 @@ class SubstituteTeacherApp {
                 }
             });
         });
+    }
+
+    /**
+     * 顯示紀錄詳細資料彈窗
+     */
+    showRecordDetail(record) {
+        const modal = document.getElementById('record-detail-modal');
+        const content = document.getElementById('record-detail-content');
+
+        const typeText = record.type === 'swap' ? '調課' : '代課';
+        const leaveTypeName = record.leaveTypeName || this.getLeaveTypeName(record.leaveType) || '-';
+
+        let detailHtml = `
+            <div class="detail-row">
+                <span class="detail-label">異動類型</span>
+                <span class="detail-value">${typeText}</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">日期</span>
+                <span class="detail-value">${record.date} ${record.weekday}</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">節次</span>
+                <span class="detail-value">${record.period}</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">班級</span>
+                <span class="detail-value">${record.className}</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">科目</span>
+                <span class="detail-value">${record.subject}</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">原任課教師</span>
+                <span class="detail-value">${record.originalTeacher}</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">代課教師</span>
+                <span class="detail-value">${record.substituteTeacher}</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">假別</span>
+                <span class="detail-value">${leaveTypeName}</span>
+            </div>
+        `;
+
+        // 公假顯示字號
+        if (record.leaveType === 'official' && record.docNumber) {
+            detailHtml += `
+                <div class="detail-row">
+                    <span class="detail-label">公假字號</span>
+                    <span class="detail-value">${record.docNumber}</span>
+                </div>
+            `;
+        }
+
+        // 事由
+        if (record.reason) {
+            detailHtml += `
+                <div class="detail-row">
+                    <span class="detail-label">事由</span>
+                    <span class="detail-value">${record.reason}</span>
+                </div>
+            `;
+        }
+
+        // 建立時間
+        if (record.createdAt) {
+            const createdDate = new Date(record.createdAt).toLocaleString('zh-TW');
+            detailHtml += `
+                <div class="detail-row">
+                    <span class="detail-label">建立時間</span>
+                    <span class="detail-value">${createdDate}</span>
+                </div>
+            `;
+        }
+
+        content.innerHTML = detailHtml;
+        modal.classList.remove('hidden');
+
+        // 綁定關閉按鈕
+        document.getElementById('close-modal-btn').onclick = () => {
+            modal.classList.add('hidden');
+        };
+
+        // 點擊背景關閉
+        modal.onclick = (e) => {
+            if (e.target === modal) {
+                modal.classList.add('hidden');
+            }
+        };
     }
 
     /**

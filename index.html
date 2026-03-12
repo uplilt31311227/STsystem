@@ -27,7 +27,7 @@
             <nav class="nav-tabs">
                 <button class="tab-btn active" data-tab="import">課表匯入</button>
                 <button class="tab-btn" data-tab="substitute">調代課申請</button>
-                <button class="tab-btn" data-tab="records">調課紀錄</button>
+                <button class="tab-btn" data-tab="records">調代課紀錄</button>
                 <button class="tab-btn" data-tab="settlement">月結算</button>
             </nav>
         </header>
@@ -215,6 +215,17 @@
                 <div id="records-content" class="hidden">
                 <div class="card">
                     <h2>調代課紀錄查詢</h2>
+                    <!-- 詳細資料彈窗 -->
+                    <div id="record-detail-modal" class="modal hidden">
+                        <div class="modal-content">
+                            <div class="modal-header">
+                                <h3>調代課詳細資料</h3>
+                                <button class="modal-close" id="close-modal-btn">&times;</button>
+                            </div>
+                            <div class="modal-body" id="record-detail-content">
+                            </div>
+                        </div>
+                    </div>
 
                     <div class="form-row">
                         <div class="form-group">
@@ -243,7 +254,7 @@
                                 <th>科目</th>
                                 <th>原任課教師</th>
                                 <th>代課教師</th>
-                                <th>事由</th>
+                                <th>假別</th>
                                 <th>操作</th>
                             </tr>
                         </thead>
