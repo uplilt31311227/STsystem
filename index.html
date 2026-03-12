@@ -311,7 +311,16 @@
                     </div>
 
                     <div id="settlement-result" class="hidden">
-                        <h3>教師授課時數統計表</h3>
+                        <div class="settlement-header">
+                            <h3>教師授課時數統計表</h3>
+                            <div class="settlement-filter">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="show-changed-only">
+                                    <span>僅顯示有變動的教師</span>
+                                </label>
+                                <span id="changed-count" class="changed-count"></span>
+                            </div>
+                        </div>
                         <table class="data-table" id="settlement-table">
                             <thead>
                                 <tr>

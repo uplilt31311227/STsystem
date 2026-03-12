@@ -1046,6 +1046,11 @@ class SubstituteTeacherApp {
         document.getElementById('export-settlement-btn').addEventListener('click', () => {
             this.exportSettlementExcel();
         });
+
+        // 僅顯示有變動教師勾選框
+        document.getElementById('show-changed-only').addEventListener('change', (e) => {
+            this.filterSettlementTable(e.target.checked);
+        });
     }
 
     /**
@@ -1063,6 +1068,12 @@ class SubstituteTeacherApp {
             this.dataManager.getTeachers()
         );
 
+        // 儲存結算資料供篩選使用
+        this.currentSettlementData = settlementData;
+
+        // 重置勾選框
+        document.getElementById('show-changed-only').checked = false;
+
         this.renderSettlementTable(settlementData);
         document.getElementById('settlement-result').classList.remove('hidden');
     }
@@ -1070,19 +1081,60 @@ class SubstituteTeacherApp {
     /**
      * 渲染結算表格
      */
-    renderSettlementTable(settlementData) {
+    renderSettlementTable(settlementData, showChangedOnly = false) {
         const tbody = document.getElementById('settlement-tbody');
+        const changedCountSpan = document.getElementById('changed-count');
 
-        tbody.innerHTML = settlementData.map(row => `
-            <tr>
-                <td>${row.teacherName}</td>
-                <td>${row.originalHours}</td>
-                <td>${row.substituteHours}</td>
-                <td>${row.substitutedHours}</td>
-                <td>${row.actualHours}</td>
-                <td>${row.overtimeHours}</td>
-            </tr>
-        `).join('');
+        // 計算有變動的教師數量
+        const changedTeachers = settlementData.filter(row =>
+            row.substituteHours > 0 || row.substitutedHours > 0
+        );
+
+        // 更新變動數量顯示
+        changedCountSpan.textContent = `共 ${changedTeachers.length} 位教師有變動`;
+
+        // 根據篩選條件決定顯示資料
+        const displayData = showChangedOnly ? changedTeachers : settlementData;
+
+        if (displayData.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" class="empty-message">本月無教師時數變動</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = displayData.map(row => {
+            const hasChange = row.substituteHours > 0 || row.substitutedHours > 0;
+            const rowClass = hasChange ? 'settlement-row-changed' : '';
+
+            // 代課增加顯示
+            const substituteDisplay = row.substituteHours > 0
+                ? `<span class="settlement-increase">+${row.substituteHours}</span>`
+                : `<span class="settlement-no-change">-</span>`;
+
+            // 被代課減少顯示
+            const substitutedDisplay = row.substitutedHours > 0
+                ? `<span class="settlement-decrease">-${row.substitutedHours}</span>`
+                : `<span class="settlement-no-change">-</span>`;
+
+            return `
+                <tr class="${rowClass}" data-has-change="${hasChange}">
+                    <td>${row.teacherName}</td>
+                    <td>${row.originalHours}</td>
+                    <td>${substituteDisplay}</td>
+                    <td>${substitutedDisplay}</td>
+                    <td><strong>${row.actualHours}</strong></td>
+                    <td>${row.overtimeHours > 0 ? row.overtimeHours : '-'}</td>
+                </tr>
+            `;
+        }).join('');
+    }
+
+    /**
+     * 篩選結算表格（僅顯示有變動的教師）
+     */
+    filterSettlementTable(showChangedOnly) {
+        if (this.currentSettlementData) {
+            this.renderSettlementTable(this.currentSettlementData, showChangedOnly);
+        }
     }
 
     /**

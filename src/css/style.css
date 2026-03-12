@@ -764,3 +764,71 @@ body {
 .btn-more:hover {
     background-color: #475569;
 }
+
+/* 月結算表格樣式 */
+.settlement-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+    flex-wrap: wrap;
+    gap: 1rem;
+}
+
+.settlement-header h3 {
+    margin: 0;
+}
+
+.settlement-filter {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    cursor: pointer;
+    font-size: 0.9rem;
+}
+
+.checkbox-label input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+}
+
+.changed-count {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    background-color: var(--background-color);
+    padding: 0.25rem 0.75rem;
+    border-radius: 12px;
+}
+
+/* 有變動的列樣式 */
+.settlement-row-changed {
+    background-color: #fef3c7 !important;
+}
+
+.settlement-row-changed:hover {
+    background-color: #fde68a !important;
+}
+
+/* 代課增加 - 綠色 */
+.settlement-increase {
+    color: #16a34a;
+    font-weight: 600;
+}
+
+/* 被代課減少 - 紅色 */
+.settlement-decrease {
+    color: #dc2626;
+    font-weight: 600;
+}
+
+/* 無變動 */
+.settlement-no-change {
+    color: var(--text-muted);
+}
