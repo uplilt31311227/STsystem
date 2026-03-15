@@ -47,6 +47,12 @@ export class ScheduleParser {
             '第七節': '第七節', '7': '第七節', '第7節': '第七節',
             '第八節': '第八節', '8': '第八節', '第8節': '第八節'
         };
+
+        // 排除的領域（不納入教師任教領域統計）
+        this.excludedDomains = [
+            '統整性主題/專題/議題探究',
+            '社團活動與技藝課程'
+        ];
     }
 
     /**
@@ -216,7 +222,8 @@ export class ScheduleParser {
                     homeroomClass: ''
                 });
             }
-            if (domain) {
+            // 將領域加入教師資料（排除特定領域）
+            if (domain && !this.excludedDomains.includes(domain)) {
                 teacherMap.get(teacher).domains.add(domain);
             }
         });
