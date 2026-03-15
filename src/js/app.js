@@ -543,9 +543,9 @@ class SubstituteTeacherApp {
             this.onLeaveTypeChanged(e.target.value);
         });
 
-        // 調課互換教師選擇
-        document.getElementById('swap-teacher')?.addEventListener('change', (e) => {
-            this.onSwapTeacherSelected(e.target.value);
+        // 調課互換課程選擇
+        document.getElementById('swap-course')?.addEventListener('change', (e) => {
+            this.onSwapCourseSelected(e.target.value);
         });
 
         // 確認調課按鈕
@@ -571,16 +571,17 @@ class SubstituteTeacherApp {
             // 調課模式
             substituteOptions.classList.add('hidden');
             swapOptions.classList.remove('hidden');
-            recommendationList.parentElement.querySelector('h3').textContent = '調課對象';
+            recommendationList.parentElement.classList.add('hidden');
 
-            // 更新調課教師列表
+            // 更新調課課程列表
             if (this.selectedCourse) {
-                this.updateSwapTeacherList();
+                this.updateSwapCourseList();
             }
         } else {
             // 代課模式
             substituteOptions.classList.remove('hidden');
             swapOptions.classList.add('hidden');
+            recommendationList.parentElement.classList.remove('hidden');
             recommendationList.parentElement.querySelector('h3').textContent = '代課教師推薦（智慧排序）';
         }
     }
@@ -615,86 +616,124 @@ class SubstituteTeacherApp {
     }
 
     /**
-     * 更新調課可互換教師列表
-     * 嚴格驗證：只顯示該時段有「相同班級」課程的教師
+     * 更新調課可互換課程列表
+     * 顯示同班級不同時段的所有課程供選擇
      */
-    updateSwapTeacherList() {
-        const swapTeacherSelect = document.getElementById('swap-teacher');
+    updateSwapCourseList() {
+        const swapCourseSelect = document.getElementById('swap-course');
         const swapHint = document.getElementById('swap-hint');
+        const swapPreview = document.getElementById('swap-preview');
         const scheduleData = this.dataManager.getScheduleData();
 
+        // 隱藏預覽
+        swapPreview.classList.add('hidden');
+
         if (!this.selectedCourse) {
-            swapTeacherSelect.innerHTML = '<option value="">請先選擇欲調課的課程</option>';
+            swapCourseSelect.innerHTML = '<option value="">請先選擇欲調課的課程</option>';
             return;
         }
 
-        // 找出該時段有相同班級課程的其他教師
+        // 找出同班級不同時段的所有課程
         const targetClass = this.selectedCourse.className;
-        const targetWeekday = this.selectedCourse.weekday;
-        const targetPeriod = this.selectedCourse.period;
-        const originalTeacher = this.selectedCourse.originalTeacher;
+        const originalWeekday = this.selectedCourse.weekday;
+        const originalPeriod = this.selectedCourse.period;
 
-        // 篩選該時段有課且班級相同的教師
-        const eligibleTeachers = scheduleData.filter(course =>
-            course.weekday === targetWeekday &&
-            course.period === targetPeriod &&
+        // 篩選同班級但不同時段的課程
+        const eligibleCourses = scheduleData.filter(course =>
             course.className === targetClass &&
-            course.teacher !== originalTeacher
+            !(course.weekday === originalWeekday && course.period === originalPeriod)
         );
 
-        if (eligibleTeachers.length === 0) {
-            swapTeacherSelect.innerHTML = '<option value="">該時段無可互換的教師（需相同班級）</option>';
-            swapHint.innerHTML = `<span style="color: #dc2626;">⚠ ${targetWeekday} ${targetPeriod}，${targetClass} 沒有其他教師可互換</span>`;
+        if (eligibleCourses.length === 0) {
+            swapCourseSelect.innerHTML = '<option value="">該班級沒有其他課程可調換</option>';
+            swapHint.innerHTML = `<span style="color: #dc2626;">⚠ ${targetClass} 只有一堂課，無法進行調課</span>`;
             return;
         }
 
-        // 建立下拉選單
-        let options = '<option value="">請選擇互換教師</option>';
-        eligibleTeachers.forEach(course => {
-            options += `<option value="${course.teacher}" data-subject="${course.subject}">${course.teacher}（${course.subject}）</option>`;
+        // 按星期、節次排序
+        const weekdayOrder = ['週一', '週二', '週三', '週四', '週五'];
+        eligibleCourses.sort((a, b) => {
+            const weekdayDiff = weekdayOrder.indexOf(a.weekday) - weekdayOrder.indexOf(b.weekday);
+            if (weekdayDiff !== 0) return weekdayDiff;
+            return a.period.localeCompare(b.period);
         });
 
-        swapTeacherSelect.innerHTML = options;
-        swapHint.innerHTML = `✓ 找到 ${eligibleTeachers.length} 位可互換教師（${targetClass} ${targetWeekday} ${targetPeriod}）`;
+        // 建立下拉選單（使用唯一 ID 作為 value）
+        let options = '<option value="">請選擇要互換的課程</option>';
+        eligibleCourses.forEach((course, index) => {
+            const courseId = `${course.weekday}_${course.period}_${course.teacher}`;
+            options += `<option value="${courseId}">${course.weekday} ${course.period} - ${course.teacher}（${course.subject}）</option>`;
+        });
+
+        swapCourseSelect.innerHTML = options;
+        swapHint.innerHTML = `✓ 找到 ${eligibleCourses.length} 堂可互換課程（${targetClass}）`;
         swapHint.style.color = '#16a34a';
     }
 
     /**
-     * 當選擇調課互換教師時觸發
+     * 當選擇調課互換課程時觸發
      */
-    onSwapTeacherSelected(teacherName) {
+    onSwapCourseSelected(courseId) {
         const validationError = document.getElementById('swap-validation-error');
+        const swapPreview = document.getElementById('swap-preview');
+        const swapPreviewContent = document.getElementById('swap-preview-content');
 
-        if (!teacherName) {
-            this.selectedSubstitute = null;
+        if (!courseId) {
+            this.selectedSwapCourse = null;
             validationError.classList.add('hidden');
+            swapPreview.classList.add('hidden');
             return;
         }
 
-        // 驗證班級是否相同（雙重保險）
+        // 解析課程 ID
+        const [weekday, period, teacher] = courseId.split('_');
         const scheduleData = this.dataManager.getScheduleData();
         const swapCourse = scheduleData.find(course =>
-            course.weekday === this.selectedCourse.weekday &&
-            course.period === this.selectedCourse.period &&
-            course.teacher === teacherName
+            course.weekday === weekday &&
+            course.period === period &&
+            course.teacher === teacher &&
+            course.className === this.selectedCourse.className
         );
 
-        if (!swapCourse || swapCourse.className !== this.selectedCourse.className) {
-            validationError.textContent = '⚠ 調課錯誤：兩位教師的班級不相同，無法調課！';
+        if (!swapCourse) {
+            validationError.textContent = '⚠ 找不到選擇的課程，請重新選擇';
             validationError.classList.remove('hidden');
-            this.selectedSubstitute = null;
+            swapPreview.classList.add('hidden');
+            this.selectedSwapCourse = null;
             return;
         }
 
         validationError.classList.add('hidden');
+        this.selectedSwapCourse = swapCourse;
 
-        // 設定選中的互換教師
-        const teachers = this.dataManager.getTeachers();
-        const teacher = teachers.find(t => t.name === teacherName);
-        this.selectedSubstitute = {
-            teacher: teacher || { name: teacherName },
-            swapCourse: swapCourse
-        };
+        // 顯示調課預覽
+        const originalCourse = this.selectedCourse;
+        swapPreviewContent.innerHTML = `
+            <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+                <tr style="background: #e0f2fe;">
+                    <th style="padding: 8px; border: 1px solid #bae6fd; text-align: center;">時段</th>
+                    <th style="padding: 8px; border: 1px solid #bae6fd; text-align: center;">調課前</th>
+                    <th style="padding: 8px; border: 1px solid #bae6fd; text-align: center;">→</th>
+                    <th style="padding: 8px; border: 1px solid #bae6fd; text-align: center;">調課後</th>
+                </tr>
+                <tr>
+                    <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center; font-weight: bold;">${originalCourse.weekday} ${originalCourse.period}</td>
+                    <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center;">${originalCourse.originalTeacher}（${originalCourse.subject}）</td>
+                    <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center;">→</td>
+                    <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center; color: #0369a1; font-weight: bold;">${swapCourse.teacher}（${swapCourse.subject}）</td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center; font-weight: bold;">${swapCourse.weekday} ${swapCourse.period}</td>
+                    <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center;">${swapCourse.teacher}（${swapCourse.subject}）</td>
+                    <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center;">→</td>
+                    <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center; color: #0369a1; font-weight: bold;">${originalCourse.originalTeacher}（${originalCourse.subject}）</td>
+                </tr>
+            </table>
+            <p style="margin: 10px 0 0 0; color: #0369a1; font-size: 13px;">
+                ✓ ${originalCourse.className} 的 ${originalCourse.originalTeacher} 與 ${swapCourse.teacher} 互換課程時段，雙方總時數不變
+            </p>
+        `;
+        swapPreview.classList.remove('hidden');
     }
 
     /**
@@ -809,10 +848,10 @@ class SubstituteTeacherApp {
         // 計算並顯示推薦代課教師
         this.showRecommendations();
 
-        // 如果是調課模式，更新可互換教師列表
+        // 如果是調課模式，更新可互換課程列表
         const changeType = document.getElementById('change-type').value;
         if (changeType === 'swap') {
-            this.updateSwapTeacherList();
+            this.updateSwapCourseList();
         }
     }
 
@@ -983,40 +1022,47 @@ class SubstituteTeacherApp {
 
         } else {
             // 調課模式驗證
-            const swapTeacher = document.getElementById('swap-teacher').value;
-            if (!swapTeacher) {
-                alert('請選擇互換教師');
+            const swapCourseId = document.getElementById('swap-course').value;
+            if (!swapCourseId) {
+                alert('請選擇要互換的課程');
                 return;
             }
 
-            // 雙重驗證班級相同
-            if (!this.selectedSubstitute || !this.selectedSubstitute.swapCourse) {
-                alert('調課驗證失敗：請重新選擇互換教師');
+            // 驗證已選擇互換課程
+            if (!this.selectedSwapCourse) {
+                alert('調課驗證失敗：請重新選擇互換課程');
                 return;
             }
 
-            if (this.selectedSubstitute.swapCourse.className !== this.selectedCourse.className) {
-                alert('調課錯誤：兩位教師的班級不相同，無法調課！');
+            if (this.selectedSwapCourse.className !== this.selectedCourse.className) {
+                alert('調課錯誤：課程班級不相同，無法調課！');
                 return;
             }
 
-            // 建立調課紀錄
+            // 建立調課紀錄（記錄完整的互換資訊）
             const record = {
                 id: Date.now().toString(),
                 type: '調課',
                 date: date,
+                // 原課程資訊（時段1）
                 weekday: this.selectedCourse.weekday,
                 period: this.selectedCourse.period,
                 className: this.selectedCourse.className,
                 subject: this.selectedCourse.subject,
                 domain: this.selectedCourse.domain,
                 originalTeacher: this.selectedCourse.originalTeacher,
-                substituteTeacher: this.selectedSubstitute.teacher.name,
-                swapSubject: this.selectedSubstitute.swapCourse.subject,
+                // 互換課程資訊（時段2）
+                swapWeekday: this.selectedSwapCourse.weekday,
+                swapPeriod: this.selectedSwapCourse.period,
+                swapTeacher: this.selectedSwapCourse.teacher,
+                swapSubject: this.selectedSwapCourse.subject,
+                swapDomain: this.selectedSwapCourse.domain,
+                // 調課不需要代課教師，兩堂課互換
+                substituteTeacher: this.selectedSwapCourse.teacher,
                 leaveType: '調課',
                 leaveTypeName: '調課',
                 docNumber: '',
-                reason: '調課互換',
+                reason: `${this.selectedCourse.weekday}${this.selectedCourse.period} ↔ ${this.selectedSwapCourse.weekday}${this.selectedSwapCourse.period} 課程互換`,
                 createdAt: new Date().toISOString()
             };
 
@@ -1251,6 +1297,7 @@ class SubstituteTeacherApp {
     cancelSubstitute() {
         this.selectedCourse = null;
         this.selectedSubstitute = null;
+        this.selectedSwapCourse = null;
         document.getElementById('selected-course-info').classList.add('hidden');
         document.getElementById('sub-reason').value = '';
         document.querySelectorAll('.schedule-course.selected').forEach(c => c.classList.remove('selected'));
@@ -1262,9 +1309,13 @@ class SubstituteTeacherApp {
         document.getElementById('doc-number-group').style.display = 'none';
         document.getElementById('substitute-options').classList.remove('hidden');
         document.getElementById('swap-options').classList.add('hidden');
-        document.getElementById('swap-teacher').innerHTML = '<option value="">請先選擇欲調課的課程</option>';
+        document.getElementById('swap-course').innerHTML = '<option value="">請先選擇欲調課的課程</option>';
         document.getElementById('swap-validation-error').classList.add('hidden');
+        document.getElementById('swap-preview').classList.add('hidden');
         document.querySelectorAll('.recommendation-item.selected').forEach(i => i.classList.remove('selected'));
+
+        // 恢復推薦列表顯示
+        document.getElementById('recommendation-list').parentElement.classList.remove('hidden');
 
         // 清除日期相關提示
         const dateHint = document.getElementById('date-adjustment-hint');

@@ -149,6 +149,7 @@ export class PDFGenerator {
 
         // 異動類型
         const changeType = record.type || '代課';
+        const isSwap = changeType === '調課';
 
         // 假別
         const leaveType = record.leaveTypeName || record.leaveType || '-';
@@ -156,23 +157,38 @@ export class PDFGenerator {
         // 公假字號
         const docNumber = record.docNumber || '-';
 
-        return `
-        <div style="height: 100%; display: flex; flex-direction: column;">
-            <!-- 標題區 -->
-            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px;">
-                <div style="font-size: 16px; font-weight: bold;">${this.schoolName}</div>
-                <div style="font-size: 22px; font-weight: bold; letter-spacing: 8px;">代課通知單</div>
-                <div style="
-                    background: ${sheet.labelBg};
-                    color: white;
-                    padding: 6px 12px;
-                    font-size: 12px;
-                    font-weight: bold;
-                    border-radius: 4px;
-                ">${sheet.label}</div>
-            </div>
-
-            <!-- 基本資訊表格 -->
+        // 根據是否為調課生成不同的基本資訊表格
+        let infoTableHTML;
+        if (isSwap) {
+            // 調課模式：顯示兩個時段的互換資訊
+            infoTableHTML = `
+            <table style="width: 100%; border-collapse: collapse; margin-bottom: 15px; font-size: 13px;">
+                <tr>
+                    <td style="padding: 8px; border: 1px solid #333; background: #f5f5f5; width: 18%; font-weight: bold;">異動類型</td>
+                    <td style="padding: 8px; border: 1px solid #333; width: 32%;">${changeType}</td>
+                    <td style="padding: 8px; border: 1px solid #333; background: #f5f5f5; width: 18%; font-weight: bold;">班級</td>
+                    <td style="padding: 8px; border: 1px solid #333; width: 32%;">${record.className}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px; border: 1px solid #333; background: #dbeafe; font-weight: bold;">時段 A</td>
+                    <td style="padding: 8px; border: 1px solid #333;">${record.weekday} ${record.period}</td>
+                    <td style="padding: 8px; border: 1px solid #333; background: #dbeafe; font-weight: bold;">課程</td>
+                    <td style="padding: 8px; border: 1px solid #333;">${record.originalTeacher}（${record.subject}）</td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px; border: 1px solid #333; background: #fef3c7; font-weight: bold;">時段 B</td>
+                    <td style="padding: 8px; border: 1px solid #333;">${record.swapWeekday || ''} ${record.swapPeriod || ''}</td>
+                    <td style="padding: 8px; border: 1px solid #333; background: #fef3c7; font-weight: bold;">課程</td>
+                    <td style="padding: 8px; border: 1px solid #333;">${record.swapTeacher || ''}（${record.swapSubject || ''}）</td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px; border: 1px solid #333; background: #f5f5f5; font-weight: bold;">調課說明</td>
+                    <td colspan="3" style="padding: 8px; border: 1px solid #333;">A、B 時段課程互換，兩位教師總時數不變</td>
+                </tr>
+            </table>`;
+        } else {
+            // 代課模式：原有的表格格式
+            infoTableHTML = `
             <table style="width: 100%; border-collapse: collapse; margin-bottom: 15px; font-size: 13px;">
                 <tr>
                     <td style="padding: 8px; border: 1px solid #333; background: #f5f5f5; width: 18%; font-weight: bold;">異動類型</td>
@@ -198,7 +214,27 @@ export class PDFGenerator {
                     <td style="padding: 8px; border: 1px solid #333; background: #f5f5f5; font-weight: bold;">公假字號</td>
                     <td style="padding: 8px; border: 1px solid #333;">${docNumber}</td>
                 </tr>
-            </table>
+            </table>`;
+        }
+
+        return `
+        <div style="height: 100%; display: flex; flex-direction: column;">
+            <!-- 標題區 -->
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px;">
+                <div style="font-size: 16px; font-weight: bold;">${this.schoolName}</div>
+                <div style="font-size: 22px; font-weight: bold; letter-spacing: 8px;">${isSwap ? '調課' : '代課'}通知單</div>
+                <div style="
+                    background: ${sheet.labelBg};
+                    color: white;
+                    padding: 6px 12px;
+                    font-size: 12px;
+                    font-weight: bold;
+                    border-radius: 4px;
+                ">${sheet.label}</div>
+            </div>
+
+            <!-- 基本資訊表格 -->
+            ${infoTableHTML}
 
             <!-- 該週課表異動 -->
             <div style="flex: 1;">
@@ -226,25 +262,41 @@ export class PDFGenerator {
      * 建立週課表 HTML（僅顯示異動課程，其他留空）
      */
     createScheduleTableHTML(schedule, record, teacherName) {
+        const isSwap = record.type === '調課';
         let tableRows = '';
 
         this.periods.forEach(period => {
             let row = `<td style="padding: 6px 4px; border: 1px solid #333; font-weight: bold; text-align: center; width: 50px;">${period}</td>`;
 
             this.weekdays.forEach(weekday => {
-                // 檢查是否為本次異動的節次
-                const isTargetSlot = record.weekday === weekday && record.period === period;
+                // 檢查是否為本次異動的節次（時段 A）
+                const isSlotA = record.weekday === weekday && record.period === period;
+                // 檢查是否為調課的另一時段（時段 B）
+                const isSlotB = isSwap && record.swapWeekday === weekday && record.swapPeriod === period;
 
-                if (isTargetSlot) {
-                    // 異動的課程用藍色標記
+                if (isSlotA) {
+                    // 時段 A：藍色標記
+                    const cellContent = isSwap
+                        ? `${record.className}<br><span style="color: #2563eb;">→${record.swapTeacher}</span>`
+                        : `${record.className}<br>${record.subject}`;
                     row += `<td style="
                         padding: 6px 4px;
                         border: 1px solid #333;
                         text-align: center;
-                        color: #2563eb;
+                        background: #dbeafe;
                         font-weight: bold;
-                        font-size: 12px;
-                    ">${record.className}<br>${record.subject}</td>`;
+                        font-size: 11px;
+                    ">${cellContent}</td>`;
+                } else if (isSlotB) {
+                    // 時段 B：橙色標記
+                    row += `<td style="
+                        padding: 6px 4px;
+                        border: 1px solid #333;
+                        text-align: center;
+                        background: #fef3c7;
+                        font-weight: bold;
+                        font-size: 11px;
+                    ">${record.className}<br><span style="color: #d97706;">→${record.originalTeacher}</span></td>`;
                 } else {
                     // 其他節次留空
                     row += `<td style="padding: 6px 4px; border: 1px solid #333; height: 35px;"></td>`;

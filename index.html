@@ -198,14 +198,18 @@
                         </div>
                     </div>
 
-                    <!-- 調課專用：選擇互換教師 -->
+                    <!-- 調課專用：選擇互換課程 -->
                     <div id="swap-options" class="hidden">
                         <div class="form-group">
-                            <label for="swap-teacher">選擇互換教師：</label>
-                            <select id="swap-teacher">
+                            <label for="swap-course">選擇互換課程：</label>
+                            <select id="swap-course">
                                 <option value="">請先選擇欲調課的課程</option>
                             </select>
-                            <p class="hint" id="swap-hint">調課限制：僅顯示該時段有相同班級課程的教師</p>
+                            <p class="hint" id="swap-hint">調課說明：選擇同班級的另一時段課程進行互換</p>
+                        </div>
+                        <div id="swap-preview" class="hidden" style="background: #f0f9ff; padding: 15px; border-radius: 8px; margin-top: 10px; border: 1px solid #bae6fd;">
+                            <h4 style="margin: 0 0 10px 0; color: #0369a1;">調課預覽</h4>
+                            <div id="swap-preview-content"></div>
                         </div>
                         <div id="swap-validation-error" class="hidden" style="color: #dc2626; padding: 10px; background: #fef2f2; border-radius: 6px; margin-top: 10px;">
                         </div>
