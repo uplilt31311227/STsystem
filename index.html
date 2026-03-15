@@ -59,6 +59,23 @@
                             <p>課程數：<span id="course-count">0</span></p>
                         </div>
                     </div>
+
+                    <!-- 學校名稱設定 -->
+                    <div id="school-name-section" class="school-name-setting hidden">
+                        <div class="form-row" style="align-items: center;">
+                            <div class="form-group" style="flex: 1;">
+                                <label for="school-name"><strong>學校名稱：</strong><span style="color: red;">*</span></label>
+                                <input type="text" id="school-name" placeholder="如：臺北市立大安國民中學" style="width: 100%;">
+                                <p class="hint" id="school-name-hint">系統已從檔名自動擷取，請確認或修改</p>
+                            </div>
+                            <div style="margin-left: 10px;">
+                                <button class="btn btn-primary" id="save-school-name-btn">確認設定</button>
+                            </div>
+                        </div>
+                        <div id="school-name-warning" class="hidden" style="color: #dc2626; background: #fef2f2; padding: 10px; border-radius: 6px; margin-top: 10px;">
+                            ⚠️ 請先設定學校名稱，才能使用其他功能
+                        </div>
+                    </div>
                 </div>
 
                 <div class="card">

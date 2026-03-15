@@ -77,6 +77,13 @@ class SubstituteTeacherApp {
 
         tabButtons.forEach(btn => {
             btn.addEventListener('click', () => {
+                const targetTab = btn.dataset.tab;
+
+                // 檢查是否可以切換到該頁籤
+                if (!this.canSwitchToTab(targetTab)) {
+                    return;
+                }
+
                 // 移除所有 active 狀態，添加 hidden
                 tabButtons.forEach(b => b.classList.remove('active'));
                 tabContents.forEach(c => {
@@ -86,13 +93,13 @@ class SubstituteTeacherApp {
 
                 // 設定當前頁籤為 active，移除 hidden
                 btn.classList.add('active');
-                const tabId = btn.dataset.tab + '-tab';
+                const tabId = targetTab + '-tab';
                 const tabContent = document.getElementById(tabId);
                 tabContent.classList.add('active');
                 tabContent.classList.remove('hidden');
 
                 // 切換到調課紀錄頁籤時，自動載入本月資料
-                if (btn.dataset.tab === 'records') {
+                if (targetTab === 'records') {
                     this.loadCurrentMonthRecords();
                 }
             });
@@ -163,6 +170,18 @@ class SubstituteTeacherApp {
         document.getElementById('save-data-btn')?.addEventListener('click', () => {
             this.saveDataManually();
         });
+
+        // 學校名稱確認按鈕
+        document.getElementById('save-school-name-btn')?.addEventListener('click', () => {
+            this.saveSchoolName();
+        });
+
+        // 學校名稱輸入框 Enter 鍵
+        document.getElementById('school-name')?.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                this.saveSchoolName();
+            }
+        });
     }
 
     /**
@@ -186,8 +205,8 @@ class SubstituteTeacherApp {
                 this.updateTeacherTable();
                 this.populateTeacherDropdowns();
 
-                // 更新各頁籤顯示狀態
-                this.updateTabContentVisibility();
+                // 從檔名擷取學校名稱並顯示設定區塊
+                this.showSchoolNameSetting(file.name);
 
                 // 儲存到 localStorage
                 this.saveDataToStorage();
@@ -200,6 +219,187 @@ class SubstituteTeacherApp {
             console.error('檔案處理錯誤:', error);
             this.showError('檔案處理錯誤: ' + error.message);
         }
+    }
+
+    /**
+     * 從檔名擷取學校名稱
+     * @param {string} fileName - 檔案名稱
+     * @returns {string} 學校名稱
+     */
+    extractSchoolNameFromFileName(fileName) {
+        // 移除副檔名
+        const nameWithoutExt = fileName.replace(/\.(xls|xlsx|csv)$/i, '');
+
+        // 常見的檔名格式：
+        // 1. "XX國中_課表" 或 "XX國中-課表"
+        // 2. "XX國民中學_課表"
+        // 3. "課表_XX國中"
+        // 4. 純學校名稱
+
+        // 嘗試用常見分隔符號分割
+        const separators = ['_', '-', ' '];
+        for (const sep of separators) {
+            const parts = nameWithoutExt.split(sep);
+            for (const part of parts) {
+                // 檢查是否包含「國中」、「國民中學」、「中學」等關鍵字
+                if (part.includes('國中') || part.includes('國民中學') || part.includes('中學') || part.includes('高中')) {
+                    return part.trim();
+                }
+            }
+        }
+
+        // 如果整個檔名包含學校關鍵字，直接使用
+        if (nameWithoutExt.includes('國中') || nameWithoutExt.includes('國民中學') || nameWithoutExt.includes('中學')) {
+            // 嘗試擷取學校名稱部分
+            const match = nameWithoutExt.match(/(.{2,}(?:國民中學|國中|中學|高中))/);
+            if (match) {
+                return match[1].trim();
+            }
+        }
+
+        // 無法識別，返回空字串
+        return '';
+    }
+
+    /**
+     * 顯示學校名稱設定區塊
+     * @param {string} fileName - 檔案名稱
+     */
+    showSchoolNameSetting(fileName) {
+        const section = document.getElementById('school-name-section');
+        const input = document.getElementById('school-name');
+        const hint = document.getElementById('school-name-hint');
+        const warning = document.getElementById('school-name-warning');
+
+        // 顯示設定區塊
+        section.classList.remove('hidden');
+
+        // 嘗試從檔名擷取學校名稱
+        const extractedName = this.extractSchoolNameFromFileName(fileName);
+
+        // 檢查是否已有儲存的學校名稱
+        const savedName = this.dataManager.getSchoolName();
+
+        if (savedName) {
+            // 已有儲存的名稱，顯示已確認狀態
+            input.value = savedName;
+            this.showSchoolNameConfirmed();
+        } else if (extractedName) {
+            // 有從檔名擷取到，填入並提示確認
+            input.value = extractedName;
+            hint.textContent = '系統已從檔名自動擷取，請確認或修改';
+            warning.classList.remove('hidden');
+        } else {
+            // 無法擷取，提示手動輸入
+            input.value = '';
+            hint.textContent = '無法從檔名自動擷取，請手動輸入學校名稱';
+            warning.classList.remove('hidden');
+        }
+
+        // 更新頁籤狀態
+        this.updateTabLockStatus();
+    }
+
+    /**
+     * 儲存學校名稱
+     */
+    saveSchoolName() {
+        const input = document.getElementById('school-name');
+        const name = input.value.trim();
+
+        if (!name) {
+            alert('請輸入學校名稱');
+            input.focus();
+            return;
+        }
+
+        // 儲存到 DataManager
+        this.dataManager.setSchoolName(name);
+
+        // 更新 PDF 生成器的學校名稱
+        this.pdfGenerator.setSchoolName(name);
+
+        // 顯示已確認狀態
+        this.showSchoolNameConfirmed();
+
+        // 更新頁籤狀態
+        this.updateTabLockStatus();
+
+        // 更新頁籤內容顯示
+        this.updateTabContentVisibility();
+
+        // 儲存到 localStorage
+        this.saveDataToStorage();
+
+        alert('學校名稱已設定：' + name);
+    }
+
+    /**
+     * 顯示學校名稱已確認狀態
+     */
+    showSchoolNameConfirmed() {
+        const section = document.getElementById('school-name-section');
+        const warning = document.getElementById('school-name-warning');
+        const hint = document.getElementById('school-name-hint');
+
+        section.classList.add('school-name-confirmed');
+        warning.classList.add('hidden');
+        hint.textContent = '✓ 學校名稱已設定';
+        hint.style.color = '#16a34a';
+    }
+
+    /**
+     * 更新頁籤鎖定狀態
+     */
+    updateTabLockStatus() {
+        const schoolName = this.dataManager.getSchoolName();
+        const hasSchedule = this.dataManager.getScheduleData().length > 0;
+        const isConfigured = schoolName && hasSchedule;
+
+        // 取得所有頁籤按鈕（除了課表匯入和設定）
+        const lockedTabs = ['substitute', 'records', 'settlement'];
+
+        lockedTabs.forEach(tabId => {
+            const btn = document.querySelector(`.tab-btn[data-tab="${tabId}"]`);
+            if (btn) {
+                if (isConfigured) {
+                    btn.classList.remove('disabled');
+                    btn.style.opacity = '1';
+                    btn.style.cursor = 'pointer';
+                } else {
+                    btn.classList.add('disabled');
+                    btn.style.opacity = '0.5';
+                    btn.style.cursor = 'not-allowed';
+                }
+            }
+        });
+    }
+
+    /**
+     * 檢查是否可以切換到指定頁籤
+     * @param {string} tabId - 頁籤 ID
+     * @returns {boolean} 是否允許切換
+     */
+    canSwitchToTab(tabId) {
+        // 課表匯入和設定頁籤始終可用
+        if (tabId === 'import' || tabId === 'settings') {
+            return true;
+        }
+
+        const schoolName = this.dataManager.getSchoolName();
+        const hasSchedule = this.dataManager.getScheduleData().length > 0;
+
+        if (!hasSchedule) {
+            alert('請先匯入課表檔案');
+            return false;
+        }
+
+        if (!schoolName) {
+            alert('請先在「課表匯入」頁籤設定學校名稱');
+            return false;
+        }
+
+        return true;
     }
 
     /**
@@ -1553,6 +1753,24 @@ class SubstituteTeacherApp {
                     this.updateTeacherTable();
                     this.populateTeacherDropdowns();
 
+                    // 顯示學校名稱設定區塊
+                    const schoolNameSection = document.getElementById('school-name-section');
+                    const schoolNameInput = document.getElementById('school-name');
+                    schoolNameSection.classList.remove('hidden');
+
+                    if (data.schoolName) {
+                        // 已有儲存的學校名稱
+                        schoolNameInput.value = data.schoolName;
+                        this.pdfGenerator.setSchoolName(data.schoolName);
+                        this.showSchoolNameConfirmed();
+                    } else {
+                        // 無學校名稱，顯示警告
+                        document.getElementById('school-name-warning').classList.remove('hidden');
+                    }
+
+                    // 更新頁籤鎖定狀態
+                    this.updateTabLockStatus();
+
                     // 更新各頁籤顯示狀態
                     this.updateTabContentVisibility();
                 }
@@ -1594,12 +1812,14 @@ class SubstituteTeacherApp {
      */
     updateTabContentVisibility() {
         const hasData = this.dataManager.getScheduleData().length > 0;
+        const hasSchoolName = !!this.dataManager.getSchoolName();
+        const isConfigured = hasData && hasSchoolName;
 
         // 調代課申請頁籤
         const substituteNoData = document.getElementById('substitute-no-data');
         const substituteContent = document.getElementById('substitute-content');
         if (substituteNoData && substituteContent) {
-            if (hasData) {
+            if (isConfigured) {
                 substituteNoData.classList.add('hidden');
                 substituteContent.classList.remove('hidden');
             } else {
@@ -1612,7 +1832,7 @@ class SubstituteTeacherApp {
         const recordsNoData = document.getElementById('records-no-data');
         const recordsContent = document.getElementById('records-content');
         if (recordsNoData && recordsContent) {
-            if (hasData) {
+            if (isConfigured) {
                 recordsNoData.classList.add('hidden');
                 recordsContent.classList.remove('hidden');
             } else {
@@ -1625,7 +1845,7 @@ class SubstituteTeacherApp {
         const settlementNoData = document.getElementById('settlement-no-data');
         const settlementContent = document.getElementById('settlement-content');
         if (settlementNoData && settlementContent) {
-            if (hasData) {
+            if (isConfigured) {
                 settlementNoData.classList.add('hidden');
                 settlementContent.classList.remove('hidden');
             } else {

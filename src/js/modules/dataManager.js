@@ -10,6 +10,9 @@
 
 export class DataManager {
     constructor() {
+        // 學校名稱
+        this.schoolName = '';
+
         // 課表資料：每筆為一堂課
         this.scheduleData = [];
 
@@ -21,6 +24,22 @@ export class DataManager {
 
         // 調代課紀錄
         this.substituteRecords = [];
+    }
+
+    /**
+     * 設定學校名稱
+     * @param {string} name - 學校名稱
+     */
+    setSchoolName(name) {
+        this.schoolName = name;
+    }
+
+    /**
+     * 取得學校名稱
+     * @returns {string} 學校名稱
+     */
+    getSchoolName() {
+        return this.schoolName;
     }
 
     /**
@@ -225,6 +244,7 @@ export class DataManager {
      * @param {Object} data - 儲存的資料物件
      */
     loadFromStorage(data) {
+        if (data.schoolName) this.schoolName = data.schoolName;
         if (data.scheduleData) this.scheduleData = data.scheduleData;
         if (data.teachers) this.teachers = data.teachers;
         if (data.classes) this.classes = data.classes;
@@ -237,6 +257,7 @@ export class DataManager {
      */
     exportToStorage() {
         return {
+            schoolName: this.schoolName,
             scheduleData: this.scheduleData,
             teachers: this.teachers,
             classes: this.classes,
@@ -248,6 +269,7 @@ export class DataManager {
      * 清除所有資料
      */
     clearAll() {
+        this.schoolName = '';
         this.scheduleData = [];
         this.teachers = [];
         this.classes = [];
