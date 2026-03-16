@@ -1259,10 +1259,6 @@ class SubstituteTeacherApp {
             }
 
             const reason = document.getElementById('sub-reason').value.trim();
-            if (!reason) {
-                alert('請輸入事由說明');
-                return;
-            }
 
             // 建立代課紀錄
             const record = {

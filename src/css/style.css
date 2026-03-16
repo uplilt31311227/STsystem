@@ -368,8 +368,10 @@ body {
 }
 
 .schedule-course.selected {
-    background-color: var(--primary-color);
-    color: white;
+    background-color: #1d4ed8 !important;
+    color: white !important;
+    border: 3px solid #1e40af !important;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.3);
 }
 
 .schedule-course.free {
