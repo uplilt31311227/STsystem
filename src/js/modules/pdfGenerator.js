@@ -139,6 +139,11 @@ export class PDFGenerator {
 
     /**
      * 建立單聯 HTML
+     * 根據聯別決定網底標識和顯示欄位：
+     * - 原任課教師聯：網底原任課教師欄位
+     * - 調代課教師聯：網底代課教師欄位，不顯示公假字號或理由
+     * - 班級聯：網底班級科目欄位，不顯示請假假別及公假字號或理由
+     * - 教學組聯：無網底，顯示完整資訊
      */
     createSheetHTML(record, sheet, scheduleData) {
         const teacherSchedule = this.getTeacherWeekSchedule(scheduleData, sheet.teacher);
@@ -165,6 +170,16 @@ export class PDFGenerator {
         // 公假字號
         const docNumber = record.docNumber || '-';
 
+        // 判斷聯別類型
+        const isOriginalTeacherSheet = sheet.label === '原任課教師聯';
+        const isSubstituteTeacherSheet = sheet.label === '代（調）課教師聯';
+        const isClassSheet = sheet.label === '班級聯';
+        const isAdminSheet = sheet.label === '教學組聯';
+
+        // 灰階網底顏色定義
+        const highlightBg = '#d0d0d0';  // 深灰色網底用於標識重點欄位
+        const normalBg = '#f5f5f5';     // 淺灰色背景
+
         // 根據是否為調課生成不同的基本資訊表格
         let infoTableHTML;
         if (isSwap) {
@@ -176,60 +191,96 @@ export class PDFGenerator {
             const dateBObj = record.swapDate ? new Date(record.swapDate) : dateAObj;
             const formattedDateB = `${dateBObj.getFullYear()}/${String(dateBObj.getMonth() + 1).padStart(2, '0')}/${String(dateBObj.getDate()).padStart(2, '0')}`;
 
-            // 調課模式：顯示兩個時段的互換資訊（包含各自日期）
+            // 調課模式：根據聯別決定網底（灰階版本）
+            // 時段 A 網底
+            const slotALabelBg = isOriginalTeacherSheet ? highlightBg : '#e8e8e8';
+            // 時段 B 網底
+            const slotBLabelBg = isSubstituteTeacherSheet ? highlightBg : '#e8e8e8';
+            // 班級欄位網底
+            const classBg = isClassSheet ? highlightBg : normalBg;
+
             infoTableHTML = `
             <table style="width: 100%; border-collapse: collapse; margin-bottom: 15px; font-size: 13px;">
                 <tr>
-                    <td style="padding: 8px; border: 1px solid #333; background: #f5f5f5; width: 18%; font-weight: bold;">異動類型</td>
+                    <td style="padding: 8px; border: 1px solid #333; background: ${normalBg}; width: 18%; font-weight: bold;">異動類型</td>
                     <td style="padding: 8px; border: 1px solid #333; width: 32%;">${changeType}</td>
-                    <td style="padding: 8px; border: 1px solid #333; background: #f5f5f5; width: 18%; font-weight: bold;">班級</td>
-                    <td style="padding: 8px; border: 1px solid #333; width: 32%;">${record.className}</td>
+                    <td style="padding: 8px; border: 1px solid #333; background: ${classBg}; width: 18%; font-weight: bold;">班級</td>
+                    <td style="padding: 8px; border: 1px solid #333; ${isClassSheet ? 'background: ' + highlightBg + ';' : ''} width: 32%;">${record.className}</td>
                 </tr>
                 <tr>
-                    <td style="padding: 8px; border: 1px solid #333; background: #dbeafe; font-weight: bold;">時段 A</td>
-                    <td style="padding: 8px; border: 1px solid #333;"><strong>${formattedDateA}</strong><br>${record.weekday} ${record.period}</td>
-                    <td style="padding: 8px; border: 1px solid #333; background: #dbeafe; font-weight: bold;">課程</td>
-                    <td style="padding: 8px; border: 1px solid #333;">${record.originalTeacher}（${record.subject}）</td>
+                    <td style="padding: 8px; border: 1px solid #333; background: ${slotALabelBg}; font-weight: bold;">時段 A</td>
+                    <td style="padding: 8px; border: 1px solid #333; ${isOriginalTeacherSheet ? 'background: ' + highlightBg + ';' : ''}"><strong>${formattedDateA}</strong><br>${record.weekday} ${record.period}</td>
+                    <td style="padding: 8px; border: 1px solid #333; background: ${slotALabelBg}; font-weight: bold;">課程</td>
+                    <td style="padding: 8px; border: 1px solid #333; ${isOriginalTeacherSheet ? 'background: ' + highlightBg + ';' : ''}">${record.originalTeacher}（${record.subject}）</td>
                 </tr>
                 <tr>
-                    <td style="padding: 8px; border: 1px solid #333; background: #fef3c7; font-weight: bold;">時段 B</td>
-                    <td style="padding: 8px; border: 1px solid #333;"><strong>${formattedDateB}</strong><br>${record.swapWeekday || ''} ${record.swapPeriod || ''}</td>
-                    <td style="padding: 8px; border: 1px solid #333; background: #fef3c7; font-weight: bold;">課程</td>
-                    <td style="padding: 8px; border: 1px solid #333;">${record.swapTeacher || ''}（${record.swapSubject || ''}）</td>
+                    <td style="padding: 8px; border: 1px solid #333; background: ${slotBLabelBg}; font-weight: bold;">時段 B</td>
+                    <td style="padding: 8px; border: 1px solid #333; ${isSubstituteTeacherSheet ? 'background: ' + highlightBg + ';' : ''}"><strong>${formattedDateB}</strong><br>${record.swapWeekday || ''} ${record.swapPeriod || ''}</td>
+                    <td style="padding: 8px; border: 1px solid #333; background: ${slotBLabelBg}; font-weight: bold;">課程</td>
+                    <td style="padding: 8px; border: 1px solid #333; ${isSubstituteTeacherSheet ? 'background: ' + highlightBg + ';' : ''}">${record.swapTeacher || ''}（${record.swapSubject || ''}）</td>
                 </tr>
                 <tr>
-                    <td style="padding: 8px; border: 1px solid #333; background: #f5f5f5; font-weight: bold;">調課說明</td>
+                    <td style="padding: 8px; border: 1px solid #333; background: ${normalBg}; font-weight: bold;">調課說明</td>
                     <td colspan="3" style="padding: 8px; border: 1px solid #333;">A、B 時段課程互換，兩位教師總時數不變</td>
                 </tr>
             </table>`;
         } else {
-            // 代課模式：原有的表格格式
+            // 代課模式：根據聯別決定顯示欄位和網底
+            // 原任課教師欄位網底
+            const originalTeacherBg = isOriginalTeacherSheet ? highlightBg : normalBg;
+            // 代課教師欄位網底
+            const substituteTeacherBg = isSubstituteTeacherSheet ? highlightBg : normalBg;
+            // 班級科目欄位網底
+            const classSubjectBg = isClassSheet ? highlightBg : normalBg;
+
+            // 決定是否顯示請假假別和公假字號
+            // 調代課教師聯：不顯示公假字號或理由
+            // 班級聯：不顯示請假假別及公假字號或理由
+            const showLeaveType = !isClassSheet;
+            const showDocNumber = !isSubstituteTeacherSheet && !isClassSheet;
+
+            // 根據顯示需求組合第四行
+            let fourthRowHTML = '';
+            if (showLeaveType && showDocNumber) {
+                // 完整顯示（教學組聯、原任課教師聯）
+                fourthRowHTML = `
+                <tr>
+                    <td style="padding: 8px; border: 1px solid #333; background: ${normalBg}; font-weight: bold;">請假假別</td>
+                    <td style="padding: 8px; border: 1px solid #333;">${leaveType}</td>
+                    <td style="padding: 8px; border: 1px solid #333; background: ${normalBg}; font-weight: bold;">公假字號</td>
+                    <td style="padding: 8px; border: 1px solid #333;">${docNumber}</td>
+                </tr>`;
+            } else if (showLeaveType && !showDocNumber) {
+                // 只顯示請假假別（調代課教師聯）
+                fourthRowHTML = `
+                <tr>
+                    <td style="padding: 8px; border: 1px solid #333; background: ${normalBg}; font-weight: bold;">請假假別</td>
+                    <td colspan="3" style="padding: 8px; border: 1px solid #333;">${leaveType}</td>
+                </tr>`;
+            }
+            // 班級聯：不顯示第四行
+
             infoTableHTML = `
             <table style="width: 100%; border-collapse: collapse; margin-bottom: 15px; font-size: 13px;">
                 <tr>
-                    <td style="padding: 8px; border: 1px solid #333; background: #f5f5f5; width: 18%; font-weight: bold;">異動類型</td>
+                    <td style="padding: 8px; border: 1px solid #333; background: ${normalBg}; width: 18%; font-weight: bold;">異動類型</td>
                     <td style="padding: 8px; border: 1px solid #333; width: 32%;">${changeType}</td>
-                    <td style="padding: 8px; border: 1px solid #333; background: #f5f5f5; width: 18%; font-weight: bold;">日期</td>
+                    <td style="padding: 8px; border: 1px solid #333; background: ${normalBg}; width: 18%; font-weight: bold;">日期</td>
                     <td style="padding: 8px; border: 1px solid #333; width: 32%;">${formattedDate}</td>
                 </tr>
                 <tr>
-                    <td style="padding: 8px; border: 1px solid #333; background: #f5f5f5; font-weight: bold;">原任課教師</td>
-                    <td style="padding: 8px; border: 1px solid #333;">${record.originalTeacher}</td>
-                    <td style="padding: 8px; border: 1px solid #333; background: #f5f5f5; font-weight: bold;">代課教師</td>
-                    <td style="padding: 8px; border: 1px solid #333;">${record.substituteTeacher}</td>
+                    <td style="padding: 8px; border: 1px solid #333; background: ${originalTeacherBg}; font-weight: bold;">原任課教師</td>
+                    <td style="padding: 8px; border: 1px solid #333; ${isOriginalTeacherSheet ? 'background: ' + highlightBg + ';' : ''}">${record.originalTeacher}</td>
+                    <td style="padding: 8px; border: 1px solid #333; background: ${substituteTeacherBg}; font-weight: bold;">代課教師</td>
+                    <td style="padding: 8px; border: 1px solid #333; ${isSubstituteTeacherSheet ? 'background: ' + highlightBg + ';' : ''}">${record.substituteTeacher}</td>
                 </tr>
                 <tr>
-                    <td style="padding: 8px; border: 1px solid #333; background: #f5f5f5; font-weight: bold;">節次</td>
+                    <td style="padding: 8px; border: 1px solid #333; background: ${normalBg}; font-weight: bold;">節次</td>
                     <td style="padding: 8px; border: 1px solid #333;">${record.period}</td>
-                    <td style="padding: 8px; border: 1px solid #333; background: #f5f5f5; font-weight: bold;">班級/科目</td>
-                    <td style="padding: 8px; border: 1px solid #333;">${record.className} ${record.subject}</td>
+                    <td style="padding: 8px; border: 1px solid #333; background: ${classSubjectBg}; font-weight: bold;">班級/科目</td>
+                    <td style="padding: 8px; border: 1px solid #333; ${isClassSheet ? 'background: ' + highlightBg + ';' : ''}">${record.className} ${record.subject}</td>
                 </tr>
-                <tr>
-                    <td style="padding: 8px; border: 1px solid #333; background: #f5f5f5; font-weight: bold;">請假假別</td>
-                    <td style="padding: 8px; border: 1px solid #333;">${leaveType}</td>
-                    <td style="padding: 8px; border: 1px solid #333; background: #f5f5f5; font-weight: bold;">公假字號</td>
-                    <td style="padding: 8px; border: 1px solid #333;">${docNumber}</td>
-                </tr>
+                ${fourthRowHTML}
             </table>`;
         }
 
@@ -240,7 +291,7 @@ export class PDFGenerator {
                 <div style="font-size: 16px; font-weight: bold;">${this.schoolName}</div>
                 <div style="font-size: 22px; font-weight: bold; letter-spacing: 8px;">${isSwap ? '調課' : '代課'}通知單</div>
                 <div style="
-                    background: ${sheet.labelBg};
+                    background: #555;
                     color: white;
                     padding: 6px 12px;
                     font-size: 12px;
@@ -285,6 +336,8 @@ export class PDFGenerator {
 
     /**
      * 建立週課表 HTML（僅顯示異動課程，其他留空）
+     * 包含午休分隔行（在第四及第五節之間）
+     * 使用灰階樣式以便黑白列印
      */
     createScheduleTableHTML(schedule, record, teacherName) {
         const isSwap = record.type === '調課';
@@ -294,8 +347,12 @@ export class PDFGenerator {
         const recordPeriod = this.normalizePeriod(record.period);
         const swapPeriod = record.swapPeriod ? this.normalizePeriod(record.swapPeriod) : null;
 
-        this.periods.forEach(period => {
-            let row = `<td style="padding: 6px 4px; border: 1px solid #333; font-weight: bold; text-align: center; width: 50px;">${period}</td>`;
+        // 灰階顏色定義
+        const slotABg = '#c0c0c0';  // 時段 A 網底（深灰）
+        const slotBBg = '#e0e0e0';  // 時段 B 網底（淺灰）
+
+        this.periods.forEach((period, index) => {
+            let row = `<td style="padding: 6px 4px; border: 1px solid #333; font-weight: bold; text-align: center; width: 50px; background: #f5f5f5;">${period}</td>`;
 
             this.weekdays.forEach(weekday => {
                 // 檢查是否為本次異動的節次（時段 A）
@@ -304,28 +361,32 @@ export class PDFGenerator {
                 const isSlotB = isSwap && record.swapWeekday === weekday && swapPeriod === period;
 
                 if (isSlotA) {
-                    // 時段 A：藍色標記
+                    // 時段 A：深灰色網底標記
+                    // 顯示格式：原 OOO / 代 OOO（上下兩行）
                     const cellContent = isSwap
-                        ? `${record.className}<br><span style="color: #2563eb;">→${record.swapTeacher}</span>`
-                        : `${record.className}<br>${record.subject}`;
+                        ? `原 ${record.originalTeacher}<br>調 ${record.swapTeacher}`
+                        : `原 ${record.originalTeacher}<br>代 ${record.substituteTeacher}`;
                     row += `<td style="
-                        padding: 6px 4px;
+                        padding: 4px 2px;
                         border: 1px solid #333;
                         text-align: center;
-                        background: #dbeafe;
+                        background: ${slotABg};
                         font-weight: bold;
-                        font-size: 11px;
+                        font-size: 10px;
+                        line-height: 1.4;
                     ">${cellContent}</td>`;
                 } else if (isSlotB) {
-                    // 時段 B：橙色標記
+                    // 時段 B：淺灰色網底標記（調課時的另一時段）
+                    // 顯示格式：原 OOO / 調 OOO（上下兩行）
                     row += `<td style="
-                        padding: 6px 4px;
+                        padding: 4px 2px;
                         border: 1px solid #333;
                         text-align: center;
-                        background: #fef3c7;
+                        background: ${slotBBg};
                         font-weight: bold;
-                        font-size: 11px;
-                    ">${record.className}<br><span style="color: #d97706;">→${record.originalTeacher}</span></td>`;
+                        font-size: 10px;
+                        line-height: 1.4;
+                    ">原 ${record.swapTeacher}<br>調 ${record.originalTeacher}</td>`;
                 } else {
                     // 其他節次留空
                     row += `<td style="padding: 6px 4px; border: 1px solid #333; height: 35px;"></td>`;
@@ -333,12 +394,29 @@ export class PDFGenerator {
             });
 
             tableRows += `<tr>${row}</tr>`;
+
+            // 在第四節後插入午休分隔行（index 為 3 時是第四節）
+            if (index === 3) {
+                tableRows += `
+                <tr>
+                    <td colspan="6" style="
+                        padding: 4px;
+                        border: 1px solid #333;
+                        text-align: center;
+                        background: #888;
+                        color: white;
+                        font-size: 10px;
+                        font-weight: bold;
+                        letter-spacing: 2px;
+                    ">午 休</td>
+                </tr>`;
+            }
         });
 
         return `
         <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
             <thead>
-                <tr style="background: #4b5563; color: white;">
+                <tr style="background: #333; color: white;">
                     <th style="padding: 6px 4px; border: 1px solid #333; width: 50px;">節次</th>
                     <th style="padding: 6px 4px; border: 1px solid #333;">週一</th>
                     <th style="padding: 6px 4px; border: 1px solid #333;">週二</th>
