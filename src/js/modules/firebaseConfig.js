@@ -9,13 +9,13 @@
 
 // Firebase 內建設定
 const FIREBASE_CONFIG = {
-    apiKey: "AIzaSyDQt1zrPoKEM96D78JidCJW0OQS69swzKY",
-    authDomain: "stsystem-9dbdd.firebaseapp.com",
-    projectId: "stsystem-9dbdd",
-    storageBucket: "stsystem-9dbdd.firebasestorage.app",
-    messagingSenderId: "585133026368",
-    appId: "1:585133026368:web:f6943ff8adde09123383a5",
-    measurementId: "G-WL87B39G8W"
+    apiKey: "AIzaSyCJ1WL_aScocarEvQdEgCYtsdqM8AUdGlw",
+    authDomain: "stsystem-9d5fe.firebaseapp.com",
+    projectId: "stsystem-9d5fe",
+    storageBucket: "stsystem-9d5fe.firebasestorage.app",
+    messagingSenderId: "192019928674",
+    appId: "1:192019928674:web:1e59b250a3fc58f982233b",
+    measurementId: "G-56YRE2K4HR"
 };
 
 // Firebase 實例
