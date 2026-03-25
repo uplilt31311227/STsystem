@@ -1629,6 +1629,18 @@ class SubstituteTeacherApp {
             existingWarning.remove();
         }
 
+        // 調試：檢查 dataManager 狀態
+        console.log('dataManager 類型:', typeof this.dataManager);
+        console.log('dataManager:', this.dataManager);
+        console.log('checkExistingRecord 存在:', typeof this.dataManager?.checkExistingRecord);
+
+        // 如果方法不存在，跳過檢查
+        if (typeof this.dataManager?.checkExistingRecord !== 'function') {
+            console.warn('checkExistingRecord 方法不存在，跳過衝堂檢查');
+            this.hasExistingRecord = false;
+            return;
+        }
+
         // 檢查是否已有紀錄
         const existingRecord = this.dataManager.checkExistingRecord(
             date,
