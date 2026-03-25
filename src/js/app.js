@@ -1690,14 +1690,24 @@ class SubstituteTeacherApp {
      */
     showRecommendations() {
         const date = document.getElementById('sub-date').value;
+        const scheduleData = this.dataManager.getScheduleData();
+        const teachers = this.dataManager.getTeachers();
+
+        console.log('===== 代課教師推薦 =====');
+        console.log('選擇的課程:', this.selectedCourse);
+        console.log('課表資料筆數:', scheduleData.length);
+        console.log('教師資料筆數:', teachers.length);
+        console.log('日期:', date);
 
         // 使用推薦引擎計算推薦列表
         const recommendations = this.recommendationEngine.getRecommendations(
             this.selectedCourse,
-            this.dataManager.getScheduleData(),
-            this.dataManager.getTeachers(),
+            scheduleData,
+            teachers,
             date
         );
+
+        console.log('推薦結果筆數:', recommendations.length);
 
         // 渲染推薦列表
         const list = document.getElementById('recommendation-list');
