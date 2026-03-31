@@ -322,9 +322,6 @@ export class PDFGenerator {
             <!-- 課表異動 -->
             <div style="flex: 1;">
                 ${scheduleTableHTML}
-                <div style="font-size: 12px; font-weight: bold; margin-top: 6px; text-align: right;">
-                    代課日期：${formattedDate}
-                </div>
             </div>
 
             <!-- 底部簽章區 -->
@@ -362,6 +359,8 @@ export class PDFGenerator {
 
                 if (matchedRecord) {
                     // 異動的課程：深灰色網底標記
+                    const dateObj = new Date(matchedRecord.date);
+                    const dateStr = `${dateObj.getMonth() + 1}/${dateObj.getDate()}`;
                     const classInfo = `${matchedRecord.className} ${matchedRecord.subject}`;
                     const teacherInfo = `原 ${matchedRecord.originalTeacher}<br>代 ${matchedRecord.substituteTeacher}`;
                     row += `<td style="
@@ -372,7 +371,7 @@ export class PDFGenerator {
                         font-weight: bold;
                         font-size: 12px;
                         line-height: 1.4;
-                    ">${classInfo}<br>${teacherInfo}</td>`;
+                    ">${dateStr}<br>${classInfo}<br>${teacherInfo}</td>`;
                 } else {
                     // 其他節次留空
                     row += `<td style="padding: 10px 6px; border: 1px solid #333; height: 45px;"></td>`;
@@ -590,16 +589,6 @@ export class PDFGenerator {
             </table>`;
         }
 
-        // 課表日期標籤
-        let dateLabel;
-        if (isSwap) {
-            const dateBObj = record.swapDate ? new Date(record.swapDate) : dateObj;
-            const swapDateStr = `${dateBObj.getFullYear()}/${String(dateBObj.getMonth() + 1).padStart(2, '0')}/${String(dateBObj.getDate()).padStart(2, '0')} (${record.swapWeekday || ''})`;
-            dateLabel = `調課日期：${formattedDate}、${swapDateStr}`;
-        } else {
-            dateLabel = `代課日期：${formattedDate}`;
-        }
-
         return `
         <div style="height: 100%; display: flex; flex-direction: column;">
             <!-- 標題區 -->
@@ -622,9 +611,6 @@ export class PDFGenerator {
             <!-- 課表異動 -->
             <div style="flex: 1;">
                 ${scheduleTableHTML}
-                <div style="font-size: 12px; font-weight: bold; margin-top: 6px; text-align: right;">
-                    ${dateLabel}
-                </div>
             </div>
 
             <!-- 底部簽章區 -->
@@ -678,7 +664,9 @@ export class PDFGenerator {
 
                 if (isSlotA) {
                     // 時段 A：深灰色網底標記
-                    // 顯示格式：班級/科目 + 原 OOO / 代 OOO（三行）
+                    // 顯示格式：日期 + 班級/科目 + 原 OOO / 代 OOO
+                    const dateA = new Date(record.date);
+                    const dateAStr = `${dateA.getMonth() + 1}/${dateA.getDate()}`;
                     const classInfo = `${record.className} ${record.subject}`;
                     const teacherInfo = isSwap
                         ? `原 ${record.originalTeacher}<br>調 ${record.swapTeacher}`
@@ -691,10 +679,12 @@ export class PDFGenerator {
                         font-weight: bold;
                         font-size: 12px;
                         line-height: 1.4;
-                    ">${classInfo}<br>${teacherInfo}</td>`;
+                    ">${dateAStr}<br>${classInfo}<br>${teacherInfo}</td>`;
                 } else if (isSlotB) {
                     // 時段 B：淺灰色網底標記（調課時的另一時段）
-                    // 顯示格式：班級/科目 + 原 OOO / 調 OOO（三行）
+                    // 顯示格式：日期 + 班級/科目 + 原 OOO / 調 OOO
+                    const dateBObj = record.swapDate ? new Date(record.swapDate) : new Date(record.date);
+                    const dateBStr = `${dateBObj.getMonth() + 1}/${dateBObj.getDate()}`;
                     const classInfoB = `${record.className} ${record.swapSubject || record.subject}`;
                     row += `<td style="
                         padding: 8px 4px;
@@ -704,7 +694,7 @@ export class PDFGenerator {
                         font-weight: bold;
                         font-size: 12px;
                         line-height: 1.4;
-                    ">${classInfoB}<br>原 ${record.swapTeacher}<br>調 ${record.originalTeacher}</td>`;
+                    ">${dateBStr}<br>${classInfoB}<br>原 ${record.swapTeacher}<br>調 ${record.originalTeacher}</td>`;
                 } else {
                     // 其他節次留空
                     row += `<td style="padding: 10px 6px; border: 1px solid #333; height: 45px;"></td>`;
