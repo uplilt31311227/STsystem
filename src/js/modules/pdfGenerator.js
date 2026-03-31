@@ -319,12 +319,12 @@ export class PDFGenerator {
             <!-- 基本資訊表格 -->
             ${infoTableHTML}
 
-            <!-- 該週課表異動 -->
+            <!-- 課表異動 -->
             <div style="flex: 1;">
-                <div style="font-size: 13px; font-weight: bold; margin-bottom: 8px;">
-                    ${sheet.teacher} 該週課表異動
-                </div>
                 ${scheduleTableHTML}
+                <div style="font-size: 12px; font-weight: bold; margin-top: 6px; text-align: right;">
+                    代課日期：${formattedDate}
+                </div>
             </div>
 
             <!-- 底部簽章區 -->
@@ -590,6 +590,16 @@ export class PDFGenerator {
             </table>`;
         }
 
+        // 課表日期標籤
+        let dateLabel;
+        if (isSwap) {
+            const dateBObj = record.swapDate ? new Date(record.swapDate) : dateObj;
+            const swapDateStr = `${dateBObj.getFullYear()}/${String(dateBObj.getMonth() + 1).padStart(2, '0')}/${String(dateBObj.getDate()).padStart(2, '0')} (${record.swapWeekday || ''})`;
+            dateLabel = `調課日期：${formattedDate}、${swapDateStr}`;
+        } else {
+            dateLabel = `代課日期：${formattedDate}`;
+        }
+
         return `
         <div style="height: 100%; display: flex; flex-direction: column;">
             <!-- 標題區 -->
@@ -609,12 +619,12 @@ export class PDFGenerator {
             <!-- 基本資訊表格 -->
             ${infoTableHTML}
 
-            <!-- 該週課表異動 -->
+            <!-- 課表異動 -->
             <div style="flex: 1;">
-                <div style="font-size: 13px; font-weight: bold; margin-bottom: 8px;">
-                    ${sheet.teacher} 該週課表異動
-                </div>
                 ${scheduleTableHTML}
+                <div style="font-size: 12px; font-weight: bold; margin-top: 6px; text-align: right;">
+                    ${dateLabel}
+                </div>
             </div>
 
             <!-- 底部簽章區 -->
