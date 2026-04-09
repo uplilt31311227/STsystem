@@ -169,6 +169,85 @@ export class DataManager {
     }
 
     /**
+     * 新增單一課表項目
+     * @param {Object} entry - 課表項目 { weekday, period, className, teacher, domain, subject, rawSubject, courseName, category }
+     */
+    addScheduleEntry(entry) {
+        // 確保必要欄位存在
+        const newEntry = {
+            weekday: entry.weekday || '',
+            period: entry.period || '',
+            className: entry.className || '',
+            teacher: entry.teacher || '',
+            domain: entry.domain || '',
+            subject: entry.subject || '',
+            rawSubject: entry.rawSubject || entry.subject || '',
+            courseName: entry.courseName || entry.subject || '',
+            category: entry.category || '領域學習'
+        };
+        this.scheduleData.push(newEntry);
+    }
+
+    /**
+     * 更新單一課表項目
+     * @param {string} teacher - 教師姓名
+     * @param {string} weekday - 星期
+     * @param {string} period - 節次
+     * @param {Object} updates - 要更新的欄位
+     */
+    updateScheduleEntry(teacher, weekday, period, updates) {
+        const index = this.scheduleData.findIndex(c =>
+            c.teacher === teacher && c.weekday === weekday && c.period === period
+        );
+        if (index !== -1) {
+            Object.assign(this.scheduleData[index], updates);
+        }
+    }
+
+    /**
+     * 移除單一課表項目
+     * @param {string} teacher - 教師姓名
+     * @param {string} weekday - 星期
+     * @param {string} period - 節次
+     */
+    removeScheduleEntry(teacher, weekday, period) {
+        const index = this.scheduleData.findIndex(c =>
+            c.teacher === teacher && c.weekday === weekday && c.period === period
+        );
+        if (index !== -1) {
+            this.scheduleData.splice(index, 1);
+        }
+    }
+
+    /**
+     * 更新班級清單（從現有課表資料重新計算）
+     */
+    refreshClasses() {
+        const classSet = new Set();
+        this.scheduleData.forEach(entry => {
+            if (entry.className) classSet.add(entry.className);
+        });
+        this.classes = [...classSet].sort();
+    }
+
+    /**
+     * 更新教師領域資訊（從現有課表資料重新計算）
+     * @param {string} teacherName - 教師姓名
+     */
+    refreshTeacherDomains(teacherName) {
+        const teacher = this.getTeacherByName(teacherName);
+        if (!teacher) return;
+
+        const domains = new Set();
+        this.scheduleData
+            .filter(c => c.teacher === teacherName)
+            .forEach(c => {
+                if (c.domain) domains.add(c.domain);
+            });
+        teacher.domains = [...domains];
+    }
+
+    /**
      * 取得指定時段有課的教師清單
      * @param {string} weekday - 星期（如：週一）
      * @param {string} period - 節次（如：第一節）

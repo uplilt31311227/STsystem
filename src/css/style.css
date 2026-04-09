@@ -1965,3 +1965,84 @@ body {
         gap: 0.5rem;
     }
 }
+
+/* ===================================
+   課表編輯器樣式
+   =================================== */
+
+.editor-schedule-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.5rem;
+}
+
+.editor-schedule-header h2 {
+    margin: 0;
+}
+
+.editor-schedule-stats {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+/* 可編輯課表格子 */
+.schedule-cell.editor-empty {
+    background-color: #fafafa;
+    cursor: pointer;
+    border: 2px dashed transparent;
+    transition: all 0.2s ease;
+}
+
+.schedule-cell.editor-empty:hover {
+    background-color: #eff6ff;
+    border-color: var(--primary-color);
+}
+
+.schedule-cell.editor-empty::after {
+    content: '+';
+    font-size: 1.2rem;
+    color: #cbd5e1;
+    font-weight: bold;
+}
+
+.schedule-cell.editor-empty:hover::after {
+    color: var(--primary-color);
+}
+
+.schedule-cell.editor-course {
+    cursor: pointer;
+    transition: all 0.2s ease;
+    position: relative;
+}
+
+.schedule-cell.editor-course:hover {
+    background-color: #eff6ff;
+    box-shadow: inset 0 0 0 2px var(--primary-color);
+}
+
+.schedule-cell.editor-course:hover::after {
+    content: '✏️';
+    position: absolute;
+    top: 2px;
+    right: 4px;
+    font-size: 0.65rem;
+}
+
+/* 課程編輯對話框 */
+#course-edit-modal .modal-content {
+    max-width: 420px;
+}
+
+#course-edit-modal .course-modal-info {
+    font-weight: 600;
+    color: var(--primary-color);
+}
+
+@media (max-width: 600px) {
+    .editor-schedule-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.5rem;
+    }
+}

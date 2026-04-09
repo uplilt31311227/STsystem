@@ -54,6 +54,11 @@ class SubstituteTeacherApp {
         this.isMultiCourseMode = false;
         this.selectedCourses = [];  // 多選課程陣列
 
+        // 課表編輯器相關
+        this.editorCurrentTeacher = null;  // 目前編輯的教師
+        this.editorEditingCell = null;     // 目前編輯的時段 { weekday, period }
+        this.editorIsEditMode = false;     // 是否為編輯模式（vs 新增）
+
         // 初始化應用程式
         this.init();
     }
@@ -79,6 +84,9 @@ class SubstituteTeacherApp {
 
         // 綁定資料管理事件
         this.bindDataManagementEvents();
+
+        // 綁定課表編輯器事件
+        this.bindScheduleEditorEvents();
 
         // 綁定 Firebase 認證相關事件
         this.bindFirebaseAuthEvents();
@@ -599,6 +607,11 @@ class SubstituteTeacherApp {
                 if (targetTab === 'records') {
                     this.loadCurrentMonthRecords();
                 }
+
+                // 切換到課表編輯頁籤時，更新教師選單
+                if (targetTab === 'schedule-editor') {
+                    this.populateEditorTeacherDropdown();
+                }
             });
         });
     }
@@ -885,8 +898,8 @@ class SubstituteTeacherApp {
      * @returns {boolean} 是否允許切換
      */
     canSwitchToTab(tabId) {
-        // 課表匯入和設定頁籤始終可用
-        if (tabId === 'import' || tabId === 'settings') {
+        // 課表匯入、課表編輯和設定頁籤始終可用
+        if (tabId === 'import' || tabId === 'settings' || tabId === 'schedule-editor') {
             return true;
         }
 
@@ -1014,6 +1027,9 @@ class SubstituteTeacherApp {
         // 紀錄查詢頁面的教師篩選選單
         const recordTeacherSelect = document.getElementById('record-teacher');
         recordTeacherSelect.innerHTML = '<option value="">全部教師</option>' + options;
+
+        // 課表編輯頁面的教師選單
+        this.populateEditorTeacherDropdown();
     }
 
     /**
@@ -3167,6 +3183,480 @@ class SubstituteTeacherApp {
         document.getElementById('import-data-file').value = '';
         document.getElementById('import-filename').textContent = '';
         document.getElementById('import-preview').classList.add('hidden');
+    }
+
+    // ===================================
+    // 課表編輯器相關方法
+    // ===================================
+
+    /**
+     * 綁定課表編輯器事件
+     */
+    bindScheduleEditorEvents() {
+        // 教師選擇變更
+        document.getElementById('editor-teacher-select')?.addEventListener('change', (e) => {
+            this.onEditorTeacherChanged(e.target.value);
+        });
+
+        // 新增教師按鈕
+        document.getElementById('editor-add-teacher-btn')?.addEventListener('click', () => {
+            document.getElementById('editor-new-teacher-form').classList.remove('hidden');
+            document.getElementById('editor-new-teacher-name').value = '';
+            document.getElementById('editor-new-teacher-homeroom').value = '';
+            document.getElementById('editor-new-teacher-name').focus();
+        });
+
+        // 確認新增教師
+        document.getElementById('editor-confirm-add-teacher-btn')?.addEventListener('click', () => {
+            this.editorAddNewTeacher();
+        });
+
+        // 取消新增教師
+        document.getElementById('editor-cancel-add-teacher-btn')?.addEventListener('click', () => {
+            document.getElementById('editor-new-teacher-form').classList.add('hidden');
+        });
+
+        // Enter 鍵確認新增教師
+        document.getElementById('editor-new-teacher-name')?.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') this.editorAddNewTeacher();
+        });
+
+        // 儲存課表按鈕
+        document.getElementById('editor-save-schedule-btn')?.addEventListener('click', () => {
+            this.editorSaveSchedule();
+        });
+
+        // 刪除教師按鈕
+        document.getElementById('editor-delete-teacher-btn')?.addEventListener('click', () => {
+            this.editorDeleteTeacher();
+        });
+
+        // 課程編輯對話框事件
+        document.getElementById('close-course-modal-btn')?.addEventListener('click', () => {
+            this.closeCourseEditModal();
+        });
+
+        document.getElementById('course-modal-save-btn')?.addEventListener('click', () => {
+            this.editorSaveCourse();
+        });
+
+        document.getElementById('course-modal-delete-btn')?.addEventListener('click', () => {
+            this.editorDeleteCourse();
+        });
+
+        document.getElementById('course-modal-cancel-btn')?.addEventListener('click', () => {
+            this.closeCourseEditModal();
+        });
+
+        // 點擊 modal 外部關閉
+        document.getElementById('course-edit-modal')?.addEventListener('click', (e) => {
+            if (e.target.id === 'course-edit-modal') this.closeCourseEditModal();
+        });
+    }
+
+    /**
+     * 填充課表編輯器教師下拉選單
+     */
+    populateEditorTeacherDropdown() {
+        const teachers = this.dataManager.getTeachers();
+        const select = document.getElementById('editor-teacher-select');
+        if (!select) return;
+
+        const currentValue = select.value;
+        const options = teachers.map(t => `<option value="${t.name}">${t.name}</option>`).join('');
+        select.innerHTML = '<option value="">請選擇教師</option>' + options;
+
+        // 恢復之前的選擇
+        if (currentValue && teachers.some(t => t.name === currentValue)) {
+            select.value = currentValue;
+        }
+    }
+
+    /**
+     * 課表編輯器：教師選擇變更
+     */
+    onEditorTeacherChanged(teacherName) {
+        const scheduleSection = document.getElementById('editor-schedule-section');
+
+        if (!teacherName) {
+            scheduleSection.classList.add('hidden');
+            this.editorCurrentTeacher = null;
+            return;
+        }
+
+        this.editorCurrentTeacher = teacherName;
+        scheduleSection.classList.remove('hidden');
+
+        // 更新教師名稱顯示
+        document.getElementById('editor-teacher-name-display').textContent = teacherName;
+
+        // 渲染可編輯的週課表
+        this.renderEditableScheduleGrid();
+    }
+
+    /**
+     * 渲染可編輯的週課表
+     */
+    renderEditableScheduleGrid() {
+        const grid = document.getElementById('editor-schedule-grid');
+        if (!grid || !this.editorCurrentTeacher) return;
+
+        const teacherName = this.editorCurrentTeacher;
+        const weekSchedule = this.dataManager.getTeacherWeekSchedule(teacherName);
+        const days = ['一', '二', '三', '四', '五'];
+        const periods = ['第一節', '第二節', '第三節', '第四節', '第五節', '第六節', '第七節'];
+
+        let html = '';
+
+        // 標題列
+        html += '<div class="schedule-cell schedule-header">節次</div>';
+        days.forEach(day => {
+            html += `<div class="schedule-cell schedule-header">週${day}</div>`;
+        });
+
+        // 各節次
+        periods.forEach(period => {
+            html += `<div class="schedule-cell schedule-period">${period}</div>`;
+
+            days.forEach(day => {
+                const dayName = '週' + day;
+                const courses = weekSchedule.filter(c =>
+                    c.weekday === dayName && c.period === period
+                );
+
+                if (courses.length > 0) {
+                    const course = courses[0];
+                    html += `
+                        <div class="schedule-cell editor-course"
+                             data-weekday="${dayName}"
+                             data-period="${period}"
+                             data-class="${course.className}"
+                             data-subject="${course.subject}"
+                             data-domain="${course.domain || ''}"
+                             title="點擊編輯：${course.className} ${course.subject}">
+                            <span class="course-class">${course.className}</span>
+                            <span class="course-subject">${course.subject}</span>
+                        </div>
+                    `;
+                } else {
+                    html += `
+                        <div class="schedule-cell editor-empty"
+                             data-weekday="${dayName}"
+                             data-period="${period}"
+                             title="點擊新增課程">
+                        </div>
+                    `;
+                }
+            });
+        });
+
+        grid.innerHTML = html;
+
+        // 更新每週節數
+        document.getElementById('editor-weekly-hours').textContent = weekSchedule.length;
+
+        // 綁定格子點擊事件
+        grid.querySelectorAll('.editor-empty').forEach(cell => {
+            cell.addEventListener('click', () => {
+                this.openCourseEditModal(cell.dataset.weekday, cell.dataset.period, false);
+            });
+        });
+
+        grid.querySelectorAll('.editor-course').forEach(cell => {
+            cell.addEventListener('click', () => {
+                this.openCourseEditModal(
+                    cell.dataset.weekday,
+                    cell.dataset.period,
+                    true,
+                    {
+                        className: cell.dataset.class,
+                        subject: cell.dataset.subject,
+                        domain: cell.dataset.domain
+                    }
+                );
+            });
+        });
+    }
+
+    /**
+     * 開啟課程編輯對話框
+     */
+    openCourseEditModal(weekday, period, isEdit, courseData = null) {
+        this.editorEditingCell = { weekday, period };
+        this.editorIsEditMode = isEdit;
+
+        const modal = document.getElementById('course-edit-modal');
+        const title = document.getElementById('course-modal-title');
+        const slotInfo = document.getElementById('course-modal-slot-info');
+        const deleteBtn = document.getElementById('course-modal-delete-btn');
+
+        // 設定標題與時段資訊
+        title.textContent = isEdit ? '編輯課程' : '新增課程';
+        slotInfo.textContent = `${weekday} ${period}`;
+
+        // 填充班級 datalist
+        const datalist = document.getElementById('class-datalist');
+        const classes = this.dataManager.getClasses();
+        datalist.innerHTML = classes.map(c => `<option value="${c}">`).join('');
+
+        // 填充表單
+        if (isEdit && courseData) {
+            document.getElementById('course-modal-class').value = courseData.className || '';
+            document.getElementById('course-modal-subject').value = courseData.subject || '';
+            document.getElementById('course-modal-domain').value = courseData.domain || '';
+            deleteBtn.style.display = 'inline-block';
+        } else {
+            document.getElementById('course-modal-class').value = '';
+            document.getElementById('course-modal-subject').value = '';
+            document.getElementById('course-modal-domain').value = '';
+            deleteBtn.style.display = 'none';
+        }
+
+        modal.classList.remove('hidden');
+        document.getElementById('course-modal-class').focus();
+    }
+
+    /**
+     * 關閉課程編輯對話框
+     */
+    closeCourseEditModal() {
+        document.getElementById('course-edit-modal').classList.add('hidden');
+        this.editorEditingCell = null;
+    }
+
+    /**
+     * 課表編輯器：儲存課程（新增或更新）
+     */
+    editorSaveCourse() {
+        if (!this.editorEditingCell) return;
+
+        const className = document.getElementById('course-modal-class').value.trim();
+        const subject = document.getElementById('course-modal-subject').value.trim();
+        const domain = document.getElementById('course-modal-domain').value;
+
+        if (!className) {
+            alert('請輸入班級');
+            return;
+        }
+        if (!subject) {
+            alert('請輸入科目');
+            return;
+        }
+
+        const { weekday, period } = this.editorEditingCell;
+        const teacherName = this.editorCurrentTeacher;
+
+        if (this.editorIsEditMode) {
+            // 更新現有課程
+            this.dataManager.updateScheduleEntry(teacherName, weekday, period, {
+                className,
+                subject,
+                rawSubject: subject,
+                courseName: subject,
+                domain
+            });
+        } else {
+            // 新增課程
+            this.dataManager.addScheduleEntry({
+                weekday,
+                period,
+                className,
+                teacher: teacherName,
+                domain,
+                subject,
+                rawSubject: subject,
+                courseName: subject
+            });
+        }
+
+        // 更新班級清單
+        this.dataManager.refreshClasses();
+
+        // 更新教師領域
+        this.dataManager.refreshTeacherDomains(teacherName);
+
+        // 關閉對話框並重新渲染
+        this.closeCourseEditModal();
+        this.renderEditableScheduleGrid();
+
+        // 自動儲存
+        this.saveDataToStorage();
+
+        // 更新其他頁籤的下拉選單和狀態
+        this.updateTeacherTable();
+        this.populateTeacherDropdowns();
+        this.updateScheduleStatusFromData();
+        this.updateTabLockStatus();
+        this.updateTabContentVisibility();
+    }
+
+    /**
+     * 課表編輯器：刪除課程
+     */
+    editorDeleteCourse() {
+        if (!this.editorEditingCell) return;
+        const { weekday, period } = this.editorEditingCell;
+        const teacherName = this.editorCurrentTeacher;
+
+        if (!confirm(`確定要刪除 ${weekday} ${period} 的課程嗎？`)) {
+            return;
+        }
+
+        this.dataManager.removeScheduleEntry(teacherName, weekday, period);
+
+        // 更新班級清單
+        this.dataManager.refreshClasses();
+
+        // 更新教師領域
+        this.dataManager.refreshTeacherDomains(teacherName);
+
+        // 關閉對話框並重新渲染
+        this.closeCourseEditModal();
+        this.renderEditableScheduleGrid();
+
+        // 自動儲存
+        this.saveDataToStorage();
+
+        // 更新其他頁籤
+        this.updateTeacherTable();
+        this.populateTeacherDropdowns();
+        this.updateScheduleStatusFromData();
+        this.updateTabLockStatus();
+        this.updateTabContentVisibility();
+    }
+
+    /**
+     * 課表編輯器：新增教師
+     */
+    editorAddNewTeacher() {
+        const nameInput = document.getElementById('editor-new-teacher-name');
+        const homeroomInput = document.getElementById('editor-new-teacher-homeroom');
+        const name = nameInput.value.trim();
+        const homeroom = homeroomInput.value.trim();
+
+        if (!name) {
+            alert('請輸入教師姓名');
+            nameInput.focus();
+            return;
+        }
+
+        // 檢查是否已存在
+        if (this.dataManager.getTeacherByName(name)) {
+            alert('此教師已存在，請直接從選單中選擇');
+            return;
+        }
+
+        // 新增教師
+        this.dataManager.addTeacher({
+            name,
+            domains: [],
+            homeroomClass: homeroom
+        });
+
+        // 儲存
+        this.saveDataToStorage();
+
+        // 隱藏新增表單
+        document.getElementById('editor-new-teacher-form').classList.add('hidden');
+
+        // 更新所有下拉選單
+        this.populateEditorTeacherDropdown();
+        this.populateTeacherDropdowns();
+        this.updateTeacherTable();
+
+        // 自動選擇新教師
+        document.getElementById('editor-teacher-select').value = name;
+        this.onEditorTeacherChanged(name);
+
+        // 顯示教師編輯區域（如果還沒顯示）
+        document.getElementById('teacher-editor').classList.remove('hidden');
+
+        // 如果沒有學校名稱，提示設定
+        if (!this.dataManager.getSchoolName()) {
+            const schoolNameSection = document.getElementById('school-name-section');
+            schoolNameSection?.classList.remove('hidden');
+            document.getElementById('school-name-warning')?.classList.remove('hidden');
+        }
+    }
+
+    /**
+     * 課表編輯器：刪除教師
+     */
+    editorDeleteTeacher() {
+        const teacherName = this.editorCurrentTeacher;
+        if (!teacherName) return;
+
+        const weeklyHours = this.dataManager.getTeacherWeeklyHours(teacherName);
+        const confirmMsg = weeklyHours > 0
+            ? `確定要刪除教師「${teacherName}」嗎？\n該教師有 ${weeklyHours} 節課將一併刪除。`
+            : `確定要刪除教師「${teacherName}」嗎？`;
+
+        if (!confirm(confirmMsg)) return;
+
+        // 刪除該教師的所有課表資料
+        const scheduleData = this.dataManager.getScheduleData();
+        const filtered = scheduleData.filter(c => c.teacher !== teacherName);
+        this.dataManager.setScheduleData(filtered);
+
+        // 刪除教師
+        const teachers = this.dataManager.getTeachers();
+        const index = teachers.findIndex(t => t.name === teacherName);
+        if (index !== -1) {
+            this.dataManager.removeTeacher(index);
+        }
+
+        // 更新班級清單
+        this.dataManager.refreshClasses();
+
+        // 儲存
+        this.saveDataToStorage();
+
+        // 重置編輯器
+        this.editorCurrentTeacher = null;
+        document.getElementById('editor-schedule-section').classList.add('hidden');
+        document.getElementById('editor-teacher-select').value = '';
+
+        // 更新所有相關 UI
+        this.populateEditorTeacherDropdown();
+        this.populateTeacherDropdowns();
+        this.updateTeacherTable();
+        this.updateScheduleStatusFromData();
+        this.updateTabLockStatus();
+        this.updateTabContentVisibility();
+    }
+
+    /**
+     * 課表編輯器：儲存課表（手動觸發）
+     */
+    editorSaveSchedule() {
+        this.saveDataToStorage();
+
+        const statusDiv = document.getElementById('editor-save-status');
+        statusDiv.classList.remove('hidden');
+        statusDiv.style.color = '#22c55e';
+        statusDiv.textContent = '✓ 課表已儲存（' + new Date().toLocaleTimeString() + '）';
+
+        setTimeout(() => {
+            statusDiv.classList.add('hidden');
+        }, 3000);
+    }
+
+    /**
+     * 根據現有資料更新匯入狀態顯示
+     */
+    updateScheduleStatusFromData() {
+        const scheduleData = this.dataManager.getScheduleData();
+        const teachers = this.dataManager.getTeachers();
+        const classes = this.dataManager.getClasses();
+
+        if (scheduleData.length > 0) {
+            const statusBox = document.getElementById('schedule-status');
+            statusBox.classList.remove('hidden', 'error');
+            document.getElementById('class-count').textContent = classes.length;
+            document.getElementById('teacher-count').textContent = teachers.length;
+            document.getElementById('course-count').textContent = scheduleData.length;
+            document.getElementById('teacher-editor').classList.remove('hidden');
+        }
     }
 
     /**

@@ -57,6 +57,7 @@
             </div>
             <nav class="nav-tabs">
                 <button class="tab-btn active" data-tab="import">課表匯入</button>
+                <button class="tab-btn" data-tab="schedule-editor">課表編輯</button>
                 <button class="tab-btn" data-tab="substitute">調代課申請</button>
                 <button class="tab-btn" data-tab="records">調代課紀錄</button>
                 <button class="tab-btn" data-tab="settlement">月結算</button>
@@ -133,6 +134,113 @@
                 </div>
 
                 </section>
+
+            <!-- 頁籤：課表編輯 -->
+            <section id="schedule-editor-tab" class="tab-content hidden">
+                <div class="card">
+                    <h2>教師課表編輯</h2>
+                    <p class="description">手動新增教師並編輯其週課表，完成後即可進行調代課作業</p>
+
+                    <div class="form-row" style="align-items: flex-end;">
+                        <div class="form-group" style="flex: 1;">
+                            <label for="editor-teacher-select">選擇教師：</label>
+                            <select id="editor-teacher-select">
+                                <option value="">請選擇教師</option>
+                            </select>
+                        </div>
+                        <div style="margin-left: 10px;">
+                            <button class="btn btn-secondary" id="editor-add-teacher-btn">+ 新增教師</button>
+                        </div>
+                    </div>
+
+                    <!-- 新增教師表單 -->
+                    <div id="editor-new-teacher-form" class="hidden" style="margin-top: 1rem; padding: 1rem; background: #f0f9ff; border-radius: 8px; border: 1px solid #bae6fd;">
+                        <h3 style="margin-bottom: 0.75rem; font-size: 1rem;">新增教師</h3>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="editor-new-teacher-name">教師姓名：<span style="color: red;">*</span></label>
+                                <input type="text" id="editor-new-teacher-name" placeholder="請輸入教師姓名">
+                            </div>
+                            <div class="form-group">
+                                <label for="editor-new-teacher-homeroom">導師班級：</label>
+                                <input type="text" id="editor-new-teacher-homeroom" placeholder="選填，如：7年1班">
+                            </div>
+                        </div>
+                        <div class="action-buttons">
+                            <button class="btn btn-primary" id="editor-confirm-add-teacher-btn">確認新增</button>
+                            <button class="btn btn-secondary" id="editor-cancel-add-teacher-btn">取消</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 課表編輯區域 -->
+                <div id="editor-schedule-section" class="card hidden">
+                    <div class="editor-schedule-header">
+                        <h2>
+                            <span id="editor-teacher-name-display"></span> 的週課表
+                        </h2>
+                        <div class="editor-schedule-stats">
+                            <span>每週節數：<strong id="editor-weekly-hours">0</strong></span>
+                        </div>
+                    </div>
+                    <p class="hint">點擊空白格新增課程，點擊已有課程進行編輯或刪除</p>
+
+                    <div class="schedule-grid" id="editor-schedule-grid">
+                        <!-- 動態生成可編輯週課表 -->
+                    </div>
+
+                    <div class="action-buttons" style="margin-top: 1rem;">
+                        <button class="btn btn-primary" id="editor-save-schedule-btn">儲存課表</button>
+                        <button class="btn btn-danger" id="editor-delete-teacher-btn">刪除此教師</button>
+                    </div>
+                    <div id="editor-save-status" class="hidden" style="margin-top: 0.5rem;"></div>
+                </div>
+
+                <!-- 課程編輯對話框 -->
+                <div id="course-edit-modal" class="modal hidden">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h3 id="course-modal-title">新增課程</h3>
+                            <button class="modal-close" id="close-course-modal-btn">&times;</button>
+                        </div>
+                        <div class="modal-body">
+                            <div class="course-modal-info" style="margin-bottom: 1rem; padding: 0.75rem; background: var(--background-color); border-radius: 6px;">
+                                <span id="course-modal-slot-info"></span>
+                            </div>
+                            <div class="form-group" style="margin-bottom: 1rem;">
+                                <label for="course-modal-class">班級：<span style="color: red;">*</span></label>
+                                <input type="text" id="course-modal-class" placeholder="如：7年1班" list="class-datalist">
+                                <datalist id="class-datalist"></datalist>
+                            </div>
+                            <div class="form-group" style="margin-bottom: 1rem;">
+                                <label for="course-modal-subject">科目：<span style="color: red;">*</span></label>
+                                <input type="text" id="course-modal-subject" placeholder="如：數學">
+                            </div>
+                            <div class="form-group" style="margin-bottom: 1rem;">
+                                <label for="course-modal-domain">領域：</label>
+                                <select id="course-modal-domain">
+                                    <option value="">請選擇領域</option>
+                                    <option value="語文領域">語文領域</option>
+                                    <option value="數學領域">數學領域</option>
+                                    <option value="社會領域">社會領域</option>
+                                    <option value="自然科學領域">自然科學領域</option>
+                                    <option value="藝術領域">藝術領域</option>
+                                    <option value="綜合活動領域">綜合活動領域</option>
+                                    <option value="科技領域">科技領域</option>
+                                    <option value="健康與體育領域">健康與體育領域</option>
+                                    <option value="彈性學習">彈性學習</option>
+                                    <option value="其他">其他</option>
+                                </select>
+                            </div>
+                            <div class="modal-actions">
+                                <button class="btn btn-primary" id="course-modal-save-btn">儲存</button>
+                                <button class="btn btn-danger" id="course-modal-delete-btn" style="display: none;">刪除此課程</button>
+                                <button class="btn btn-secondary" id="course-modal-cancel-btn">取消</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
 
             <!-- 頁籤二：調代課申請 -->
             <section id="substitute-tab" class="tab-content hidden">
@@ -684,7 +792,7 @@
 
         <!-- 底部資訊 -->
         <footer class="footer">
-            <p>國中調代課自動化系統 v1.6.0 | 適用於人力資源網2.0匯出之課表</p>
+            <p>國中調代課自動化系統 v1.7.0 | 適用於人力資源網2.0匯出之課表</p>
             <p class="credit">內湖國中 藍奕麟老師 with Claude Code 製作</p>
         </footer>
     </div>
