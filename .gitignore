@@ -25,6 +25,10 @@ Thumbs.db
 test/*.png
 test/e2e-test.js
 
+# Claude Code
+.claude/
+
 # Temporary files
 *.log
 *.tmp
+nul
