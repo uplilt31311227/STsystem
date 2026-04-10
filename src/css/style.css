@@ -1967,6 +1967,175 @@ body {
 }
 
 /* ===================================
+   多重調課批次樣式
+   =================================== */
+
+#multi-swap-batch-panel {
+    margin-top: 1.5rem;
+    padding: 1.25rem;
+    background: #f8fafc;
+    border: 2px solid #c7d2fe;
+    border-radius: 10px;
+}
+
+#multi-swap-batch-panel h3 {
+    margin: 0 0 0.5rem 0;
+    color: #4338ca;
+    font-size: 1.1rem;
+}
+
+.batch-swap-list {
+    margin: 1rem 0;
+}
+
+.batch-empty-message {
+    text-align: center;
+    color: #94a3b8;
+    padding: 1.5rem;
+    background: #fff;
+    border-radius: 8px;
+    border: 1px dashed #cbd5e1;
+}
+
+.batch-swap-item {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.75rem;
+    margin-bottom: 0.5rem;
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    transition: box-shadow 0.15s;
+}
+
+.batch-swap-item:hover {
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+}
+
+.batch-swap-number {
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #4338ca;
+    color: #fff;
+    border-radius: 50%;
+    font-size: 0.85rem;
+    font-weight: bold;
+    flex-shrink: 0;
+}
+
+.batch-swap-detail {
+    flex: 1;
+    font-size: 0.9rem;
+    line-height: 1.6;
+}
+
+.batch-swap-slot-a,
+.batch-swap-slot-b {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.batch-slot-label {
+    display: inline-block;
+    width: 22px;
+    height: 22px;
+    line-height: 22px;
+    text-align: center;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: bold;
+    color: #fff;
+    background: #3b82f6;
+    flex-shrink: 0;
+}
+
+.batch-slot-label-b {
+    background: #f59e0b;
+}
+
+.batch-swap-arrow {
+    text-align: center;
+    color: #6366f1;
+    font-size: 1rem;
+    font-weight: bold;
+    padding: 2px 0;
+}
+
+.batch-swap-badge {
+    display: inline-block;
+    margin-top: 4px;
+    padding: 2px 8px;
+    background: #dbeafe;
+    color: #1e40af;
+    border-radius: 4px;
+    font-size: 0.75rem;
+}
+
+/* 衝突面板 */
+#batch-conflict-panel {
+    margin: 1rem 0;
+    padding: 0.75rem 1rem;
+    border-radius: 8px;
+}
+
+.batch-conflict-ok {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: #16a34a;
+    font-weight: 600;
+    background: #f0fdf4;
+    padding: 0.75rem 1rem;
+    border-radius: 8px;
+    border: 1px solid #bbf7d0;
+}
+
+.batch-conflict-error {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: #dc2626;
+    font-weight: 600;
+    background: #fef2f2;
+    padding: 0.75rem 1rem;
+    border-radius: 8px;
+    border: 1px solid #fecaca;
+}
+
+.conflict-icon {
+    font-size: 1.2rem;
+}
+
+.batch-conflict-list {
+    margin: 0.5rem 0 0 1.5rem;
+    padding: 0;
+    color: #991b1b;
+    font-size: 0.9rem;
+    line-height: 1.8;
+}
+
+.batch-conflict-list li {
+    margin-bottom: 4px;
+}
+
+/* 響應式 */
+@media (max-width: 600px) {
+    .batch-swap-item {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+    .batch-swap-number {
+        align-self: flex-start;
+    }
+}
+
+/* ===================================
    課表編輯器樣式
    =================================== */
 

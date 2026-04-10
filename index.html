@@ -295,6 +295,16 @@
                                 </div>
                             </div>
                         </label>
+                        <label class="change-type-option">
+                            <input type="radio" name="change-type-radio" value="multi-swap">
+                            <div class="change-type-card">
+                                <div class="change-type-icon">🔀</div>
+                                <div class="change-type-info">
+                                    <strong>多重調課</strong>
+                                    <span>多組調課同時進行，整批檢查衝突</span>
+                                </div>
+                            </div>
+                        </label>
                     </div>
 
                     <!-- 代課專用：假別選擇（移到選擇課程前） -->
@@ -460,6 +470,28 @@
                         </div>
                     </div>
 
+                    <!-- 多重調課批次面板 -->
+                    <div id="multi-swap-batch-panel" class="hidden">
+                        <h3>多重調課批次</h3>
+                        <p class="hint">逐一新增調課組合，系統會自動檢查整批衝突。全部無衝突時才可送出。</p>
+
+                        <!-- 待處理調課清單 -->
+                        <div id="batch-swap-list" class="batch-swap-list">
+                            <div class="batch-empty-message">尚未加入任何調課，請從上方課表選擇課程後點擊「加入批次」</div>
+                        </div>
+
+                        <!-- 衝突檢查結果 -->
+                        <div id="batch-conflict-panel" class="hidden">
+                            <div id="batch-conflict-content"></div>
+                        </div>
+
+                        <!-- 批次操作按鈕 -->
+                        <div class="action-buttons" style="margin-top: 1rem;">
+                            <button class="btn btn-primary" id="batch-submit-btn" disabled>確認全部調課並產生表單</button>
+                            <button class="btn btn-secondary" id="batch-clear-btn">清除全部</button>
+                        </div>
+                    </div>
+
                     <div class="action-buttons" style="margin-top: 1.5rem;">
                         <button class="btn btn-primary" id="confirm-substitute-btn">確認並產生表單</button>
                         <button class="btn btn-secondary" id="cancel-substitute-btn">重新選擇</button>
@@ -470,6 +502,7 @@
                 <select id="change-type" class="hidden">
                     <option value="substitute">代課</option>
                     <option value="swap">調課</option>
+                    <option value="multi-swap">多重調課</option>
                 </select>
                 </div>
             </section>
@@ -798,6 +831,6 @@
     </div>
 
     <!-- 載入 JavaScript 模組 -->
-    <script type="module" src="src/js/app.js?v=1.7.0"></script>
+    <script type="module" src="src/js/app.js?v=1.8.0"></script>
 </body>
 </html>

@@ -54,6 +54,10 @@ class SubstituteTeacherApp {
         this.isMultiCourseMode = false;
         this.selectedCourses = [];  // 多選課程陣列
 
+        // 多重調課批次相關
+        this.isMultiSwapMode = false;
+        this.swapBatch = [];  // 待處理調課批次
+
         // 課表編輯器相關
         this.editorCurrentTeacher = null;  // 目前編輯的教師
         this.editorEditingCell = null;     // 目前編輯的時段 { weekday, period }
@@ -1051,13 +1055,34 @@ class SubstituteTeacherApp {
             this.onTeacherOrDateChanged();
         });
 
-        // 異動類型切換（調課/代課）- 新版使用 radio button
+        // 異動類型切換（調課/代課/多重調課）- 新版使用 radio button
         document.querySelectorAll('input[name="change-type-radio"]').forEach(radio => {
             radio.addEventListener('change', (e) => {
-                this.onChangeTypeSelected(e.target.value);
-                // 同步更新隱藏的 select（保持相容性）
-                document.getElementById('change-type').value = e.target.value;
+                const val = e.target.value;
+                // 多重調課模式映射為 swap + 批次模式
+                if (val === 'multi-swap') {
+                    this.isMultiSwapMode = true;
+                    this.onChangeTypeSelected('swap');
+                    document.getElementById('change-type').value = 'swap';
+                    document.getElementById('multi-swap-batch-panel').classList.remove('hidden');
+                    document.getElementById('confirm-substitute-btn').textContent = '加入批次';
+                } else {
+                    this.isMultiSwapMode = false;
+                    this.swapBatch = [];
+                    this.onChangeTypeSelected(val);
+                    document.getElementById('change-type').value = val;
+                    document.getElementById('multi-swap-batch-panel').classList.add('hidden');
+                    document.getElementById('confirm-substitute-btn').textContent = '確認並產生表單';
+                }
             });
+        });
+
+        // 多重調課批次按鈕
+        document.getElementById('batch-submit-btn')?.addEventListener('click', () => {
+            this.submitSwapBatch();
+        });
+        document.getElementById('batch-clear-btn')?.addEventListener('click', () => {
+            this.clearSwapBatch();
         });
 
         // 假別變更（動態顯示公假字號欄位）
@@ -1130,22 +1155,33 @@ class SubstituteTeacherApp {
         this.selectedSwapCourse = null;
         this.selectedCourses = [];  // 重置多選課程
 
-        // 重置異動類型為代課
-        const substituteRadio = document.querySelector('input[name="change-type-radio"][value="substitute"]');
-        if (substituteRadio) {
-            substituteRadio.checked = true;
+        // 多重調課模式下保持調課類型
+        if (this.isMultiSwapMode) {
+            const multiSwapRadio = document.querySelector('input[name="change-type-radio"][value="multi-swap"]');
+            if (multiSwapRadio) multiSwapRadio.checked = true;
+            document.getElementById('change-type').value = 'swap';
+            document.getElementById('substitute-options-early').classList.add('hidden');
+            document.getElementById('substitute-options').classList.add('hidden');
+            document.getElementById('swap-options').classList.remove('hidden');
+            document.getElementById('confirm-substitute-btn').textContent = '加入批次';
+        } else {
+            // 重置異動類型為代課
+            const substituteRadio = document.querySelector('input[name="change-type-radio"][value="substitute"]');
+            if (substituteRadio) {
+                substituteRadio.checked = true;
+            }
+            document.getElementById('change-type').value = 'substitute';
+
+            // 重置假別
+            document.getElementById('leave-type').value = '';
+            document.getElementById('doc-number').value = '';
+            document.getElementById('doc-number-group').style.display = 'none';
+
+            // 顯示代課選項，隱藏調課選項
+            document.getElementById('substitute-options-early').classList.remove('hidden');
+            document.getElementById('substitute-options').classList.remove('hidden');
+            document.getElementById('swap-options').classList.add('hidden');
         }
-        document.getElementById('change-type').value = 'substitute';
-
-        // 重置假別
-        document.getElementById('leave-type').value = '';
-        document.getElementById('doc-number').value = '';
-        document.getElementById('doc-number-group').style.display = 'none';
-
-        // 顯示代課選項，隱藏調課選項
-        document.getElementById('substitute-options-early').classList.remove('hidden');
-        document.getElementById('substitute-options').classList.remove('hidden');
-        document.getElementById('swap-options').classList.add('hidden');
 
         // 清除課程選擇狀態
         document.querySelectorAll('.schedule-course.selected').forEach(c => c.classList.remove('selected'));
@@ -1867,21 +1903,25 @@ class SubstituteTeacherApp {
                 this.onChangeTypeSelected('substitute');
                 document.getElementById('change-type').value = 'substitute';
             }
-            // 禁用調課選項
-            const swapRadio = document.querySelector('input[name="change-type-radio"][value="swap"]');
-            if (swapRadio) {
-                swapRadio.disabled = true;
-                swapRadio.closest('.change-type-option').style.opacity = '0.5';
-                swapRadio.closest('.change-type-option').title = '多節課模式不支援調課';
-            }
+            // 禁用調課/多重調課選項
+            ['swap', 'multi-swap'].forEach(val => {
+                const radio = document.querySelector(`input[name="change-type-radio"][value="${val}"]`);
+                if (radio) {
+                    radio.disabled = true;
+                    radio.closest('.change-type-option').style.opacity = '0.5';
+                    radio.closest('.change-type-option').title = '多節課模式不支援調課';
+                }
+            });
         } else {
-            // 啟用調課選項
-            const swapRadio = document.querySelector('input[name="change-type-radio"][value="swap"]');
-            if (swapRadio) {
-                swapRadio.disabled = false;
-                swapRadio.closest('.change-type-option').style.opacity = '1';
-                swapRadio.closest('.change-type-option').title = '';
-            }
+            // 啟用調課/多重調課選項
+            ['swap', 'multi-swap'].forEach(val => {
+                const radio = document.querySelector(`input[name="change-type-radio"][value="${val}"]`);
+                if (radio) {
+                    radio.disabled = false;
+                    radio.closest('.change-type-option').style.opacity = '1';
+                    radio.closest('.change-type-option').title = '';
+                }
+            });
         }
 
         // 清除之前的選擇
@@ -2250,36 +2290,33 @@ class SubstituteTeacherApp {
                 return;
             }
 
-            // 建立調課紀錄（記錄完整的互換資訊，包含兩個日期）
-            const record = {
-                id: Date.now().toString(),
-                type: '調課',
-                date: date,           // 時段 A 日期
-                swapDate: swapDate,   // 時段 B 日期
-                // 原課程資訊（時段 A）
-                weekday: this.selectedCourse.weekday,
-                period: this.selectedCourse.period,
-                className: this.selectedCourse.className,
-                subject: this.selectedCourse.subject,
-                domain: this.selectedCourse.domain,
-                originalTeacher: this.selectedCourse.originalTeacher,
-                // 互換課程資訊（時段 B）
-                swapWeekday: this.selectedSwapCourse.weekday,
-                swapPeriod: this.selectedSwapCourse.period,
-                swapTeacher: this.selectedSwapCourse.teacher,
-                swapSubject: this.selectedSwapCourse.subject,
-                swapDomain: this.selectedSwapCourse.domain,
-                // 調課不需要代課教師，兩堂課互換
-                substituteTeacher: this.selectedSwapCourse.teacher,
-                leaveType: '調課',
-                leaveTypeName: '調課',
-                docNumber: '',
-                isSelfSwap: this.selectedCourse.originalTeacher === this.selectedSwapCourse.teacher,
-                reason: this.selectedCourse.originalTeacher === this.selectedSwapCourse.teacher
-                    ? `${this.selectedCourse.originalTeacher} 自行調課：時段A(${date}) ${this.selectedCourse.weekday}${this.selectedCourse.period} ${this.selectedCourse.subject} ↔ 時段B(${swapDate}) ${this.selectedSwapCourse.weekday}${this.selectedSwapCourse.period} ${this.selectedSwapCourse.subject}`
-                    : `時段A(${date}) ${this.selectedCourse.weekday}${this.selectedCourse.period} ↔ 時段B(${swapDate}) ${this.selectedSwapCourse.weekday}${this.selectedSwapCourse.period} 課程互換`,
-                createdAt: new Date().toISOString()
+            // 組裝調課資料
+            const swapData = {
+                dateA: date,
+                weekdayA: this.selectedCourse.weekday,
+                periodA: this.selectedCourse.period,
+                classNameA: this.selectedCourse.className,
+                subjectA: this.selectedCourse.subject,
+                domainA: this.selectedCourse.domain,
+                teacherA: this.selectedCourse.originalTeacher,
+                dateB: swapDate,
+                weekdayB: this.selectedSwapCourse.weekday,
+                periodB: this.selectedSwapCourse.period,
+                classNameB: this.selectedSwapCourse.className,
+                subjectB: this.selectedSwapCourse.subject,
+                domainB: this.selectedSwapCourse.domain,
+                teacherB: this.selectedSwapCourse.teacher,
+                isSelfSwap: this.selectedCourse.originalTeacher === this.selectedSwapCourse.teacher
             };
+
+            // 多重調課模式：加入批次
+            if (this.isMultiSwapMode) {
+                this.addToSwapBatch(swapData);
+                return;
+            }
+
+            // 單次調課模式：直接建立紀錄
+            const record = this.buildSwapRecord(swapData);
 
             // 儲存並處理
             await this.saveAndProcessRecord(record);
@@ -2686,6 +2723,347 @@ class SubstituteTeacherApp {
             swapRadio.closest('.change-type-option').style.opacity = '1';
             swapRadio.closest('.change-type-option').title = '';
         }
+
+        // 重置多重調課模式
+        this.isMultiSwapMode = false;
+        this.swapBatch = [];
+        const multiSwapPanel = document.getElementById('multi-swap-batch-panel');
+        if (multiSwapPanel) multiSwapPanel.classList.add('hidden');
+        const multiSwapRadio = document.querySelector('input[name="change-type-radio"][value="multi-swap"]');
+        if (multiSwapRadio) {
+            multiSwapRadio.disabled = false;
+            multiSwapRadio.closest('.change-type-option').style.opacity = '1';
+        }
+        document.getElementById('confirm-substitute-btn').textContent = '確認並產生表單';
+    }
+
+    // ==========================================
+    // 多重調課批次功能
+    // ==========================================
+
+    /**
+     * 從 swapData 建立調課紀錄
+     */
+    buildSwapRecord(swapData, idSuffix = '') {
+        const isSelf = swapData.isSelfSwap;
+        return {
+            id: Date.now().toString() + idSuffix,
+            type: '調課',
+            date: swapData.dateA,
+            swapDate: swapData.dateB,
+            weekday: swapData.weekdayA,
+            period: swapData.periodA,
+            className: swapData.classNameA,
+            subject: swapData.subjectA,
+            domain: swapData.domainA,
+            originalTeacher: swapData.teacherA,
+            swapWeekday: swapData.weekdayB,
+            swapPeriod: swapData.periodB,
+            swapTeacher: swapData.teacherB,
+            swapSubject: swapData.subjectB,
+            swapDomain: swapData.domainB,
+            substituteTeacher: swapData.teacherB,
+            leaveType: '調課',
+            leaveTypeName: '調課',
+            docNumber: '',
+            isSelfSwap: isSelf,
+            isMultiSwap: true,
+            reason: isSelf
+                ? `${swapData.teacherA} 自行調課：時段A(${swapData.dateA}) ${swapData.weekdayA}${swapData.periodA} ${swapData.subjectA} ↔ 時段B(${swapData.dateB}) ${swapData.weekdayB}${swapData.periodB} ${swapData.subjectB}`
+                : `時段A(${swapData.dateA}) ${swapData.weekdayA}${swapData.periodA} ↔ 時段B(${swapData.dateB}) ${swapData.weekdayB}${swapData.periodB} 課程互換`,
+            createdAt: new Date().toISOString()
+        };
+    }
+
+    /**
+     * 加入調課到批次
+     */
+    addToSwapBatch(swapData) {
+        // 檢查是否重複加入
+        const isDup = this.swapBatch.some(s =>
+            s.dateA === swapData.dateA && s.periodA === swapData.periodA && s.classNameA === swapData.classNameA &&
+            s.dateB === swapData.dateB && s.periodB === swapData.periodB
+        );
+        if (isDup) {
+            alert('此調課組合已在批次中！');
+            return;
+        }
+
+        this.swapBatch.push(swapData);
+        this.renderSwapBatch();
+        this.checkBatchConflicts();
+
+        // 重置選課狀態以便繼續新增
+        this.resetSwapSelectionForBatch();
+
+        alert(`已加入批次（第 ${this.swapBatch.length} 筆），可繼續新增或點擊「確認全部調課」送出`);
+    }
+
+    /**
+     * 重置選課狀態（保留批次面板）
+     */
+    resetSwapSelectionForBatch() {
+        this.selectedCourse = null;
+        this.selectedSwapCourse = null;
+
+        // 隱藏步驟三、四
+        document.getElementById('step-select-course').classList.add('hidden');
+        document.getElementById('selected-course-info').classList.add('hidden');
+
+        // 清除課程選擇狀態
+        document.querySelectorAll('.schedule-course.selected').forEach(c => c.classList.remove('selected'));
+
+        // 重置調課欄位
+        const swapDate = document.getElementById('swap-date');
+        if (swapDate) swapDate.value = '';
+        document.getElementById('swap-course').innerHTML = '<option value="">請先選擇時段 B 日期</option>';
+        document.getElementById('swap-validation-error').classList.add('hidden');
+        document.getElementById('swap-preview').classList.add('hidden');
+
+        // 重置教師與日期選擇，讓使用者可以選新的教師/日期
+        document.getElementById('sub-teacher').value = '';
+    }
+
+    /**
+     * 渲染批次面板
+     */
+    renderSwapBatch() {
+        const listEl = document.getElementById('batch-swap-list');
+        if (this.swapBatch.length === 0) {
+            listEl.innerHTML = '<div class="batch-empty-message">尚未加入任何調課，請從上方課表選擇課程後點擊「加入批次」</div>';
+            return;
+        }
+
+        let html = '';
+        this.swapBatch.forEach((swap, idx) => {
+            const isSelf = swap.isSelfSwap;
+            html += `
+                <div class="batch-swap-item">
+                    <div class="batch-swap-number">${idx + 1}</div>
+                    <div class="batch-swap-detail">
+                        <div class="batch-swap-slot-a">
+                            <span class="batch-slot-label">A</span>
+                            ${swap.dateA} ${swap.weekdayA} ${swap.periodA}
+                            <strong>${swap.classNameA}</strong> ${swap.subjectA}（${swap.teacherA}）
+                        </div>
+                        <div class="batch-swap-arrow">↕</div>
+                        <div class="batch-swap-slot-b">
+                            <span class="batch-slot-label batch-slot-label-b">B</span>
+                            ${swap.dateB} ${swap.weekdayB} ${swap.periodB}
+                            <strong>${swap.classNameB}</strong> ${swap.subjectB}（${swap.teacherB}）
+                        </div>
+                        ${isSelf ? '<div class="batch-swap-badge">教師自行調課</div>' : ''}
+                    </div>
+                    <button class="btn btn-sm btn-danger batch-remove-btn" data-index="${idx}">移除</button>
+                </div>
+            `;
+        });
+        listEl.innerHTML = html;
+
+        // 綁定移除按鈕
+        listEl.querySelectorAll('.batch-remove-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const idx = parseInt(e.target.dataset.index);
+                this.swapBatch.splice(idx, 1);
+                this.renderSwapBatch();
+                this.checkBatchConflicts();
+            });
+        });
+    }
+
+    /**
+     * 檢查整批調課衝突
+     * 核心邏輯：模擬所有調課後，檢查教師是否在同一日期+節次有多個班級
+     */
+    checkBatchConflicts() {
+        const conflictPanel = document.getElementById('batch-conflict-panel');
+        const conflictContent = document.getElementById('batch-conflict-content');
+        const submitBtn = document.getElementById('batch-submit-btn');
+
+        if (this.swapBatch.length === 0) {
+            conflictPanel.classList.add('hidden');
+            submitBtn.disabled = true;
+            return;
+        }
+
+        const scheduleData = this.dataManager.getScheduleData();
+        const conflicts = [];
+
+        // 收集所有教師的移動：從哪個 date+period 移走，到哪個 date+period
+        // key = "teacher", value = { vacate: [{date, period, class}], occupy: [{date, period, class}] }
+        const teacherMoves = {};
+
+        const addMove = (teacher, vacateDate, vacatePeriod, vacateWeekday, vacateClass,
+                         occupyDate, occupyPeriod, occupyWeekday, occupyClass) => {
+            if (!teacherMoves[teacher]) {
+                teacherMoves[teacher] = { vacate: [], occupy: [] };
+            }
+            teacherMoves[teacher].vacate.push({ date: vacateDate, period: vacatePeriod, weekday: vacateWeekday, className: vacateClass });
+            teacherMoves[teacher].occupy.push({ date: occupyDate, period: occupyPeriod, weekday: occupyWeekday, className: occupyClass });
+        };
+
+        this.swapBatch.forEach(swap => {
+            // 教師 A：從 A 時段離開，到 B 時段
+            addMove(swap.teacherA,
+                swap.dateA, swap.periodA, swap.weekdayA, swap.classNameA,
+                swap.dateB, swap.periodB, swap.weekdayB, swap.classNameA);
+            // 教師 B：從 B 時段離開，到 A 時段
+            addMove(swap.teacherB,
+                swap.dateB, swap.periodB, swap.weekdayB, swap.classNameB,
+                swap.dateA, swap.periodA, swap.weekdayA, swap.classNameB);
+        });
+
+        // 收集所有涉及的日期
+        const affectedDates = new Set();
+        this.swapBatch.forEach(swap => {
+            affectedDates.add(swap.dateA);
+            affectedDates.add(swap.dateB);
+        });
+
+        // 對每個涉及的日期+節次，檢查教師是否重複
+        for (const date of affectedDates) {
+            // 計算此日期的星期
+            const weekday = this.getDateWeekday(date);
+
+            // 找出此日期所有節次
+            const periodsOnDay = new Set();
+            scheduleData.filter(c => c.weekday === weekday).forEach(c => periodsOnDay.add(c.period));
+
+            for (const period of periodsOnDay) {
+                // 原始排課：此 weekday+period 的所有教師 → 班級
+                const originalAssignments = {};
+                scheduleData.filter(c => c.weekday === weekday && c.period === period)
+                    .forEach(c => {
+                        if (!originalAssignments[c.teacher]) originalAssignments[c.teacher] = [];
+                        originalAssignments[c.teacher].push(c.className);
+                    });
+
+                // 建立「此 date+period 的教師指派」（深拷貝）
+                const assignments = {};
+                for (const [teacher, classes] of Object.entries(originalAssignments)) {
+                    assignments[teacher] = [...classes];
+                }
+
+                // 套用移動
+                for (const [teacher, moves] of Object.entries(teacherMoves)) {
+                    // 此教師在此 date+period 離開的班級
+                    moves.vacate.forEach(v => {
+                        if (v.date === date && v.period === period) {
+                            if (assignments[teacher]) {
+                                const idx = assignments[teacher].indexOf(v.className);
+                                if (idx >= 0) assignments[teacher].splice(idx, 1);
+                                if (assignments[teacher].length === 0) delete assignments[teacher];
+                            }
+                        }
+                    });
+                    // 此教師在此 date+period 進入的班級
+                    moves.occupy.forEach(o => {
+                        if (o.date === date && o.period === period) {
+                            if (!assignments[teacher]) assignments[teacher] = [];
+                            assignments[teacher].push(o.className);
+                        }
+                    });
+                }
+
+                // 檢查：有教師在同一 date+period 有 2 個以上班級？
+                for (const [teacher, classes] of Object.entries(assignments)) {
+                    if (classes.length > 1) {
+                        const uniqueClasses = [...new Set(classes)];
+                        if (uniqueClasses.length > 1) {
+                            conflicts.push({
+                                teacher,
+                                date,
+                                weekday,
+                                period,
+                                classes: uniqueClasses
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // 顯示結果
+        conflictPanel.classList.remove('hidden');
+        if (conflicts.length === 0) {
+            conflictContent.innerHTML = `
+                <div class="batch-conflict-ok">
+                    <span class="conflict-icon">✓</span>
+                    整批 ${this.swapBatch.length} 筆調課無衝突，可以送出
+                </div>`;
+            submitBtn.disabled = false;
+        } else {
+            let html = `
+                <div class="batch-conflict-error">
+                    <span class="conflict-icon">⚠</span>
+                    發現 ${conflicts.length} 個衝突，請調整後再送出
+                </div>
+                <ul class="batch-conflict-list">`;
+            conflicts.forEach(c => {
+                html += `<li><strong>${c.teacher}</strong> 在 ${c.date}（${c.weekday}）${c.period} 同時有 ${c.classes.join('、')} 的課</li>`;
+            });
+            html += '</ul>';
+            conflictContent.innerHTML = html;
+            submitBtn.disabled = true;
+        }
+    }
+
+    /**
+     * 清除批次
+     */
+    clearSwapBatch() {
+        if (this.swapBatch.length > 0 && !confirm('確定要清除全部批次調課？')) return;
+        this.swapBatch = [];
+        this.renderSwapBatch();
+        this.checkBatchConflicts();
+    }
+
+    /**
+     * 送出整批調課
+     */
+    async submitSwapBatch() {
+        if (this.swapBatch.length === 0) {
+            alert('批次中沒有調課項目');
+            return;
+        }
+
+        // 最終衝突檢查
+        this.checkBatchConflicts();
+        if (document.getElementById('batch-submit-btn').disabled) {
+            alert('批次中仍有衝突，無法送出');
+            return;
+        }
+
+        if (!confirm(`確認送出 ${this.swapBatch.length} 筆調課？將同時產生調課紀錄與 PDF 表單。`)) {
+            return;
+        }
+
+        // 建立所有紀錄
+        const records = this.swapBatch.map((swap, idx) =>
+            this.buildSwapRecord(swap, `_${idx}`)
+        );
+
+        // 批次 ID，讓這些紀錄可被識別為同一批
+        const batchId = Date.now().toString();
+        records.forEach(r => { r.batchId = batchId; });
+
+        // 儲存所有紀錄
+        records.forEach(record => {
+            this.dataManager.addSubstituteRecord(record);
+        });
+        this.saveDataToStorage();
+
+        // 逐一生成 PDF
+        for (const record of records) {
+            await this.generateSubstitutePDF(record);
+        }
+
+        // 重置
+        this.swapBatch = [];
+        this.resetSubstituteFlow();
+
+        const syncText = typeof isSignedIn === 'function' && isSignedIn() ? '並同步到雲端' : '';
+        alert(`已完成 ${records.length} 筆多重調課${syncText}，PDF 已逐一生成`);
     }
 
     /**
