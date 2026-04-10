@@ -470,31 +470,31 @@
                         </div>
                     </div>
 
-                    <!-- 多重調課批次面板 -->
-                    <div id="multi-swap-batch-panel" class="hidden">
-                        <h3>多重調課批次</h3>
-                        <p class="hint">逐一新增調課組合，系統會自動檢查整批衝突。全部無衝突時才可送出。</p>
-
-                        <!-- 待處理調課清單 -->
-                        <div id="batch-swap-list" class="batch-swap-list">
-                            <div class="batch-empty-message">尚未加入任何調課，請從上方課表選擇課程後點擊「加入批次」</div>
-                        </div>
-
-                        <!-- 衝突檢查結果 -->
-                        <div id="batch-conflict-panel" class="hidden">
-                            <div id="batch-conflict-content"></div>
-                        </div>
-
-                        <!-- 批次操作按鈕 -->
-                        <div class="action-buttons" style="margin-top: 1rem;">
-                            <button class="btn btn-primary" id="batch-submit-btn" disabled>確認全部調課並產生表單</button>
-                            <button class="btn btn-secondary" id="batch-clear-btn">清除全部</button>
-                        </div>
-                    </div>
-
                     <div class="action-buttons" style="margin-top: 1.5rem;">
                         <button class="btn btn-primary" id="confirm-substitute-btn">確認並產生表單</button>
                         <button class="btn btn-secondary" id="cancel-substitute-btn">重新選擇</button>
+                    </div>
+                </div>
+
+                <!-- 多重調課批次面板（獨立 card，不隨步驟四隱藏） -->
+                <div id="multi-swap-batch-panel" class="card hidden">
+                    <h2>🔀 多重調課批次</h2>
+                    <p class="hint">逐一新增調課組合，系統會自動檢查整批衝突。全部無衝突時才可送出。</p>
+
+                    <!-- 待處理調課清單 -->
+                    <div id="batch-swap-list" class="batch-swap-list">
+                        <div class="batch-empty-message">尚未加入任何調課，請從上方課表選擇課程後點擊「加入批次」</div>
+                    </div>
+
+                    <!-- 衝突檢查結果 -->
+                    <div id="batch-conflict-panel" class="hidden">
+                        <div id="batch-conflict-content"></div>
+                    </div>
+
+                    <!-- 批次操作按鈕 -->
+                    <div class="action-buttons" style="margin-top: 1rem;">
+                        <button class="btn btn-primary" id="batch-submit-btn" disabled>確認全部調課並產生表單</button>
+                        <button class="btn btn-secondary" id="batch-clear-btn">清除全部</button>
                     </div>
                 </div>
 

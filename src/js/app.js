@@ -1132,8 +1132,12 @@ class SubstituteTeacherApp {
         this.resetStepsAfterBasic();
 
         if (!teacher || !date) {
-            // 隱藏步驟二及後續
-            document.getElementById('step-change-type').classList.add('hidden');
+            // 多重調課模式下保持步驟二可見（讓使用者看到模式狀態）
+            if (this.isMultiSwapMode) {
+                document.getElementById('step-change-type').classList.remove('hidden');
+            } else {
+                document.getElementById('step-change-type').classList.add('hidden');
+            }
             document.getElementById('step-select-course').classList.add('hidden');
             document.getElementById('selected-course-info').classList.add('hidden');
             return;
@@ -2796,21 +2800,21 @@ class SubstituteTeacherApp {
         // 重置選課狀態以便繼續新增
         this.resetSwapSelectionForBatch();
 
-        alert(`已加入批次（第 ${this.swapBatch.length} 筆），可繼續新增或點擊「確認全部調課」送出`);
+        // 捲動到批次面板讓使用者看到新增結果
+        document.getElementById('multi-swap-batch-panel').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
 
     /**
-     * 重置選課狀態（保留批次面板）
+     * 重置選課狀態（保留批次面板、保留步驟一二三）
      */
     resetSwapSelectionForBatch() {
         this.selectedCourse = null;
         this.selectedSwapCourse = null;
 
-        // 隱藏步驟三、四
-        document.getElementById('step-select-course').classList.add('hidden');
+        // 隱藏步驟四（選中課程確認），但保留步驟二、三
         document.getElementById('selected-course-info').classList.add('hidden');
 
-        // 清除課程選擇狀態
+        // 清除課程選擇高亮
         document.querySelectorAll('.schedule-course.selected').forEach(c => c.classList.remove('selected'));
 
         // 重置調課欄位
@@ -2820,8 +2824,8 @@ class SubstituteTeacherApp {
         document.getElementById('swap-validation-error').classList.add('hidden');
         document.getElementById('swap-preview').classList.add('hidden');
 
-        // 重置教師與日期選擇，讓使用者可以選新的教師/日期
-        document.getElementById('sub-teacher').value = '';
+        // 不清空教師/日期，使用者可直接在課表點選下一堂課
+        // 若要換教師，手動更改步驟一即可
     }
 
     /**
