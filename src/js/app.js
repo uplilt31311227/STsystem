@@ -3708,29 +3708,6 @@ class SubstituteTeacherApp {
             this.onEditorTeacherChanged(e.target.value);
         });
 
-        // 新增教師按鈕
-        document.getElementById('editor-add-teacher-btn')?.addEventListener('click', () => {
-            document.getElementById('editor-new-teacher-form').classList.remove('hidden');
-            document.getElementById('editor-new-teacher-name').value = '';
-            document.getElementById('editor-new-teacher-homeroom').value = '';
-            document.getElementById('editor-new-teacher-name').focus();
-        });
-
-        // 確認新增教師
-        document.getElementById('editor-confirm-add-teacher-btn')?.addEventListener('click', () => {
-            this.editorAddNewTeacher();
-        });
-
-        // 取消新增教師
-        document.getElementById('editor-cancel-add-teacher-btn')?.addEventListener('click', () => {
-            document.getElementById('editor-new-teacher-form').classList.add('hidden');
-        });
-
-        // Enter 鍵確認新增教師
-        document.getElementById('editor-new-teacher-name')?.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') this.editorAddNewTeacher();
-        });
-
         // 儲存課表按鈕
         document.getElementById('editor-save-schedule-btn')?.addEventListener('click', () => {
             this.editorSaveSchedule();
@@ -4033,60 +4010,6 @@ class SubstituteTeacherApp {
         this.updateScheduleStatusFromData();
         this.updateTabLockStatus();
         this.updateTabContentVisibility();
-    }
-
-    /**
-     * 課表編輯器：新增教師
-     */
-    editorAddNewTeacher() {
-        const nameInput = document.getElementById('editor-new-teacher-name');
-        const homeroomInput = document.getElementById('editor-new-teacher-homeroom');
-        const name = nameInput.value.trim();
-        const homeroom = homeroomInput.value.trim();
-
-        if (!name) {
-            this.showToast('請輸入教師姓名', 'warning');
-            nameInput.focus();
-            return;
-        }
-
-        // 檢查是否已存在
-        if (this.dataManager.getTeacherByName(name)) {
-            this.showToast('此教師已存在，請直接從選單中選擇', 'warning');
-            return;
-        }
-
-        // 新增教師
-        this.dataManager.addTeacher({
-            name,
-            domains: [],
-            homeroomClass: homeroom
-        });
-
-        // 儲存
-        this.saveDataToStorage();
-
-        // 隱藏新增表單
-        document.getElementById('editor-new-teacher-form').classList.add('hidden');
-
-        // 更新所有下拉選單
-        this.populateEditorTeacherDropdown();
-        this.populateTeacherDropdowns();
-        this.updateTeacherTable();
-
-        // 自動選擇新教師
-        document.getElementById('editor-teacher-select').value = name;
-        this.onEditorTeacherChanged(name);
-
-        // 顯示教師編輯區域（如果還沒顯示）
-        document.getElementById('teacher-editor').classList.remove('hidden');
-
-        // 如果沒有學校名稱，提示設定
-        if (!this.dataManager.getSchoolName()) {
-            const schoolNameSection = document.getElementById('school-name-section');
-            schoolNameSection?.classList.remove('hidden');
-            document.getElementById('school-name-warning')?.classList.remove('hidden');
-        }
     }
 
     /**
