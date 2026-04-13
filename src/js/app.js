@@ -1182,19 +1182,10 @@ class SubstituteTeacherApp {
         this.resetStepsAfterBasic();
 
         if (!teacher || !date) {
-            // 多重調課模式下保持步驟二可見（讓使用者看到模式狀態）
-            if (this.isMultiSwapMode) {
-                document.getElementById('step-change-type').classList.remove('hidden');
-            } else {
-                document.getElementById('step-change-type').classList.add('hidden');
-            }
             document.getElementById('step-select-course').classList.add('hidden');
             document.getElementById('selected-course-info').classList.add('hidden');
             return;
         }
-
-        // 顯示步驟二：選擇異動類型
-        document.getElementById('step-change-type').classList.remove('hidden');
 
         // 根據日期更新課表顯示
         this.showScheduleForDate(teacher, date);
@@ -2717,8 +2708,7 @@ class SubstituteTeacherApp {
         document.getElementById('sub-teacher').value = '';
         document.getElementById('sub-date').value = new Date().toISOString().split('T')[0];
 
-        // 隱藏步驟二、三、四
-        document.getElementById('step-change-type').classList.add('hidden');
+        // 隱藏步驟三、四
         document.getElementById('step-select-course').classList.add('hidden');
         document.getElementById('selected-course-info').classList.add('hidden');
 
