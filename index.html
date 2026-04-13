@@ -68,73 +68,75 @@
         <main class="main-content">
             <!-- 頁籤一：課表匯入 -->
             <section id="import-tab" class="tab-content active">
-                <div class="card">
-                    <h2>步驟一：匯入課表資料</h2>
-                    <p class="description">請上傳人力資源網2.0匯出的課表檔案（支援 .xls, .xlsx, .csv 格式）</p>
+                <div class="import-layout">
+                    <!-- 左側：課表上傳 -->
+                    <div class="import-left">
+                        <div class="card compact-card">
+                            <h3>匯入課表資料</h3>
+                            <div class="upload-area upload-area-compact" id="schedule-upload">
+                                <div class="upload-icon-compact">📅</div>
+                                <p>拖放課表檔案或<label for="schedule-file" class="upload-link">點擊選擇</label></p>
+                                <span class="upload-hint">支援 .xls / .xlsx / .csv</span>
+                                <input type="file" id="schedule-file" accept=".xls,.xlsx,.csv" hidden>
+                            </div>
 
-                    <div class="upload-area" id="schedule-upload">
-                        <div class="upload-icon">📅</div>
-                        <p>拖放課表檔案至此處，或<label for="schedule-file" class="upload-link">點擊選擇檔案</label></p>
-                        <input type="file" id="schedule-file" accept=".xls,.xlsx,.csv" hidden>
-                    </div>
+                            <div id="schedule-status" class="status-box status-box-compact hidden">
+                                <div class="status-header">
+                                    <span class="status-icon">✓</span>
+                                    <span class="status-text">課表已載入</span>
+                                </div>
+                                <div class="status-details status-details-inline">
+                                    <span>班級 <strong id="class-count">0</strong></span>
+                                    <span>教師 <strong id="teacher-count">0</strong></span>
+                                    <span>課程 <strong id="course-count">0</strong></span>
+                                </div>
+                                <div id="schedule-conflicts" class="hidden"></div>
+                            </div>
 
-                    <div id="schedule-status" class="status-box hidden">
-                        <div class="status-header">
-                            <span class="status-icon">✓</span>
-                            <span class="status-text">課表已載入</span>
-                        </div>
-                        <div class="status-details">
-                            <p>班級數：<span id="class-count">0</span></p>
-                            <p>教師數：<span id="teacher-count">0</span></p>
-                            <p>課程數：<span id="course-count">0</span></p>
-                        </div>
-                        <div id="schedule-conflicts" class="hidden"></div>
-                    </div>
-
-                    <!-- 學校名稱設定 -->
-                    <div id="school-name-section" class="school-name-setting hidden">
-                        <div class="form-row" style="align-items: center;">
-                            <div class="form-group" style="flex: 1;">
-                                <label for="school-name"><strong>學校名稱：</strong><span style="color: red;">*</span></label>
-                                <input type="text" id="school-name" placeholder="如：臺北市立大安國民中學" style="width: 100%;">
+                            <!-- 學校名稱設定 -->
+                            <div id="school-name-section" class="school-name-setting school-name-compact hidden">
+                                <label for="school-name"><strong>學校名稱</strong> <span style="color: red;">*</span></label>
+                                <div class="school-name-row">
+                                    <input type="text" id="school-name" placeholder="如：臺北市立大安國民中學">
+                                    <button class="btn btn-primary btn-sm" id="save-school-name-btn">確認</button>
+                                </div>
                                 <p class="hint" id="school-name-hint">系統已從檔名自動擷取，請確認或修改</p>
-                            </div>
-                            <div style="margin-left: 10px;">
-                                <button class="btn btn-primary" id="save-school-name-btn">確認設定</button>
+                                <div id="school-name-warning" class="hidden" style="color: #dc2626; background: #fef2f2; padding: 6px 10px; border-radius: 6px; margin-top: 6px; font-size: 0.85rem;">
+                                    ⚠ 請先設定學校名稱
+                                </div>
                             </div>
                         </div>
-                        <div id="school-name-warning" class="hidden" style="color: #dc2626; background: #fef2f2; padding: 10px; border-radius: 6px; margin-top: 10px;">
-                            ⚠️ 請先設定學校名稱，才能使用其他功能
+                    </div>
+
+                    <!-- 右側：教師屬性 -->
+                    <div class="import-right">
+                        <div class="card compact-card">
+                            <div class="teacher-header">
+                                <h3>教師屬性</h3>
+                                <div class="teacher-header-actions">
+                                    <button class="btn btn-secondary btn-sm" id="add-teacher-btn">+ 新增教師</button>
+                                    <button class="btn btn-primary btn-sm" id="save-data-btn">儲存資料</button>
+                                </div>
+                            </div>
+                            <div id="teacher-editor" class="hidden">
+                                <table class="data-table data-table-compact" id="teacher-table">
+                                    <thead>
+                                        <tr>
+                                            <th>教師姓名</th>
+                                            <th>任教領域</th>
+                                            <th>導師班級</th>
+                                            <th>操作</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="teacher-tbody">
+                                    </tbody>
+                                </table>
+                            </div>
+                            <div id="save-status" class="hidden" style="margin-top: 0.5rem;"></div>
                         </div>
                     </div>
                 </div>
-
-                <div class="card">
-                    <h2>步驟二：匯入/編輯教師屬性</h2>
-                    <p class="description">系統已自動從課表中擷取教師資訊，您可以編輯任教領域及導師班級資訊</p>
-
-                    <div id="teacher-editor" class="hidden">
-                        <table class="data-table" id="teacher-table">
-                            <thead>
-                                <tr>
-                                    <th>教師姓名</th>
-                                    <th>任教領域</th>
-                                    <th>導師班級</th>
-                                    <th>操作</th>
-                                </tr>
-                            </thead>
-                            <tbody id="teacher-tbody">
-                            </tbody>
-                        </table>
-                        <div class="action-buttons" style="margin-top: 1rem;">
-                            <button class="btn btn-secondary" id="add-teacher-btn">+ 新增教師</button>
-                            <button class="btn btn-primary" id="save-data-btn">儲存資料</button>
-                        </div>
-                        <div id="save-status" class="hidden" style="margin-top: 0.5rem;"></div>
-                    </div>
-                </div>
-
-                </section>
+            </section>
 
             <!-- 頁籤：課表編輯 -->
             <section id="schedule-editor-tab" class="tab-content hidden">
@@ -831,7 +833,10 @@
         </footer>
     </div>
 
+    <!-- Toast 通知容器 -->
+    <div id="toast-container"></div>
+
     <!-- 載入 JavaScript 模組 -->
-    <script type="module" src="src/js/app.js?v=1.8.0"></script>
+    <script type="module" src="src/js/app.js?v=1.9.0"></script>
 </body>
 </html>

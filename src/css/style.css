@@ -144,6 +144,43 @@ body {
     display: none !important;
 }
 
+/* ===================================
+   課表匯入頁籤 - 緊湊雙欄布局
+   =================================== */
+.import-layout {
+    display: grid;
+    grid-template-columns: 340px 1fr;
+    gap: 1rem;
+    align-items: start;
+}
+
+.compact-card {
+    padding: 1rem 1.25rem;
+}
+
+.compact-card h3 {
+    font-size: 1rem;
+    margin-bottom: 0.75rem;
+    color: var(--text-color);
+}
+
+/* 教師表格區標題行 */
+.teacher-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.75rem;
+}
+
+.teacher-header h3 {
+    margin-bottom: 0;
+}
+
+.teacher-header-actions {
+    display: flex;
+    gap: 0.4rem;
+}
+
 /* 上傳區域樣式 */
 .upload-area {
     border: 2px dashed var(--border-color);
@@ -170,6 +207,96 @@ body {
     color: var(--primary-color);
     cursor: pointer;
     text-decoration: underline;
+}
+
+/* 緊湊上傳區域 */
+.upload-area-compact {
+    padding: 1rem;
+}
+
+.upload-icon-compact {
+    font-size: 2rem;
+    margin-bottom: 0.25rem;
+}
+
+.upload-area-compact p {
+    font-size: 0.9rem;
+    margin-bottom: 0.15rem;
+}
+
+.upload-hint {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+/* 緊湊狀態盒子 */
+.status-box-compact {
+    margin-top: 0.75rem;
+    padding: 0.6rem 0.75rem;
+}
+
+.status-box-compact .status-header {
+    margin-bottom: 0.25rem;
+    font-size: 0.9rem;
+}
+
+.status-details-inline {
+    display: flex;
+    gap: 0.75rem;
+    font-size: 0.85rem;
+}
+
+.status-details-inline span {
+    white-space: nowrap;
+}
+
+/* 緊湊學校名稱 */
+.school-name-compact {
+    margin-top: 0.75rem;
+    padding: 0.75rem;
+}
+
+.school-name-compact label {
+    font-size: 0.9rem;
+    margin-bottom: 0.25rem;
+    display: block;
+}
+
+.school-name-row {
+    display: flex;
+    gap: 0.4rem;
+    align-items: center;
+}
+
+.school-name-row input {
+    flex: 1;
+    min-width: 0;
+}
+
+/* 緊湊教師表格 */
+.data-table-compact {
+    font-size: 0.85rem;
+}
+
+.data-table-compact th,
+.data-table-compact td {
+    padding: 0.35rem 0.5rem;
+}
+
+.import-right #teacher-editor {
+    max-height: calc(100vh - 220px);
+    overflow-y: auto;
+}
+
+/* 響應式：窄螢幕單欄 */
+@media (max-width: 860px) {
+    .import-layout {
+        grid-template-columns: 1fr;
+    }
+
+    .import-right #teacher-editor {
+        max-height: 400px;
+    }
 }
 
 /* 狀態盒子 */
@@ -2244,4 +2371,95 @@ body {
         align-items: flex-start;
         gap: 0.5rem;
     }
+}
+
+/* ===================================
+   Toast 通知系統
+   =================================== */
+#toast-container {
+    position: fixed;
+    top: 1rem;
+    right: 1rem;
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    pointer-events: none;
+    max-width: 420px;
+}
+
+.toast {
+    pointer-events: auto;
+    display: flex;
+    align-items: flex-start;
+    gap: 0.6rem;
+    padding: 0.75rem 1rem;
+    border-radius: 8px;
+    background: var(--card-background);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    border-left: 4px solid var(--primary-color);
+    font-size: 0.9rem;
+    line-height: 1.5;
+    opacity: 0;
+    transform: translateX(100%);
+    transition: opacity 0.35s ease, transform 0.35s ease;
+    max-width: 100%;
+    word-break: break-word;
+}
+
+.toast.show {
+    opacity: 1;
+    transform: translateX(0);
+}
+
+.toast.hide {
+    opacity: 0;
+    transform: translateX(100%);
+}
+
+.toast-icon {
+    flex-shrink: 0;
+    font-size: 1.1rem;
+    margin-top: 1px;
+}
+
+.toast-body {
+    flex: 1;
+    min-width: 0;
+}
+
+.toast-close {
+    flex-shrink: 0;
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--text-muted);
+    font-size: 1rem;
+    padding: 0 0 0 0.5rem;
+    line-height: 1;
+}
+
+.toast-close:hover {
+    color: var(--text-color);
+}
+
+/* Toast 類型 */
+.toast.toast-success {
+    border-left-color: var(--success-color);
+    background: #f0fdf4;
+}
+
+.toast.toast-error {
+    border-left-color: var(--danger-color);
+    background: #fef2f2;
+}
+
+.toast.toast-warning {
+    border-left-color: var(--warning-color);
+    background: #fffbeb;
+}
+
+.toast.toast-info {
+    border-left-color: var(--primary-color);
+    background: #eff6ff;
 }

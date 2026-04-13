@@ -207,7 +207,7 @@ class SubstituteTeacherApp {
             console.log('登入成功:', user);
         } catch (error) {
             console.error('登入失敗:', error);
-            alert('登入失敗：' + error.message);
+            this.showToast('登入失敗：' + error.message, 'error');
         }
     }
 
@@ -359,7 +359,7 @@ class SubstituteTeacherApp {
      * 顯示學校不同的通知
      */
     showSchoolMismatchNotification(localSchool, cloudSchool) {
-        alert(`偵測到不同學校的資料：\n\n本機：${localSchool}\n雲端：${cloudSchool}\n\n已自動載入雲端資料（${cloudSchool}）。`);
+        this.showToast(`偵測到不同學校的資料：\n本機：${localSchool}\n雲端：${cloudSchool}\n已自動載入雲端資料（${cloudSchool}）`, 'warning', 5000);
     }
 
     /**
@@ -829,7 +829,7 @@ class SubstituteTeacherApp {
         const name = input.value.trim();
 
         if (!name) {
-            alert('請輸入學校名稱');
+            this.showToast('請輸入學校名稱', 'warning');
             input.focus();
             return;
         }
@@ -852,7 +852,7 @@ class SubstituteTeacherApp {
         // 儲存到 localStorage
         this.saveDataToStorage();
 
-        alert('學校名稱已設定：' + name);
+        this.showToast('學校名稱已設定：' + name, 'success');
     }
 
     /**
@@ -911,12 +911,12 @@ class SubstituteTeacherApp {
         const hasSchedule = this.dataManager.getScheduleData().length > 0;
 
         if (!hasSchedule) {
-            alert('請先匯入課表檔案');
+            this.showToast('請先匯入課表檔案', 'warning');
             return false;
         }
 
         if (!schoolName) {
-            alert('請先在「課表匯入」頁籤設定學校名稱');
+            this.showToast('請先在「課表匯入」頁籤設定學校名稱', 'warning');
             return false;
         }
 
@@ -1626,7 +1626,7 @@ class SubstituteTeacherApp {
 
         const date = document.getElementById('sub-date').value;
         if (!date) {
-            alert('請先選擇調課日期');
+            this.showToast('請先選擇調課日期', 'warning');
             return;
         }
 
@@ -1813,7 +1813,7 @@ class SubstituteTeacherApp {
                     courseInfo.originalTeacher
                 );
                 if (existingRecord) {
-                    alert(`此課堂（${courseInfo.period} ${courseInfo.className}）已有調代課紀錄，無法選擇！`);
+                    this.showToast(`此課堂（${courseInfo.period} ${courseInfo.className}）已有調代課紀錄，無法選擇`, 'error');
                     return;
                 }
             }
@@ -2183,7 +2183,7 @@ class SubstituteTeacherApp {
         }, 3000);
 
         // 顯示提示
-        alert(message);
+        this.showToast(message, 'warning', 5000);
     }
 
     /**
@@ -2256,11 +2256,11 @@ class SubstituteTeacherApp {
                 ? (existingRecord.isSelfSwap ? `教師自行調課` : `調課教師：${existingRecord.swapTeacher || existingRecord.substituteTeacher}`)
                 : `代課教師：${existingRecord.substituteTeacher}`;
 
-            alert(`此課堂已有調代課紀錄，無法重複申請！\n\n` +
+            this.showToast(`此課堂已有調代課紀錄，無法重複申請！\n` +
                 `${existingRecord.date} ${existingRecord.weekday} ${existingRecord.period}\n` +
                 `${existingRecord.className} ${existingRecord.subject}（${recordType}）\n` +
-                `${substituteInfo}\n\n` +
-                `如需重新安排，請先至「調代課紀錄」刪除該筆紀錄。`);
+                `${substituteInfo}\n` +
+                `如需重新安排，請先至「調代課紀錄」刪除該筆紀錄。`, 'error', 6000);
             return;
         }
 
@@ -2411,7 +2411,7 @@ class SubstituteTeacherApp {
         const mismatchCourses = this.selectedCourses.filter(c => c.weekday !== dateWeekday);
         if (mismatchCourses.length > 0) {
             const mismatchList = mismatchCourses.map(c => `${c.period}（${c.weekday}）`).join('、');
-            alert(`以下課程的星期與日期不符：\n${mismatchList}\n\n選擇的日期是「${dateWeekday}」，請重新選擇課程或調整日期。`);
+            this.showToast(`以下課程的星期與日期不符：\n${mismatchList}\n選擇的日期是「${dateWeekday}」，請重新選擇課程或調整日期。`, 'error', 5000);
             return;
         }
 
@@ -2460,7 +2460,7 @@ class SubstituteTeacherApp {
 
         // 顯示結果
         const syncText = isSignedIn() ? '並同步到雲端' : '';
-        alert(`已完成 ${records.length} 節課的代課申請${syncText}，PDF 已生成`);
+        this.showToast(`已完成 ${records.length} 節課的代課申請${syncText}，PDF 已生成`, 'success', 4000);
     }
 
     /**
@@ -2480,7 +2480,7 @@ class SubstituteTeacherApp {
         // 顯示結果
         const typeText = record.type === '調課' ? '調課' : '代課';
         const syncText = isSignedIn() ? '並同步到雲端' : '';
-        alert(`${typeText}紀錄已儲存${syncText}，PDF 已生成`);
+        this.showToast(`${typeText}紀錄已儲存${syncText}，PDF 已生成`, 'success', 4000);
     }
 
     /**
@@ -2854,7 +2854,7 @@ class SubstituteTeacherApp {
             s.dateB === swapData.dateB && s.periodB === swapData.periodB
         );
         if (isDup) {
-            alert('此調課組合已在批次中！');
+            this.showToast('此調課組合已在批次中', 'warning');
             return;
         }
 
@@ -3090,14 +3090,14 @@ class SubstituteTeacherApp {
      */
     async submitSwapBatch() {
         if (this.swapBatch.length === 0) {
-            alert('批次中沒有調課項目');
+            this.showToast('批次中沒有調課項目', 'warning');
             return;
         }
 
         // 最終衝突檢查
         this.checkBatchConflicts();
         if (document.getElementById('batch-submit-btn').disabled) {
-            alert('批次中仍有衝突，無法送出');
+            this.showToast('批次中仍有衝突，無法送出', 'error');
             return;
         }
 
@@ -3130,7 +3130,7 @@ class SubstituteTeacherApp {
         this.resetSubstituteFlow();
 
         const syncText = typeof isSignedIn === 'function' && isSignedIn() ? '並同步到雲端' : '';
-        alert(`已完成 ${records.length} 筆多重調課${syncText}，PDF 已逐一生成`);
+        this.showToast(`已完成 ${records.length} 筆多重調課${syncText}，PDF 已逐一生成`, 'success', 4000);
     }
 
     /**
@@ -3510,7 +3510,7 @@ class SubstituteTeacherApp {
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
 
-        alert('資料已匯出');
+        this.showToast('資料已匯出', 'success');
     }
 
     /**
@@ -3521,7 +3521,7 @@ class SubstituteTeacherApp {
             if (confirm('再次確認：清除所有資料？')) {
                 localStorage.removeItem('substituteSystemData');
                 localStorage.removeItem('gasUrl');
-                alert('所有資料已清除，頁面將重新載入');
+                this.showToast('所有資料已清除，頁面將重新載入', 'success');
                 location.reload();
             }
         }
@@ -3536,7 +3536,7 @@ class SubstituteTeacherApp {
 
         // 檢查檔案類型
         if (!file.name.endsWith('.json')) {
-            alert('請選擇 JSON 格式的備份檔案');
+            this.showToast('請選擇 JSON 格式的備份檔案', 'error');
             return;
         }
 
@@ -3549,12 +3549,12 @@ class SubstituteTeacherApp {
                 const data = JSON.parse(e.target.result);
                 this.validateAndPreviewImport(data);
             } catch (error) {
-                alert('檔案格式錯誤，無法解析 JSON');
+                this.showToast('檔案格式錯誤，無法解析 JSON', 'error');
                 this.cancelImport();
             }
         };
         reader.onerror = () => {
-            alert('檔案讀取失敗');
+            this.showToast('檔案讀取失敗', 'error');
             this.cancelImport();
         };
         reader.readAsText(file);
@@ -3570,7 +3570,7 @@ class SubstituteTeacherApp {
         const missingFields = requiredFields.filter(field => !data.hasOwnProperty(field));
 
         if (missingFields.length > 0) {
-            alert(`備份檔案格式不正確，缺少欄位：${missingFields.join(', ')}`);
+            this.showToast(`備份檔案格式不正確，缺少欄位：${missingFields.join(', ')}`, 'error');
             this.cancelImport();
             return;
         }
@@ -3611,7 +3611,7 @@ class SubstituteTeacherApp {
      */
     confirmImport() {
         if (!this.pendingImportData) {
-            alert('沒有待匯入的資料');
+            this.showToast('沒有待匯入的資料', 'warning');
             return;
         }
 
@@ -3627,11 +3627,11 @@ class SubstituteTeacherApp {
             this.saveDataToStorage();
 
             // 重新整理頁面顯示
-            alert('資料匯入成功！頁面將重新載入以套用變更。');
+            this.showToast('資料匯入成功！頁面將重新載入以套用變更。', 'success');
             location.reload();
         } catch (error) {
             console.error('匯入失敗:', error);
-            alert('匯入失敗：' + error.message);
+            this.showToast('匯入失敗：' + error.message, 'error');
         }
     }
 
@@ -3895,11 +3895,11 @@ class SubstituteTeacherApp {
         const domain = document.getElementById('course-modal-domain').value;
 
         if (!className) {
-            alert('請輸入班級');
+            this.showToast('請輸入班級', 'warning');
             return;
         }
         if (!subject) {
-            alert('請輸入科目');
+            this.showToast('請輸入科目', 'warning');
             return;
         }
 
@@ -3995,14 +3995,14 @@ class SubstituteTeacherApp {
         const homeroom = homeroomInput.value.trim();
 
         if (!name) {
-            alert('請輸入教師姓名');
+            this.showToast('請輸入教師姓名', 'warning');
             nameInput.focus();
             return;
         }
 
         // 檢查是否已存在
         if (this.dataManager.getTeacherByName(name)) {
-            alert('此教師已存在，請直接從選單中選擇');
+            this.showToast('此教師已存在，請直接從選單中選擇', 'warning');
             return;
         }
 
@@ -4277,7 +4277,7 @@ class SubstituteTeacherApp {
     }
 
     /**
-     * 顯示錯誤訊息
+     * 顯示錯誤訊息（課表狀態區專用）
      */
     showError(message) {
         const statusBox = document.getElementById('schedule-status');
@@ -4292,6 +4292,44 @@ class SubstituteTeacherApp {
                 <p>${message}</p>
             </div>
         `;
+    }
+
+    /**
+     * 顯示 Toast 通知
+     * @param {string} message - 通知訊息
+     * @param {string} type - 類型：success, error, warning, info
+     * @param {number} duration - 顯示時間（毫秒），預設 3000
+     */
+    showToast(message, type = 'info', duration = 3000) {
+        const container = document.getElementById('toast-container');
+        const icons = { success: '✓', error: '✗', warning: '⚠', info: 'ℹ' };
+
+        const toast = document.createElement('div');
+        toast.className = `toast toast-${type}`;
+        toast.innerHTML = `
+            <span class="toast-icon">${icons[type] || icons.info}</span>
+            <span class="toast-body">${message.replace(/\n/g, '<br>')}</span>
+            <button class="toast-close">&times;</button>
+        `;
+
+        container.appendChild(toast);
+
+        // 觸發淡入動畫
+        requestAnimationFrame(() => {
+            toast.classList.add('show');
+        });
+
+        const dismiss = () => {
+            toast.classList.remove('show');
+            toast.classList.add('hide');
+            toast.addEventListener('transitionend', () => toast.remove(), { once: true });
+        };
+
+        toast.querySelector('.toast-close').addEventListener('click', dismiss);
+
+        if (duration > 0) {
+            setTimeout(dismiss, duration);
+        }
     }
 }
 
