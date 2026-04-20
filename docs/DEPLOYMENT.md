@@ -9,13 +9,14 @@ tags:
 
 ## 部署環境總覽
 
-| 環境 | URL / branch | 說明 | 狀態 |
-|------|-----|------|------|
-| Production | GitHub Pages（master） | 組長穩定版1.0（v1.9.0） | 🟢 運行中 |
-| Preview (V2) | feature/permission-system branch | V2 權限系統，待部署（見 V2_PERMISSION_SYSTEM.md） | 🟡 開發中 |
-| Development | localhost | 本地開發伺服器 | - |
+| 環境 | URL | branch / repo | 說明 | 狀態 |
+|------|-----|---------------|------|------|
+| Production | GitHub Pages（本 repo master） | master | 組長穩定版1.0（v1.9.0） | 🟢 運行中 |
+| Preview (V2) | https://uplilt31311227.github.io/STsystem-preview/ | STsystem-preview main（源自 feature/permission-system） | V2 權限系統 | 🟢 已部署 |
+| Development | http://localhost:8000 | — | 本地開發伺服器 | — |
 
-> V2 預覽站點部署指南詳見 [`V2_PERMISSION_SYSTEM.md`](./V2_PERMISSION_SYSTEM.md)。
+> V2 預覽站點詳見 [`V2_PERMISSION_SYSTEM.md`](./V2_PERMISSION_SYSTEM.md)。
+> 更新 Preview：`git push preview feature/permission-system:main`
 
 ## 部署方式
 

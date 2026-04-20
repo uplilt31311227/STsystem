@@ -74,12 +74,18 @@ python start-server.py
 # 瀏覽器開 http://localhost:8000/?v2=1
 ```
 
-### 選項 B：建立第二個 GitHub repo 當預覽站（推薦）
-1. 在 GitHub 建立新 repo：`STsystem-preview`
-2. 加入 remote：`git remote add preview https://github.com/<user>/STsystem-preview.git`
-3. 推送 feature branch：`git push preview feature/permission-system:master`
-4. 在該 repo 設定 GitHub Pages 從 master 部署
-5. 開啟預覽站點（hostname 含 `preview` 會自動啟用 V2）
+### 選項 B：獨立 GitHub repo 當預覽站（**已部署**）
+- **Preview Repo**: https://github.com/uplilt31311227/STsystem-preview （public）
+- **Preview URL**: https://uplilt31311227.github.io/STsystem-preview/
+- **部署分支**: `main`（由本 repo `feature/permission-system` 推送而來）
+- **啟用機制**: `envDetector` 偵測 pathname 含 `-preview/` → 自動啟用 V2（無需 `?v2=1`）
+
+更新流程（後續 feature branch 有新 commit 時）：
+```bash
+git push preview feature/permission-system:main
+```
+
+⚠️ 不可合併回本 repo master。穩定版 `組長穩定版1.0` 維持原狀。
 
 ### 選項 C：用 ?v2=1 URL 參數在既有 Pages 測試
 ⚠️ 不建議。雖然 V2 模組對穩定版無副作用，但會讓 master Pages 同時載入 V2 程式碼。
