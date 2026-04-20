@@ -325,19 +325,133 @@ function bindV2TabSwitches() {
 
 /* ===== 調課送出攔截（P5/P7 重點）===== */
 
+/**
+ * V2 啟用時，在「確認並產生表單」click 的 capture 階段擋下：
+ *   - 非 admin 若「原任課教師」不是自己 → 阻止並 alert
+ *   - admin 放行（可代任一教師發起）
+ */
 function interceptSubmitButton() {
     const btn = document.getElementById('confirm-substitute-btn');
     if (!btn) return;
 
-    btn.addEventListener('click', async (ev) => {
-        // 僅當 V2 已啟用且身份已確認時攔截
+    btn.addEventListener('click', (ev) => {
         if (!roleSvc.isSignedIn()) return;
+        if (roleSvc.isAdmin()) return;
 
-        // 先讓原 app.js 的 handler 執行，收集它準備寫入的 record
-        // 這裡採用「等待 dataManager.addSubstituteRecord 被呼叫」的 hook
-        // 為簡化，暫時不阻擋原流程；真正 V2 提交將在下一版本完全接管
-        // TODO (P5-b): 替換 app.js 的 confirmSubstitute 實作為 V2 版本
+        const me = roleSvc.getCurrentIdentity();
+        const selectedName = document.getElementById('sub-teacher')?.value || '';
+        if (selectedName && selectedName !== me.name) {
+            ev.stopPropagation();
+            ev.stopImmediatePropagation();
+            ev.preventDefault();
+            alert(`您僅能發起自己的課務調代課。\n您的身份為「${me.name}」，但「原任課教師」選的是「${selectedName}」。`);
+            logger.log(LOG_ACTIONS.PERMISSION_DENIED, LOG_TARGET_TYPES.SUBSTITUTE_RECORD, null, {
+                reason: 'non_admin_initiate_other',
+                attemptedTeacher: selectedName,
+                myTeacher: me.name,
+            });
+        }
     }, true);
+}
+
+/* ===== dataManager patch：V2 模式下改走 V2 寫入 ===== */
+
+async function resolveApproverInfo(record) {
+    const teachers = await dataSvc.listTeachers();
+    const findId   = (n) => teachers.find(t => t.name === n)?.teacherId || null;
+
+    const originalTeacherId   = findId(record.originalTeacher);
+    const substituteTeacherId = findId(record.substituteTeacher);
+    const swapTeacherId       = findId(record.swapTeacher);
+
+    let requiredApproverId   = null;
+    let requiredApproverName = null;
+
+    if (record.isSelfSwap) {
+        // 自我調課不需他人同意
+        requiredApproverId   = null;
+        requiredApproverName = null;
+    } else if (record.type === '代課') {
+        requiredApproverId   = substituteTeacherId;
+        requiredApproverName = record.substituteTeacher || null;
+    } else if (record.type === '調課') {
+        requiredApproverId   = swapTeacherId || substituteTeacherId;
+        requiredApproverName = record.swapTeacher || record.substituteTeacher || null;
+    }
+
+    return {
+        originalTeacherId,
+        substituteTeacherId,
+        swapTeacherId,
+        requiredApproverId,
+        requiredApproverName,
+    };
+}
+
+async function writeV2Record(record) {
+    const me = roleSvc.getCurrentIdentity();
+    if (!me) throw new Error('尚未登入');
+
+    const ids = await resolveApproverInfo(record);
+    const payload = {
+        ...record,
+        ...ids,
+        initiatedByName: record.originalTeacher || me.name,
+    };
+
+    if (roleSvc.isAdmin()) {
+        payload.initiatedBy = ids.originalTeacherId || me.teacherId;
+        return requestSvc.adminCreate(payload);
+    }
+
+    payload.initiatedBy = me.teacherId;
+
+    if (!ids.requiredApproverId) {
+        // 自我調課或無其他教師涉入 → 直接成立
+        const now = new Date().toISOString();
+        const created = await dataSvc.createSubstituteRecord({
+            ...payload,
+            status:         'approved',
+            initiatedByRole:'teacher',
+            approvedAt:     now,
+            createdAt:      now,
+        });
+        await logger.log(LOG_ACTIONS.APPROVE, LOG_TARGET_TYPES.SUBSTITUTE_RECORD, created.recordId, {
+            selfApproved: true,
+            initiatedBy:  payload.initiatedBy,
+        });
+        return created;
+    }
+
+    const saved = await requestSvc.createRequest(payload);
+    setTimeout(() => {
+        alert(`已送出給 ${ids.requiredApproverName} 同意。\n對方同意後紀錄才會正式成立。`);
+    }, 100);
+    return saved;
+}
+
+function patchDataManager() {
+    const dm = window.app?.dataManager;
+    if (!dm || dm.__v2_patched) return;
+    dm.__v2_patched = true;
+
+    const origAdd = dm.addSubstituteRecord.bind(dm);
+    dm.addSubstituteRecord = function(record) {
+        if (roleSvc.isSignedIn()) {
+            // V2 模式：改走 V2 寫入，不入 local
+            writeV2Record(record)
+                .then(async () => {
+                    await renderPendingTab();
+                    await renderRecordsTab();
+                })
+                .catch(err => {
+                    console.error('[V2] 寫入失敗:', err);
+                    alert('V2 寫入失敗：' + err.message);
+                });
+            return; // 不 push local
+        }
+        return origAdd(record);
+    };
 }
 
 /* ===== 主啟動流程 ===== */
@@ -392,6 +506,7 @@ async function bootstrap() {
 
     bindV2TabSwitches();
     interceptSubmitButton();
+    patchDataManager();
 
     console.log('[V2] 權限系統已啟動');
 }
