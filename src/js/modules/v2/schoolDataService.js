@@ -217,3 +217,32 @@ export async function listLogs({ limit: lim = 200, since = null } = {}) {
     const snap = await fs.getDocs(q);
     return snap.docs.map(d => ({ logId: d.id, ...d.data() }));
 }
+
+/* ===== 即時訂閱（onSnapshot） ===== */
+
+export async function subscribePendingRequests(callback) {
+    const fs  = await getV2Firestore();
+    const col = fs.collection(fs.db, SCHEMA_PATHS.pendingCol());
+    const q   = fs.query(col, fs.orderBy('createdAt', 'desc'));
+    return fs.onSnapshot(q, (snap) => {
+        callback(snap.docs.map(d => ({ reqId: d.id, ...d.data() })));
+    });
+}
+
+export async function subscribeSubstituteRecords(callback) {
+    const fs  = await getV2Firestore();
+    const col = fs.collection(fs.db, SCHEMA_PATHS.substituteCol());
+    const q   = fs.query(col, fs.orderBy('createdAt', 'desc'));
+    return fs.onSnapshot(q, (snap) => {
+        callback(snap.docs.map(d => ({ recordId: d.id, ...d.data() })));
+    });
+}
+
+export async function subscribeOperationLogs(callback, { limit: lim = 200 } = {}) {
+    const fs  = await getV2Firestore();
+    const col = fs.collection(fs.db, SCHEMA_PATHS.logsCol());
+    const q   = fs.query(col, fs.orderBy('timestamp', 'desc'), fs.limit(lim));
+    return fs.onSnapshot(q, (snap) => {
+        callback(snap.docs.map(d => ({ logId: d.id, ...d.data() })));
+    });
+}

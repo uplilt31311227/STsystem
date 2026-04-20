@@ -1,6 +1,6 @@
 ---
 created: 2026-04-10
-updated: 2026-04-10
+updated: 2026-04-20
 tags:
   - issues
   - troubleshooting
@@ -15,6 +15,34 @@ tags:
 | 🔴 待處理 | 已發現但尚未開始處理 |
 | 🟡 處理中 | 正在調查或修復 |
 | 🟢 已解決 | 已找到解決方案並修復 |
+
+---
+
+## V2 權限系統（feature/permission-system）已知限制與待辦
+
+### V2 原「調代課紀錄」頁籤不顯示（已由 V2 頁籤區塊取代）
+
+- **日期**: 2026-04-20
+- **狀態**: 🟡 設計取捨
+- **描述**: V2 模式下 `dataManager.addSubstituteRecord` 被 patch 為不寫 local；原頁籤的本地紀錄表格會空。
+- **現況**: 已在同頁籤下方注入 V2 專屬的「全校調代課紀錄」區塊顯示 V2 資料。
+- **後續**: P11 若決定合併回 master，需將原表格完全移除或由 V2 資料填入。
+
+### V2 衝堂檢查暫失效
+
+- **日期**: 2026-04-20
+- **狀態**: 🔴 待處理
+- **描述**: 原 `checkExistingRecord` 查 local 陣列；V2 下 local 為空，無法檢測 V2 中已存在的調代課。
+- **解決方案 (規劃)**: patchDataManager 中先 await 查 V2 `substituteRecords` 再決定是否放行。
+- **相關檔案**: `src/js/v2-app.js` patchDataManager、`src/js/app.js:2234`
+
+### PDF 生成與 V2 pending 狀態的關係
+
+- **日期**: 2026-04-20
+- **狀態**: 🟡 待決策
+- **描述**: V2 教師發起後立即產生 PDF，但紀錄尚未成立（等對方同意）。
+- **現況**: 視為「申請單」，可帶給對方簽；對方同意後 PDF 即成為正式紀錄。
+- **後續**: 若需在 pending 階段產生的 PDF 顯浮水印「待同意」，可在 pdfGenerator 加 status 欄位處理。
 
 ---
 

@@ -470,7 +470,11 @@ async function bootstrap() {
 
     await authMod.initAuthService();
 
+    let unsubs = [];
+    const clearSubs = () => { unsubs.forEach(u => { try { u(); } catch (_) {} }); unsubs = []; };
+
     authMod.onAuthStateChange(async (user) => {
+        clearSubs();
         if (!user) {
             roleSvc.clearCurrentIdentity();
             document.body.classList.remove('v2-admin');
@@ -494,9 +498,17 @@ async function bootstrap() {
 
             // 初次渲染
             await renderPendingTab();
+            await renderRecordsTab();
             if (roleSvc.isAdmin()) {
                 await renderTeachersAdminTab();
                 await renderLogsTab();
+            }
+
+            // 即時同步：待辦 / 紀錄 / 日誌（admin）
+            unsubs.push(await dataSvc.subscribePendingRequests(() => renderPendingTab()));
+            unsubs.push(await dataSvc.subscribeSubstituteRecords(() => renderRecordsTab()));
+            if (roleSvc.isAdmin()) {
+                unsubs.push(await dataSvc.subscribeOperationLogs(() => renderLogsTab()));
             }
         } catch (e) {
             console.error('[v2] resolveIdentity 失敗:', e);
