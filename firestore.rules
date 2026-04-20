@@ -1,0 +1,19 @@
+rules_version = '2';
+
+// STsystem V2 權限系統 Firestore 規則（測試階段）
+// 僅要求登入（request.auth != null）；細粒度權限由應用層 roleService 把關。
+// TODO: 上線前收緊為 schools/default/ 路徑限定 + 依 email 白名單核對管理員權限。
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // V2 權限系統：登入使用者可讀寫 schools/ 底下全部資料
+    match /schools/{schoolId}/{document=**} {
+      allow read, write: if request.auth != null;
+    }
+
+    // 穩定版 master 原本的個人空間（users/{uid}/...）：僅擁有者可讀寫
+    match /users/{uid}/{document=**} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+  }
+}

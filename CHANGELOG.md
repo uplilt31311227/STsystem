@@ -35,6 +35,12 @@
 - V2 僅在 URL `?v2=1` 或 hostname 含 `preview` 時啟動
 - 啟動時透過 `body.v2-active` class 顯示 V2 專屬頁籤，隱藏/取代既有行為
 
+### 2026-04-20（部署）Firestore 初始資料 + 安全規則發布
+- **`schools/default/config/main` 文件已建立**：schoolName="XX 國中"、initialAdminEmails=["operator@example.edu.tw"]
+- **Firestore 安全規則 v2 發布**：新增 `schools/{schoolId}/{document=**}` 允許登入者讀寫，保留原 `users/{uid}/{document=**}` 僅擁有者讀寫
+- 規則檔提交至 repo (`firestore.rules`) 作為 source of truth
+- 測試階段規則寬鬆；正式上線前需改為依 email 白名單與 role 判讀
+
 ### 2026-04-20（補丁）衝堂檢查 + 紀錄頁籤清理 + gitignore
 - **V2 衝堂檢查修復**：新增同步 cache (`_v2RecordsCache` / `_v2PendingCache`)，由 onSnapshot 更新，`dm.checkExistingRecord` 在 V2 模式下改查 cache（含 pending 尚未被處理者），解決原 local 陣列空導致偵測不到 V2 既有紀錄的問題
 - **V2 下隱藏原紀錄表格**：CSS 隱藏 `#records-no-data` 與 `#records-content`，避免空表格與 V2 全校紀錄表格並存造成混淆；V2 紀錄區塊改為頁籤主內容

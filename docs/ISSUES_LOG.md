@@ -40,6 +40,31 @@ tags:
 
 ## 已解決的問題
 
+### Firestore 初始管理員設定與安全規則
+
+- **日期**: 2026-04-20
+- **狀態**: 🟢 已解決
+
+**問題描述**：V2 權限系統需要兩項初始設定才能運作：
+1. Firestore `schools/default/config/main` 文件（含 initialAdminEmails）
+2. Firestore 安全規則允許 `schools/{schoolId}/` 讀寫（原規則僅涵蓋 `users/{uid}/`）
+
+**解決方案**：使用 gcloud access token + Firestore / FirebaseRules REST API：
+
+```bash
+# 1. 建立 config 文件
+curl -X PATCH -H "Authorization: Bearer $TOKEN" \
+  ".../documents/schools/default/config/main" \
+  --data-binary "@_firestore_init.json"
+
+# 2. 建立並發布 ruleset
+curl -X POST ".../rulesets" -d '{"source":{"files":[...]}}'
+curl -X PATCH ".../releases/cloud.firestore" \
+  -d '{"release":{"name":"...","rulesetName":"..."},"updateMask":"rulesetName"}'
+```
+
+**相關檔案**：`firestore.rules`（已提交）、`docs/V2_PERMISSION_SYSTEM.md`
+
 ### PDF 生成與 V2 pending 狀態
 
 - **日期**: 2026-04-20

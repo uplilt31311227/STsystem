@@ -44,17 +44,38 @@ tags:
 
 ## 初始設定（部署前必做）
 
-### 1. Firestore Console
-在專案 `stsystem-9d5fe` 的 Firestore Console 手動建立以下文件：
+### 1. Firestore 初始資料（✅ 已建立）
+在專案 `stsystem-9d5fe` Firestore 已建立：
 
-- 路徑：`schools/default/config/main`
-- 內容：
+- `schools/default` — V2 資料根（佔位文件）
+- `schools/default/config/main` — 設定文件：
   ```json
   {
     "schoolName": "XX 國中",
-    "initialAdminEmails": ["operator@example.edu.tw"]
+    "initialAdminEmails": ["operator@example.edu.tw"],
+    "updatedAt": "2026-04-20"
   }
   ```
+
+要追加管理員或更新學校名稱，可用 gcloud REST API 或 Firebase Console 修改。
+
+### 1b. Firestore 安全規則（✅ 已部署）
+規則檔：`firestore.rules`（保留原 master 的 users/{uid} 規則，新增 schools/{schoolId}）
+
+```
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /schools/{schoolId}/{document=**} {
+      allow read, write: if request.auth != null;
+    }
+    match /users/{uid}/{document=**} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+  }
+}
+```
+
+⚠️ 測試階段規則寬鬆。正式上線前應改為依 email 白名單與 role 判讀權限。
 
 ### 2. 初次登入
 - 在瀏覽器開啟 `http://localhost:8000/?v2=1`（或預覽站點 URL）
