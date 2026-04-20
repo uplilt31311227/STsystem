@@ -36,17 +36,29 @@ tags:
 - **解決方案 (規劃)**: patchDataManager 中先 await 查 V2 `substituteRecords` 再決定是否放行。
 - **相關檔案**: `src/js/v2-app.js` patchDataManager、`src/js/app.js:2234`
 
-### PDF 生成與 V2 pending 狀態的關係
-
-- **日期**: 2026-04-20
-- **狀態**: 🟡 待決策
-- **描述**: V2 教師發起後立即產生 PDF，但紀錄尚未成立（等對方同意）。
-- **現況**: 視為「申請單」，可帶給對方簽；對方同意後 PDF 即成為正式紀錄。
-- **後續**: 若需在 pending 階段產生的 PDF 顯浮水印「待同意」，可在 pdfGenerator 加 status 欄位處理。
-
 ---
 
 ## 已解決的問題
+
+### PDF 生成與 V2 pending 狀態
+
+- **日期**: 2026-04-20
+- **狀態**: 🟢 已解決（策略變更：pending 完全不產 PDF）
+
+**原問題**：V2 教師發起後立即產生 PDF，但紀錄尚未成立（等對方同意），容易誤導使用者。
+
+**最終決策**：
+不再走「pending 加浮水印」方案。改為**同意前完全不產 PDF**：
+- 教師發起 → pending，僅送出即時通知，不產 PDF
+- 對方同意 → 正式成立 + 同意方當場下載 PDF
+- 對方拒絕 → 不產 PDF，發起人可在「我已發起」看到「❌ 被拒絕」提示
+- 組長代發起 / 自我調課 → 跳過同意流程，即時產 PDF（維持原行為）
+- 紀錄列表新增「下載 PDF」按鈕，發起人可事後補下載
+
+**相關檔案**：
+- `src/js/modules/v2/pendingRequestService.js`（rejectRequest 改 soft-reject、新增 dismissRejectedRequest）
+- `src/js/modules/v2/schoolDataService.js`（新增 updatePendingRequest）
+- `src/js/v2-app.js`（v2NeedsApproval / patchPdfGenerators / approve 產 PDF / rejected 顯示 / 下載 PDF）
 
 ### 調代課紀錄查詢日期比較問題
 

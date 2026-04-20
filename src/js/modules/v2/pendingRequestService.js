@@ -115,7 +115,10 @@ export async function approveRequest(reqId) {
     return saved;
 }
 
-/** 被邀請教師拒絕：刪除 pending。 */
+/**
+ * 被邀請教師拒絕：soft-reject（標記 status=rejected，保留文件讓發起人看到）。
+ * 發起人確認後由 dismissRejectedRequest() 真正刪除。
+ */
 export async function rejectRequest(reqId, note = '') {
     const req = await dataSvc.getPendingRequest(reqId);
     if (!req) throw new Error('找不到此請求');
@@ -125,7 +128,15 @@ export async function rejectRequest(reqId, note = '') {
         });
         throw new Error('您不是被調課教師，無法拒絕此請求');
     }
-    await dataSvc.deletePendingRequest(reqId);
+    const me  = roleSvc.getCurrentIdentity();
+    const now = new Date().toISOString();
+    await dataSvc.updatePendingRequest(reqId, {
+        status:       REQUEST_STATUS.REJECTED,
+        rejectedAt:   now,
+        rejectedBy:   me?.teacherId,
+        rejectedByName: me?.name,
+        rejectNote:   note || '',
+    });
     await logger.log(
         LOG_ACTIONS.REJECT,
         LOG_TARGET_TYPES.PENDING_REQUEST,
@@ -137,6 +148,21 @@ export async function rejectRequest(reqId, note = '') {
             note,
         }
     );
+}
+
+/**
+ * 發起人（或 admin）確認已知悉被拒絕，真正刪除 pending 文件。
+ */
+export async function dismissRejectedRequest(reqId) {
+    const req = await dataSvc.getPendingRequest(reqId);
+    if (!req) return;
+    if (req.status !== REQUEST_STATUS.REJECTED) {
+        throw new Error('此請求尚未被拒絕，無法關閉');
+    }
+    if (!roleSvc.canCancelRequest(req)) {
+        throw new Error('您不是發起人，無法關閉');
+    }
+    await dataSvc.deletePendingRequest(reqId);
 }
 
 /** 發起人撤回：刪除 pending。 */
