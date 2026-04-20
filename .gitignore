@@ -5,6 +5,19 @@ build/
 dist/
 wheels/
 *.egg-info
+.python-version
+
+# uv / pyproject workspace
+uv.lock
+pyproject.toml
+main.py
+
+# Dev helper scripts (non-production)
+start-server.py
+read_excel.ps1
+export_csv.ps1
+analysis.txt
+extracted_text.txt
 
 # Virtual environments
 .venv
@@ -12,6 +25,7 @@ wheels/
 # Node.js
 node_modules/
 package-lock.json
+package.json
 
 # IDE
 .vscode/
@@ -24,6 +38,14 @@ Thumbs.db
 # Test outputs
 test/*.png
 test/e2e-test.js
+test/*.pdf
+test/run_tests.py
+test-results/
+
+# Raw schedule files (source data, not committed)
+*.xls
+*.xlsx
+schedule_export.csv
 
 # Claude Code
 .claude/

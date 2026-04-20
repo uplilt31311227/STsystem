@@ -20,21 +20,21 @@ tags:
 
 ## V2 權限系統（feature/permission-system）已知限制與待辦
 
-### V2 原「調代課紀錄」頁籤不顯示（已由 V2 頁籤區塊取代）
+### V2 原「調代課紀錄」頁籤不顯示
 
 - **日期**: 2026-04-20
-- **狀態**: 🟡 設計取捨
+- **狀態**: 🟢 已解決
 - **描述**: V2 模式下 `dataManager.addSubstituteRecord` 被 patch 為不寫 local；原頁籤的本地紀錄表格會空。
-- **現況**: 已在同頁籤下方注入 V2 專屬的「全校調代課紀錄」區塊顯示 V2 資料。
-- **後續**: P11 若決定合併回 master，需將原表格完全移除或由 V2 資料填入。
+- **解決方案**: V2 啟用時由 CSS 隱藏 `#records-tab > #records-no-data` 與 `#records-content`，V2 全校紀錄區塊改為頁籤主內容，避免空表格混淆。feature branch 獨立部署，不合併回 master，因此無需保留原表格。
+- **相關檔案**: `src/js/v2-app.js` injectV2Styles / renderRecordsTab
 
 ### V2 衝堂檢查暫失效
 
 - **日期**: 2026-04-20
-- **狀態**: 🔴 待處理
+- **狀態**: 🟢 已解決
 - **描述**: 原 `checkExistingRecord` 查 local 陣列；V2 下 local 為空，無法檢測 V2 中已存在的調代課。
-- **解決方案 (規劃)**: patchDataManager 中先 await 查 V2 `substituteRecords` 再決定是否放行。
-- **相關檔案**: `src/js/v2-app.js` patchDataManager、`src/js/app.js:2234`
+- **解決方案**: v2-app.js 建立同步 cache (`_v2RecordsCache` / `_v2PendingCache`)，由 onSnapshot 即時更新；`patchDataManager` 替換 `checkExistingRecord`，在 V2 模式下查詢 cache 而非 local 陣列；pending 也視為衝突（排除 rejected）。
+- **相關檔案**: `src/js/v2-app.js` v2CheckExistingRecord / patchDataManager
 
 ---
 
