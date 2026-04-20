@@ -1,5 +1,42 @@
 # 版本紀錄 (Changelog)
 
+## [Unreleased - v2.0.0-alpha] - feature/permission-system branch
+
+> 本段變更僅存在於 `feature/permission-system` 分支，尚未合併回 master。穩定版 `組長穩定版1.0` 不受影響。
+
+### 新增（V2 權限系統）
+- **角色制度**：`admin`（組長）與 `teacher`（教師）雙角色
+  - 組長識別依 `schools/default/config/main.initialAdminEmails` 或 `teachers/{id}.role`
+  - 教師以 Google email 綁定 `teachers/{id}.email`
+- **教師帳號管理頁籤（admin 專用）**：指派 email、切換角色、新增/刪除教師、從課表一鍵匯入教師
+- **登入綁定機制（authGuardV2）**：未綁定 email 的 Google 帳號拒絕登入並提示
+- **調課同意流程（pendingRequestService）**：教師發起 → 寫入 `pendingRequests` → 對方同意後轉為 `substituteRecords` → 或對方拒絕 / 發起人撤回
+- **待辦清單頁籤**：顯示「待我同意」「我已發起」兩區塊
+- **組長代發起模式**：組長可代任一教師直接建立紀錄，跳過同意流程
+- **完整操作日誌**：所有寫入事件（create_request / approve / reject / cancel / admin_create / edit / delete / teacher_bind_email / role_change / login_denied / permission_denied 等）都寫入 `operationLogs` 集合；組長看全部、教師只看相關
+- **全新 Firestore Schema**：`schools/default/`（與舊 `users/{uid}/data/…` 完全物理隔離）
+
+### 新增檔案
+- `src/js/v2-app.js`（V2 入口）
+- `src/js/modules/v2/schemaConstants.js`
+- `src/js/modules/v2/envDetector.js`
+- `src/js/modules/v2/firebaseV2.js`
+- `src/js/modules/v2/schoolDataService.js`
+- `src/js/modules/v2/roleService.js`
+- `src/js/modules/v2/operationLogger.js`
+- `src/js/modules/v2/teacherAccountManager.js`
+- `src/js/modules/v2/pendingRequestService.js`
+- `src/js/modules/v2/authGuardV2.js`
+- `src/js/modules/v2/README.md`
+- `docs/V2_PERMISSION_SYSTEM.md`
+
+### 相容性
+- 穩定版 master 的 `index.html`、`app.js`、Firestore 資料路徑完全未動
+- V2 僅在 URL `?v2=1` 或 hostname 含 `preview` 時啟動
+- 啟動時透過 `body.v2-active` class 顯示 V2 專屬頁籤，隱藏/取代既有行為
+
+---
+
 ## [1.9.0] - 2026-04-13
 
 ### 新增

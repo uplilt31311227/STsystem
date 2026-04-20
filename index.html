@@ -61,6 +61,9 @@
                 <button class="tab-btn" data-tab="substitute">調代課申請</button>
                 <button class="tab-btn" data-tab="records">調代課紀錄</button>
                 <button class="tab-btn" data-tab="settlement">月結算</button>
+                <button class="tab-btn v2-only" data-tab="v2-pending">待辦清單</button>
+                <button class="tab-btn v2-only v2-admin-only" data-tab="v2-teachers">教師管理</button>
+                <button class="tab-btn v2-only v2-admin-only" data-tab="v2-logs">操作日誌</button>
                 <button class="tab-btn" data-tab="settings">設定</button>
             </nav>
         </header>
@@ -813,6 +816,19 @@
                 </div>
                 </div>
             </section>
+
+            <!-- ===== V2 權限系統頁籤（僅 ?v2=1 或預覽站啟用） ===== -->
+            <section id="v2-pending-tab" class="tab-content hidden v2-only">
+                <div class="card"><div id="v2-pending-list"></div></div>
+            </section>
+
+            <section id="v2-teachers-tab" class="tab-content hidden v2-only v2-admin-only">
+                <div class="card"><div id="v2-teachers-admin"></div></div>
+            </section>
+
+            <section id="v2-logs-tab" class="tab-content hidden v2-only v2-admin-only">
+                <div class="card"><div id="v2-logs"></div></div>
+            </section>
         </main>
 
         <!-- 底部資訊 -->
@@ -827,5 +843,7 @@
 
     <!-- 載入 JavaScript 模組 -->
     <script type="module" src="src/js/app.js?v=1.9.0"></script>
+    <!-- V2 權限系統（?v2=1 或預覽站才啟用；對穩定版無影響） -->
+    <script type="module" src="src/js/v2-app.js?v=0.1.0"></script>
 </body>
 </html>
