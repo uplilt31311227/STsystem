@@ -35,6 +35,12 @@
 - V2 僅在 URL `?v2=1` 或 hostname 含 `preview` 時啟動
 - 啟動時透過 `body.v2-active` class 顯示 V2 專屬頁籤，隱藏/取代既有行為
 
+### 2026-04-20（補丁）衝堂檢查 + 紀錄頁籤清理 + gitignore
+- **V2 衝堂檢查修復**：新增同步 cache (`_v2RecordsCache` / `_v2PendingCache`)，由 onSnapshot 更新，`dm.checkExistingRecord` 在 V2 模式下改查 cache（含 pending 尚未被處理者），解決原 local 陣列空導致偵測不到 V2 既有紀錄的問題
+- **V2 下隱藏原紀錄表格**：CSS 隱藏 `#records-no-data` 與 `#records-content`，避免空表格與 V2 全校紀錄表格並存造成混淆；V2 紀錄區塊改為頁籤主內容
+- **擴充 .gitignore**：排除 uv/pyproject 產物、test-results/、test PDFs、schedule xls、臨時 analysis/extracted_text 檔
+- **冒煙測試擴充**：新增 `test/v2-patch-test.js`（驗證 patch 套用）與 `test/v2-isolation-test.js`（驗證穩定版 URL 未被污染）
+
 ### 2026-04-20（補丁）同意前不產 PDF + rejected 保留狀態
 - **同意前完全不產 PDF**：教師發起 pending 時不再產生 PDF，避免使用者誤以為紀錄已成立；同意方按「同意並產生 PDF」後才在同意方瀏覽器下載
 - **攔截 app 層 PDF 生成**：`patchPdfGenerators()` 包裹 `generateSubstitutePDF` / `generateMultiCoursePDF`，對含 `__v2NeedsApproval` 標記的 record 略過；同時吞掉 app.js 原「PDF 已生成」toast

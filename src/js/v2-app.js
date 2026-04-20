@@ -55,6 +55,10 @@ function injectV2Styles() {
     .v2-status-tag.pending  { background: #fef3c7; color: #92400e; }
     .v2-status-tag.rejected { background: #fee2e2; color: #991b1b; }
 
+    /* V2 模式下隱藏原本地「調代課紀錄」表格與查詢，避免與 V2 全校紀錄混淆 */
+    body.v2-active #records-tab > #records-no-data,
+    body.v2-active #records-tab > #records-content { display: none !important; }
+
     .v2-log-table { width: 100%; font-size: 0.85rem; border-collapse: collapse; }
     .v2-log-table th, .v2-log-table td { padding: 4px 8px; border-bottom: 1px solid #e5e7eb; text-align: left; }
     .v2-log-table tbody tr:hover { background: #f9fafb; }
@@ -299,14 +303,14 @@ async function renderLogsTab() {
 }
 
 async function renderRecordsTab() {
-    // V2 模式下，在原「調代課紀錄」頁籤下方注入 V2 全校紀錄區塊
+    // V2 模式下，原本地紀錄表格已由 CSS 隱藏，這裡是 records-tab 的主要內容。
     let host = document.getElementById('v2-records-section');
     if (!host) {
         const original = document.getElementById('records-tab');
         if (!original) return;
         host = document.createElement('div');
         host.id = 'v2-records-section';
-        host.style.marginTop = '2rem';
+        host.className = 'card compact-card';
         original.appendChild(host);
     }
     const all     = await dataSvc.listSubstituteRecords();
@@ -510,6 +514,35 @@ async function writeV2Record(record) {
 // 標示「正在處理的批次中含 pending」，讓 showToast 吞掉誤導訊息。
 let _swallowPdfSummaryToast = false;
 
+// 同步 cache：由 onSnapshot 更新，供 checkExistingRecord 同步查詢。
+let _v2RecordsCache = [];
+let _v2PendingCache = [];
+
+function conflictMatches(item, date, period, className, originalTeacher) {
+    return item
+        && item.date === date
+        && item.period === period
+        && item.className === className
+        && item.originalTeacher === originalTeacher;
+}
+
+/**
+ * V2 下的衝堂檢查：合併 substituteRecords（已成立）與 pendingRequests（尚待同意）。
+ * pending 也視為衝突：若已送出請求未處理，就不該再送第二筆同樣時段。
+ * 回傳與 dataManager.checkExistingRecord 相容的紀錄物件，或 null。
+ */
+function v2CheckExistingRecord(date, period, className, originalTeacher) {
+    const args = [date, period, className, originalTeacher];
+    const r = _v2RecordsCache.find(x => conflictMatches(x, ...args));
+    if (r) return r;
+    const p = _v2PendingCache.find(x =>
+        conflictMatches(x, ...args)
+        && (x.status || 'pending') === 'pending'   // 排除 rejected（已無效）
+    );
+    if (p) return { ...p, type: p.type || '代課', __v2Pending: true };
+    return null;
+}
+
 function patchDataManager() {
     const dm = window.app?.dataManager;
     if (!dm || dm.__v2_patched) return;
@@ -533,6 +566,16 @@ function patchDataManager() {
             return; // 不 push local
         }
         return origAdd(record);
+    };
+
+    // 衝堂檢查：V2 下改查 Firestore cache（含 substituteRecords 與 pendingRequests）。
+    const origCheck = typeof dm.checkExistingRecord === 'function'
+        ? dm.checkExistingRecord.bind(dm) : null;
+    dm.checkExistingRecord = function(date, period, className, originalTeacher) {
+        if (roleSvc.isSignedIn()) {
+            return v2CheckExistingRecord(date, period, className, originalTeacher);
+        }
+        return origCheck ? origCheck(date, period, className, originalTeacher) : null;
     };
 }
 
@@ -625,6 +668,8 @@ async function bootstrap() {
         if (!user) {
             roleSvc.clearCurrentIdentity();
             document.body.classList.remove('v2-admin');
+            _v2RecordsCache = [];
+            _v2PendingCache = [];
             return;
         }
         try {
@@ -651,12 +696,22 @@ async function bootstrap() {
                 await renderLogsTab();
             }
 
-            // 即時同步：待辦 / 紀錄 / 日誌（admin）
-            unsubs.push(await dataSvc.subscribePendingRequests(() => renderPendingTab()));
-            unsubs.push(await dataSvc.subscribeSubstituteRecords(() => renderRecordsTab()));
+            // 即時同步：更新同步 cache + 重新渲染（cache 供 checkExistingRecord 使用）
+            unsubs.push(await dataSvc.subscribePendingRequests((items) => {
+                _v2PendingCache = Array.isArray(items) ? items : [];
+                renderPendingTab();
+            }));
+            unsubs.push(await dataSvc.subscribeSubstituteRecords((items) => {
+                _v2RecordsCache = Array.isArray(items) ? items : [];
+                renderRecordsTab();
+            }));
             if (roleSvc.isAdmin()) {
                 unsubs.push(await dataSvc.subscribeOperationLogs(() => renderLogsTab()));
             }
+
+            // 首次塞 cache（onSnapshot 首次觸發前）— 讓即刻的衝堂檢查可用
+            _v2RecordsCache = await dataSvc.listSubstituteRecords();
+            _v2PendingCache = await dataSvc.listPendingRequests();
         } catch (e) {
             console.error('[v2] resolveIdentity 失敗:', e);
             alert('V2 身份綁定失敗：' + e.message);
