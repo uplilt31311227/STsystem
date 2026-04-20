@@ -16,7 +16,7 @@ import * as dataSvc             from './modules/v2/schoolDataService.js';
 import * as teacherMgr          from './modules/v2/teacherAccountManager.js';
 import * as requestSvc          from './modules/v2/pendingRequestService.js';
 import * as logger              from './modules/v2/operationLogger.js';
-import { LOG_ACTIONS, LOG_TARGET_TYPES, ROLES } from './modules/v2/schemaConstants.js';
+import { LOG_ACTIONS, LOG_TARGET_TYPES, ROLES, REQUEST_STATUS } from './modules/v2/schemaConstants.js';
 import * as authMod from './modules/authService.js';
 
 /* ===== 樣式注入 ===== */
@@ -50,6 +50,10 @@ function injectV2Styles() {
     .v2-pending-item.outgoing { border-left: 4px solid #3b82f6; }
     .v2-pending-meta { font-size: 0.85rem; color: #6b7280; margin-top: 4px; }
     .v2-pending-actions { margin-top: 0.6rem; display: flex; gap: 0.4rem; }
+    .v2-status-tag { display: inline-block; padding: 2px 8px; border-radius: 10px;
+                     font-size: 0.72rem; font-weight: 600; margin-right: 4px; }
+    .v2-status-tag.pending  { background: #fef3c7; color: #92400e; }
+    .v2-status-tag.rejected { background: #fee2e2; color: #991b1b; }
 
     .v2-log-table { width: 100%; font-size: 0.85rem; border-collapse: collapse; }
     .v2-log-table th, .v2-log-table td { padding: 4px 8px; border-bottom: 1px solid #e5e7eb; text-align: left; }
@@ -103,16 +107,39 @@ async function renderPendingTab() {
     if (!me) { host.innerHTML = '<p>尚未登入。</p>'; return; }
 
     const all = await dataSvc.listPendingRequests();
-    const incoming = all.filter(r => r.requiredApproverId === me.teacherId);
+    // 被邀請方的待辦只顯示 pending（不含已拒絕）
+    const incoming = all.filter(r =>
+        r.requiredApproverId === me.teacherId
+        && (r.status || REQUEST_STATUS.PENDING) === REQUEST_STATUS.PENDING
+    );
+    // 發起人的看板同時顯示 pending + rejected（讓發起人知道被拒絕）
     const outgoing = all.filter(r => r.initiatedBy === me.teacherId);
 
-    const render = (items, cls, emptyMsg, actionsFn) => {
+    const statusBadge = (r) => {
+        const s = r.status || REQUEST_STATUS.PENDING;
+        if (s === REQUEST_STATUS.REJECTED) return '<span class="v2-status-tag rejected">❌ 被拒絕</span>';
+        return '<span class="v2-status-tag pending">⏳ 等待中</span>';
+    };
+
+    const outgoingActions = (r) => {
+        const s = r.status || REQUEST_STATUS.PENDING;
+        if (s === REQUEST_STATUS.REJECTED) {
+            return `<button class="btn btn-secondary btn-sm v2-dismiss-btn" data-id="${r.reqId}">我知道了</button>`;
+        }
+        return `<button class="btn btn-danger btn-sm v2-cancel-btn" data-id="${r.reqId}">撤回</button>`;
+    };
+
+    const render = (items, cls, emptyMsg, actionsFn, showStatus) => {
         if (!items.length) return `<p class="muted">${emptyMsg}</p>`;
         return items.map(r => `
             <div class="v2-pending-item ${cls}" data-id="${r.reqId}">
-                <div><strong>${r.type || '調課'}</strong> ・ ${r.date || ''} 第 ${r.period || '?'} 節 ・ ${r.className || ''} ${r.subject || ''}</div>
+                <div>
+                    ${showStatus ? statusBadge(r) + ' ' : ''}
+                    <strong>${r.type || '調課'}</strong> ・ ${r.date || ''} 第 ${r.period || '?'} 節 ・ ${r.className || ''} ${r.subject || ''}
+                </div>
                 <div class="v2-pending-meta">
                     發起：${r.initiatedByName || r.initiatedBy || ''} ・ 對象：${r.requiredApproverName || r.requiredApproverId || ''} ・ ${fmtDate(r.createdAt)}
+                    ${r.status === REQUEST_STATUS.REJECTED && r.rejectNote ? `<br>拒絕原因：${r.rejectNote}` : ''}
                 </div>
                 <div class="v2-pending-actions">${actionsFn(r)}</div>
             </div>`).join('');
@@ -121,23 +148,32 @@ async function renderPendingTab() {
     host.innerHTML = `
         <div class="v2-section-header"><h3>待我同意</h3></div>
         ${render(incoming, 'incoming', '目前沒有等待您同意的請求', r =>
-            `<button class="btn btn-primary btn-sm v2-approve-btn" data-id="${r.reqId}">同意</button>
-             <button class="btn btn-secondary btn-sm v2-reject-btn" data-id="${r.reqId}">拒絕</button>`
+            `<button class="btn btn-primary btn-sm v2-approve-btn" data-id="${r.reqId}">同意並產生 PDF</button>
+             <button class="btn btn-secondary btn-sm v2-reject-btn" data-id="${r.reqId}">拒絕</button>`,
+            false
         )}
         <div class="v2-section-header" style="margin-top:2rem;"><h3>我已發起</h3></div>
-        ${render(outgoing, 'outgoing', '目前沒有您發起中的請求', r =>
-            `<button class="btn btn-danger btn-sm v2-cancel-btn" data-id="${r.reqId}">撤回</button>`
-        )}
+        ${render(outgoing, 'outgoing', '目前沒有您發起中的請求', outgoingActions, true)}
     `;
 
     host.querySelectorAll('.v2-approve-btn').forEach(btn =>
         btn.addEventListener('click', async () => {
-            try { await requestSvc.approveRequest(btn.dataset.id); await renderPendingTab(); await renderRecordsTab(); }
-            catch (e) { alert(e.message); }
+            btn.disabled = true;
+            try {
+                const saved = await requestSvc.approveRequest(btn.dataset.id);
+                // 同意方當場取得 PDF（正式成立後才產）
+                await generatePdfForRecord(saved);
+                window.app?.showToast?.(`已同意並產生 PDF`, 'success', 3500);
+                await renderPendingTab();
+                await renderRecordsTab();
+            } catch (e) {
+                alert(e.message);
+                btn.disabled = false;
+            }
         }));
     host.querySelectorAll('.v2-reject-btn').forEach(btn =>
         btn.addEventListener('click', async () => {
-            const note = prompt('拒絕原因（可留空）：') || '';
+            const note = prompt('拒絕原因（可留空，對方會看到）：') || '';
             try { await requestSvc.rejectRequest(btn.dataset.id, note); await renderPendingTab(); }
             catch (e) { alert(e.message); }
         }));
@@ -145,6 +181,11 @@ async function renderPendingTab() {
         btn.addEventListener('click', async () => {
             if (!confirm('確定撤回此調課請求？')) return;
             try { await requestSvc.cancelRequest(btn.dataset.id); await renderPendingTab(); }
+            catch (e) { alert(e.message); }
+        }));
+    host.querySelectorAll('.v2-dismiss-btn').forEach(btn =>
+        btn.addEventListener('click', async () => {
+            try { await requestSvc.dismissRejectedRequest(btn.dataset.id); await renderPendingTab(); }
             catch (e) { alert(e.message); }
         }));
 }
@@ -279,7 +320,7 @@ async function renderRecordsTab() {
         <table class="data-table data-table-compact">
             <thead><tr>
                 <th>日期</th><th>節次</th><th>班級</th><th>原教師</th><th>代/調對象</th><th>類型</th><th>發起</th>
-                ${isAdmin ? '<th>操作</th>' : ''}
+                <th>操作</th>
             </tr></thead>
             <tbody>
             ${visible.map(r => `
@@ -291,13 +332,23 @@ async function renderRecordsTab() {
                     <td>${r.substituteTeacher || r.swapTeacher || ''}</td>
                     <td>${r.type || ''}${r.initiatedByRole === 'admin' ? ' <span class="v2-role-tag admin">代發</span>' : ''}</td>
                     <td>${r.initiatedByName || ''}</td>
-                    ${isAdmin ? `<td>
-                        <button class="btn btn-danger btn-sm v2-admin-delete" data-id="${r.recordId}">刪除</button>
-                    </td>` : ''}
+                    <td>
+                        <button class="btn btn-secondary btn-sm v2-download-pdf" data-id="${r.recordId}">下載 PDF</button>
+                        ${isAdmin ? `<button class="btn btn-danger btn-sm v2-admin-delete" data-id="${r.recordId}">刪除</button>` : ''}
+                    </td>
                 </tr>`).join('')}
             </tbody>
         </table>
     `;
+
+    host.querySelectorAll('.v2-download-pdf').forEach(btn =>
+        btn.addEventListener('click', async () => {
+            const rec = visible.find(x => x.recordId === btn.dataset.id);
+            if (!rec) return;
+            btn.disabled = true;
+            await generatePdfForRecord(rec);
+            btn.disabled = false;
+        }));
 
     if (isAdmin) {
         host.querySelectorAll('.v2-admin-delete').forEach(btn =>
@@ -388,6 +439,29 @@ async function resolveApproverInfo(record) {
     };
 }
 
+/**
+ * 同步判斷該筆 record 在 V2 下是否需要他人同意（= 不應即時產 PDF）。
+ * 必須在 addSubstituteRecord 呼叫當下同步完成，以便標記 record。
+ */
+function v2NeedsApproval(record) {
+    if (!roleSvc.isSignedIn()) return false;
+    if (roleSvc.isAdmin()) return false;              // admin 代發起直接成立
+    if (record.isSelfSwap) return false;              // A→A 自我調課直接成立
+    const me = roleSvc.getCurrentIdentity();
+    const myName = me?.name;
+    if (!myName) return false;
+
+    if (record.type === '代課') {
+        const target = record.substituteTeacher;
+        return !!target && target !== myName;
+    }
+    if (record.type === '調課') {
+        const target = record.swapTeacher || record.substituteTeacher;
+        return !!target && target !== myName;
+    }
+    return false;
+}
+
 async function writeV2Record(record) {
     const me = roleSvc.getCurrentIdentity();
     if (!me) throw new Error('尚未登入');
@@ -398,6 +472,8 @@ async function writeV2Record(record) {
         ...ids,
         initiatedByName: record.originalTeacher || me.name,
     };
+    // 同步已標記於 record.__v2NeedsApproval，避免傳到 Firestore
+    delete payload.__v2NeedsApproval;
 
     if (roleSvc.isAdmin()) {
         payload.initiatedBy = ids.originalTeacherId || me.teacherId;
@@ -424,11 +500,15 @@ async function writeV2Record(record) {
     }
 
     const saved = await requestSvc.createRequest(payload);
-    setTimeout(() => {
-        alert(`已送出給 ${ids.requiredApproverName} 同意。\n對方同意後紀錄才會正式成立。`);
-    }, 100);
+    // 顯示正確的送出訊息（pending，尚未產 PDF）
+    const msg = `已送出給 ${ids.requiredApproverName} 同意。對方同意後紀錄才會正式成立並產生 PDF。`;
+    if (window.app?.showToast) window.app.showToast(msg, 'info', 5000);
+    else setTimeout(() => alert(msg), 100);
     return saved;
 }
+
+// 標示「正在處理的批次中含 pending」，讓 showToast 吞掉誤導訊息。
+let _swallowPdfSummaryToast = false;
 
 function patchDataManager() {
     const dm = window.app?.dataManager;
@@ -438,7 +518,9 @@ function patchDataManager() {
     const origAdd = dm.addSubstituteRecord.bind(dm);
     dm.addSubstituteRecord = function(record) {
         if (roleSvc.isSignedIn()) {
-            // V2 模式：改走 V2 寫入，不入 local
+            // 同步標記：pending 路徑不應產 PDF（由 patched generatePDF 檢查）
+            record.__v2NeedsApproval = v2NeedsApproval(record);
+            if (record.__v2NeedsApproval) _swallowPdfSummaryToast = true;
             writeV2Record(record)
                 .then(async () => {
                     await renderPendingTab();
@@ -452,6 +534,71 @@ function patchDataManager() {
         }
         return origAdd(record);
     };
+}
+
+/**
+ * 攔截 app 層 PDF 生成：V2 pending 請求不產 PDF，等對方同意後再由 approve 流程產生。
+ * admin 代發起 / 自我調課仍正常產生。
+ */
+function patchPdfGenerators() {
+    const app = window.app;
+    if (!app || app.__v2_pdf_patched) return;
+    app.__v2_pdf_patched = true;
+
+    if (typeof app.generateSubstitutePDF === 'function') {
+        const origSingle = app.generateSubstitutePDF.bind(app);
+        app.generateSubstitutePDF = async function(record) {
+            if (record?.__v2NeedsApproval) {
+                console.log('[V2] 此請求待同意，暫不產生 PDF');
+                return;
+            }
+            return origSingle(record);
+        };
+    }
+
+    if (typeof app.generateMultiCoursePDF === 'function') {
+        const origMulti = app.generateMultiCoursePDF.bind(app);
+        app.generateMultiCoursePDF = async function(records, courses) {
+            if (Array.isArray(records) && records.some(r => r?.__v2NeedsApproval)) {
+                console.log('[V2] 多節課請求待同意，暫不產生 PDF');
+                return;
+            }
+            return origMulti(records, courses);
+        };
+    }
+
+    // 攔截 app.js 寫死的「PDF 已生成」彙總 toast：僅當本批次確實含 pending 時才吞。
+    if (typeof app.showToast === 'function') {
+        const origToast = app.showToast.bind(app);
+        app.showToast = function(message, type, duration) {
+            if (_swallowPdfSummaryToast
+                && typeof message === 'string'
+                && /PDF 已生成|PDF 已逐一生成/.test(message)) {
+                _swallowPdfSummaryToast = false;
+                return;
+            }
+            return origToast(message, type, duration);
+        };
+    }
+}
+
+/**
+ * 同意方產生 PDF（供 approve 按鈕呼叫）。
+ */
+async function generatePdfForRecord(record) {
+    const app = window.app;
+    if (!app?.pdfGenerator) {
+        console.warn('[V2] pdfGenerator 不可用，略過 PDF 產生');
+        return;
+    }
+    const scheduleData = app.dataManager?.getScheduleData?.() || [];
+    const teachers     = app.dataManager?.getTeachers?.() || [];
+    try {
+        await app.pdfGenerator.generateSubstituteForm(record, scheduleData, teachers);
+    } catch (e) {
+        console.error('[V2] PDF 產生失敗：', e);
+        app.showToast?.('PDF 產生失敗：' + e.message, 'error', 4000);
+    }
 }
 
 /* ===== 主啟動流程 ===== */
@@ -519,6 +666,7 @@ async function bootstrap() {
     bindV2TabSwitches();
     interceptSubmitButton();
     patchDataManager();
+    patchPdfGenerators();
 
     console.log('[V2] 權限系統已啟動');
 }

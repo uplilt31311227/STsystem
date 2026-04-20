@@ -178,6 +178,13 @@ export async function createPendingRequest(req) {
     return { reqId, ...data };
 }
 
+export async function updatePendingRequest(reqId, patch) {
+    const fs  = await getV2Firestore();
+    const ref = fs.doc(fs.db, SCHEMA_PATHS.pendingDoc(reqId));
+    await fs.updateDoc(ref, { ...patch, updatedAt: new Date().toISOString() });
+    return getPendingRequest(reqId);
+}
+
 export async function deletePendingRequest(reqId) {
     const fs  = await getV2Firestore();
     const ref = fs.doc(fs.db, SCHEMA_PATHS.pendingDoc(reqId));

@@ -35,6 +35,17 @@
 - V2 僅在 URL `?v2=1` 或 hostname 含 `preview` 時啟動
 - 啟動時透過 `body.v2-active` class 顯示 V2 專屬頁籤，隱藏/取代既有行為
 
+### 2026-04-20（補丁）同意前不產 PDF + rejected 保留狀態
+- **同意前完全不產 PDF**：教師發起 pending 時不再產生 PDF，避免使用者誤以為紀錄已成立；同意方按「同意並產生 PDF」後才在同意方瀏覽器下載
+- **攔截 app 層 PDF 生成**：`patchPdfGenerators()` 包裹 `generateSubstitutePDF` / `generateMultiCoursePDF`，對含 `__v2NeedsApproval` 標記的 record 略過；同時吞掉 app.js 原「PDF 已生成」toast
+- **rejected 狀態保留**：`rejectRequest` 改 soft-reject（status=rejected），發起人在「我已發起」看到「❌ 被拒絕」與拒絕原因，按「我知道了」（`dismissRejectedRequest`）才真正刪除
+- **送出 toast 重寫**：pending 送出改顯示「已送出給 ○○ 同意。對方同意後紀錄才會正式成立並產生 PDF。」
+- **紀錄列表新增「下載 PDF」**：發起人當下不在線時，可在「全校調代課紀錄」事後補下載 PDF
+- **相關檔案**：
+  - `src/js/modules/v2/pendingRequestService.js`（soft-reject、dismissRejectedRequest）
+  - `src/js/modules/v2/schoolDataService.js`（updatePendingRequest）
+  - `src/js/v2-app.js`（v2NeedsApproval、patchPdfGenerators、generatePdfForRecord、rejected 徽章、下載 PDF 按鈕）
+
 ---
 
 ## [1.9.0] - 2026-04-13
