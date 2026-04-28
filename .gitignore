@@ -40,6 +40,7 @@ test/*.png
 test/e2e-test.js
 test/*.pdf
 test/run_tests.py
+test/e2e-screenshots/
 test-results/
 
 # Raw schedule files (source data, not committed)
