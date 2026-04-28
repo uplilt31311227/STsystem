@@ -43,10 +43,21 @@ python start-server.py
 
 ### 必要服務
 - Firebase Authentication（Google 登入）
-- Firebase Realtime Database（資料同步）
+- Firestore Database（V2 資料同步；master 仍用 Realtime DB / users path）
+- 專案：`stsystem-9d5fe`
 
 ### Firebase Config
 Firebase config 為前端公開設定（非機密），已包含在 `index.html` 中。
+
+### Firestore 安全規則
+規則檔 `firestore.rules` 為 source of truth。部署：
+```bash
+node scripts/firestore-deploy-rules.js          # 建立 ruleset 並發布 release
+node scripts/firestore-deploy-rules.js --list   # 觀察目前 release 與最近 ruleset
+node scripts/firestore-deploy-rules.js --dry    # 只建立 ruleset 不發布
+```
+認證：透過 `gcloud auth print-access-token --account=uplilt31311227@gmail.com`。
+詳細權限分層見 [`V2_PERMISSION_SYSTEM.md`](./V2_PERMISSION_SYSTEM.md)。
 
 ## 依賴
 
@@ -69,3 +80,5 @@ Firebase config 為前端公開設定（非機密），已包含在 `index.html`
 | 2026-04-09 | v1.7.0 | 教師課表手動編輯功能 |
 | 2026-04-10 | v1.8.0 | 多重調課批次、任教領域編輯、衝突檢查 |
 | 2026-04-13 | v1.9.0 | 全站緊湊布局改造、Toast 通知、備份還原 |
+| 2026-04-20 | v2.0.0-alpha | V2 權限系統初版，部署至獨立 preview repo |
+| 2026-04-29 | v2.0.0-alpha2 | Firestore 規則 v2.1（角色判讀）+ 部署/健康檢查腳本 + E2E checklist |

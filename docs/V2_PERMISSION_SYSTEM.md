@@ -59,23 +59,28 @@ tags:
 
 要追加管理員或更新學校名稱，可用 gcloud REST API 或 Firebase Console 修改。
 
-### 1b. Firestore 安全規則（✅ 已部署）
-規則檔：`firestore.rules`（保留原 master 的 users/{uid} 規則，新增 schools/{schoolId}）
+### 1b. Firestore 安全規則（v2.1 正式版，已撰寫，待部署）
+規則檔：[`firestore.rules`](../firestore.rules)（保留原 master 的 users/{uid} 規則，收緊 schools/{schoolId} 為角色判讀）
 
-```
-service cloud.firestore {
-  match /databases/{database}/documents {
-    match /schools/{schoolId}/{document=**} {
-      allow read, write: if request.auth != null;
-    }
-    match /users/{uid}/{document=**} {
-      allow read, write: if request.auth != null && request.auth.uid == uid;
-    }
-  }
-}
+關鍵變更（v2.0 寬鬆 → v2.1 正式）：
+- `isAdmin(schoolId)` helper：email 在 `config.initialAdminEmails` 白名單 OR `teachers/{tid}.role == 'admin'`
+- `myTeacherId(schoolId)` 透過 `userMappings/{uid}.linkedTeacherId` 解析當前登入者
+- `pendingRequests` 寫入要求 `initiatedBy == 自己 teacherId`；更新／刪除以 `requiredApproverId` / `initiatedBy` 為界
+- `substituteRecords` 建立要求 `approvedBy` 或 `requiredApproverId == 自己`（同意人才能成立）；編輯／刪除僅 admin
+- `teachers` 編輯／刪除僅 admin；初始管理員第一次登入可 bootstrap 自己的 admin 教師檔
+- `userMappings/{uid}` 自己讀寫自己；admin 全可
+- `operationLogs` 任何登入者可寫（稽核），不可改／刪
+
+部署：
+```bash
+node scripts/firestore-deploy-rules.js          # 建立 ruleset 並發布 release
+node scripts/firestore-deploy-rules.js --list   # 確認 release 指向新 ruleset
+node scripts/firestore-deploy-rules.js --dry    # 只建立 ruleset 不發布（rollback 預備）
 ```
 
-⚠️ 測試階段規則寬鬆。正式上線前應改為依 email 白名單與 role 判讀權限。
+回滾：用 `--list` 找回舊 rulesetName，再 `gcloud firestore ... releases:update --ruleset=...`（或執行同腳本但替換 publish 目標）。
+
+驗證：跑 [V2_E2E_CHECKLIST.md](V2_E2E_CHECKLIST.md) 的「情境 6：規則層權限攻擊測試」。
 
 ### 2. 初次登入
 - 在瀏覽器開啟 `http://localhost:8000/?v2=1`（或預覽站點 URL）
@@ -144,3 +149,17 @@ schools/default/
 ## 目前實作進度
 
 見 `docs/CHANGELOG.md` 的 `[Unreleased - v2]` 區段。
+
+## 驗證與部署輔助腳本
+
+| 腳本 | 用途 |
+|---|---|
+| `scripts/firestore-snapshot.js [which]` | 列出 V2 集合資料（teachers / pending / records / logs / mappings / config） |
+| `scripts/firestore-health-check.js [--verbose]` | 結構與必備欄位健康檢查 |
+| `scripts/firestore-deploy-rules.js [--dry/--list]` | 部署 / 觀察 firestore.rules |
+| `test/v2-smoke-test.js` | 本機 V2 啟動煙霧測試 |
+| `test/v2-isolation-test.js` | 穩定版 master 未被 V2 污染檢查 |
+| `test/v2-patch-test.js` | dataManager / pdf patch 套用驗證 |
+| `test/v2-preview-test.js` | preview Pages URL 自動啟用 V2 驗證 |
+| `test/v2-interactive-test.js` | 需手動 Google 登入的互動式 e2e（截圖至 e2e-screenshots/） |
+| `docs/V2_E2E_CHECKLIST.md` | 規則 + 流程的完整人工驗證清單 |

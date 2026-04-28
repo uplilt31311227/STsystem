@@ -20,6 +20,19 @@ tags:
 
 ## V2 權限系統（feature/permission-system）已知限制與待辦
 
+### Firestore 規則由「測試版（任何登入者皆可讀寫）」收緊為 v2.1
+
+- **日期**: 2026-04-29
+- **狀態**: 🟢 規則撰寫完成；部署需手動執行 `node scripts/firestore-deploy-rules.js`
+- **描述**: V2 alpha 初版的安全規則僅檢查 `request.auth != null`，任何登入者都能改 schools/default 任意資料。雖然 schools 路徑不影響穩定版 master，但偽造請求即可越權。
+- **解決方案**: 重寫 `firestore.rules` 加入 `isAdmin(schoolId)` / `myTeacherId` helper：
+  - admin 由 `config.initialAdminEmails` 白名單或 `teachers/{tid}.role=='admin'` 判定
+  - 教師寫 pending 強制 `initiatedBy == 自己`，更新限 `requiredApproverId`
+  - 同意人寫 substituteRecord 強制 `approvedBy/requiredApproverId == 自己`，admin 編輯／刪除
+  - userMappings 自己讀寫自己；operationLogs 任何登入者可寫不可改/刪
+- **驗證**: 走完 `docs/V2_E2E_CHECKLIST.md` 情境 6（規則層權限攻擊測試）
+- **相關檔案**: `firestore.rules`、`scripts/firestore-deploy-rules.js`、`scripts/firestore-health-check.js`、`docs/V2_E2E_CHECKLIST.md`、`docs/V2_PERMISSION_SYSTEM.md`
+
 ### V2 原「調代課紀錄」頁籤不顯示
 
 - **日期**: 2026-04-20
