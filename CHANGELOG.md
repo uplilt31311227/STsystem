@@ -47,6 +47,20 @@
 - **擴充 .gitignore**：排除 uv/pyproject 產物、test-results/、test PDFs、schedule xls、臨時 analysis/extracted_text 檔
 - **冒煙測試擴充**：新增 `test/v2-patch-test.js`（驗證 patch 套用）與 `test/v2-isolation-test.js`（驗證穩定版 URL 未被污染）
 
+### 2026-04-29（規則正式版 + 驗證工具）
+- **Firestore 安全規則 v2.1 撰寫完成**（`firestore.rules`，待部署）：
+  - 新增 helpers：`isInitialAdmin` / `myTeacherId` / `myTeacherDoc` / `isAdmin(schoolId)`
+  - `teachers`：建立／刪除僅 admin；初始管理員可 bootstrap 自己的 admin 檔
+  - `pendingRequests`：建立要求 `initiatedBy == 自己`；更新限 `requiredApproverId` 或 admin；刪除限 `initiatedBy` / `requiredApproverId` / admin
+  - `substituteRecords`：建立要求 `approvedBy` 或 `requiredApproverId == 自己`（同意人成立）或 admin；編輯／刪除僅 admin
+  - `userMappings`：自己讀寫自己；admin 全可
+  - `operationLogs`：任何登入者可寫，不可改／刪
+  - master `users/{uid}/{document=**}` 規則維持不變
+- **新增部署腳本 `scripts/firestore-deploy-rules.js`**：用 gcloud token 透過 firebaserules.googleapis.com 建 ruleset 並發布 release，支援 `--dry` / `--list`
+- **新增健康檢查腳本 `scripts/firestore-health-check.js`**：驗證 config、teachers、userMappings、pendingRequests、substituteRecords、operationLogs 結構完整性
+- **新增 `docs/V2_E2E_CHECKLIST.md`**：7 大情境（admin bootstrap / 未綁定拒絕 / 教師管理 / pending 流程 / admin 代發起 / 規則攻擊測試 / master 隔離）的人工驗證清單
+- **不合併回 master**：所有變更僅存於 `feature/permission-system` 與 preview repo
+
 ### 2026-04-20（補丁）同意前不產 PDF + rejected 保留狀態
 - **同意前完全不產 PDF**：教師發起 pending 時不再產生 PDF，避免使用者誤以為紀錄已成立；同意方按「同意並產生 PDF」後才在同意方瀏覽器下載
 - **攔截 app 層 PDF 生成**：`patchPdfGenerators()` 包裹 `generateSubstitutePDF` / `generateMultiCoursePDF`，對含 `__v2NeedsApproval` 標記的 record 略過；同時吞掉 app.js 原「PDF 已生成」toast

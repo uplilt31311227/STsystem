@@ -1,19 +1,198 @@
 rules_version = '2';
 
-// STsystem V2 權限系統 Firestore 規則（測試階段）
-// 僅要求登入（request.auth != null）；細粒度權限由應用層 roleService 把關。
-// TODO: 上線前收緊為 schools/default/ 路徑限定 + 依 email 白名單核對管理員權限。
+// STsystem V2 權限系統 Firestore 規則（正式版 v2.1）
+//
+// 設計原則：
+//   1. 兩條根路徑物理隔離
+//      - schools/{schoolId}/...  ← V2 全校共用資料
+//      - users/{uid}/...         ← 穩定版 master 個人空間（保留原規則）
+//   2. V2 角色判讀
+//      - admin：email 在 config.initialAdminEmails 白名單 OR 自己的 teacher.role == 'admin'
+//      - teacher：登入 uid 透過 userMappings 對應到 teachers 文件
+//   3. 寫入規則對齊應用層 pendingRequestService / authGuardV2 / teacherAccountManager 行為
+//
+// 部署：透過 gcloud REST API 或 Firebase Console（見 docs/V2_PERMISSION_SYSTEM.md）
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    // V2 權限系統：登入使用者可讀寫 schools/ 底下全部資料
-    match /schools/{schoolId}/{document=**} {
-      allow read, write: if request.auth != null;
+
+    // ================ 共用 helpers ================
+
+    function isSignedIn() {
+      return request.auth != null;
     }
 
-    // 穩定版 master 原本的個人空間（users/{uid}/...）：僅擁有者可讀寫
+    function userEmail() {
+      return request.auth.token.email;
+    }
+
+    function configExists(schoolId) {
+      return exists(/databases/$(database)/documents/schools/$(schoolId)/config/main);
+    }
+
+    function configDoc(schoolId) {
+      return get(/databases/$(database)/documents/schools/$(schoolId)/config/main).data;
+    }
+
+    // 登入 email 是否在初始管理員白名單
+    function isInitialAdmin(schoolId) {
+      return isSignedIn()
+        && configExists(schoolId)
+        && configDoc(schoolId).initialAdminEmails is list
+        && configDoc(schoolId).initialAdminEmails.hasAny([userEmail()]);
+    }
+
+    function mappingExists(schoolId) {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/schools/$(schoolId)/userMappings/$(request.auth.uid));
+    }
+
+    function myMapping(schoolId) {
+      return get(/databases/$(database)/documents/schools/$(schoolId)/userMappings/$(request.auth.uid)).data;
+    }
+
+    // 目前登入者對應的 teacherId（從 userMappings/uid 讀）
+    function myTeacherId(schoolId) {
+      return mappingExists(schoolId) ? myMapping(schoolId).linkedTeacherId : '';
+    }
+
+    function myTeacherExists(schoolId) {
+      return mappingExists(schoolId)
+        && exists(/databases/$(database)/documents/schools/$(schoolId)/teachers/$(myTeacherId(schoolId)));
+    }
+
+    function myTeacherDoc(schoolId) {
+      return get(/databases/$(database)/documents/schools/$(schoolId)/teachers/$(myTeacherId(schoolId))).data;
+    }
+
+    // 是否為 admin（白名單 OR teacher.role == 'admin'）
+    function isAdmin(schoolId) {
+      return isSignedIn() && (
+        isInitialAdmin(schoolId)
+        || (myTeacherExists(schoolId) && myTeacherDoc(schoolId).role == 'admin')
+      );
+    }
+
+    // ================ V2: schools/{schoolId} ================
+
+    match /schools/{schoolId} {
+      // 學校根佔位文件
+      allow read:  if isSignedIn();
+      allow write: if isAdmin(schoolId);
+
+      // ----- 設定 -----
+      match /config/{docId} {
+        // 任何登入者可讀（authGuardV2 啟動時要讀 initialAdminEmails）
+        allow read:  if isSignedIn();
+        // 僅 admin 可改學校名稱、白名單
+        allow write: if isAdmin(schoolId);
+      }
+
+      // ----- 教師 -----
+      match /teachers/{teacherId} {
+        // 任何登入者可讀（顯示全校教師、推薦代課需要）
+        allow read: if isSignedIn();
+
+        // 建立：admin；或初始管理員第一次登入時自建 admin 教師檔（bootstrap）
+        allow create: if isAdmin(schoolId)
+          || (
+            isInitialAdmin(schoolId)
+            && request.resource.data.email == userEmail()
+            && request.resource.data.role == 'admin'
+          );
+
+        // 更新：admin；或初始管理員把自己的教師檔升級為 admin（bootstrap 補登）
+        allow update: if isAdmin(schoolId)
+          || (
+            isInitialAdmin(schoolId)
+            && resource.data.email == userEmail()
+          );
+
+        allow delete: if isAdmin(schoolId);
+      }
+
+      // ----- 全校課表 -----
+      match /data/{docId} {
+        allow read:  if isSignedIn();
+        allow write: if isAdmin(schoolId);
+      }
+
+      // ----- 已成立調代課紀錄 -----
+      match /substituteRecords/{recordId} {
+        // 全員可讀（教師端由 roleService.filterRecordsForCurrent 過濾）
+        allow read: if isSignedIn();
+
+        // 建立：admin（adminCreate）；或同意人（approveRequest 寫 approvedBy=自己）
+        allow create: if isAdmin(schoolId)
+          || (
+            isSignedIn()
+            && myTeacherId(schoolId) != ''
+            && (
+              request.resource.data.approvedBy == myTeacherId(schoolId)
+              || request.resource.data.requiredApproverId == myTeacherId(schoolId)
+            )
+          );
+
+        // 編輯／刪除：僅 admin
+        allow update, delete: if isAdmin(schoolId);
+      }
+
+      // ----- 待同意請求 -----
+      match /pendingRequests/{reqId} {
+        allow read: if isSignedIn();
+
+        // 建立：admin；或發起人本人（initiatedBy == 自己 teacherId）
+        allow create: if isAdmin(schoolId)
+          || (
+            isSignedIn()
+            && myTeacherId(schoolId) != ''
+            && request.resource.data.initiatedBy == myTeacherId(schoolId)
+          );
+
+        // 更新：admin；或被邀請人（rejectRequest 把 status 改為 rejected）
+        allow update: if isAdmin(schoolId)
+          || (
+            isSignedIn()
+            && myTeacherId(schoolId) != ''
+            && resource.data.requiredApproverId == myTeacherId(schoolId)
+          );
+
+        // 刪除：admin；發起人（cancel / dismissRejected）；被邀請人（approve 後清掉）
+        allow delete: if isAdmin(schoolId)
+          || (
+            isSignedIn()
+            && myTeacherId(schoolId) != ''
+            && (
+              resource.data.initiatedBy == myTeacherId(schoolId)
+              || resource.data.requiredApproverId == myTeacherId(schoolId)
+            )
+          );
+      }
+
+      // ----- 操作日誌（稽核軌跡，不可改／刪） -----
+      match /operationLogs/{logId} {
+        allow read:   if isSignedIn();
+        allow create: if isSignedIn();
+        allow update, delete: if false;
+      }
+
+      // ----- Google uid → teacherId 映射 -----
+      match /userMappings/{uid} {
+        // 自己的 mapping 自己讀；admin 可讀全部
+        allow read: if isSignedIn() && (request.auth.uid == uid || isAdmin(schoolId));
+
+        // 自己 upsert 自己（authGuardV2 登入完成寫入）；admin 可代寫
+        allow create, update: if isAdmin(schoolId)
+          || (isSignedIn() && request.auth.uid == uid);
+
+        allow delete: if isAdmin(schoolId);
+      }
+    }
+
+    // ================ 穩定版 master：保留原規則 ================
+    // users/{uid}/... 由本人讀寫，與 V2 完全分離
     match /users/{uid}/{document=**} {
-      allow read, write: if request.auth != null && request.auth.uid == uid;
+      allow read, write: if isSignedIn() && request.auth.uid == uid;
     }
   }
 }
