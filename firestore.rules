@@ -170,10 +170,16 @@ service cloud.firestore {
       }
 
       // ----- 操作日誌（稽核軌跡，不可改／刪） -----
+      // 安全性：限定欄位白名單、action 長度、timestamp 必須等於伺服器時間
       match /operationLogs/{logId} {
-        allow read:   if isSignedIn();
-        allow create: if isSignedIn();
-        allow update, delete: if false;
+        allow read:   if isAdmin(schoolId);
+        allow create: if isSignedIn()
+          && request.resource.data.keys().hasOnly(['action', 'actor', 'timestamp', 'target', 'detail'])
+          && request.resource.data.action is string
+          && request.resource.data.action.size() < 100
+          && request.resource.data.timestamp == request.time
+          && (request.resource.data.detail is map || request.resource.data.detail == null);
+        allow update, delete: if false;  // 稽核軌跡不可改／刪
       }
 
       // ----- Google uid → teacherId 映射 -----

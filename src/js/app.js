@@ -8,6 +8,15 @@
  * 4. 月結算與時數統計
  */
 
+/**
+ * XSS 防護：對使用者可控字串進行 HTML 跳脫
+ * 用於所有 innerHTML 內插使用者輸入的欄位（教師名、課程名、班級名等）
+ *
+ * @param {*} s - 任意值，轉為字串後跳脫
+ * @returns {string} 安全的 HTML 跳脫字串
+ */
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
 // 匯入模組
 import { DataManager } from './modules/dataManager.js';
 import { ScheduleParser } from './modules/scheduleParser.js';
@@ -978,7 +987,7 @@ class SubstituteTeacherApp {
         html += `<div class="schedule-conflict-header">⚠ 課表資料有 ${conflicts.length} 筆衝突（同一教師同時段多班級）</div>`;
         html += `<ul class="schedule-conflict-list">`;
         conflicts.forEach(c => {
-            html += `<li><strong>${c.teacher}</strong> ${c.weekday} ${c.period}：${c.classes.join('、')}</li>`;
+            html += `<li><strong>${esc(c.teacher)}</strong> ${esc(c.weekday)} ${esc(c.period)}：${c.classes.map(esc).join('、')}</li>`;
         });
         html += `</ul>`;
         html += `<div class="schedule-conflict-hint">此為原始課表資料問題，可能為合班授課或資料重複，不影響系統使用。</div>`;
@@ -1001,12 +1010,12 @@ class SubstituteTeacherApp {
             const row = document.createElement('tr');
             row.innerHTML = `
                 <td>
-                    <input type="text" value="${teacher.name}"
+                    <input type="text" value="${esc(teacher.name)}"
                            data-index="${index}" data-field="name"
                            class="teacher-input">
                 </td>
                 <td>
-                    <input type="text" value="${teacher.domains.join(', ')}"
+                    <input type="text" value="${esc(teacher.domains.join(', '))}"
                            data-index="${index}" data-field="domains"
                            class="teacher-input"
                            title="多個領域請用逗號分隔，例如：國文, 英語"
@@ -1016,7 +1025,7 @@ class SubstituteTeacherApp {
                     <select data-index="${index}" data-field="homeroomClass" class="teacher-input">
                         <option value="">非導師</option>
                         ${this.dataManager.getClasses().map(c =>
-                `<option value="${c}" ${teacher.homeroomClass === c ? 'selected' : ''}>${c}</option>`
+                `<option value="${esc(c)}" ${teacher.homeroomClass === c ? 'selected' : ''}>${esc(c)}</option>`
             ).join('')}
                     </select>
                 </td>
@@ -1573,6 +1582,10 @@ class SubstituteTeacherApp {
 
         // 顯示調課預覽（包含日期）
         const originalCourse = this.selectedCourse;
+        // esc() 防 XSS：weekday/period/teacher/subject/className 均為使用者輸入資料
+        const swapSummary = originalCourse.originalTeacher === swapCourse.teacher
+            ? `✓ ${esc(originalCourse.className)} 的 ${esc(originalCourse.originalTeacher)} 自行調動課程時段，科目互換`
+            : `✓ ${esc(originalCourse.className)} 的 ${esc(originalCourse.originalTeacher)} 與 ${esc(swapCourse.teacher)} 互換課程時段，雙方總時數不變`;
         swapPreviewContent.innerHTML = `
             <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
                 <tr style="background: #e0f2fe;">
@@ -1584,23 +1597,21 @@ class SubstituteTeacherApp {
                 </tr>
                 <tr style="background: #dbeafe;">
                     <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center; font-weight: bold;">A</td>
-                    <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center;">${formattedDateA}<br>${originalCourse.weekday} ${originalCourse.period}</td>
-                    <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center;">${originalCourse.originalTeacher}（${originalCourse.subject}）</td>
+                    <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center;">${esc(formattedDateA)}<br>${esc(originalCourse.weekday)} ${esc(originalCourse.period)}</td>
+                    <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center;">${esc(originalCourse.originalTeacher)}（${esc(originalCourse.subject)}）</td>
                     <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center;">→</td>
-                    <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center; color: #0369a1; font-weight: bold;">${swapCourse.teacher}（${swapCourse.subject}）</td>
+                    <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center; color: #0369a1; font-weight: bold;">${esc(swapCourse.teacher)}（${esc(swapCourse.subject)}）</td>
                 </tr>
                 <tr style="background: #fef3c7;">
                     <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center; font-weight: bold;">B</td>
-                    <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center;">${formattedDateB}<br>${swapCourse.weekday} ${swapCourse.period}</td>
-                    <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center;">${swapCourse.teacher}（${swapCourse.subject}）</td>
+                    <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center;">${esc(formattedDateB)}<br>${esc(swapCourse.weekday)} ${esc(swapCourse.period)}</td>
+                    <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center;">${esc(swapCourse.teacher)}（${esc(swapCourse.subject)}）</td>
                     <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center;">→</td>
-                    <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center; color: #b45309; font-weight: bold;">${originalCourse.originalTeacher}（${originalCourse.subject}）</td>
+                    <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center; color: #b45309; font-weight: bold;">${esc(originalCourse.originalTeacher)}（${esc(originalCourse.subject)}）</td>
                 </tr>
             </table>
             <p style="margin: 10px 0 0 0; color: #0369a1; font-size: 13px;">
-                ${originalCourse.originalTeacher === swapCourse.teacher
-                    ? `✓ ${originalCourse.className} 的 ${originalCourse.originalTeacher} 自行調動課程時段，科目互換`
-                    : `✓ ${originalCourse.className} 的 ${originalCourse.originalTeacher} 與 ${swapCourse.teacher} 互換課程時段，雙方總時數不變`}
+                ${swapSummary}
             </p>
         `;
         swapPreview.classList.remove('hidden');
@@ -1680,16 +1691,17 @@ class SubstituteTeacherApp {
                         isSelectable ? 'selectable' : 'disabled'
                     ].filter(Boolean).join(' ');
 
+                    // esc() 防 XSS：className/subject/domain/dayName/period 為使用者課表資料
                     html += `
-                        <div class="${cellClasses}"
-                             data-weekday="${dayName}"
-                             data-period="${period}"
-                             data-class="${course.className}"
-                             data-subject="${course.subject}"
-                             data-domain="${course.domain}"
+                        <div class="${esc(cellClasses)}"
+                             data-weekday="${esc(dayName)}"
+                             data-period="${esc(period)}"
+                             data-class="${esc(course.className)}"
+                             data-subject="${esc(course.subject)}"
+                             data-domain="${esc(course.domain)}"
                              data-selectable="${isSelectable}">
-                            <span class="course-class">${course.className}</span>
-                            <span class="course-subject">${course.subject}</span>
+                            <span class="course-class">${esc(course.className)}</span>
+                            <span class="course-subject">${esc(course.subject)}</span>
                         </div>
                     `;
                 } else {
@@ -1853,10 +1865,10 @@ class SubstituteTeacherApp {
         container.classList.remove('hidden');
         countElement.textContent = this.selectedCourses.length;
 
-        // 生成課程標籤
+        // 生成課程標籤（esc() 防 XSS：period/className/subject 為使用者輸入資料）
         chipsContainer.innerHTML = this.selectedCourses.map((course, index) => `
             <div class="course-chip" data-index="${index}">
-                <span class="chip-text">${course.period} ${course.className} ${course.subject}</span>
+                <span class="chip-text">${esc(course.period)} ${esc(course.className)} ${esc(course.subject)}</span>
                 <span class="chip-remove" data-index="${index}" title="移除">×</span>
             </div>
         `).join('');
@@ -1935,9 +1947,9 @@ class SubstituteTeacherApp {
 
         tbody.innerHTML = sortedCourses.map(course => `
             <tr>
-                <td>${course.weekday} ${course.period}</td>
-                <td>${course.className}</td>
-                <td>${course.subject}</td>
+                <td>${esc(course.weekday)} ${esc(course.period)}</td>
+                <td>${esc(course.className)}</td>
+                <td>${esc(course.subject)}</td>
             </tr>
         `).join('');
     }
@@ -2045,9 +2057,9 @@ class SubstituteTeacherApp {
                     <div>
                         <div style="font-weight: bold; margin-bottom: 4px;">此課堂已有調代課紀錄</div>
                         <div style="font-size: 13px; color: #7f1d1d;">
-                            ${existingRecord.date} ${existingRecord.weekday} ${existingRecord.period}<br>
-                            ${existingRecord.className} ${existingRecord.subject}（${recordType}）<br>
-                            ${substituteInfo}
+                            ${esc(existingRecord.date)} ${esc(existingRecord.weekday)} ${esc(existingRecord.period)}<br>
+                            ${esc(existingRecord.className)} ${esc(existingRecord.subject)}（${esc(recordType)}）<br>
+                            ${esc(substituteInfo)}
                         </div>
                         <div style="font-size: 12px; margin-top: 8px; color: #b91c1c;">
                             如需重新安排，請先至「調代課紀錄」刪除該筆紀錄
@@ -2120,10 +2132,10 @@ class SubstituteTeacherApp {
 
             item.innerHTML = `
                 <div class="recommendation-info">
-                    <span class="recommendation-name">${rec.teacher.name}</span>
-                    <span class="recommendation-reason">${rec.reasonText}</span>
+                    <span class="recommendation-name">${esc(rec.teacher.name)}</span>
+                    <span class="recommendation-reason">${esc(rec.reasonText)}</span>
                 </div>
-                <span class="recommendation-badge ${badgeClass}">${badgeText}</span>
+                <span class="recommendation-badge ${esc(badgeClass)}">${esc(badgeText)}</span>
             `;
 
             item.addEventListener('click', () => this.onSubstituteSelected(index, recommendations));
@@ -2896,20 +2908,21 @@ class SubstituteTeacherApp {
         let html = '';
         this.swapBatch.forEach((swap, idx) => {
             const isSelf = swap.isSelfSwap;
+            // esc() 防 XSS：swap 各欄位為使用者課表/輸入資料
             html += `
                 <div class="batch-swap-item">
                     <div class="batch-swap-number">${idx + 1}</div>
                     <div class="batch-swap-detail">
                         <div class="batch-swap-slot-a">
                             <span class="batch-slot-label">A</span>
-                            ${swap.dateA} ${swap.weekdayA} ${swap.periodA}
-                            <strong>${swap.classNameA}</strong> ${swap.subjectA}（${swap.teacherA}）
+                            ${esc(swap.dateA)} ${esc(swap.weekdayA)} ${esc(swap.periodA)}
+                            <strong>${esc(swap.classNameA)}</strong> ${esc(swap.subjectA)}（${esc(swap.teacherA)}）
                         </div>
                         <div class="batch-swap-arrow">↕</div>
                         <div class="batch-swap-slot-b">
                             <span class="batch-slot-label batch-slot-label-b">B</span>
-                            ${swap.dateB} ${swap.weekdayB} ${swap.periodB}
-                            <strong>${swap.classNameB}</strong> ${swap.subjectB}（${swap.teacherB}）
+                            ${esc(swap.dateB)} ${esc(swap.weekdayB)} ${esc(swap.periodB)}
+                            <strong>${esc(swap.classNameB)}</strong> ${esc(swap.subjectB)}（${esc(swap.teacherB)}）
                         </div>
                         ${isSelf ? '<div class="batch-swap-badge">教師自行調課</div>' : ''}
                     </div>
@@ -3057,7 +3070,7 @@ class SubstituteTeacherApp {
                 </div>
                 <ul class="batch-conflict-list">`;
             conflicts.forEach(c => {
-                html += `<li><strong>${c.teacher}</strong> 在 ${c.date}（${c.weekday}）${c.period} 同時有 ${c.classes.join('、')} 的課</li>`;
+                html += `<li><strong>${esc(c.teacher)}</strong> 在 ${esc(c.date)}（${esc(c.weekday)}）${esc(c.period)} 同時有 ${c.classes.map(esc).join('、')} 的課</li>`;
             });
             html += '</ul>';
             conflictContent.innerHTML = html;
@@ -3181,19 +3194,20 @@ class SubstituteTeacherApp {
 
         tbody.innerHTML = records.map(record => {
             const leaveTypeName = record.leaveTypeName || this.getLeaveTypeName(record.leaveType) || '-';
+            // esc() 防 XSS：record 欄位均為使用者/Firestore 可控資料
             return `
                 <tr>
-                    <td>${record.date}</td>
-                    <td>${record.className}</td>
-                    <td>${record.weekday} ${record.period}</td>
-                    <td>${record.subject}</td>
-                    <td>${record.originalTeacher}</td>
-                    <td>${record.isSelfSwap ? '自行調課' : record.substituteTeacher}</td>
-                    <td>${leaveTypeName}</td>
+                    <td>${esc(record.date)}</td>
+                    <td>${esc(record.className)}</td>
+                    <td>${esc(record.weekday)} ${esc(record.period)}</td>
+                    <td>${esc(record.subject)}</td>
+                    <td>${esc(record.originalTeacher)}</td>
+                    <td>${record.isSelfSwap ? '自行調課' : esc(record.substituteTeacher)}</td>
+                    <td>${esc(leaveTypeName)}</td>
                     <td>
-                        <button class="btn btn-sm btn-more detail-btn" data-id="${record.id}">更多</button>
-                        <button class="btn btn-sm btn-primary reprint-btn" data-id="${record.id}">重印</button>
-                        <button class="btn btn-sm btn-danger delete-record-btn" data-id="${record.id}">刪除</button>
+                        <button class="btn btn-sm btn-more detail-btn" data-id="${esc(record.id)}">更多</button>
+                        <button class="btn btn-sm btn-primary reprint-btn" data-id="${esc(record.id)}">重印</button>
+                        <button class="btn btn-sm btn-danger delete-record-btn" data-id="${esc(record.id)}">刪除</button>
                     </td>
                 </tr>
             `;
@@ -3244,38 +3258,39 @@ class SubstituteTeacherApp {
         const typeText = record.type === 'swap' ? '調課' : '代課';
         const leaveTypeName = record.leaveTypeName || this.getLeaveTypeName(record.leaveType) || '-';
 
+        // esc() 防 XSS：record 所有文字欄位均為使用者/Firestore 可控資料
         let detailHtml = `
             <div class="detail-row">
                 <span class="detail-label">異動類型</span>
-                <span class="detail-value">${typeText}</span>
+                <span class="detail-value">${esc(typeText)}</span>
             </div>
             <div class="detail-row">
                 <span class="detail-label">日期</span>
-                <span class="detail-value">${record.date} ${record.weekday}</span>
+                <span class="detail-value">${esc(record.date)} ${esc(record.weekday)}</span>
             </div>
             <div class="detail-row">
                 <span class="detail-label">節次</span>
-                <span class="detail-value">${record.period}</span>
+                <span class="detail-value">${esc(record.period)}</span>
             </div>
             <div class="detail-row">
                 <span class="detail-label">班級</span>
-                <span class="detail-value">${record.className}</span>
+                <span class="detail-value">${esc(record.className)}</span>
             </div>
             <div class="detail-row">
                 <span class="detail-label">科目</span>
-                <span class="detail-value">${record.subject}</span>
+                <span class="detail-value">${esc(record.subject)}</span>
             </div>
             <div class="detail-row">
                 <span class="detail-label">原任課教師</span>
-                <span class="detail-value">${record.originalTeacher}</span>
+                <span class="detail-value">${esc(record.originalTeacher)}</span>
             </div>
             <div class="detail-row">
                 <span class="detail-label">${record.isSelfSwap ? '調課方式' : '代課教師'}</span>
-                <span class="detail-value">${record.isSelfSwap ? '教師自行調課' : record.substituteTeacher}</span>
+                <span class="detail-value">${record.isSelfSwap ? '教師自行調課' : esc(record.substituteTeacher)}</span>
             </div>
             <div class="detail-row">
                 <span class="detail-label">假別</span>
-                <span class="detail-value">${leaveTypeName}</span>
+                <span class="detail-value">${esc(leaveTypeName)}</span>
             </div>
         `;
 
@@ -3286,8 +3301,8 @@ class SubstituteTeacherApp {
                               record.leaveType === '長期病假' ? '核准文號' : '喪假證明';
             detailHtml += `
                 <div class="detail-row">
-                    <span class="detail-label">${labelText}</span>
-                    <span class="detail-value">${record.docNumber}</span>
+                    <span class="detail-label">${esc(labelText)}</span>
+                    <span class="detail-value">${esc(record.docNumber)}</span>
                 </div>
             `;
         }
@@ -3297,7 +3312,7 @@ class SubstituteTeacherApp {
             detailHtml += `
                 <div class="detail-row">
                     <span class="detail-label">事由</span>
-                    <span class="detail-value">${record.reason}</span>
+                    <span class="detail-value">${esc(record.reason)}</span>
                 </div>
             `;
         }
@@ -3308,7 +3323,7 @@ class SubstituteTeacherApp {
             detailHtml += `
                 <div class="detail-row">
                     <span class="detail-label">建立時間</span>
-                    <span class="detail-value">${createdDate}</span>
+                    <span class="detail-value">${esc(createdDate)}</span>
                 </div>
             `;
         }
@@ -3399,19 +3414,19 @@ class SubstituteTeacherApp {
             const hasChange = row.substituteHours > 0 || row.substitutedHours > 0;
             const rowClass = hasChange ? 'settlement-row-changed' : '';
 
-            // 代課增加顯示
+            // 數值欄位直接顯示（已為 number，無 XSS 風險）
             const substituteDisplay = row.substituteHours > 0
                 ? `<span class="settlement-increase">+${row.substituteHours}</span>`
                 : `<span class="settlement-no-change">-</span>`;
 
-            // 被代課減少顯示
             const substitutedDisplay = row.substitutedHours > 0
                 ? `<span class="settlement-decrease">-${row.substitutedHours}</span>`
                 : `<span class="settlement-no-change">-</span>`;
 
+            // esc() 防 XSS：teacherName 為使用者輸入資料
             return `
-                <tr class="${rowClass}" data-has-change="${hasChange}">
-                    <td>${row.teacherName}</td>
+                <tr class="${esc(rowClass)}" data-has-change="${hasChange}">
+                    <td>${esc(row.teacherName)}</td>
                     <td>${row.originalHours}</td>
                     <td>${substituteDisplay}</td>
                     <td>${substitutedDisplay}</td>
@@ -4252,7 +4267,7 @@ class SubstituteTeacherApp {
                 <span class="status-text">錯誤</span>
             </div>
             <div class="status-details">
-                <p>${message}</p>
+                <p>${esc(message)}</p>
             </div>
         `;
     }
@@ -4269,9 +4284,10 @@ class SubstituteTeacherApp {
 
         const toast = document.createElement('div');
         toast.className = `toast toast-${type}`;
+        // esc() 防 XSS：message 可能含使用者輸入資料（教師名、課程名等）
         toast.innerHTML = `
             <span class="toast-icon">${icons[type] || icons.info}</span>
-            <span class="toast-body">${message.replace(/\n/g, '<br>')}</span>
+            <span class="toast-body">${esc(message).replace(/\n/g, '<br>')}</span>
             <button class="toast-close">&times;</button>
         `;
 
