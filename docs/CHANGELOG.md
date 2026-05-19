@@ -7,6 +7,22 @@ tags:
 
 # 版本紀錄
 
+---
+
+## [2026-05-19]
+
+### 安全
+- `app.js` 新增 `esc()` HTML 跳脫 helper，全面包裹所有 `innerHTML` 模板字面量，防止 XSS
+- `firestore.rules` `operationLogs` 集合新增 schema 欄位驗證，限制寫入欄位與資料型別
+- `firestore.rules` `operationLogs` 讀取限制為 admin-only，禁止一般使用者查閱操作日誌
+- `firestore.rules` `operationLogs` 禁止 update / delete 操作，確保日誌不可竄改
+
+### 變更
+- `pyproject.toml` pandas 版本約束從 `>=3.0.1` 修正為 `>=2.2,<3`（3.x 尚無正式 release）
+- **需執行 `firebase deploy --only firestore:rules`** 以套用新 Firestore 安全規則
+
+---
+
 > 完整版本紀錄請參考專案根目錄的 [CHANGELOG.md](../../CHANGELOG.md)
 
 ## 版本摘要
