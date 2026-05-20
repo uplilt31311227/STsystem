@@ -35,17 +35,23 @@ export class RecommendationEngine {
      * @param {Array} scheduleData - 全部課表資料
      * @param {Array} teachers - 全部教師資料
      * @param {string} date - 調課日期（用於判斷星期）
+     * @param {Array} [substituteRecords=[]] - 已存在的調代課紀錄（用於排除已被指派的教師）
      * @returns {Array} 推薦教師列表（已排序）
      */
-    getRecommendations(targetCourse, scheduleData, teachers, date) {
+    getRecommendations(targetCourse, scheduleData, teachers, date, substituteRecords = []) {
         const { weekday, period, className, domain, originalTeacher } = targetCourse;
 
         console.log('===== 智慧推薦引擎開始運算 =====');
         console.log('目標課程:', { weekday, period, className, domain, originalTeacher });
 
-        // 步驟 1：找出該時段有課的教師
-        const busyTeachers = this.getBusyTeachers(scheduleData, weekday, period);
-        console.log('有課教師:', busyTeachers);
+        // 步驟 1：找出該時段有原課的教師
+        const scheduledBusy = this.getBusyTeachers(scheduleData, weekday, period);
+
+        // 步驟 1.5：找出該日該節已被指派為代課/調課的教師（避免重複指派造成衝堂）
+        const assignedBusy = this.getAssignedTeachers(substituteRecords, date, period);
+
+        const busyTeachers = [...new Set([...scheduledBusy, ...assignedBusy])];
+        console.log('有課教師（含已派代/調課）:', busyTeachers);
 
         // 步驟 2：篩選出空堂教師（排除有課者和原任課教師）
         const freeTeachers = teachers.filter(teacher =>
@@ -87,6 +93,31 @@ export class RecommendationEngine {
         return scheduleData
             .filter(course => course.weekday === weekday && course.period === period)
             .map(course => course.teacher);
+    }
+
+    /**
+     * 取得指定日期+節次已被指派為代課/調課的教師清單
+     *
+     * Why: 推薦引擎原本只看原始課表的空堂狀態，
+     * 但同一日同一節該教師可能已被指派代別人的課（substituteRecord 已存在），
+     * 再次推薦會造成同時段重複指派、實際代課當下兩堂課衝堂。
+     *
+     * @param {Array} substituteRecords - 已存在的調代課紀錄
+     * @param {string} date - 目標日期 (YYYY-MM-DD)
+     * @param {string} period - 目標節次
+     * @returns {Array} 該日該節已被指派的教師姓名清單（substituteTeacher / swapTeacher）
+     */
+    getAssignedTeachers(substituteRecords, date, period) {
+        if (!substituteRecords || substituteRecords.length === 0 || !date || !period) {
+            return [];
+        }
+        const names = [];
+        substituteRecords.forEach(r => {
+            if (r.date !== date || r.period !== period) return;
+            if (r.substituteTeacher) names.push(r.substituteTeacher);
+            if (r.swapTeacher) names.push(r.swapTeacher);
+        });
+        return [...new Set(names)];
     }
 
     /**

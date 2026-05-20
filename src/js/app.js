@@ -951,46 +951,77 @@ class SubstituteTeacherApp {
     }
 
     /**
-     * 檢查課表資料中的衝突（同一教師在同一星期+節次有多個不同班級）
+     * 檢查課表資料中的衝突：
+     *  (A) 同一教師在同一星期+節次有多個不同班級（合班授課或資料重複）
+     *  (B) 同一班級在同一星期+節次有多個不同教師（課表錯誤或協同教學）
      */
     checkScheduleConflicts(scheduleData) {
         const conflictsEl = document.getElementById('schedule-conflicts');
         if (!conflictsEl) return;
 
-        // 以 teacher+weekday+period 為 key，收集班級
-        const slotMap = {};
+        // (A) 同教師同時段多班級
+        const teacherSlotMap = {};
+        // (B) 同班級同時段多教師
+        const classSlotMap = {};
         scheduleData.forEach(entry => {
-            const key = `${entry.teacher}|${entry.weekday}|${entry.period}`;
-            if (!slotMap[key]) slotMap[key] = [];
-            slotMap[key].push(entry.className);
+            const tKey = `${entry.teacher}|${entry.weekday}|${entry.period}`;
+            if (!teacherSlotMap[tKey]) teacherSlotMap[tKey] = [];
+            teacherSlotMap[tKey].push(entry.className);
+
+            const cKey = `${entry.className}|${entry.weekday}|${entry.period}`;
+            if (!classSlotMap[cKey]) classSlotMap[cKey] = [];
+            classSlotMap[cKey].push(entry.teacher);
         });
 
-        // 找出衝突（同一時段有 2 個以上不同班級）
-        const conflicts = [];
-        for (const [key, classes] of Object.entries(slotMap)) {
+        const teacherConflicts = [];
+        for (const [key, classes] of Object.entries(teacherSlotMap)) {
             const uniqueClasses = [...new Set(classes)];
             if (uniqueClasses.length > 1) {
                 const [teacher, weekday, period] = key.split('|');
-                conflicts.push({ teacher, weekday, period, classes: uniqueClasses });
+                teacherConflicts.push({ teacher, weekday, period, classes: uniqueClasses });
             }
         }
 
-        if (conflicts.length === 0) {
+        const classConflicts = [];
+        for (const [key, teachers] of Object.entries(classSlotMap)) {
+            const uniqueTeachers = [...new Set(teachers)];
+            if (uniqueTeachers.length > 1) {
+                const [className, weekday, period] = key.split('|');
+                classConflicts.push({ className, weekday, period, teachers: uniqueTeachers });
+            }
+        }
+
+        const totalConflicts = teacherConflicts.length + classConflicts.length;
+        if (totalConflicts === 0) {
             conflictsEl.classList.add('hidden');
             return;
         }
 
-        // 按教師名排序
-        conflicts.sort((a, b) => a.teacher.localeCompare(b.teacher, 'zh-TW'));
+        teacherConflicts.sort((a, b) => a.teacher.localeCompare(b.teacher, 'zh-TW'));
+        classConflicts.sort((a, b) => a.className.localeCompare(b.className, 'zh-TW'));
 
         let html = `<div class="schedule-conflict-warning">`;
-        html += `<div class="schedule-conflict-header">⚠ 課表資料有 ${conflicts.length} 筆衝突（同一教師同時段多班級）</div>`;
-        html += `<ul class="schedule-conflict-list">`;
-        conflicts.forEach(c => {
-            html += `<li><strong>${esc(c.teacher)}</strong> ${esc(c.weekday)} ${esc(c.period)}：${c.classes.map(esc).join('、')}</li>`;
-        });
-        html += `</ul>`;
-        html += `<div class="schedule-conflict-hint">此為原始課表資料問題，可能為合班授課或資料重複，不影響系統使用。</div>`;
+        html += `<div class="schedule-conflict-header">⚠ 課表資料有 ${totalConflicts} 筆衝突</div>`;
+
+        if (teacherConflicts.length > 0) {
+            html += `<div class="schedule-conflict-section"><strong>同一教師同時段多班級（${teacherConflicts.length} 筆）：</strong></div>`;
+            html += `<ul class="schedule-conflict-list">`;
+            teacherConflicts.forEach(c => {
+                html += `<li><strong>${esc(c.teacher)}</strong> ${esc(c.weekday)} ${esc(c.period)}：${c.classes.map(esc).join('、')}</li>`;
+            });
+            html += `</ul>`;
+        }
+
+        if (classConflicts.length > 0) {
+            html += `<div class="schedule-conflict-section"><strong>同一班級同時段多教師（${classConflicts.length} 筆）：</strong></div>`;
+            html += `<ul class="schedule-conflict-list">`;
+            classConflicts.forEach(c => {
+                html += `<li><strong>${esc(c.className)}</strong> ${esc(c.weekday)} ${esc(c.period)}：${c.teachers.map(esc).join('、')}</li>`;
+            });
+            html += `</ul>`;
+        }
+
+        html += `<div class="schedule-conflict-hint">此為原始課表資料問題，可能為合班授課、協同教學或資料重複，不影響系統使用；如非預期請回課表來源檢查。</div>`;
         html += `</div>`;
 
         conflictsEl.innerHTML = html;
@@ -2088,6 +2119,7 @@ class SubstituteTeacherApp {
         const date = document.getElementById('sub-date').value;
         const scheduleData = this.dataManager.getScheduleData();
         const teachers = this.dataManager.getTeachers();
+        const substituteRecords = this.dataManager.getSubstituteRecords();
 
         console.log('===== 代課教師推薦 =====');
         console.log('選擇的課程:', this.selectedCourse);
@@ -2100,7 +2132,8 @@ class SubstituteTeacherApp {
             this.selectedCourse,
             scheduleData,
             teachers,
-            date
+            date,
+            substituteRecords
         );
 
         console.log('推薦結果筆數:', recommendations.length);
@@ -2449,6 +2482,21 @@ class SubstituteTeacherApp {
             multiCourseTotal: sortedCourses.length
         }));
 
+        // 多節代課送出前批次衝堂攔截
+        for (const record of records) {
+            const conflict = this.dataManager.checkSubstituteTeacherConflict(
+                record.substituteTeacher,
+                record.date,
+                record.weekday,
+                record.period,
+                record.id
+            );
+            if (conflict) {
+                this.showToast(`代課指派衝突：${conflict}，請重新選擇代課教師`, 'error', 6000);
+                return;
+            }
+        }
+
         // 儲存所有紀錄
         for (const record of records) {
             this.dataManager.addSubstituteRecord(record);
@@ -2470,6 +2518,21 @@ class SubstituteTeacherApp {
      * 儲存並處理紀錄
      */
     async saveAndProcessRecord(record) {
+        // 代課送出前衝堂攔截（調課由 checkSwapConflict 處理）
+        if (record.type === '代課' && record.substituteTeacher) {
+            const conflict = this.dataManager.checkSubstituteTeacherConflict(
+                record.substituteTeacher,
+                record.date,
+                record.weekday,
+                record.period,
+                record.id
+            );
+            if (conflict) {
+                this.showToast(`代課指派衝突：${conflict}，請重新選擇代課教師`, 'error', 6000);
+                return;
+            }
+        }
+
         // 儲存紀錄到本地（會自動同步到 Firebase 雲端）
         this.dataManager.addSubstituteRecord(record);
         this.saveDataToStorage();

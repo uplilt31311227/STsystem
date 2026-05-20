@@ -382,6 +382,54 @@ export class DataManager {
     }
 
     /**
+     * 送出代課紀錄前的衝堂攔截：檢查代課老師當日當節是否會衝堂
+     *
+     * 檢查兩件事：
+     *   (1) 該老師當天當節原本是否有自己的課（scheduleData）
+     *   (2) 該老師當日當節是否已被指派為其他代課/調課（substituteRecords）
+     *
+     * Why: 推薦引擎已過濾掉這兩種情況，但使用者可能透過手動操作
+     *      （刪除舊紀錄、切換異動類型、邊緣 case）跳過推薦邏輯，
+     *      送出前再攔一次當作 fail-safe。
+     *
+     * @param {string} substituteTeacherName - 代課老師姓名
+     * @param {string} date - 代課日期 (YYYY-MM-DD)
+     * @param {string} weekday - 代課星期（用於查 scheduleData）
+     * @param {string} period - 代課節次
+     * @param {string} [excludeRecordId] - 排除這個 record id（編輯既有紀錄時用）
+     * @returns {string|null} 衝突原因，null 表示無衝突
+     */
+    checkSubstituteTeacherConflict(substituteTeacherName, date, weekday, period, excludeRecordId = null) {
+        if (!substituteTeacherName || !date || !period) return null;
+
+        // (1) 該老師當天當節是否有自己的原課
+        if (weekday) {
+            const ownClass = this.scheduleData.find(c =>
+                c.teacher === substituteTeacherName &&
+                c.weekday === weekday &&
+                c.period === period
+            );
+            if (ownClass) {
+                return `${substituteTeacherName}在${weekday}${period}原本有${ownClass.className}的課`;
+            }
+        }
+
+        // (2) 該老師同日同節是否已被指派為其他代課/調課
+        const assigned = this.substituteRecords.find(r =>
+            r.id !== excludeRecordId &&
+            r.date === date &&
+            r.period === period &&
+            (r.substituteTeacher === substituteTeacherName || r.swapTeacher === substituteTeacherName)
+        );
+        if (assigned) {
+            const role = assigned.swapTeacher === substituteTeacherName ? '調課' : '代課';
+            return `${substituteTeacherName}在${date} ${period}已被指派為${assigned.className}的${role}`;
+        }
+
+        return null;
+    }
+
+    /**
      * 計算教師每週基本授課時數
      * @param {string} teacherName - 教師姓名
      * @returns {number} 每週授課節數
