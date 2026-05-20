@@ -1,5 +1,41 @@
 # 版本紀錄 (Changelog)
 
+## [1.11.0] - 2026-05-20
+
+### 新增（週彙整通知單）
+- **「列印本週彙整」按鈕**：在「調代課紀錄」頁籤 toolbar 新增按鈕，選週後一鍵產生整週綜合 PDF
+- **週彙整 PDF 結構**：1 份 PDF、按收件方分頁
+  - 第 1 頁起：教學組全校彙整（A4 直向，25 筆/頁自動切 chunk，含合計與簽核欄）
+  - 接續：每班 1 頁（A4 橫向，左側班級週課表標異動 + 右側精簡列表）
+  - 接續：每位原任課老師 1 頁（A4 橫向）
+  - 接續：每位代課老師 1 頁（A4 橫向）
+  - 教學組裁切後分送各方，紙張耗用由 4N 聯降為「教學組數 + 班數 + 原任課人數 + 代課人數」頁
+- **保留既有單筆/多節 PDF 流程**：本功能為新增第二條出口，不取代既有按筆 PDF
+- **PDF 模組新增方法**（`src/js/modules/pdfGenerator.js`）：
+  - `generateWeeklySummaryForm(weekStart, records, scheduleData, teachers)` — 入口
+  - `getWeekStart` / `getWeekRange` — 週範圍計算（週一到週五）
+  - `getClassWeekSchedule` — 班級週課表（仿 `getTeacherWeekSchedule`）
+  - `groupRecordsByRecipient` — 紀錄依教學組/班級/原任課老師/代課老師分群
+  - `createAdminWeeklyPageHTML` / `createClassWeeklyPageHTML` / `createTeacherWeeklyPageHTML` — 三類頁面渲染
+  - `createWeeklySummaryTableHTML` — 共用列表表格（支援 multiCourseGroupId 列分組視覺）
+  - 格式 helper：`formatDate` / `formatMonthDay` / `formatWeekLabel`
+- **PDF 模組修改**：`createMultiCourseScheduleTableHTML` 加 optional `options.colorFn` 與 `options.cellRenderer`，向後相容；代課用深灰、調課用淺灰
+- **app.js 新增**：`openWeeklySummaryModal` / `closeWeeklySummaryModal` / `updateWeeklySummaryPreview` / `generateWeeklySummaryPDF`
+  - 即時顯示「本週共 X 筆 → 預估 Y 頁」
+  - 0 筆時禁用確認鈕
+- **index.html 新增**：`#print-weekly-summary-btn` 按鈕 + `#weekly-summary-modal`（input[type=date] + 預覽 + 確認/取消）
+
+### 邊界處理
+- 跨週 batch：以 `record.date` 各自歸週
+- 調課 swapDate 在另一週：以時段 A 歸週；列表「類型」欄加註「↔ MM/DD 第 X 節」
+- 自行調課 `isSelfSwap`：列表與週課表標示「(自調)」
+- 多節 `isMultiCourse`：逐節展開，同 `multiCourseGroupId` 用淡灰背景視覺分組
+
+### 檔名格式
+- `調代課週彙整_YYYYMMDD-YYYYMMDD.pdf`（週一-週五的起迄）
+
+---
+
 ## [1.10.0] - 2026-05-20
 
 ### 新增（衝突檢查強化）
