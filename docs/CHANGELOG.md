@@ -1,11 +1,25 @@
 ---
 created: 2026-03-12
-updated: 2026-04-20
+updated: 2026-05-20
 tags:
   - changelog
 ---
 
 # 版本紀錄
+
+---
+
+## [2026-05-20]
+
+### 安全
+- `app.js` 補上 11 處遺漏的 `esc()` 包裹（5/19 宣稱「全面包裹」但仍有殘留）：
+  - `slotAInfo` 時段 A 摘要（日期 / 星期節次 / 班級 / 原任課教師）
+  - `swapDateHint` 調課對應星期提示
+  - `swapCourseSelect` option 與「沒有課程可調換」訊息
+  - 可互換 / 衝堂課程 option label 與 hint 訊息
+  - 「請選擇 XX 的日期」提示、「日期不符」警告、「日期已選定」確認
+  - `class-datalist` 班級 option value
+- `firebaseConfig.js` 補上註解：API key 為 client-side 公開 key，需在 Cloud Console 設定 HTTP referrer 限制（`uplilt31311227.github.io/*`）為主要防濫用機制
 
 ---
 

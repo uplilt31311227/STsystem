@@ -8,6 +8,8 @@
  */
 
 // Firebase 內建設定
+// 注意: 此 API key 是 client-side 公開 key (Google 設計)，須在 Cloud Console > APIs & Services > Credentials
+// 設定 HTTP referrer 限制為 uplilt31311227.github.io/* 以防止濫用。
 const FIREBASE_CONFIG = {
     apiKey: "AIzaSyCJ1WL_aScocarEvQdEgCYtsdqM8AUdGlw",
     authDomain: "stsystem-9d5fe.firebaseapp.com",

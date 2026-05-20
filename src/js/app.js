@@ -1339,10 +1339,10 @@ class SubstituteTeacherApp {
         }) : '';
 
         slotAInfo.innerHTML = `
-            <span style="color: #1d4ed8;">📅 ${formattedDateA}</span>
-            <span style="margin-left: 10px;">${this.selectedCourse.weekday} ${this.selectedCourse.period}</span>
-            <span style="margin-left: 10px;">${this.selectedCourse.className}</span>
-            <span style="margin-left: 10px;">${this.selectedCourse.originalTeacher}（${this.selectedCourse.subject}）</span>
+            <span style="color: #1d4ed8;">📅 ${esc(formattedDateA)}</span>
+            <span style="margin-left: 10px;">${esc(this.selectedCourse.weekday)} ${esc(this.selectedCourse.period)}</span>
+            <span style="margin-left: 10px;">${esc(this.selectedCourse.className)}</span>
+            <span style="margin-left: 10px;">${esc(this.selectedCourse.originalTeacher)}（${esc(this.selectedCourse.subject)}）</span>
         `;
     }
 
@@ -1366,7 +1366,7 @@ class SubstituteTeacherApp {
 
         // 取得時段 B 日期對應的星期
         const swapWeekday = this.getDateWeekday(date);
-        swapDateHint.innerHTML = `<span style="color: #b45309;">→ ${swapWeekday}</span>`;
+        swapDateHint.innerHTML = `<span style="color: #b45309;">→ ${esc(swapWeekday)}</span>`;
 
         // 更新課程列表（根據時段 B 的星期過濾）
         this.updateSwapCourseListForDate(swapWeekday);
@@ -1404,7 +1404,7 @@ class SubstituteTeacherApp {
         );
 
         if (sameclassCourses.length === 0) {
-            swapCourseSelect.innerHTML = `<option value="">${swapWeekday} ${targetClass} 沒有課程可調換</option>`;
+            swapCourseSelect.innerHTML = `<option value="">${esc(swapWeekday)} ${esc(targetClass)} 沒有課程可調換</option>`;
             swapHint.innerHTML = `調課說明：選擇同班級的另一時段課程進行互換`;
             swapHint.style.color = '#6b7280';
             return;
@@ -1434,7 +1434,7 @@ class SubstituteTeacherApp {
         // 可調換的課程
         eligibleCourses.forEach(course => {
             const courseId = `${course.weekday}_${course.period}_${course.teacher}`;
-            options += `<option value="${courseId}">${course.period} - ${course.teacher}（${course.subject}）</option>`;
+            options += `<option value="${esc(courseId)}">${esc(course.period)} - ${esc(course.teacher)}（${esc(course.subject)}）</option>`;
         });
 
         // 衝堂的課程
@@ -1448,7 +1448,7 @@ class SubstituteTeacherApp {
             // 單次調課模式：禁用衝堂課程
             conflictCourses.forEach(({ course, conflict }) => {
                 const courseId = `${course.weekday}_${course.period}_${course.teacher}`;
-                options += `<option value="${courseId}" disabled style="color: #999;">⚠ ${course.period} - ${course.teacher}（${course.subject}）- ${conflict}</option>`;
+                options += `<option value="${esc(courseId)}" disabled style="color: #999;">⚠ ${esc(course.period)} - ${esc(course.teacher)}（${esc(course.subject)}）- ${esc(conflict)}</option>`;
             });
         }
 
@@ -1457,15 +1457,15 @@ class SubstituteTeacherApp {
         if (this.isMultiSwapMode) {
             // 多重調課模式：所有課程皆可選取，衝突整批檢查
             const totalCourses = eligibleCourses.length + conflictCourses.length;
-            swapHint.innerHTML = `✓ ${swapWeekday} ${targetClass} 有 ${totalCourses} 堂可互換課程` +
+            swapHint.innerHTML = `✓ ${esc(swapWeekday)} ${esc(targetClass)} 有 ${totalCourses} 堂可互換課程` +
                 (conflictCourses.length > 0 ? `<br><span style="color: #b45309;">⚠ ${conflictCourses.length} 堂有潛在衝堂，加入批次後將於送出時整批檢查</span>` : '');
             swapHint.style.color = '#16a34a';
         } else if (eligibleCourses.length > 0) {
-            swapHint.innerHTML = `✓ ${swapWeekday} ${targetClass} 有 ${eligibleCourses.length} 堂可互換課程` +
+            swapHint.innerHTML = `✓ ${esc(swapWeekday)} ${esc(targetClass)} 有 ${eligibleCourses.length} 堂可互換課程` +
                 (conflictCourses.length > 0 ? `<br><span style="color: #dc2626;">⚠ ${conflictCourses.length} 堂因衝堂無法調換</span>` : '');
             swapHint.style.color = '#16a34a';
         } else {
-            swapHint.innerHTML = `<span style="color: #dc2626;">⚠ ${swapWeekday} ${targetClass} 的課程皆因衝堂無法調換</span>`;
+            swapHint.innerHTML = `<span style="color: #dc2626;">⚠ ${esc(swapWeekday)} ${esc(targetClass)} 的課程皆因衝堂無法調換</span>`;
         }
     }
 
@@ -2628,7 +2628,7 @@ class SubstituteTeacherApp {
         hint.style.padding = '8px';
         hint.style.borderRadius = '4px';
         hint.style.marginTop = '8px';
-        hint.innerHTML = `📅 請選擇「<strong>${weekday}</strong>」的日期`;
+        hint.innerHTML = `📅 請選擇「<strong>${esc(weekday)}</strong>」的日期`;
         hint.style.display = 'block';
     }
 
@@ -2667,7 +2667,7 @@ class SubstituteTeacherApp {
             const formattedDate = new Date(date).toLocaleDateString('zh-TW', {
                 year: 'numeric', month: 'long', day: 'numeric'
             });
-            warning.innerHTML = `⚠️ 日期不符：${formattedDate} 是「${dateWeekday}」，但課程是「${courseWeekday}」的課`;
+            warning.innerHTML = `⚠️ 日期不符：${esc(formattedDate)} 是「${esc(dateWeekday)}」，但課程是「${esc(courseWeekday)}」的課`;
             warning.style.display = 'block';
             if (hint) hint.style.display = 'none';
         } else {
@@ -2677,7 +2677,7 @@ class SubstituteTeacherApp {
                 const formattedDate = new Date(date).toLocaleDateString('zh-TW', {
                     year: 'numeric', month: 'long', day: 'numeric'
                 });
-                hint.innerHTML = `✅ ${formattedDate}（${courseWeekday}）`;
+                hint.innerHTML = `✅ ${esc(formattedDate)}（${esc(courseWeekday)}）`;
                 hint.style.color = '#16a34a';
                 hint.style.backgroundColor = '#f0fdf4';
             }
@@ -3889,7 +3889,7 @@ class SubstituteTeacherApp {
         // 填充班級 datalist
         const datalist = document.getElementById('class-datalist');
         const classes = this.dataManager.getClasses();
-        datalist.innerHTML = classes.map(c => `<option value="${c}">`).join('');
+        datalist.innerHTML = classes.map(c => `<option value="${esc(c)}">`).join('');
 
         // 填充表單
         if (isEdit && courseData) {
