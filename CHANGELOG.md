@@ -74,6 +74,23 @@
 
 ---
 
+## [1.10.0] - 2026-05-20
+
+> 由 master 合併進來。本段在 v1.10.0 釋出時對 master 與 feature/permission-system 同步生效；feature 分支的 `checkScheduleConflicts` 已合併 esc() XSS 跳脫包裹。
+
+### 新增（衝突檢查強化）
+- **代課教師重複指派檢查**：推薦引擎 `RecommendationEngine.getRecommendations` 新增 `substituteRecords` 參數；同日同節已被指派為代課/調課的教師會被視為 busy，不再出現在推薦清單，避免同時段重複指派造成實際衝堂
+  - 新增 helper `getAssignedTeachers(substituteRecords, date, period)`
+  - `app.js` `showRecommendations` 傳入 `this.dataManager.getSubstituteRecords()`
+- **送出代課紀錄前的衝堂攔截（fail-safe）**：`saveAndProcessRecord` 與 `confirmMultiCourseSubstitute` 在寫入紀錄前最後檢查，攔截推薦邏輯被繞過的邊緣情況
+  - 新增 `DataManager.checkSubstituteTeacherConflict(name, date, weekday, period, excludeId)`
+  - 同時檢查（1）該老師原課表是否有自己的課；（2）同日同節是否已被指派為其他代課/調課
+  - 衝突時顯示 toast 並阻擋送出
+- **課表上傳：班級衝突檢查**：`checkScheduleConflicts` 除既有「同教師同時段多班級」外，新增「同班級同時段多教師」檢查（協同教學/課表錯誤可能來源），分區塊呈現；feature 分支版本額外保留 esc() 跳脫包裹
+- **CSS**：新增 `.schedule-conflict-section` 樣式（衝突清單分區用）
+
+---
+
 ## [1.9.0] - 2026-04-13
 
 ### 新增
