@@ -340,15 +340,41 @@ export class PDFGenerator {
 
     /**
      * 建立多節課週課表 HTML（顯示多個異動課程）
+     * @param {Array} schedule - 教師週課表（目前未使用，保留參數位置）
+     * @param {Array} records - 該週要標示的異動紀錄
+     * @param {string} teacherName - 教師姓名
+     * @param {Object} [options] - 可選設定
+     * @param {Function} [options.colorFn] - (record) => 背景色字串；預設代課深灰、調課淺灰
+     * @param {Function} [options.cellRenderer] - (record) => innerHTML 字串；預設「日期/班級科目/原X代Y」
+     * @param {Function} [options.normalCellRenderer] - (weekday, period, schedule) => innerHTML 字串；非變動格的內容（預設空白）
+     * @param {number} [options.cellPadY=8] - 變動格垂直 padding (px)
+     * @param {number} [options.emptyHeight=45] - 非變動格高度 (px)
+     * @param {number} [options.fontSize=13] - 表格節次/表頭字體
      */
-    createMultiCourseScheduleTableHTML(schedule, records, teacherName) {
+    createMultiCourseScheduleTableHTML(schedule, records, teacherName, options = {}) {
         let tableRows = '';
 
         // 灰階顏色定義
-        const slotABg = '#c0c0c0';  // 時段 A 網底（深灰）
+        const defaultColorFn = (r) => (r.type === '調課' ? '#e0e0e0' : '#c0c0c0');
+        const colorFn = options.colorFn || defaultColorFn;
+        const cellPadY = options.cellPadY != null ? options.cellPadY : 8;
+        const emptyHeight = options.emptyHeight != null ? options.emptyHeight : 45;
+        const fontSize = options.fontSize != null ? options.fontSize : 13;
+        const cellRenderer = options.cellRenderer || ((r) => {
+            const dateObj = new Date(r.date);
+            const dateStr = `${dateObj.getMonth() + 1}/${dateObj.getDate()}`;
+            const classInfo = `${r.className} ${r.subject || ''}`;
+            const teacherInfo = r.type === '調課'
+                ? (r.isSelfSwap
+                    ? `${r.originalTeacher}<br>(自調)`
+                    : `原 ${r.originalTeacher}<br>調 ${r.swapTeacher || r.substituteTeacher || ''}`)
+                : `原 ${r.originalTeacher}<br>代 ${r.substituteTeacher || ''}`;
+            return `${dateStr}<br>${classInfo}<br>${teacherInfo}`;
+        });
+        const normalCellRenderer = options.normalCellRenderer || null;
 
         this.periods.forEach((period, index) => {
-            let row = `<td style="padding: 10px 6px; border: 1px solid #333; font-weight: bold; text-align: center; width: 60px; background: #f5f5f5; font-size: 13px;">${period}</td>`;
+            let row = `<td style="padding: ${cellPadY}px 4px; border: 1px solid #333; font-weight: bold; text-align: center; width: 60px; background: #f5f5f5; font-size: ${fontSize}px;">${period}</td>`;
 
             this.weekdays.forEach(weekday => {
                 // 檢查是否為本次異動的節次
@@ -358,23 +384,31 @@ export class PDFGenerator {
                 );
 
                 if (matchedRecord) {
-                    // 異動的課程：深灰色網底標記
-                    const dateObj = new Date(matchedRecord.date);
-                    const dateStr = `${dateObj.getMonth() + 1}/${dateObj.getDate()}`;
-                    const classInfo = `${matchedRecord.className} ${matchedRecord.subject}`;
-                    const teacherInfo = `原 ${matchedRecord.originalTeacher}<br>代 ${matchedRecord.substituteTeacher}`;
+                    const bg = colorFn(matchedRecord);
                     row += `<td style="
-                        padding: 8px 4px;
+                        padding: ${cellPadY}px 4px;
                         border: 1px solid #333;
                         text-align: center;
-                        background: ${slotABg};
+                        background: ${bg};
                         font-weight: bold;
-                        font-size: 12px;
-                        line-height: 1.4;
-                    ">${dateStr}<br>${classInfo}<br>${teacherInfo}</td>`;
+                        font-size: ${fontSize - 1}px;
+                        line-height: 1.3;
+                    ">${cellRenderer(matchedRecord)}</td>`;
+                } else if (normalCellRenderer) {
+                    // 非變動格：顯示原任課資訊
+                    const normalContent = normalCellRenderer(weekday, period, schedule);
+                    row += `<td style="
+                        padding: ${cellPadY}px 4px;
+                        border: 1px solid #333;
+                        text-align: center;
+                        height: ${emptyHeight}px;
+                        font-size: ${fontSize - 2}px;
+                        line-height: 1.3;
+                        color: #444;
+                    ">${normalContent}</td>`;
                 } else {
                     // 其他節次留空
-                    row += `<td style="padding: 10px 6px; border: 1px solid #333; height: 45px;"></td>`;
+                    row += `<td style="padding: ${cellPadY}px 4px; border: 1px solid #333; height: ${emptyHeight}px;"></td>`;
                 }
             });
 
@@ -385,12 +419,12 @@ export class PDFGenerator {
                 tableRows += `
                 <tr>
                     <td colspan="6" style="
-                        padding: 6px;
+                        padding: 4px;
                         border: 1px solid #333;
                         text-align: center;
                         background: #888;
                         color: white;
-                        font-size: 12px;
+                        font-size: ${fontSize - 1}px;
                         font-weight: bold;
                         letter-spacing: 3px;
                     ">午 休</td>
@@ -399,15 +433,15 @@ export class PDFGenerator {
         });
 
         return `
-        <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+        <table style="width: 100%; border-collapse: collapse; font-size: ${fontSize}px;">
             <thead>
                 <tr style="background: #333; color: white;">
-                    <th style="padding: 10px 6px; border: 1px solid #333; width: 60px; font-size: 14px;">節次</th>
-                    <th style="padding: 10px 6px; border: 1px solid #333; font-size: 14px;">週一</th>
-                    <th style="padding: 10px 6px; border: 1px solid #333; font-size: 14px;">週二</th>
-                    <th style="padding: 10px 6px; border: 1px solid #333; font-size: 14px;">週三</th>
-                    <th style="padding: 10px 6px; border: 1px solid #333; font-size: 14px;">週四</th>
-                    <th style="padding: 10px 6px; border: 1px solid #333; font-size: 14px;">週五</th>
+                    <th style="padding: ${cellPadY}px 4px; border: 1px solid #333; width: 60px; font-size: ${fontSize}px;">節次</th>
+                    <th style="padding: ${cellPadY}px 4px; border: 1px solid #333; font-size: ${fontSize}px;">週一</th>
+                    <th style="padding: ${cellPadY}px 4px; border: 1px solid #333; font-size: ${fontSize}px;">週二</th>
+                    <th style="padding: ${cellPadY}px 4px; border: 1px solid #333; font-size: ${fontSize}px;">週三</th>
+                    <th style="padding: ${cellPadY}px 4px; border: 1px solid #333; font-size: ${fontSize}px;">週四</th>
+                    <th style="padding: ${cellPadY}px 4px; border: 1px solid #333; font-size: ${fontSize}px;">週五</th>
                 </tr>
             </thead>
             <tbody>
@@ -751,6 +785,547 @@ export class PDFGenerator {
      */
     getTeacherWeekSchedule(scheduleData, teacherName) {
         return scheduleData.filter(course => course.teacher === teacherName);
+    }
+
+    // ============================================================
+    // 週彙整通知單（v1.11.0）
+    // ============================================================
+
+    /**
+     * 取得指定日期所在週的週一日期字串 (YYYY-MM-DD)
+     */
+    getWeekStart(dateStr) {
+        const d = new Date(dateStr + 'T00:00:00');
+        const day = d.getDay(); // 0=Sun, 1=Mon, ..., 6=Sat
+        const diff = day === 0 ? -6 : 1 - day;
+        d.setDate(d.getDate() + diff);
+        return this.formatDate(d);
+    }
+
+    /**
+     * 取得教學週範圍（週一到週五）
+     */
+    getWeekRange(weekStart) {
+        const start = new Date(weekStart + 'T00:00:00');
+        const dates = [];
+        for (let i = 0; i < 5; i++) {
+            const d = new Date(start);
+            d.setDate(d.getDate() + i);
+            dates.push(this.formatDate(d));
+        }
+        return { start: weekStart, end: dates[4], dates };
+    }
+
+    /**
+     * 取得班級週課表
+     */
+    getClassWeekSchedule(scheduleData, className) {
+        return scheduleData.filter(course => course.className === className);
+    }
+
+    /** YYYY-MM-DD */
+    formatDate(d) {
+        const yyyy = d.getFullYear();
+        const mm = String(d.getMonth() + 1).padStart(2, '0');
+        const dd = String(d.getDate()).padStart(2, '0');
+        return `${yyyy}-${mm}-${dd}`;
+    }
+
+    /** M/D */
+    formatMonthDay(dateStr) {
+        const d = new Date(dateStr + 'T00:00:00');
+        return `${d.getMonth() + 1}/${d.getDate()}`;
+    }
+
+    /** YYYY/MM/DD(週X) */
+    formatWeekLabel(dateStr) {
+        const d = new Date(dateStr + 'T00:00:00');
+        const wd = ['日', '一', '二', '三', '四', '五', '六'][d.getDay()];
+        return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}(${wd})`;
+    }
+
+    /**
+     * 將紀錄依收件方分群（為週彙整 PDF 準備）
+     * @returns {{adminAll: Array, byClass: Object, byOriginalTeacher: Object, bySubstituteTeacher: Object}}
+     */
+    groupRecordsByRecipient(records) {
+        const cmp = (a, b) => {
+            if (a.date !== b.date) return a.date.localeCompare(b.date);
+            const pa = this.periods.indexOf(this.normalizePeriod(a.period));
+            const pb = this.periods.indexOf(this.normalizePeriod(b.period));
+            return pa - pb;
+        };
+
+        const adminAll = [...records].sort(cmp);
+        const byClass = {};
+        const byOriginalTeacher = {};
+        const bySubstituteTeacher = {};
+
+        records.forEach(r => {
+            if (r.className) {
+                (byClass[r.className] = byClass[r.className] || []).push(r);
+            }
+            if (r.originalTeacher) {
+                (byOriginalTeacher[r.originalTeacher] = byOriginalTeacher[r.originalTeacher] || []).push(r);
+            }
+            const subT = r.swapTeacher || r.substituteTeacher;
+            if (subT && subT !== r.originalTeacher) {
+                (bySubstituteTeacher[subT] = bySubstituteTeacher[subT] || []).push(r);
+            }
+        });
+
+        Object.values(byClass).forEach(arr => arr.sort(cmp));
+        Object.values(byOriginalTeacher).forEach(arr => arr.sort(cmp));
+        Object.values(bySubstituteTeacher).forEach(arr => arr.sort(cmp));
+
+        return { adminAll, byClass, byOriginalTeacher, bySubstituteTeacher };
+    }
+
+    /**
+     * 渲染通用週彙整列表表格
+     * @param {Array} records
+     * @param {Array<{label, getValue, width?, align?}>} columns
+     * @param {Object} [options]
+     * @param {string} [options.rowGroupKey] - 同 key 值的相鄰列用淡灰背景區隔（用於多節 group）
+     * @param {number} [options.fontSize=11]
+     * @param {string} [options.headerBg='#333']
+     */
+    createWeeklySummaryTableHTML(records, columns, options = {}) {
+        const { rowGroupKey = null, fontSize = 11, headerBg = '#333' } = options;
+
+        const head = columns.map(c =>
+            `<th style="padding: 6px 4px; border: 1px solid #333; font-size: ${fontSize}px; ${c.width ? 'width: ' + c.width + ';' : ''}">${c.label}</th>`
+        ).join('');
+
+        if (records.length === 0) {
+            return `<table style="width:100%; border-collapse:collapse;">
+                <thead><tr style="background:${headerBg}; color:white;">${head}</tr></thead>
+                <tbody><tr><td colspan="${columns.length}" style="padding:18px; border:1px solid #333; text-align:center; color:#666;">本週無相關紀錄</td></tr></tbody>
+            </table>`;
+        }
+
+        let prevGroup = null;
+        let stripeOn = false;
+        const rows = records.map((r, i) => {
+            if (rowGroupKey && r[rowGroupKey]) {
+                if (r[rowGroupKey] !== prevGroup) {
+                    stripeOn = !stripeOn;
+                    prevGroup = r[rowGroupKey];
+                }
+            } else {
+                prevGroup = null;
+            }
+            const bg = (rowGroupKey && r[rowGroupKey] && stripeOn) ? '#f0f0f0' : '#ffffff';
+            const cells = columns.map(c =>
+                `<td style="padding: 5px 4px; border: 1px solid #333; font-size: ${fontSize}px; text-align: ${c.align || 'left'};">${c.getValue(r, i)}</td>`
+            ).join('');
+            return `<tr style="background: ${bg};">${cells}</tr>`;
+        }).join('');
+
+        return `
+        <table style="width: 100%; border-collapse: collapse;">
+            <thead><tr style="background: ${headerBg}; color: white;">${head}</tr></thead>
+            <tbody>${rows}</tbody>
+        </table>`;
+    }
+
+    /**
+     * 教學組頁 HTML（A4 直向、長列表，超過 CHUNK 列分頁）
+     */
+    createAdminWeeklyPageHTML(records, weekRange, pageIdx = 0, totalChunks = 1) {
+        const printDate = new Date().toLocaleDateString('zh-TW');
+        const weekStartLabel = this.formatWeekLabel(weekRange.start);
+        const weekEndLabel = this.formatWeekLabel(weekRange.end);
+        const pageInfo = totalChunks > 1 ? ` (頁 ${pageIdx + 1}/${totalChunks})` : '';
+
+        const offset = pageIdx * 25;
+        const columns = [
+            { label: '序', width: '5%', align: 'center', getValue: (r, i) => offset + i + 1 },
+            { label: '日期', width: '10%', align: 'center', getValue: (r) => this.formatMonthDay(r.date) },
+            { label: '週', width: '5%', align: 'center', getValue: (r) => (r.weekday || '').replace('週', '') },
+            { label: '節', width: '8%', align: 'center', getValue: (r) => r.period || '' },
+            { label: '班級', width: '9%', align: 'center', getValue: (r) => r.className || '' },
+            { label: '科目', width: '10%', align: 'center', getValue: (r) => r.subject || '' },
+            { label: '原任課', width: '10%', align: 'center', getValue: (r) => r.originalTeacher || '' },
+            { label: '代/調入', width: '12%', align: 'center', getValue: (r) => {
+                if (r.type === '調課') return r.isSelfSwap ? '(自調)' : (r.swapTeacher || r.substituteTeacher || '');
+                return r.substituteTeacher || '';
+            }},
+            { label: '類型', width: '8%', align: 'center', getValue: (r) => r.type || '代課' },
+            { label: '假別/字號', width: '23%', align: 'left', getValue: (r) => {
+                const lt = r.leaveTypeName || r.leaveType || '-';
+                const dn = r.docNumber ? ` / ${r.docNumber}` : '';
+                return lt + dn;
+            }},
+        ];
+
+        const tableHTML = this.createWeeklySummaryTableHTML(records, columns, {
+            rowGroupKey: 'multiCourseGroupId',
+            fontSize: 11,
+        });
+
+        // 合計（只在最後一頁顯示）
+        const isLastPage = pageIdx === totalChunks - 1;
+        let footerHTML = '';
+        if (isLastPage) {
+            // 取得完整 records 用於合計（這裡只能算當前 chunk，因此合計需上層傳；簡化為當頁 + 提示）
+            footerHTML = `
+            <div style="margin-top: 12px; padding: 8px 12px; background: #f5f5f5; border: 1px solid #333; font-size: 12px;">
+                <strong>本頁 ${records.length} 筆</strong>（含代課 ${records.filter(r => r.type !== '調課').length} 筆 / 調課 ${records.filter(r => r.type === '調課').length} 筆）
+            </div>
+            <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-top: 14px; font-size: 11px;">
+                <div>列印日期：${printDate}</div>
+                <div style="display: flex; gap: 24px;">
+                    <div>教學組長：__________</div>
+                    <div>教務主任：__________</div>
+                    <div>校長：__________</div>
+                </div>
+            </div>`;
+        }
+
+        return `
+        <div style="
+            width: 794px;
+            min-height: 1123px;
+            padding: 30px 25px;
+            font-family: 'Microsoft JhengHei', 'Noto Sans TC', sans-serif;
+            background: white;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+        ">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+                <div style="font-size: 14px; font-weight: bold;">${this.schoolName}</div>
+                <div style="font-size: 20px; font-weight: bold; letter-spacing: 4px;">週彙整調代課通知單</div>
+                <div style="background: #555; color: white; padding: 6px 12px; font-size: 12px; font-weight: bold; border-radius: 4px;">教學組聯</div>
+            </div>
+
+            <div style="margin-bottom: 10px; font-size: 13px;">
+                <strong>週次：</strong>${weekStartLabel} ~ ${weekEndLabel}${pageInfo}
+            </div>
+
+            <div style="flex: 1;">
+                ${tableHTML}
+            </div>
+
+            ${footerHTML}
+        </div>
+        `;
+    }
+
+    /**
+     * 老師週彙整半頁 HTML（含外層 div、寬 1123、高 ~387，可兩個拼成 A4 橫向一頁）
+     * @param {string} role - 'original' | 'substitute'
+     */
+    createTeacherWeeklySheetHTML(records, teacherName, role, weekRange, scheduleData) {
+        const isOriginal = role === 'original';
+        const sheetLabel = isOriginal ? `${teacherName}老師 原任課聯` : `${teacherName}老師 代課聯`;
+        const teacherSchedule = this.getTeacherWeekSchedule(scheduleData, teacherName);
+        const printDate = new Date().toLocaleDateString('zh-TW');
+
+        const scheduleTableHTML = this.createMultiCourseScheduleTableHTML(teacherSchedule, records, teacherName, {
+            cellPadY: 3,
+            emptyHeight: 24,
+            fontSize: 10,
+            // 變動格：同時顯示原任課與代/調入兩位老師
+            cellRenderer: (r) => {
+                const dateObj = new Date(r.date);
+                const dateStr = `${dateObj.getMonth() + 1}/${dateObj.getDate()}`;
+                const classInfo = `${r.className} ${r.subject || ''}`;
+                const counterpart = r.type === '調課'
+                    ? (r.isSelfSwap ? '(自調)' : `調 ${r.swapTeacher || r.substituteTeacher || ''}`)
+                    : `代 ${r.substituteTeacher || ''}`;
+                return `${dateStr} ${classInfo}<br>原 ${r.originalTeacher}<br>${counterpart}`;
+            },
+            // 未變動格顯示「該老師當節原本的課」：班級 科目；找不到時顯示「—」（資料缺漏視覺提示）
+            normalCellRenderer: (weekday, period, schedule) => {
+                const np = this.normalizePeriod(period);
+                const course = schedule.find(c => c.weekday === weekday && this.normalizePeriod(c.period) === np);
+                if (!course) return '<span style="color:#bbb;">—</span>';
+                return `${course.className}<br>${course.subject || ''}`;
+            },
+        });
+
+        const columns = [
+            { label: '日期', align: 'center', width: '14%', getValue: (r) => this.formatMonthDay(r.date) },
+            { label: '節', align: 'center', width: '14%', getValue: (r) => (r.period || '').replace('第', '').replace('節', '') },
+            { label: '班/科', align: 'left', width: '28%', getValue: (r) => `${r.className} ${r.subject || ''}` },
+            { label: isOriginal ? '代/調入' : '原任課', align: 'center', width: '22%', getValue: (r) => {
+                if (isOriginal) {
+                    if (r.type === '調課') return r.isSelfSwap ? '(自調)' : (r.swapTeacher || r.substituteTeacher || '');
+                    return r.substituteTeacher || '';
+                }
+                return r.originalTeacher || '';
+            }},
+            { label: '類型', align: 'center', width: '22%', getValue: (r) => {
+                const t = r.type || '代課';
+                if (t === '調課' && r.swapDate && this.getWeekStart(r.swapDate) !== weekRange.start) {
+                    const sd = new Date(r.swapDate + 'T00:00:00');
+                    return `${t} <span style="font-size:8px;">↔${sd.getMonth() + 1}/${sd.getDate()}</span>`;
+                }
+                return t;
+            }},
+        ];
+
+        const listHTML = this.createWeeklySummaryTableHTML(records, columns, {
+            rowGroupKey: 'multiCourseGroupId',
+            fontSize: 9,
+        });
+
+        const weekLabel = `${this.formatMonthDay(weekRange.start)}~${this.formatMonthDay(weekRange.end)}`;
+
+        return `
+        <div style="
+            width: 551px;
+            height: 794px;
+            padding: 10px 14px;
+            font-family: 'Microsoft JhengHei', 'Noto Sans TC', sans-serif;
+            background: white;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+        ">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
+                <div style="font-size: 11px; font-weight: bold;">${this.schoolName}</div>
+                <div style="font-size: 14px; font-weight: bold; letter-spacing: 2px;">週彙整通知單</div>
+                <div style="background: #555; color: white; padding: 3px 8px; font-size: 10px; font-weight: bold; border-radius: 3px;">${sheetLabel}</div>
+            </div>
+
+            <div style="margin-bottom: 4px; font-size: 10px;">
+                <strong>週次：</strong>${weekLabel}　共 ${records.length} 筆異動
+            </div>
+
+            <!-- 上：週課表（自然高度，最多延伸到列表上緣）/ 下：列表（佔剩餘空間） -->
+            <div style="flex: 0 0 auto; overflow: hidden; margin-bottom: 6px;">
+                ${scheduleTableHTML}
+            </div>
+            <div style="flex: 1 1 auto; min-height: 0; overflow: hidden;">
+                ${listHTML}
+            </div>
+
+            <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-top: 4px; font-size: 9px;">
+                <div>${isOriginal ? '原任課' : '代課'}教師：${teacherName}</div>
+                <div style="display: flex; gap: 18px;">
+                    <div>教務處：__________</div>
+                    <div style="color:#666;">列印日期：${printDate}</div>
+                </div>
+            </div>
+        </div>
+        `;
+    }
+
+    /**
+     * 班級週彙整半頁 HTML（含外層 div、寬 1123、高 ~387）
+     */
+    createClassWeeklySheetHTML(records, className, weekRange, scheduleData) {
+        const classSchedule = this.getClassWeekSchedule(scheduleData, className);
+        const printDate = new Date().toLocaleDateString('zh-TW');
+
+        const scheduleTableHTML = this.createMultiCourseScheduleTableHTML(classSchedule, records, className, {
+            cellPadY: 3,
+            emptyHeight: 24,
+            fontSize: 10,
+            cellRenderer: (r) => {
+                const dateObj = new Date(r.date);
+                const dateStr = `${dateObj.getMonth() + 1}/${dateObj.getDate()}`;
+                const subject = r.subject || '';
+                const change = r.type === '調課'
+                    ? (r.isSelfSwap ? `${r.originalTeacher} (自調)` : `原 ${r.originalTeacher}<br>調 ${r.swapTeacher || ''}`)
+                    : `原 ${r.originalTeacher}<br>代 ${r.substituteTeacher || ''}`;
+                return `${dateStr} ${subject}<br>${change}`;
+            },
+            // 未變動格顯示「該班級當節原本的課」：教師 科目；找不到時顯示「—」（資料缺漏視覺提示）
+            normalCellRenderer: (weekday, period, schedule) => {
+                const np = this.normalizePeriod(period);
+                const course = schedule.find(c => c.weekday === weekday && this.normalizePeriod(c.period) === np);
+                if (!course) return '<span style="color:#bbb;">—</span>';
+                return `${course.teacher}<br>${course.subject || ''}`;
+            },
+        });
+
+        const columns = [
+            { label: '日期', align: 'center', width: '14%', getValue: (r) => this.formatMonthDay(r.date) },
+            { label: '節', align: 'center', width: '12%', getValue: (r) => (r.period || '').replace('第', '').replace('節', '') },
+            { label: '科目', align: 'left', width: '18%', getValue: (r) => r.subject || '' },
+            { label: '原任課', align: 'center', width: '18%', getValue: (r) => r.originalTeacher || '' },
+            { label: '代/調入', align: 'center', width: '22%', getValue: (r) => {
+                if (r.type === '調課') return r.isSelfSwap ? '(自調)' : (r.swapTeacher || r.substituteTeacher || '');
+                return r.substituteTeacher || '';
+            }},
+            { label: '類型', align: 'center', width: '16%', getValue: (r) => r.type || '代課' },
+        ];
+
+        const listHTML = this.createWeeklySummaryTableHTML(records, columns, {
+            rowGroupKey: 'multiCourseGroupId',
+            fontSize: 9,
+        });
+
+        const weekLabel = `${this.formatMonthDay(weekRange.start)}~${this.formatMonthDay(weekRange.end)}`;
+
+        return `
+        <div style="
+            width: 551px;
+            height: 794px;
+            padding: 10px 14px;
+            font-family: 'Microsoft JhengHei', 'Noto Sans TC', sans-serif;
+            background: white;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+        ">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
+                <div style="font-size: 11px; font-weight: bold;">${this.schoolName}</div>
+                <div style="font-size: 14px; font-weight: bold; letter-spacing: 2px;">週彙整通知單</div>
+                <div style="background: #555; color: white; padding: 3px 8px; font-size: 10px; font-weight: bold; border-radius: 3px;">${className} 班級聯</div>
+            </div>
+
+            <div style="margin-bottom: 4px; font-size: 10px;">
+                <strong>週次：</strong>${weekLabel}　共 ${records.length} 筆異動
+            </div>
+
+            <!-- 上：週課表（自然高度，最多延伸到列表上緣）/ 下：列表（佔剩餘空間） -->
+            <div style="flex: 0 0 auto; overflow: hidden; margin-bottom: 6px;">
+                ${scheduleTableHTML}
+            </div>
+            <div style="flex: 1 1 auto; min-height: 0; overflow: hidden;">
+                ${listHTML}
+            </div>
+
+            <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-top: 4px; font-size: 9px;">
+                <div>班級：${className}</div>
+                <div style="display: flex; gap: 18px;">
+                    <div>導師：__________</div>
+                    <div>教務處：__________</div>
+                    <div style="color:#666;">列印日期：${printDate}</div>
+                </div>
+            </div>
+        </div>
+        `;
+    }
+
+    /**
+     * 將兩個半頁 HTML（每個 551×794）拼成 A4 橫向一頁（1123×794），中間垂直虛線分隔
+     * 命名延用「topHTML/bottomHTML」表示「順序上的第一/第二」，實際版型左/右排列
+     */
+    createCombinedHalfPageHTML(topHTML, bottomHTML) {
+        return `
+        <div style="
+            width: 1123px;
+            height: 794px;
+            font-family: 'Microsoft JhengHei', 'Noto Sans TC', sans-serif;
+            background: white;
+            box-sizing: border-box;
+            position: relative;
+        ">
+            <div style="position: absolute; top: 0; left: 0; width: 551px; height: 794px;">
+                ${topHTML}
+            </div>
+            <div style="
+                position: absolute;
+                top: 14px;
+                bottom: 14px;
+                left: 561px;
+                width: 1px;
+                border-left: 1.5px dashed #999;
+            "></div>
+            <div style="position: absolute; top: 0; left: 572px; width: 551px; height: 794px;">
+                ${bottomHTML || ''}
+            </div>
+        </div>
+        `;
+    }
+
+    /**
+     * 週彙整 PDF 主入口
+     *
+     * 輸出 1 份綜合 PDF，頁序：
+     *   1) 教學組全校彙整（A4 直向，25 筆/頁）
+     *   2) 各班級頁（A4 橫向）
+     *   3) 各原任課老師頁（A4 橫向）
+     *   4) 各代課老師頁（A4 橫向）
+     *
+     * @param {string} weekStart - 週一日期 YYYY-MM-DD
+     * @param {Array} recordsInWeek - 已篩選為當週的紀錄
+     * @param {Array} scheduleData - 全部課表
+     * @param {Array} teachers - 全部教師
+     */
+    async generateWeeklySummaryForm(weekStart, recordsInWeek, scheduleData, teachers) {
+        const { jsPDF } = window.jspdf;
+        const weekRange = this.getWeekRange(weekStart);
+        const groups = this.groupRecordsByRecipient(recordsInWeek);
+
+        // 初始化 PDF（首頁 portrait = 教學組）
+        const doc = new jsPDF('p', 'mm', 'a4');
+
+        const container = document.createElement('div');
+        container.style.cssText = 'position: absolute; left: -9999px; top: 0;';
+        document.body.appendChild(container);
+
+        const renderPage = async (html, width, orientation) => {
+            container.style.width = `${width}px`;
+            container.innerHTML = html;
+            await new Promise(r => setTimeout(r, 150));
+            const canvas = await html2canvas(container, {
+                scale: 2,
+                useCORS: true,
+                logging: false,
+                backgroundColor: '#ffffff'
+            });
+            const imgData = canvas.toDataURL('image/jpeg', 0.95);
+            if (orientation === 'portrait') {
+                doc.addImage(imgData, 'JPEG', 0, 0, 210, 297);
+            } else {
+                doc.addImage(imgData, 'JPEG', 0, 0, 297, 210);
+            }
+        };
+
+        try {
+            // 1) 教學組頁（25 筆/頁切 chunk）
+            const CHUNK_SIZE = 25;
+            const adminChunks = [];
+            for (let i = 0; i < groups.adminAll.length; i += CHUNK_SIZE) {
+                adminChunks.push(groups.adminAll.slice(i, i + CHUNK_SIZE));
+            }
+            if (adminChunks.length === 0) adminChunks.push([]);
+
+            for (let i = 0; i < adminChunks.length; i++) {
+                if (i > 0) doc.addPage('a4', 'portrait');
+                const html = this.createAdminWeeklyPageHTML(adminChunks[i], weekRange, i, adminChunks.length);
+                await renderPage(html, 794, 'portrait');
+            }
+
+            // 2-4) 班 + 原任課 + 代課 → 全部以半頁 sheet 渲染，兩兩拼成一頁
+            const halfSheets = [];
+
+            const classNames = Object.keys(groups.byClass).sort((a, b) => a.localeCompare(b, 'zh-TW'));
+            for (const cls of classNames) {
+                halfSheets.push(this.createClassWeeklySheetHTML(groups.byClass[cls], cls, weekRange, scheduleData));
+            }
+
+            const origTeachers = Object.keys(groups.byOriginalTeacher).sort((a, b) => a.localeCompare(b, 'zh-TW'));
+            for (const t of origTeachers) {
+                halfSheets.push(this.createTeacherWeeklySheetHTML(groups.byOriginalTeacher[t], t, 'original', weekRange, scheduleData));
+            }
+
+            const subTeachers = Object.keys(groups.bySubstituteTeacher).sort((a, b) => a.localeCompare(b, 'zh-TW'));
+            for (const t of subTeachers) {
+                halfSheets.push(this.createTeacherWeeklySheetHTML(groups.bySubstituteTeacher[t], t, 'substitute', weekRange, scheduleData));
+            }
+
+            // 兩兩拼頁（A4 橫向，左右對切，每半頁 551×794px）
+            for (let i = 0; i < halfSheets.length; i += 2) {
+                doc.addPage('a4', 'landscape');
+                const leftHTML = halfSheets[i];
+                const rightHTML = halfSheets[i + 1] || '';
+                const html = this.createCombinedHalfPageHTML(leftHTML, rightHTML);
+                await renderPage(html, 1123, 'landscape');
+            }
+
+            const fileName = `調代課週彙整_${weekRange.start.replace(/-/g, '')}-${weekRange.end.replace(/-/g, '')}.pdf`;
+            doc.save(fileName);
+        } finally {
+            document.body.removeChild(container);
+        }
     }
 
     /**

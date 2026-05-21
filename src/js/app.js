@@ -3229,6 +3229,124 @@ class SubstituteTeacherApp {
         document.getElementById('search-records-btn').addEventListener('click', () => {
             this.searchRecords();
         });
+
+        // 週彙整 PDF 流程
+        const openBtn = document.getElementById('print-weekly-summary-btn');
+        if (openBtn) {
+            openBtn.addEventListener('click', () => this.openWeeklySummaryModal());
+        }
+        const closeBtn = document.getElementById('close-weekly-summary-btn');
+        const cancelBtn = document.getElementById('cancel-weekly-summary-btn');
+        const confirmBtn = document.getElementById('confirm-weekly-summary-btn');
+        const dateInput = document.getElementById('weekly-summary-date');
+        if (closeBtn) closeBtn.addEventListener('click', () => this.closeWeeklySummaryModal());
+        if (cancelBtn) cancelBtn.addEventListener('click', () => this.closeWeeklySummaryModal());
+        if (dateInput) dateInput.addEventListener('change', () => this.updateWeeklySummaryPreview());
+        if (confirmBtn) confirmBtn.addEventListener('click', () => this.generateWeeklySummaryPDF());
+    }
+
+    /**
+     * 開啟週彙整 modal，預設本週
+     */
+    openWeeklySummaryModal() {
+        const modal = document.getElementById('weekly-summary-modal');
+        const dateInput = document.getElementById('weekly-summary-date');
+        // 預設今天
+        const today = new Date();
+        const yyyy = today.getFullYear();
+        const mm = String(today.getMonth() + 1).padStart(2, '0');
+        const dd = String(today.getDate()).padStart(2, '0');
+        dateInput.value = `${yyyy}-${mm}-${dd}`;
+        modal.classList.remove('hidden');
+        this.updateWeeklySummaryPreview();
+    }
+
+    closeWeeklySummaryModal() {
+        const modal = document.getElementById('weekly-summary-modal');
+        modal.classList.add('hidden');
+    }
+
+    /**
+     * 即時更新「本週共 X 筆 → 預估 Y 頁」預覽
+     */
+    updateWeeklySummaryPreview() {
+        const dateInput = document.getElementById('weekly-summary-date');
+        const hint = document.getElementById('weekly-summary-range-hint');
+        const preview = document.getElementById('weekly-summary-preview');
+        const confirmBtn = document.getElementById('confirm-weekly-summary-btn');
+
+        const selected = dateInput.value;
+        if (!selected) {
+            hint.textContent = '系統將自動取該日所在週一到週五。';
+            preview.textContent = '請先選擇日期。';
+            confirmBtn.disabled = true;
+            return;
+        }
+
+        const weekStart = this.pdfGenerator.getWeekStart(selected);
+        const weekRange = this.pdfGenerator.getWeekRange(weekStart);
+        const records = this.dataManager.getSubstituteRecords(weekRange.start, weekRange.end);
+
+        hint.textContent = `週次：${this.pdfGenerator.formatWeekLabel(weekRange.start)} ~ ${this.pdfGenerator.formatWeekLabel(weekRange.end)}`;
+
+        if (records.length === 0) {
+            preview.innerHTML = '<span style="color:#b45309;">⚠ 本週無調代課紀錄</span>';
+            confirmBtn.disabled = true;
+            return;
+        }
+
+        const groups = this.pdfGenerator.groupRecordsByRecipient(records);
+        const adminPages = Math.max(1, Math.ceil(groups.adminAll.length / 25));
+        const classCount = Object.keys(groups.byClass).length;
+        const origCount = Object.keys(groups.byOriginalTeacher).length;
+        const subCount = Object.keys(groups.bySubstituteTeacher).length;
+        const halfSheets = classCount + origCount + subCount;
+        const halfPages = Math.ceil(halfSheets / 2);
+        const totalPages = adminPages + halfPages;
+
+        preview.innerHTML = `
+            本週共 <strong>${records.length}</strong> 筆異動
+            （代課 ${records.filter(r => r.type !== '調課').length} 筆 / 調課 ${records.filter(r => r.type === '調課').length} 筆）<br>
+            <span style="color:#666;">預估 ${totalPages} 頁：教學組 ${adminPages} 頁 + 半頁拼接 ${halfPages} 頁（${halfSheets} 個半頁：班 ${classCount} / 原任課 ${origCount} / 代課 ${subCount}）</span>
+        `;
+        confirmBtn.disabled = false;
+    }
+
+    /**
+     * 產生週彙整 PDF
+     */
+    async generateWeeklySummaryPDF() {
+        const dateInput = document.getElementById('weekly-summary-date');
+        const confirmBtn = document.getElementById('confirm-weekly-summary-btn');
+        const selected = dateInput.value;
+        if (!selected) return;
+
+        const weekStart = this.pdfGenerator.getWeekStart(selected);
+        const weekRange = this.pdfGenerator.getWeekRange(weekStart);
+        const records = this.dataManager.getSubstituteRecords(weekRange.start, weekRange.end);
+        if (records.length === 0) {
+            this.showToast('本週無調代課紀錄，無法產生彙整單', 'warning');
+            return;
+        }
+
+        confirmBtn.disabled = true;
+        const originalText = confirmBtn.textContent;
+        confirmBtn.textContent = '產生中…';
+
+        try {
+            const scheduleData = this.dataManager.getScheduleData();
+            const teachers = this.dataManager.getTeachers();
+            this.pdfGenerator.setSchoolName(this.dataManager.schoolName || this.pdfGenerator.schoolName);
+            await this.pdfGenerator.generateWeeklySummaryForm(weekStart, records, scheduleData, teachers);
+            this.showToast(`已產生週彙整 PDF（${records.length} 筆異動）`, 'success', 4000);
+            this.closeWeeklySummaryModal();
+        } catch (err) {
+            console.error('產生週彙整 PDF 失敗:', err);
+            this.showToast('產生 PDF 失敗，請查看 console', 'error', 5000);
+        } finally {
+            confirmBtn.disabled = false;
+            confirmBtn.textContent = originalText;
+        }
     }
 
     /**
