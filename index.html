@@ -540,6 +540,31 @@
                                 </select>
                             </div>
                             <button class="btn btn-primary btn-sm" id="search-records-btn">查詢</button>
+                            <button class="btn btn-secondary btn-sm" id="print-weekly-summary-btn" title="以週為單位彙整本週所有調代課，產生 1 份 PDF（教學組 + 各班 + 各原任課/代課老師）精簡列印">📄 列印本週彙整</button>
+                        </div>
+                    </div>
+
+                    <!-- 週彙整 modal -->
+                    <div id="weekly-summary-modal" class="modal hidden">
+                        <div class="modal-content">
+                            <div class="modal-header">
+                                <h3>列印本週調代課彙整單</h3>
+                                <button class="modal-close" id="close-weekly-summary-btn">&times;</button>
+                            </div>
+                            <div class="modal-body">
+                                <div class="form-group">
+                                    <label for="weekly-summary-date">選擇週內任一日期</label>
+                                    <input type="date" id="weekly-summary-date">
+                                    <p class="hint" id="weekly-summary-range-hint" style="margin-top:6px;">系統將自動取該日所在週一到週五。</p>
+                                </div>
+                                <div id="weekly-summary-preview" style="margin-top:12px; padding:10px; background:#f5f5f5; border-radius:6px; font-size:13px;">
+                                    請先選擇日期。
+                                </div>
+                                <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:14px;">
+                                    <button class="btn btn-default btn-sm" id="cancel-weekly-summary-btn">取消</button>
+                                    <button class="btn btn-primary btn-sm" id="confirm-weekly-summary-btn" disabled>產生 PDF</button>
+                                </div>
+                            </div>
                         </div>
                     </div>
 
