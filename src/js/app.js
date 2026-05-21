@@ -3284,15 +3284,17 @@ class SubstituteTeacherApp {
 
         const groups = this.pdfGenerator.groupRecordsByRecipient(records);
         const adminPages = Math.max(1, Math.ceil(groups.adminAll.length / 25));
-        const classPages = Object.keys(groups.byClass).length;
-        const origPages = Object.keys(groups.byOriginalTeacher).length;
-        const subPages = Object.keys(groups.bySubstituteTeacher).length;
-        const totalPages = adminPages + classPages + origPages + subPages;
+        const classCount = Object.keys(groups.byClass).length;
+        const origCount = Object.keys(groups.byOriginalTeacher).length;
+        const subCount = Object.keys(groups.bySubstituteTeacher).length;
+        const halfSheets = classCount + origCount + subCount;
+        const halfPages = Math.ceil(halfSheets / 2);
+        const totalPages = adminPages + halfPages;
 
         preview.innerHTML = `
             本週共 <strong>${records.length}</strong> 筆異動
             （代課 ${records.filter(r => r.type !== '調課').length} 筆 / 調課 ${records.filter(r => r.type === '調課').length} 筆）<br>
-            <span style="color:#666;">預估 ${totalPages} 頁：教學組 ${adminPages} 頁 + 班級 ${classPages} 頁 + 原任課老師 ${origPages} 頁 + 代課老師 ${subPages} 頁</span>
+            <span style="color:#666;">預估 ${totalPages} 頁：教學組 ${adminPages} 頁 + 半頁拼接 ${halfPages} 頁（${halfSheets} 個半頁：班 ${classCount} / 原任課 ${origCount} / 代課 ${subCount}）</span>
         `;
         confirmBtn.disabled = false;
     }
