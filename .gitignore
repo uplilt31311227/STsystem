@@ -24,6 +24,9 @@ Thumbs.db
 # Test outputs
 test/*.png
 test/e2e-test.js
+test/*.pdf
+test/e2e-screenshots/
+test-results/
 
 # Claude Code
 .claude/
@@ -32,3 +35,25 @@ test/e2e-test.js
 *.log
 *.tmp
 nul
+
+# Phase 0 / v2.0.0 升級準備 — ETL 暫時性輸出
+analysis.txt
+extracted_text.txt
+etl_log.txt
+verify_log.txt
+compare_categorized.txt
+compare_result.txt
+
+# Excel 課表原檔（含個資 + 檔案大，請另存 OneDrive/USB 不進 git）
+*.xls
+*.xlsx
+
+# 測試用課表 CSV exports（人力資源網 ETL 比對產物）
+schedule_export*.csv
+schedule_*_export.csv
+schedule_*_backup.csv
+
+# 備份目錄個資檔（README 進 git，內含 JSON 不進）
+docs/backup/*.json
+docs/backup/*.csv
+
