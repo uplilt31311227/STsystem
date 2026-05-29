@@ -86,6 +86,40 @@ function injectV2Styles() {
     .v2-section-header { display: flex; justify-content: space-between;
                          align-items: center; margin-bottom: 1rem; }
     .v2-section-header h3 { display: flex; align-items: center; gap: 8px; margin: 0; }
+
+    /* Phase 1.6.b 雙軌登入 */
+    .v2-email-login-trigger {
+        display: block; margin-top: 6px; padding: 4px 8px;
+        background: transparent; border: none; color: #2563eb;
+        font-size: 0.82rem; cursor: pointer; text-decoration: underline;
+    }
+    .v2-email-login-trigger:hover { color: #1d4ed8; }
+
+    .v2-modal-backdrop {
+        position: fixed; inset: 0; background: rgba(0,0,0,0.45);
+        display: flex; align-items: center; justify-content: center;
+        z-index: 10000;
+    }
+    .v2-modal {
+        background: #fff; border-radius: 10px; padding: 1.5rem;
+        width: 92%; max-width: 380px; box-shadow: 0 10px 25px rgba(0,0,0,0.2);
+    }
+    .v2-modal h3 { margin: 0 0 1rem 0; color: #1f2937; }
+    .v2-modal label { display: block; font-size: 0.85rem; color: #4b5563; margin-top: 0.6rem; }
+    .v2-modal input[type=email], .v2-modal input[type=password] {
+        width: 100%; padding: 8px 10px; border: 1px solid #d1d5db;
+        border-radius: 6px; font-size: 0.95rem; box-sizing: border-box;
+    }
+    .v2-modal-actions { display: flex; gap: 8px; margin-top: 1rem; }
+    .v2-modal-actions .btn { flex: 1; }
+    .v2-modal-links { margin-top: 0.8rem; display: flex; justify-content: space-between;
+                      font-size: 0.82rem; }
+    .v2-modal-links a { color: #2563eb; text-decoration: none; cursor: pointer; }
+    .v2-modal-links a:hover { text-decoration: underline; }
+    .v2-modal-msg { margin-top: 0.6rem; padding: 6px 10px; border-radius: 6px;
+                    font-size: 0.85rem; }
+    .v2-modal-msg.error   { background: #fee2e2; color: #991b1b; }
+    .v2-modal-msg.success { background: #d1fae5; color: #065f46; }
     `;
     document.head.appendChild(style);
 }
@@ -259,6 +293,9 @@ async function renderTeachersAdminTab() {
                     <td>${(t.domains || []).join('、')}</td>
                     <td>
                         <button class="btn btn-primary btn-sm v2-save-teacher">儲存</button>
+                        ${t.email
+                            ? `<button class="btn btn-secondary btn-sm v2-send-reset" title="為此教師建立 Auth 帳號（若無）並寄出密碼設定/重置信">📧 寄密碼信</button>`
+                            : ''}
                         <button class="btn btn-danger btn-sm v2-delete-teacher">刪除</button>
                     </td>
                 </tr>`;
@@ -287,6 +324,32 @@ async function renderTeachersAdminTab() {
             if (!confirm('確定刪除此教師？此操作會寫入 log。')) return;
             try { await teacherMgr.deleteTeacher(id); await renderTeachersAdminTab(); }
             catch (e) { alert('刪除失敗：' + e.message); }
+        }));
+
+    host.querySelectorAll('.v2-send-reset').forEach(btn =>
+        btn.addEventListener('click', async () => {
+            const tr    = btn.closest('tr');
+            const email = tr.querySelector('.v2-email-input').value.trim();
+            if (!email) { alert('此教師尚未填 email，請先儲存 email 再試。'); return; }
+            if (!confirm(`即將為 ${email} 建立 Auth 帳號（若不存在）並寄出密碼設定信。確認？`)) return;
+            btn.disabled = true;
+            const origText = btn.textContent;
+            btn.textContent = '寄送中…';
+            try {
+                const r = await authMod.createTeacherAuthAndSendReset(email);
+                alert(r.accountCreated
+                    ? `✓ 已建立帳號並寄出密碼設定信給 ${email}`
+                    : `✓ 該 email 已有帳號，已寄出密碼重置信給 ${email}`);
+                btn.textContent = '已寄出';
+                await logger.log(LOG_ACTIONS.TEACHER_BIND_EMAIL, LOG_TARGET_TYPES.TEACHER, tr.dataset.id, {
+                    action: 'send_password_reset', email, accountCreated: r.accountCreated,
+                });
+            } catch (e) {
+                console.error('寄密碼信失敗:', e);
+                alert('寄信失敗：' + (e.message || e.code || '未知錯誤'));
+                btn.textContent = origText;
+                btn.disabled = false;
+            }
         }));
 
     document.getElementById('v2-add-teacher')?.addEventListener('click', async () => {
@@ -751,6 +814,109 @@ async function generatePdfForRecord(record) {
     }
 }
 
+/* ===== Phase 1.6.b 雙軌登入：Email 入口 + Modal ===== */
+
+function injectEmailLoginTrigger() {
+    const loggedOutBox = document.getElementById('auth-logged-out');
+    if (!loggedOutBox || document.getElementById('v2-email-login-trigger')) return;
+    const link = document.createElement('button');
+    link.id = 'v2-email-login-trigger';
+    link.className = 'v2-email-login-trigger';
+    link.textContent = '使用 Email / 密碼登入';
+    link.addEventListener('click', () => openAuthModal('signin'));
+    loggedOutBox.appendChild(link);
+}
+
+function closeAuthModal() {
+    document.getElementById('v2-auth-modal-backdrop')?.remove();
+}
+
+function openAuthModal(mode = 'signin') {
+    closeAuthModal();
+    const backdrop = document.createElement('div');
+    backdrop.id = 'v2-auth-modal-backdrop';
+    backdrop.className = 'v2-modal-backdrop';
+
+    const titles = {
+        signin:   'Email 登入',
+        forgot:   '重設密碼',
+        register: '新教師註冊',
+    };
+    const helpText = {
+        signin:   '若您剛被加入名單但還沒收到密碼設定信，請先聯絡教務主任「📧 寄密碼設定信」。',
+        forgot:   '系統會寄出一封密碼重設信到您的 email。請使用主任已為您加入名單的 email。',
+        register: '註冊前請先確認教務主任已把您的 email 加進名單，否則註冊後會被系統擋下並登出。',
+    };
+
+    backdrop.innerHTML = `
+        <div class="v2-modal">
+            <h3>${titles[mode]}</h3>
+            ${mode !== 'forgot' ? `
+                <label>Email</label>
+                <input type="email" id="v2-modal-email" placeholder="your@email.com" autocomplete="email">
+                <label>密碼${mode === 'register' ? '（至少 6 字元）' : ''}</label>
+                <input type="password" id="v2-modal-pwd" placeholder="••••••••" autocomplete="${mode === 'signin' ? 'current-password' : 'new-password'}">
+            ` : `
+                <label>Email</label>
+                <input type="email" id="v2-modal-email" placeholder="your@email.com" autocomplete="email">
+            `}
+            <div class="v2-modal-msg" id="v2-modal-msg" style="display:none;"></div>
+            <p style="font-size:0.78rem; color:#6b7280; margin-top:0.6rem;">${helpText[mode]}</p>
+            <div class="v2-modal-actions">
+                <button class="btn btn-secondary" id="v2-modal-cancel">取消</button>
+                <button class="btn btn-primary" id="v2-modal-submit">
+                    ${mode === 'signin' ? '登入' : mode === 'forgot' ? '寄重置信' : '註冊'}
+                </button>
+            </div>
+            <div class="v2-modal-links">
+                ${mode !== 'signin' ? `<a data-mode="signin">← 回登入</a>` : `<span></span>`}
+                ${mode !== 'forgot'   ? `<a data-mode="forgot">忘記密碼？</a>` : ''}
+                ${mode !== 'register' ? `<a data-mode="register">我是新教師（註冊）</a>` : ''}
+            </div>
+        </div>
+    `;
+    document.body.appendChild(backdrop);
+
+    const msgEl = backdrop.querySelector('#v2-modal-msg');
+    const showMsg = (text, kind = 'error') => {
+        msgEl.textContent = text;
+        msgEl.className = 'v2-modal-msg ' + kind;
+        msgEl.style.display = 'block';
+    };
+
+    backdrop.querySelector('#v2-modal-cancel').addEventListener('click', closeAuthModal);
+    backdrop.addEventListener('click', (e) => { if (e.target === backdrop) closeAuthModal(); });
+    backdrop.querySelectorAll('.v2-modal-links a').forEach(a =>
+        a.addEventListener('click', () => openAuthModal(a.dataset.mode)));
+
+    backdrop.querySelector('#v2-modal-submit').addEventListener('click', async (ev) => {
+        const btn = ev.currentTarget;
+        const email = backdrop.querySelector('#v2-modal-email').value.trim();
+        const pwd   = backdrop.querySelector('#v2-modal-pwd')?.value || '';
+        if (!email) { showMsg('請輸入 Email'); return; }
+        if (mode !== 'forgot' && !pwd) { showMsg('請輸入密碼'); return; }
+        btn.disabled = true;
+        try {
+            if (mode === 'signin') {
+                await authMod.signInWithEmail(email, pwd);
+                closeAuthModal();
+                // onAuthStateChange 會接手 → authGuardV2 配對名單
+            } else if (mode === 'forgot') {
+                await authMod.sendPasswordReset(email);
+                showMsg('已寄出密碼重設信，請至信箱收信。若未收到，請確認 email 正確且已被加入名單。', 'success');
+                btn.textContent = '已寄出';
+            } else if (mode === 'register') {
+                await authMod.registerWithEmail(email, pwd);
+                closeAuthModal();
+                // onAuthStateChange 會接手；若 email 不在名單會被 authGuardV2 擋下並登出
+            }
+        } catch (e) {
+            showMsg(e.message || '操作失敗');
+            btn.disabled = false;
+        }
+    });
+}
+
 /* ===== 主啟動流程 ===== */
 
 async function bootstrap() {
@@ -765,6 +931,7 @@ async function bootstrap() {
         window.app.canSwitchToTab = (tabId) => tabId.startsWith('v2-') ? true : orig(tabId);
     }
 
+    injectEmailLoginTrigger();
     await authMod.initAuthService();
 
     let unsubs = [];

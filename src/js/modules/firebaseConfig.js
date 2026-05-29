@@ -52,8 +52,9 @@ async function loadFirebaseSDK() {
     try {
         // 使用動態 import 載入 Firebase 模組
         const [
-            { initializeApp },
-            { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged },
+            { initializeApp, deleteApp },
+            { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged,
+              signInWithEmailAndPassword, createUserWithEmailAndPassword, sendPasswordResetEmail },
             { getFirestore, collection, doc, setDoc, getDoc, getDocs, onSnapshot, enableIndexedDbPersistence }
         ] = await Promise.all([
             import('https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js'),
@@ -64,11 +65,15 @@ async function loadFirebaseSDK() {
         // 將函數存到全域以供其他模組使用
         window.firebaseModules = {
             initializeApp,
+            deleteApp,
             getAuth,
             GoogleAuthProvider,
             signInWithPopup,
             signOut,
             onAuthStateChanged,
+            signInWithEmailAndPassword,
+            createUserWithEmailAndPassword,
+            sendPasswordResetEmail,
             getFirestore,
             collection,
             doc,
@@ -78,6 +83,8 @@ async function loadFirebaseSDK() {
             onSnapshot,
             enableIndexedDbPersistence
         };
+        // 也暴露 FIREBASE_CONFIG 給 authService 建立 secondary app（用於主任建教師帳號）
+        window.firebaseModules.__config = FIREBASE_CONFIG;
 
         isLoaded = true;
         console.log('Firebase SDK 載入完成');
