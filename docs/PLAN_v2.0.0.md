@@ -23,39 +23,48 @@ status: 規劃中（等待 V2 路徑裁決）
 | V2 評估報告 | ✅ 完成 | 2026-05-29 | 見下方 §1 |
 | V2 路徑裁決 | ✅ 接續 | 2026-05-29 | tag `v2.0.0-alpha2-backup` 標記擴充前 V2 |
 | Phase 1：基礎建設（三層角色 + rules v2.2） | 🟡 程式碼完成，待實機驗收 | 2026-05-29 | commit `4fded65`(模組) + `40c7c19`(rules) + `5072b99`(語法修正) |
-| Phase 2：全校課表共享 | ⏸️ 待 Phase 1 驗收後 | — | |
+| Phase 1.5：bootstrap schools/inhu + 組長 uplilt313 | ✅ 完成 | 2026-05-29 | rules v2.2 已部署 `ruleset 14413047-...`、config/main + teacher uplilt313 已寫入。commit `bdc7a06` |
+| Phase 1.6.a：課表匯入 → 教師管理串接 | ✅ 完成 | 2026-05-29 | dataManager.setTeachers 攔截 + 自動 importFromLegacyTeachers + 浮動跳轉 toast + 未指派 email 高亮。commit `4d8d6d3` |
+| Phase 1.6.b：Email/密碼雙軌登入 + 主任寄密碼信 | ✅ 程式碼完成，**需先在 Firebase Console 啟用 Email/Password provider** | 2026-05-29 | authService 加 4 API + v2-app 雙軌登入 modal + 教師管理寄信按鈕。commit `f37dcf3` |
+| Phase 2：全校課表共享 | ⏸️ 待 Phase 1 / 1.6 驗收後 | — | |
 | Phase 3：申請與審核工作流 | ⏸️ | — | |
 | Phase 4：對調同意 + 多重調課 | ⏸️ | — | |
 | Phase 5：資料遷移 + Legacy | ⏸️ | — | |
 | Phase 6：通知精緻化 + 審計 | ⏸️ | — | |
 | 合回 master + v2.0.0 tag | ⏸️ | — | |
 
-### Phase 1 驗收待辦（使用者實機操作）
+### Phase 1 / 1.6 驗收待辦（使用者實機操作）
 
-自動可驗的部分已通過：
+#### 自動可驗的部分已通過
 - ✅ ES module 語法檢查（node --check 全綠）
-- ✅ 本地 HTTP 200 OK 載入測試（index.html / v2-app.js / v2 模組 / firestore.rules）
+- ✅ 本地 HTTP 200 OK 載入測試
 - ✅ `SCHOOL_ID = 'inhu'` 已落地
+- ✅ firestore.rules v2.2 已部署到 stsystem-9d5fe（ruleset 14413047-...）
+- ✅ schools/inhu/config/main 建立完成（initialAdminEmails 含主任）
+- ✅ schools/inhu/teachers 已有 uplilt313（組長角色）
 
-待實機操作：
-1. **部署 firestore.rules v2.2** 到 `stsystem-9d5fe`：
-   ```bash
-   node scripts/firestore-deploy-rules.js
-   node scripts/firestore-deploy-rules.js --list   # 確認 release 指向新 ruleset
-   ```
-2. **Firestore Console 手動建立** `schools/inhu/config/main`：
-   ```json
-   {
-     "schoolName": "新竹市立內湖國民中學",
-     "initialAdminEmails": ["uplilt31311227@gmail.com"],
-     "currentSemester": "114-2"
-   }
-   ```
-3. **三角色登入測試**（preview 或本地 `?v2=1`）：
-   - director 帳號：Google 登入 → body 應有 `v2-director v2-approver v2-admin` class、頭部徽章顯示「教務主任」、可看到「教師管理」頁籤
-   - section_chief 帳號（先用 director 登入後到「教師管理」設定一名測試教師為 section_chief）：登入後 body 應有 `v2-section-chief v2-approver v2-admin` class、可看到「核准者視圖」紀錄、但**看不到**「教師管理」
-   - teacher 帳號：body 應只有 `v2-teacher` class、紀錄為「個人相關」、無「教師管理」「操作日誌」
-4. **規則攻擊測試**：
+#### 待實機操作（步驟）
+
+**1. Firebase Console 啟用 Email/Password provider**（Phase 1.6.b 前置）
+
+   到 Firebase Console → Authentication → Sign-in method → Email/Password → 啟用。
+   若不啟用，Email 登入 modal 與寄密碼信會回 `auth/operation-not-allowed`。
+
+**2. 三角色登入測試**（本機 `?v2=1`）：
+   - **director 帳號**（uplilt31311227@gmail.com）：Google 登入 → body 應有 `v2-director v2-approver v2-admin`、頭部徽章顯示「教務主任」、可看到「教師管理」「操作日誌」頁籤
+   - **section_chief 帳號**（uplilt313@gmail.com）：
+     - 第一次使用：點「使用 Email / 密碼登入」→「我是新教師（註冊）」→ 設密碼
+     - 或主任在「教師管理」按該列「📧 寄密碼信」→ 收信設密碼 → 用 Email 登入
+     - 登入後 body 應有 `v2-section-chief v2-approver v2-admin`、徽章「教學組長」、能看「操作日誌」但**看不到**「教師管理」
+   - **teacher 帳號**（任一未在白名單的帳號）：應被擋下顯示「尚未授權」
+
+**3. 課表匯入串接測試**：
+   - 主任 Google 登入後到「課表匯入」頁籤上傳人力資源網 2.0 CSV/Excel
+   - 上傳完成後右下角應出現「📋 N 位新教師待指派 email」浮動 toast
+   - 點「前往教師管理」→ 直接跳到該頁籤、未指派 email 的列淡黃底高亮
+   - 表頭應顯示「⚠ N 位待指派 email」徽章
+
+**4. 規則攻擊測試**：
    - teacher 帳號用 DevTools 直接 POST `schools/inhu/teachers/anything` 應被 DENY
    - section_chief 帳號改 teacher.role 應被 DENY（只有 director 能改 role）
    - 其他細項見 `docs/V2_E2E_CHECKLIST.md`
