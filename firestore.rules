@@ -1,15 +1,18 @@
 rules_version = '2';
 
-// STsystem V2 權限系統 Firestore 規則（正式版 v2.1）
+// STsystem V2 權限系統 Firestore 規則（v2.2 — 三層角色）
 //
 // 設計原則：
 //   1. 兩條根路徑物理隔離
 //      - schools/{schoolId}/...  ← V2 全校共用資料
 //      - users/{uid}/...         ← 穩定版 master 個人空間（保留原規則）
-//   2. V2 角色判讀
-//      - admin：email 在 config.initialAdminEmails 白名單 OR 自己的 teacher.role == 'admin'
-//      - teacher：登入 uid 透過 userMappings 對應到 teachers 文件
-//   3. 寫入規則對齊應用層 pendingRequestService / authGuardV2 / teacherAccountManager 行為
+//   2. V2 角色三層
+//      - director（教務主任）：最高權限 + 後台教師管理 + 學校設定
+//      - section_chief（教學組長）：核准 / 駁回 / 上傳課表 / 月結算 / 查看所有紀錄與日誌
+//      - teacher（一般教師）：看全校課表唯讀 + 申請自己代調課 + 回應對調 + 查自己相關紀錄
+//   3. 舊 v2 alpha 期 teacher.role == 'admin' 仍兼容：在 rules 中視同 director。
+//      config.initialAdminEmails 欄位名稱維持，意義改為「初始主任白名單」。
+//   4. 寫入規則對齊應用層 pendingRequestService / authGuardV2 / teacherAccountManager 行為。
 //
 // 部署：透過 gcloud REST API 或 Firebase Console（見 docs/V2_PERMISSION_SYSTEM.md）
 
@@ -34,8 +37,8 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/schools/$(schoolId)/config/main).data;
     }
 
-    // 登入 email 是否在初始管理員白名單
-    function isInitialAdmin(schoolId) {
+    // 登入 email 是否在初始主任白名單（欄位名稱沿用 initialAdminEmails 兼容舊 config）
+    function isInitialDirector(schoolId) {
       return isSignedIn()
         && configExists(schoolId)
         && configDoc(schoolId).initialAdminEmails is list
@@ -51,7 +54,6 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/schools/$(schoolId)/userMappings/$(request.auth.uid)).data;
     }
 
-    // 目前登入者對應的 teacherId（從 userMappings/uid 讀）
     function myTeacherId(schoolId) {
       return mappingExists(schoolId) ? myMapping(schoolId).linkedTeacherId : '';
     }
@@ -65,12 +67,32 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/schools/$(schoolId)/teachers/$(myTeacherId(schoolId))).data;
     }
 
-    // 是否為 admin（白名單 OR teacher.role == 'admin'）
-    function isAdmin(schoolId) {
+    // 教務主任：白名單 OR teacher.role in ['director', 'admin']（admin 為舊資料兼容）
+    function isDirector(schoolId) {
       return isSignedIn() && (
-        isInitialAdmin(schoolId)
-        || (myTeacherExists(schoolId) && myTeacherDoc(schoolId).role == 'admin')
+        isInitialDirector(schoolId)
+        || (myTeacherExists(schoolId) && myTeacherDoc(schoolId).role in ['director', 'admin'])
       );
+    }
+
+    // 具核准權（director + section_chief，舊 admin 兼容）
+    function isApprover(schoolId) {
+      return isSignedIn() && (
+        isInitialDirector(schoolId)
+        || (myTeacherExists(schoolId) && myTeacherDoc(schoolId).role in ['director', 'section_chief', 'admin'])
+      );
+    }
+
+    // 相容 alias：v2.1 期間程式碼語意中的「admin」現在等同「approver」。
+    // 預留給跨檔案引用此 rules 的腳本，使其依語意持續可用。
+    function isAdmin(schoolId) {
+      return isApprover(schoolId);
+    }
+
+    // 新增 teachers doc 時的 role 欄位合法性
+    function isValidRoleValue(role) {
+      // 接受三層角色 + 舊 admin（authGuardV2 bootstrap 與資料遷移需要）
+      return role in ['director', 'section_chief', 'teacher', 'admin'];
     }
 
     // ================ V2: schools/{schoolId} ================
@@ -78,14 +100,14 @@ service cloud.firestore {
     match /schools/{schoolId} {
       // 學校根佔位文件
       allow read:  if isSignedIn();
-      allow write: if isAdmin(schoolId);
+      allow write: if isDirector(schoolId);
 
-      // ----- 設定 -----
+      // ----- 設定（學校名稱、白名單） -----
       match /config/{docId} {
         // 任何登入者可讀（authGuardV2 啟動時要讀 initialAdminEmails）
         allow read:  if isSignedIn();
-        // 僅 admin 可改學校名稱、白名單
-        allow write: if isAdmin(schoolId);
+        // 僅 director 可改學校名稱、白名單
+        allow write: if isDirector(schoolId);
       }
 
       // ----- 教師 -----
@@ -93,28 +115,35 @@ service cloud.firestore {
         // 任何登入者可讀（顯示全校教師、推薦代課需要）
         allow read: if isSignedIn();
 
-        // 建立：admin；或初始管理員第一次登入時自建 admin 教師檔（bootstrap）
-        allow create: if isAdmin(schoolId)
+        // 建立：director；或初始主任第一次登入自建 director 教師檔（bootstrap）
+        allow create: if isDirector(schoolId)
           || (
-            isInitialAdmin(schoolId)
+            isInitialDirector(schoolId)
             && request.resource.data.email == userEmail()
-            && request.resource.data.role == 'admin'
+            && request.resource.data.role in ['director', 'admin']
           );
 
-        // 更新：admin；或初始管理員把自己的教師檔升級為 admin（bootstrap 補登）
-        allow update: if isAdmin(schoolId)
+        // 更新：director；或初始主任把自己的教師檔升級為 director（bootstrap 補登）；
+        //       section_chief 可改一般欄位但不能改 role 或 email
+        allow update: if isDirector(schoolId)
           || (
-            isInitialAdmin(schoolId)
+            isInitialDirector(schoolId)
             && resource.data.email == userEmail()
+          )
+          || (
+            isApprover(schoolId)
+            && request.resource.data.role == resource.data.role
+            && request.resource.data.email == resource.data.email
           );
 
-        allow delete: if isAdmin(schoolId);
+        // 刪除：只有 director 能刪教師
+        allow delete: if isDirector(schoolId);
       }
 
       // ----- 全校課表 -----
       match /data/{docId} {
         allow read:  if isSignedIn();
-        allow write: if isAdmin(schoolId);
+        allow write: if isApprover(schoolId);
       }
 
       // ----- 已成立調代課紀錄 -----
@@ -122,8 +151,8 @@ service cloud.firestore {
         // 全員可讀（教師端由 roleService.filterRecordsForCurrent 過濾）
         allow read: if isSignedIn();
 
-        // 建立：admin（adminCreate）；或同意人（approveRequest 寫 approvedBy=自己）
-        allow create: if isAdmin(schoolId)
+        // 建立：approver（adminCreate / approveRequest）；或同意人
+        allow create: if isApprover(schoolId)
           || (
             isSignedIn()
             && myTeacherId(schoolId) != ''
@@ -133,32 +162,42 @@ service cloud.firestore {
             )
           );
 
-        // 編輯／刪除：僅 admin
-        allow update, delete: if isAdmin(schoolId);
+        // 編輯：approver
+        allow update: if isApprover(schoolId);
+
+        // 刪除：只有 director 能刪除正式紀錄
+        allow delete: if isDirector(schoolId);
       }
 
-      // ----- 待同意請求 -----
+      // ----- 待同意 / 待核准請求 -----
       match /pendingRequests/{reqId} {
         allow read: if isSignedIn();
 
-        // 建立：admin；或發起人本人（initiatedBy == 自己 teacherId）
-        allow create: if isAdmin(schoolId)
+        // 建立：approver（代發）；或發起人本人
+        allow create: if isApprover(schoolId)
           || (
             isSignedIn()
             && myTeacherId(schoolId) != ''
             && request.resource.data.initiatedBy == myTeacherId(schoolId)
           );
 
-        // 更新：admin；或被邀請人（rejectRequest 把 status 改為 rejected）
-        allow update: if isAdmin(schoolId)
+        // 更新：approver；或被邀請人（同意 / 拒絕）；
+        //       Phase 4 多重調課全員同意：被列入 pendingConsentTeacherIds 的教師可改自己的同意欄位
+        allow update: if isApprover(schoolId)
           || (
             isSignedIn()
             && myTeacherId(schoolId) != ''
-            && resource.data.requiredApproverId == myTeacherId(schoolId)
+            && (
+              resource.data.requiredApproverId == myTeacherId(schoolId)
+              || (
+                resource.data.pendingConsentTeacherIds is list
+                && resource.data.pendingConsentTeacherIds.hasAny([myTeacherId(schoolId)])
+              )
+            )
           );
 
-        // 刪除：admin；發起人（cancel / dismissRejected）；被邀請人（approve 後清掉）
-        allow delete: if isAdmin(schoolId)
+        // 刪除：approver；發起人；被邀請人（同意後可清掉草稿）
+        allow delete: if isApprover(schoolId)
           || (
             isSignedIn()
             && myTeacherId(schoolId) != ''
@@ -169,10 +208,11 @@ service cloud.firestore {
           );
       }
 
-      // ----- 操作日誌（稽核軌跡，不可改／刪） -----
-      // 安全性：限定欄位白名單、action 長度、timestamp 必須等於伺服器時間
+      // ----- 操作日誌（稽核軌跡，不可改/刪） -----
+      // 讀取：approver（director + section_chief）皆可查 audit trail
+      // 寫入：任何登入者；欄位白名單與型別嚴格驗證
       match /operationLogs/{logId} {
-        allow read:   if isAdmin(schoolId);
+        allow read:   if isApprover(schoolId);
         allow create: if isSignedIn()
           && request.resource.data.keys().hasOnly(['action', 'actor', 'timestamp', 'target', 'detail'])
           && request.resource.data.action is string
@@ -184,14 +224,15 @@ service cloud.firestore {
 
       // ----- Google uid → teacherId 映射 -----
       match /userMappings/{uid} {
-        // 自己的 mapping 自己讀；admin 可讀全部
-        allow read: if isSignedIn() && (request.auth.uid == uid || isAdmin(schoolId));
+        // 自己讀自己；approver 可讀全部（核准時需要看對方身份）
+        allow read: if isSignedIn() && (request.auth.uid == uid || isApprover(schoolId));
 
-        // 自己 upsert 自己（authGuardV2 登入完成寫入）；admin 可代寫
-        allow create, update: if isAdmin(schoolId)
+        // 自己 upsert 自己（authGuardV2 登入完成寫入）；director 可代寫（補綁定）
+        allow create, update: if isDirector(schoolId)
           || (isSignedIn() && request.auth.uid == uid);
 
-        allow delete: if isAdmin(schoolId);
+        // 刪除：只有 director
+        allow delete: if isDirector(schoolId);
       }
     }
 
