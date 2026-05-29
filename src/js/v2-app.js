@@ -82,6 +82,12 @@ function injectV2Styles() {
     .v2-row-needs-email td:first-child::before {
         content: '⚠ '; color: #d97706; font-weight: bold;
     }
+    .v2-auth-provider-chip {
+        display: inline-block; padding: 2px 8px; border-radius: 10px;
+        font-size: 0.75rem; font-weight: 500; vertical-align: middle;
+        margin-left: 4px;
+    }
+    .v2-auth-provider-chip.google { background: #dbeafe; color: #1e40af; }
 
     .v2-section-header { display: flex; justify-content: space-between;
                          align-items: center; margin-bottom: 1rem; }
@@ -246,6 +252,27 @@ async function renderPendingTab() {
         }));
 }
 
+/**
+ * Phase 1.6.c：依 teachers.authProvider 決定顯示「寄密碼信」按鈕或「Google 登入」標籤。
+ *   - 'google.com'：教師已用 Google 登入過，無 Firebase 密碼可重置 → 隱藏寄信按鈕、顯示標籤
+ *   - 'password'：教師用 Email/Password 註冊或主任曾代發信 → 顯示寄信按鈕
+ *   - null（從未登入過）：主任可能要發首次邀請信 → 顯示寄信按鈕
+ *   - 無 email：兩者都不顯示
+ */
+function renderTeacherAuthAction(t) {
+    if (!t.email) return '';
+    if (t.authProvider === 'google.com') {
+        return `<span class="v2-auth-provider-chip google" title="此教師以 Google 帳號登入，密碼由 Google 管理，本系統無法為其重置">🔒 Google 登入</span>`;
+    }
+    const label = t.authProvider === 'password'
+        ? '📧 重設密碼'
+        : '📧 寄首次密碼信';
+    const tooltip = t.authProvider === 'password'
+        ? '為此教師寄出密碼重置信'
+        : '為此教師建立 Auth 帳號並寄出密碼設定信（首次邀請）';
+    return `<button class="btn btn-secondary btn-sm v2-send-reset" title="${tooltip}">${label}</button>`;
+}
+
 async function renderTeachersAdminTab() {
     const host = document.getElementById('v2-teachers-admin');
     if (!host) return;
@@ -293,9 +320,7 @@ async function renderTeachersAdminTab() {
                     <td>${(t.domains || []).join('、')}</td>
                     <td>
                         <button class="btn btn-primary btn-sm v2-save-teacher">儲存</button>
-                        ${t.email
-                            ? `<button class="btn btn-secondary btn-sm v2-send-reset" title="為此教師建立 Auth 帳號（若無）並寄出密碼設定/重置信">📧 寄密碼信</button>`
-                            : ''}
+                        ${renderTeacherAuthAction(t)}
                         <button class="btn btn-danger btn-sm v2-delete-teacher">刪除</button>
                     </td>
                 </tr>`;
@@ -947,9 +972,12 @@ async function bootstrap() {
             return;
         }
         try {
+            // Phase 1.6.c：抓登入 provider（google.com / password），由 authGuardV2 寫入 teachers.authProvider
+            const providerId = user.providerData?.[0]?.providerId || null;
             const identity = await authGuard.resolveIdentity({
                 uid: user.uid, email: user.email,
                 displayName: user.displayName, photoURL: user.photoURL,
+                providerId,
             });
             if (!identity) {
                 await authMod.signOutUser();

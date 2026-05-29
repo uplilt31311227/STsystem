@@ -124,7 +124,8 @@ service cloud.firestore {
           );
 
         // 更新：director；或初始主任把自己的教師檔升級為 director（bootstrap 補登）；
-        //       section_chief 可改一般欄位但不能改 role 或 email
+        //       section_chief 可改一般欄位但不能改 role 或 email；
+        //       Phase 1.6.c：自己對應的 teacher doc 可改 authProvider（只准動該欄位 + updatedAt）
         allow update: if isDirector(schoolId)
           || (
             isInitialDirector(schoolId)
@@ -134,6 +135,11 @@ service cloud.firestore {
             isApprover(schoolId)
             && request.resource.data.role == resource.data.role
             && request.resource.data.email == resource.data.email
+          )
+          || (
+            isSignedIn()
+            && myTeacherId(schoolId) == teacherId
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['authProvider', 'updatedAt'])
           );
 
         // 刪除：只有 director 能刪教師

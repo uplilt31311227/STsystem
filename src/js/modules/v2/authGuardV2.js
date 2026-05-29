@@ -52,6 +52,9 @@ async function ensureDirectorTeacher(email, googleUser) {
 export async function resolveIdentity(googleUser) {
     if (!googleUser || !googleUser.email) return null;
     const email = googleUser.email.toLowerCase().trim();
+    // Phase 1.6.c：providerId 來自 Firebase user.providerData[0].providerId
+    //   'google.com' → Google 登入；'password' → Email/密碼登入
+    const providerId = googleUser.providerId || null;
 
     const initialDirectors = await getInitialDirectorEmails();
     const isInitialDirector = initialDirectors.includes(email);
@@ -67,16 +70,29 @@ export async function resolveIdentity(googleUser) {
         await logger.log(LOG_ACTIONS.LOGIN_DENIED, LOG_TARGET_TYPES.AUTH, googleUser.uid, {
             email,
             displayName: googleUser.displayName || null,
+            providerId,
         });
         return null;
     }
 
+    // 先 upsert mapping，這樣 rules helper myTeacherId() 立刻生效，
+    // 後續 update teacher.authProvider 才會通過「自己可改自己 authProvider」的 rule。
     await dataSvc.upsertUserMapping(googleUser.uid, {
         email,
         googleName: googleUser.displayName || null,
         googlePhotoUrl: googleUser.photoURL || null,
         linkedTeacherId: teacher.teacherId,
+        lastProviderId: providerId,
     });
+
+    // 記錄登入 provider 到 teachers doc（給教師管理 UI 判斷「寄密碼信」按鈕是否顯示）
+    if (providerId && teacher.authProvider !== providerId) {
+        try {
+            teacher = await dataSvc.updateTeacher(teacher.teacherId, { authProvider: providerId });
+        } catch (e) {
+            console.warn('[v2] 寫入 teachers.authProvider 失敗（不阻擋登入）：', e?.message || e);
+        }
+    }
 
     const identity = {
         uid:       googleUser.uid,
@@ -84,6 +100,7 @@ export async function resolveIdentity(googleUser) {
         teacherId: teacher.teacherId,
         name:      teacher.name,
         role:      normalizeRole(teacher.role) || ROLES.TEACHER,
+        authProvider: providerId,
     };
     roleSvc.setCurrentIdentity(identity);
     return identity;
