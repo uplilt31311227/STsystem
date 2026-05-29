@@ -28,17 +28,30 @@ function injectV2Styles() {
     style.textContent = `
     .v2-only { display: none; }
     body.v2-active .v2-only { display: revert; }
-    body.v2-active .v2-admin-only { display: none; }
-    body.v2-active.v2-admin .v2-admin-only { display: revert; }
+
+    /* v2.0.0 三層角色顯隱：
+       .v2-admin-only       — 兼容舊類別，效果等同 .v2-approver-only（director + section_chief 可見）
+       .v2-approver-only    — 限 director 或 section_chief 可見（核准 / 紀錄 / 月結算 / 操作日誌）
+       .v2-director-only    — 限 director 可見（教師管理 / 學校設定）
+       .v2-teacher-only     — 僅一般教師可見（個人版首頁、待我同意）
+    */
+    body.v2-active .v2-admin-only,
+    body.v2-active .v2-approver-only,
+    body.v2-active .v2-director-only { display: none; }
+    body.v2-active.v2-approver .v2-admin-only,
+    body.v2-active.v2-approver .v2-approver-only { display: revert; }
+    body.v2-active.v2-director .v2-director-only { display: revert; }
     body.v2-active .v2-teacher-only { display: revert; }
-    body.v2-active.v2-admin .v2-teacher-only { display: none; }
+    body.v2-active.v2-approver .v2-teacher-only { display: none; }
 
     .v2-badge { display: inline-block; padding: 2px 6px; border-radius: 10px;
                 font-size: 0.72rem; margin-left: 4px; background: #e53e3e; color: #fff; }
     .v2-role-tag { display: inline-block; padding: 2px 8px; border-radius: 10px;
                    font-size: 0.75rem; font-weight: 600; }
-    .v2-role-tag.admin { background: #d97706; color: #fff; }
-    .v2-role-tag.teacher { background: #2563eb; color: #fff; }
+    .v2-role-tag.admin,
+    .v2-role-tag.director      { background: #b91c1c; color: #fff; }
+    .v2-role-tag.section_chief { background: #d97706; color: #fff; }
+    .v2-role-tag.teacher       { background: #2563eb; color: #fff; }
 
     .v2-login-denied { max-width: 520px; margin: 3rem auto; padding: 2rem;
                       background: #fff3cd; border: 1px solid #ffc107; border-radius: 8px; }
@@ -197,10 +210,14 @@ async function renderPendingTab() {
 async function renderTeachersAdminTab() {
     const host = document.getElementById('v2-teachers-admin');
     if (!host) return;
-    if (!roleSvc.isAdmin()) { host.innerHTML = '<p>僅組長可存取。</p>'; return; }
+    if (!roleSvc.canManageRoster()) { host.innerHTML = '<p>僅教務主任可存取此頁籤。教學組長與一般教師無此權限。</p>'; return; }
 
     host.innerHTML = '<p>載入中…</p>';
     const teachers = await teacherMgr.listAllTeachers();
+    const roleLabel = (role) => {
+        const r = (role === 'admin') ? 'director' : role;
+        return { director: '主任', section_chief: '組長', teacher: '教師' }[r] || '教師';
+    };
 
     host.innerHTML = `
         <div class="v2-section-header">
@@ -213,15 +230,19 @@ async function renderTeachersAdminTab() {
         <table class="data-table data-table-compact">
             <thead><tr><th>姓名</th><th>Email（登入帳號）</th><th>角色</th><th>領域</th><th>操作</th></tr></thead>
             <tbody>
-            ${teachers.map(t => `
+            ${teachers.map(t => {
+                const normRole = (t.role === 'admin') ? 'director' : (t.role || 'teacher');
+                return `
                 <tr class="v2-teacher-row" data-id="${t.teacherId}">
                     <td>${t.name}</td>
                     <td><input type="email" class="v2-email-input" value="${t.email || ''}" placeholder="未指派"></td>
                     <td>
                         <select class="v2-role-select">
-                            <option value="teacher" ${t.role !== 'admin' ? 'selected' : ''}>教師</option>
-                            <option value="admin"   ${t.role === 'admin' ? 'selected' : ''}>組長</option>
+                            <option value="teacher"       ${normRole === 'teacher' ? 'selected' : ''}>教師</option>
+                            <option value="section_chief" ${normRole === 'section_chief' ? 'selected' : ''}>組長</option>
+                            <option value="director"      ${normRole === 'director' ? 'selected' : ''}>主任</option>
                         </select>
+                        <span class="v2-role-tag ${normRole}" style="margin-left:6px;">${roleLabel(t.role)}</span>
                     </td>
                     <td>${(t.domains || []).join('、')}</td>
                     <td>
@@ -313,13 +334,14 @@ async function renderRecordsTab() {
         host.className = 'card compact-card';
         original.appendChild(host);
     }
-    const all     = await dataSvc.listSubstituteRecords();
-    const visible = roleSvc.filterRecordsForCurrent(all);
-    const isAdmin = roleSvc.isAdmin();
+    const all       = await dataSvc.listSubstituteRecords();
+    const visible   = roleSvc.filterRecordsForCurrent(all);
+    const isApprover = roleSvc.isApprover();
+    const APPROVER_ROLES_FOR_BADGE = ['admin', 'director', 'section_chief'];
 
     host.innerHTML = `
         <div class="v2-section-header">
-            <h3>全校調代課紀錄 <small style="color:#6b7280;font-weight:normal;">（${visible.length} 筆｜${isAdmin ? '組長視圖' : '個人相關'}）</small></h3>
+            <h3>全校調代課紀錄 <small style="color:#6b7280;font-weight:normal;">（${visible.length} 筆｜${isApprover ? '核准者視圖' : '個人相關'}）</small></h3>
         </div>
         <table class="data-table data-table-compact">
             <thead><tr>
@@ -334,11 +356,11 @@ async function renderRecordsTab() {
                     <td>${r.className || ''}</td>
                     <td>${r.originalTeacher || ''}</td>
                     <td>${r.substituteTeacher || r.swapTeacher || ''}</td>
-                    <td>${r.type || ''}${r.initiatedByRole === 'admin' ? ' <span class="v2-role-tag admin">代發</span>' : ''}</td>
+                    <td>${r.type || ''}${APPROVER_ROLES_FOR_BADGE.includes(r.initiatedByRole) ? ' <span class="v2-role-tag director">代發</span>' : ''}</td>
                     <td>${r.initiatedByName || ''}</td>
                     <td>
                         <button class="btn btn-secondary btn-sm v2-download-pdf" data-id="${r.recordId}">下載 PDF</button>
-                        ${isAdmin ? `<button class="btn btn-danger btn-sm v2-admin-delete" data-id="${r.recordId}">刪除</button>` : ''}
+                        ${isApprover ? `<button class="btn btn-danger btn-sm v2-admin-delete" data-id="${r.recordId}">刪除</button>` : ''}
                     </td>
                 </tr>`).join('')}
             </tbody>
@@ -354,7 +376,7 @@ async function renderRecordsTab() {
             btn.disabled = false;
         }));
 
-    if (isAdmin) {
+    if (isApprover) {
         host.querySelectorAll('.v2-admin-delete').forEach(btn =>
             btn.addEventListener('click', async () => {
                 if (!confirm('確定刪除此紀錄？此操作會寫入 log。')) return;
@@ -667,7 +689,7 @@ async function bootstrap() {
         clearSubs();
         if (!user) {
             roleSvc.clearCurrentIdentity();
-            document.body.classList.remove('v2-admin');
+            document.body.classList.remove('v2-admin', 'v2-director', 'v2-section-chief', 'v2-teacher', 'v2-approver');
             _v2RecordsCache = [];
             _v2PendingCache = [];
             return;
@@ -682,17 +704,32 @@ async function bootstrap() {
                 showLoginDenied(user.email);
                 return;
             }
-            if (identity.role === ROLES.ADMIN) document.body.classList.add('v2-admin');
-            else                                document.body.classList.remove('v2-admin');
+            // v2.0.0 三層角色 body class：
+            //   v2-director / v2-section-chief / v2-teacher 三選一
+            //   v2-approver = director ∪ section_chief（CSS .v2-approver-only 用）
+            //   v2-admin    = 舊 alpha 類別，繼續寫入以兼容既有 CSS / DOM 查詢
+            document.body.classList.remove('v2-director', 'v2-section-chief', 'v2-teacher', 'v2-approver', 'v2-admin');
+            if (identity.role === ROLES.DIRECTOR) {
+                document.body.classList.add('v2-director', 'v2-approver', 'v2-admin');
+            } else if (identity.role === ROLES.SECTION_CHIEF) {
+                document.body.classList.add('v2-section-chief', 'v2-approver', 'v2-admin');
+            } else {
+                document.body.classList.add('v2-teacher');
+            }
 
+            const roleLabelMap = { director: '教務主任', section_chief: '教學組長', teacher: '教師' };
             const nameSpan = document.getElementById('user-name');
-            if (nameSpan) nameSpan.innerHTML = `${identity.name} <span class="v2-role-tag ${identity.role}">${identity.role === 'admin' ? '組長' : '教師'}</span>`;
+            if (nameSpan) {
+                nameSpan.innerHTML = `${identity.name} <span class="v2-role-tag ${identity.role}">${roleLabelMap[identity.role] || '教師'}</span>`;
+            }
 
             // 初次渲染
             await renderPendingTab();
             await renderRecordsTab();
-            if (roleSvc.isAdmin()) {
+            if (roleSvc.canManageRoster()) {
                 await renderTeachersAdminTab();
+            }
+            if (roleSvc.isApprover()) {
                 await renderLogsTab();
             }
 
@@ -705,7 +742,7 @@ async function bootstrap() {
                 _v2RecordsCache = Array.isArray(items) ? items : [];
                 renderRecordsTab();
             }));
-            if (roleSvc.isAdmin()) {
+            if (roleSvc.isApprover()) {
                 unsubs.push(await dataSvc.subscribeOperationLogs(() => renderLogsTab()));
             }
 
