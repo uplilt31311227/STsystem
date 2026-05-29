@@ -78,9 +78,14 @@ function injectV2Styles() {
 
     .v2-teacher-row td { vertical-align: middle; }
     .v2-teacher-row input[type="email"] { width: 220px; }
+    .v2-row-needs-email { background: #fffbeb; }
+    .v2-row-needs-email td:first-child::before {
+        content: '⚠ '; color: #d97706; font-weight: bold;
+    }
 
     .v2-section-header { display: flex; justify-content: space-between;
                          align-items: center; margin-bottom: 1rem; }
+    .v2-section-header h3 { display: flex; align-items: center; gap: 8px; margin: 0; }
     `;
     document.head.appendChild(style);
 }
@@ -218,10 +223,16 @@ async function renderTeachersAdminTab() {
         const r = (role === 'admin') ? 'director' : role;
         return { director: '主任', section_chief: '組長', teacher: '教師' }[r] || '教師';
     };
+    const missingEmailCount = teachers.filter(t => !t.email).length;
 
     host.innerHTML = `
         <div class="v2-section-header">
-            <h3>教師帳號管理</h3>
+            <h3>
+                教師帳號管理
+                ${missingEmailCount > 0
+                    ? `<span class="v2-badge" title="尚有教師未指派 email，無法登入">⚠ ${missingEmailCount} 位待指派 email</span>`
+                    : ''}
+            </h3>
             <div>
                 <button class="btn btn-secondary btn-sm" id="v2-import-legacy-teachers">從課表匯入教師</button>
                 <button class="btn btn-primary btn-sm" id="v2-add-teacher">新增教師</button>
@@ -232,8 +243,9 @@ async function renderTeachersAdminTab() {
             <tbody>
             ${teachers.map(t => {
                 const normRole = (t.role === 'admin') ? 'director' : (t.role || 'teacher');
+                const rowClass = t.email ? 'v2-teacher-row' : 'v2-teacher-row v2-row-needs-email';
                 return `
-                <tr class="v2-teacher-row" data-id="${t.teacherId}">
+                <tr class="${rowClass}" data-id="${t.teacherId}">
                     <td>${t.name}</td>
                     <td><input type="email" class="v2-email-input" value="${t.email || ''}" placeholder="未指派"></td>
                     <td>
@@ -600,6 +612,78 @@ function patchDataManager() {
         }
         return origCheck ? origCheck(date, period, className, originalTeacher) : null;
     };
+
+    /**
+     * Phase 1.6.a：課表匯入完成 → 自動 sync 教師清單到 V2 teachers 集合。
+     * 攔截 dataManager.setTeachers：若主任登入且有新教師（teachers 集合中尚未存在 name 的），
+     * 自動 importFromLegacyTeachers 並顯示「前往教師管理補 email」toast。
+     */
+    const origSetTeachers = dm.setTeachers.bind(dm);
+    dm.setTeachers = function(teachers) {
+        origSetTeachers(teachers);
+        if (!roleSvc.canManageRoster()) return;
+        if (!Array.isArray(teachers) || teachers.length === 0) return;
+        autoSyncTeachersToV2(teachers).catch(err => {
+            console.warn('[V2] 自動同步教師清單失敗：', err);
+        });
+    };
+}
+
+let _autoSyncInFlight = false;
+async function autoSyncTeachersToV2(legacyTeachers) {
+    if (_autoSyncInFlight) return;
+    _autoSyncInFlight = true;
+    try {
+        const created = await teacherMgr.importFromLegacyTeachers(legacyTeachers);
+        if (!created.length) return;
+
+        const app = window.app;
+        const message = `📋 已自動加入 ${created.length} 位教師到名單`;
+        if (app && typeof app.showToast === 'function') {
+            app.showToast(message, 'success', 6000);
+        }
+        showGoToTeacherAdminToast(created.length);
+        await renderTeachersAdminTab();
+    } finally {
+        _autoSyncInFlight = false;
+    }
+}
+
+function showGoToTeacherAdminToast(count) {
+    const existing = document.getElementById('v2-import-followup-toast');
+    if (existing) existing.remove();
+
+    const toast = document.createElement('div');
+    toast.id = 'v2-import-followup-toast';
+    toast.style.cssText = `
+        position: fixed; bottom: 24px; right: 24px; z-index: 9999;
+        background: #fffbeb; border: 1px solid #d97706; border-radius: 8px;
+        padding: 12px 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        max-width: 320px; font-size: 0.9rem;
+    `;
+    toast.innerHTML = `
+        <div style="display:flex; align-items:center; gap:10px;">
+            <span style="font-size:1.4rem;">📧</span>
+            <div style="flex:1;">
+                <div style="font-weight:600; color:#92400e;">${count} 位新教師待指派 email</div>
+                <div style="color:#78350f; font-size:0.82rem; margin-top:2px;">未指派 email 的教師無法登入系統</div>
+            </div>
+        </div>
+        <div style="display:flex; gap:8px; margin-top:10px;">
+            <button id="v2-goto-teacher-admin" class="btn btn-primary btn-sm" style="flex:1;">前往教師管理</button>
+            <button id="v2-dismiss-followup-toast" class="btn btn-secondary btn-sm">稍後</button>
+        </div>
+    `;
+    document.body.appendChild(toast);
+
+    document.getElementById('v2-goto-teacher-admin').addEventListener('click', () => {
+        const tabBtn = document.querySelector('.tab-btn[data-tab="v2-teachers"]');
+        if (tabBtn) tabBtn.click();
+        toast.remove();
+    });
+    document.getElementById('v2-dismiss-followup-toast').addEventListener('click', () => toast.remove());
+
+    setTimeout(() => toast.remove(), 30000);
 }
 
 /**
