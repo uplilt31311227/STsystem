@@ -36,6 +36,7 @@ async function api(method, urlSuffix, body) {
         headers: {
             Authorization: `Bearer ${token}`,
             'Content-Type': 'application/json',
+            'X-Goog-User-Project': PROJECT,
         },
     };
     if (body !== undefined) init.body = JSON.stringify(body);
@@ -67,9 +68,12 @@ async function createRuleset(rulesSource) {
 }
 
 async function publishRelease(rulesetName) {
-    return api('PATCH', '/releases/cloud.firestore?updateMask=rulesetName', {
-        name:         `projects/${PROJECT}/releases/cloud.firestore`,
-        rulesetName,
+    // body 須包 release 物件（對齊 firebase-tools rulesDeploy.ts 的呼叫格式）
+    return api('PATCH', '/releases/cloud.firestore', {
+        release: {
+            name:         `projects/${PROJECT}/releases/cloud.firestore`,
+            rulesetName,
+        },
     });
 }
 
