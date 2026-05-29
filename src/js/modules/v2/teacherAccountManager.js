@@ -4,15 +4,18 @@
  * 功能：
  * - 將舊 DataManager 的教師名單匯入 V2 teachers 集合
  * - 為教師指派/解除 email
- * - 切換教師角色（admin / teacher）
+ * - 切換教師角色（director / section_chief / teacher）
  * - 新增 / 刪除教師
  *
  * 所有異動皆寫入 operationLog。
+ *
+ * v2.0.0 升級：setRole 接受三層角色（director / section_chief / teacher）。
+ * 舊 'admin' 仍允許輸入（normalizeRole 自動轉為 'director'）以便平滑遷移。
  */
 
 import * as dataSvc    from './schoolDataService.js';
 import * as logger     from './operationLogger.js';
-import { LOG_ACTIONS, LOG_TARGET_TYPES, ROLES } from './schemaConstants.js';
+import { LOG_ACTIONS, LOG_TARGET_TYPES, ROLES, VALID_ROLES, normalizeRole } from './schemaConstants.js';
 
 export async function listAllTeachers() {
     return dataSvc.listTeachers();
@@ -72,13 +75,14 @@ export async function assignEmail(teacherId, email) {
 }
 
 export async function setRole(teacherId, role) {
-    if (role !== ROLES.ADMIN && role !== ROLES.TEACHER) {
+    const normalized = normalizeRole(role);
+    if (!VALID_ROLES.includes(normalized)) {
         throw new Error(`無效角色：${role}`);
     }
     const before = await dataSvc.getTeacher(teacherId);
     if (!before) throw new Error('找不到教師');
 
-    const after = await dataSvc.updateTeacher(teacherId, { role });
+    const after = await dataSvc.updateTeacher(teacherId, { role: normalized });
     await logger.log(
         LOG_ACTIONS.ROLE_CHANGE,
         LOG_TARGET_TYPES.TEACHER,
