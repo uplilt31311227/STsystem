@@ -249,7 +249,8 @@ async function renderTeachersAdminTab() {
                         <button class="btn btn-primary btn-sm v2-save-teacher">儲存</button>
                         <button class="btn btn-danger btn-sm v2-delete-teacher">刪除</button>
                     </td>
-                </tr>`).join('')}
+                </tr>`;
+            }).join('')}
             </tbody>
         </table>
     `;
