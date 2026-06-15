@@ -38,8 +38,10 @@ export class DataManager {
 
         // 系統設定（會持久化到 localStorage 與雲端）
         // grade9Disabled：九年級已畢業 → 停用九年級課程，使其不擋調代課
+        // subjectDomainMap：科目→領域對應表 { 科目: [領域...依出現次數降序] }
         this.settings = {
-            grade9Disabled: false
+            grade9Disabled: false,
+            subjectDomainMap: {}
         };
 
         // 最後修改時間
@@ -151,6 +153,117 @@ export class DataManager {
     getActiveScheduleData() {
         if (!this.isGrade9Disabled()) return this.scheduleData;
         return this.scheduleData.filter(course => !this.isGraduatedClass(course.className));
+    }
+
+    // ===== 科目↔領域 對應表 =====
+
+    /** 標準領域選項（與課表編輯對話框一致） */
+    getStandardDomains() {
+        return [
+            '語文領域', '數學領域', '社會領域', '自然科學領域',
+            '藝術領域', '綜合活動領域', '科技領域', '健康與體育領域',
+            '彈性學習', '其他'
+        ];
+    }
+
+    /**
+     * 從目前課表擷取「科目→領域」對應表
+     * @param {boolean} merge - true（自動匯入時用）：保留既有對應表的科目與順序，僅把課表新出現的領域 union 補在尾端，不重排既有項目；
+     *                          false（手動「重新擷取」時用）：完全以課表重建，所有科目領域嚴格依出現次數降序
+     * @returns {Object} { 科目: [領域...] }（全新擷取的科目依出現次數降序）
+     */
+    buildSubjectDomainMap(merge = true) {
+        // 統計 科目 → 各領域出現次數
+        const counts = {};
+        this.scheduleData.forEach(c => {
+            const subject = (c.subject || '').trim();
+            const domain = (c.domain || '').trim();
+            if (!subject) return;
+            if (!counts[subject]) counts[subject] = {};
+            if (domain) counts[subject][domain] = (counts[subject][domain] || 0) + 1;
+        });
+
+        // 轉為 科目 → [領域依次數降序]
+        const built = {};
+        for (const [subject, domainCounts] of Object.entries(counts)) {
+            built[subject] = Object.entries(domainCounts)
+                .sort((a, b) => b[1] - a[1])
+                .map(([d]) => d);
+        }
+
+        // 合併既有對應表（保留手動新增的科目與使用者偏好順序）
+        if (merge && this.settings.subjectDomainMap) {
+            const existing = this.settings.subjectDomainMap;
+            for (const [subject, domains] of Object.entries(existing)) {
+                if (!built[subject]) {
+                    built[subject] = [...domains];
+                } else {
+                    const merged = [...domains];
+                    built[subject].forEach(d => { if (!merged.includes(d)) merged.push(d); });
+                    built[subject] = merged;
+                }
+            }
+        }
+
+        this.settings.subjectDomainMap = built;
+        return built;
+    }
+
+    /** 取得科目→領域對應表 */
+    getSubjectDomainMap() {
+        return this.settings.subjectDomainMap || {};
+    }
+
+    /** 設定（覆寫）科目→領域對應表 */
+    setSubjectDomainMap(map) {
+        this.settings.subjectDomainMap = map || {};
+    }
+
+    /** 取得所有科目名稱（依筆劃/字典序排序） */
+    getSubjects() {
+        return Object.keys(this.getSubjectDomainMap()).sort((a, b) => a.localeCompare(b, 'zh-Hant'));
+    }
+
+    /** 取得某科目對應的領域陣列（最常出現的在前）；無對應回傳空陣列 */
+    getDomainsForSubject(subject) {
+        if (!subject) return [];
+        return this.getSubjectDomainMap()[(subject + '').trim()] || [];
+    }
+
+    /** 取得所有已知領域（標準領域 ∪ 對應表內出現過的領域） */
+    getAllKnownDomains() {
+        const set = new Set(this.getStandardDomains());
+        Object.values(this.getSubjectDomainMap()).forEach(domains => {
+            domains.forEach(d => { if (d) set.add(d); });
+        });
+        return Array.from(set);
+    }
+
+    /**
+     * 新增/更新單筆科目→領域對應（手動編輯或編輯課程時回饋）
+     * @param {string} subject - 科目
+     * @param {string} domain - 領域（可空）
+     */
+    setSubjectDomains(subject, domains) {
+        subject = (subject + '').trim();
+        if (!subject) return;
+        if (!this.settings.subjectDomainMap) this.settings.subjectDomainMap = {};
+        // domains 可為陣列或以「、」「,」「，」分隔的字串
+        // 注意：不可用「/」分隔，領域名本身可能含斜線（如「統整性主題/專題/議題探究」）
+        const list = Array.isArray(domains)
+            ? domains
+            : (domains + '').split(/[,，、]/);
+        this.settings.subjectDomainMap[subject] = list
+            .map(d => (d + '').trim())
+            .filter((d, i, arr) => d && arr.indexOf(d) === i);
+    }
+
+    /** 刪除某科目的對應 */
+    removeSubject(subject) {
+        subject = (subject + '').trim();
+        if (this.settings.subjectDomainMap) {
+            delete this.settings.subjectDomainMap[subject];
+        }
     }
 
     /**
@@ -548,7 +661,7 @@ export class DataManager {
         this.teachers = [];
         this.classes = [];
         this.substituteRecords = [];
-        this.settings = { grade9Disabled: false };
+        this.settings = { grade9Disabled: false, subjectDomainMap: {} };
         this.lastModified = null;
         this.version = 0;
     }
