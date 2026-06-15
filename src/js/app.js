@@ -4203,6 +4203,11 @@ class SubstituteTeacherApp {
                     `;
                 }
             });
+
+            // 第四節後插入「午休」橫列（跨整列灰色間隔，提升辨識度）
+            if (period === '第四節') {
+                html += '<div class="schedule-cell schedule-lunch">午休</div>';
+            }
         });
 
         grid.innerHTML = html;
