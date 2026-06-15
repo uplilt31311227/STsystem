@@ -18,6 +18,18 @@ tags:
 
 ---
 
+## 九年級畢業後課程擋住調代課
+
+- **日期**: 2026-06-15
+- **狀態**: 🟢 已解決
+- **描述**: 九年級學生畢業後，課表上仍保留「9年X班」課程，導致原任課老師在該時段被判定為忙碌，無法被推薦/安排代課，也造成調課衝堂誤判——調代課被不須上的課程擋住。
+- **原因**: 所有教師空堂/衝堂判斷皆以完整 `scheduleData` 計算，未排除已畢業班級的課程。
+- **解決方案**: 新增「九年級已畢業」手動開關（`settings.grade9Disabled`，持久化至 localStorage 與 Firebase）。開啟後以班級名稱前綴（9年X班/九年X班/9XX）判定九年級，提供 `getActiveScheduleData()` 回傳排除九年級的有效課表，並套用於所有調代課可用性計算：代課推薦、`getBusyTeachers`、`checkSubstituteTeacherConflict`、單次調課（`updateSwapCourseListForDate`）、批次調課（`checkBatchConflicts`）。月結算與 PDF 維持原始課表以保留歷史。資料保留可隨時還原。
+- **驗證**: `test/test-grade9.mjs` 18 項單元測試通過；瀏覽器手動驗收。
+- **相關檔案**: `src/js/modules/dataManager.js`、`src/js/app.js`、`index.html`、`src/css/style.css`、`docs/PLAN_grade9_graduation.md`
+
+---
+
 ## V2 權限系統（feature/permission-system）已知限制與待辦
 
 ### Firestore 規則由「測試版（任何登入者皆可讀寫）」收緊為 v2.1
