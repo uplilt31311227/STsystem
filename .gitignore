@@ -47,6 +47,13 @@ test-results/
 *.xls
 *.xlsx
 schedule_export.csv
+schedule_*.csv
+schedule_export_*.csv
+
+# Working / ETL scratch outputs (not committed)
+compare_*.txt
+etl_log.txt
+verify_log.txt
 
 # Claude Code
 .claude/
