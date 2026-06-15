@@ -36,6 +36,12 @@ export class DataManager {
         // 調代課紀錄
         this.substituteRecords = [];
 
+        // 系統設定（會持久化到 localStorage 與雲端）
+        // grade9Disabled：九年級已畢業 → 停用九年級課程，使其不擋調代課
+        this.settings = {
+            grade9Disabled: false
+        };
+
         // 最後修改時間
         this.lastModified = null;
 
@@ -79,6 +85,72 @@ export class DataManager {
      */
     getScheduleData() {
         return this.scheduleData;
+    }
+
+    /**
+     * 取得九年級停用開關狀態
+     * @returns {boolean}
+     */
+    isGrade9Disabled() {
+        return !!(this.settings && this.settings.grade9Disabled);
+    }
+
+    /**
+     * 設定九年級停用開關（九年級已畢業）
+     * @param {boolean} value - true 表示停用九年級課程
+     */
+    setGrade9Disabled(value) {
+        if (!this.settings) this.settings = {};
+        this.settings.grade9Disabled = !!value;
+    }
+
+    /**
+     * 判斷一個班級名稱是否屬於九年級
+     * 涵蓋格式：9年X班、九年X班、9XX（如 901）
+     * 注意：此為「純判斷」，不檢查開關狀態
+     * @param {string} className - 班級名稱
+     * @returns {boolean}
+     */
+    isGraduatedClass(className) {
+        if (!className) return false;
+        let n = String(className).replace(/\s+/g, '');
+
+        // 中文數字轉阿拉伯數字
+        const cn = {
+            '一': '1', '二': '2', '三': '3', '四': '4', '五': '5',
+            '六': '6', '七': '7', '八': '8', '九': '9', '十': '10'
+        };
+        for (const [c, num] of Object.entries(cn)) {
+            n = n.replace(new RegExp(c, 'g'), num);
+        }
+
+        // 形如 901 → 9 年 1 班
+        const numMatch = n.match(/^(\d)(\d{2})$/);
+        if (numMatch) return numMatch[1] === '9';
+
+        // 形如 9年1班
+        const gradeMatch = n.match(/^(\d+)年/);
+        return gradeMatch ? gradeMatch[1] === '9' : false;
+    }
+
+    /**
+     * 判斷一筆課程目前是否有效（未因九年級畢業而停用）
+     * @param {Object} course - 課程物件
+     * @returns {boolean}
+     */
+    isCourseActive(course) {
+        if (!this.isGrade9Disabled()) return true;
+        return !this.isGraduatedClass(course && course.className);
+    }
+
+    /**
+     * 取得「有效」課表資料（九年級已畢業時排除九年級課程）
+     * 用於調代課推薦，避免已畢業班級的課擋住老師
+     * @returns {Array} 過濾後的課表資料
+     */
+    getActiveScheduleData() {
+        if (!this.isGrade9Disabled()) return this.scheduleData;
+        return this.scheduleData.filter(course => !this.isGraduatedClass(course.className));
     }
 
     /**
@@ -254,7 +326,8 @@ export class DataManager {
      * @returns {Array} 有課的教師姓名清單
      */
     getBusyTeachers(weekday, period) {
-        return this.scheduleData
+        // 使用有效課表：九年級已畢業時，其課程不再讓老師被視為忙碌
+        return this.getActiveScheduleData()
             .filter(course => course.weekday === weekday && course.period === period)
             .map(course => course.teacher);
     }
@@ -402,9 +475,9 @@ export class DataManager {
     checkSubstituteTeacherConflict(substituteTeacherName, date, weekday, period, excludeRecordId = null) {
         if (!substituteTeacherName || !date || !period) return null;
 
-        // (1) 該老師當天當節是否有自己的原課
+        // (1) 該老師當天當節是否有自己的原課（九年級已畢業時不算，使用有效課表）
         if (weekday) {
-            const ownClass = this.scheduleData.find(c =>
+            const ownClass = this.getActiveScheduleData().find(c =>
                 c.teacher === substituteTeacherName &&
                 c.weekday === weekday &&
                 c.period === period
@@ -448,6 +521,7 @@ export class DataManager {
         if (data.teachers) this.teachers = data.teachers;
         if (data.classes) this.classes = data.classes;
         if (data.substituteRecords) this.substituteRecords = data.substituteRecords;
+        if (data.settings) this.settings = { ...this.settings, ...data.settings };
     }
 
     /**
@@ -460,7 +534,8 @@ export class DataManager {
             scheduleData: this.scheduleData,
             teachers: this.teachers,
             classes: this.classes,
-            substituteRecords: this.substituteRecords
+            substituteRecords: this.substituteRecords,
+            settings: this.settings
         };
     }
 
@@ -473,6 +548,7 @@ export class DataManager {
         this.teachers = [];
         this.classes = [];
         this.substituteRecords = [];
+        this.settings = { grade9Disabled: false };
         this.lastModified = null;
         this.version = 0;
     }
@@ -495,6 +571,7 @@ export class DataManager {
             teachers: this.teachers,
             classes: this.classes,
             substituteRecords: this.substituteRecords,
+            settings: this.settings,
             lastModified: this.lastModified || new Date().toISOString(),
             version: this.version
         };
@@ -512,6 +589,7 @@ export class DataManager {
         if (data.teachers) this.teachers = data.teachers;
         if (data.classes) this.classes = data.classes;
         if (data.substituteRecords) this.substituteRecords = data.substituteRecords;
+        if (data.settings) this.settings = { ...this.settings, ...data.settings };
         if (data.lastModified) this.lastModified = data.lastModified;
         if (data.version !== undefined) this.version = data.version;
 

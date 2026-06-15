@@ -549,6 +549,9 @@ class SubstituteTeacherApp {
      * 同步後刷新 UI
      */
     refreshUIAfterSync() {
+        // 同步「九年級已畢業」開關狀態
+        this.syncGrade9Toggle();
+
         // 更新教師表格
         this.updateTeacherTable();
 
@@ -1411,7 +1414,8 @@ class SubstituteTeacherApp {
         const swapCourseSelect = document.getElementById('swap-course');
         const swapHint = document.getElementById('swap-hint');
         const swapPreview = document.getElementById('swap-preview');
-        const scheduleData = this.dataManager.getScheduleData();
+        // 使用有效課表：九年級已畢業時，其課程不再造成調課衝堂誤判
+        const scheduleData = this.dataManager.getActiveScheduleData();
 
         // 隱藏預覽
         swapPreview.classList.add('hidden');
@@ -1713,12 +1717,16 @@ class SubstituteTeacherApp {
 
                 if (courses.length > 0) {
                     const course = courses[0];
-                    // 如果有高亮設定，只有該天的課程可選擇
-                    const isSelectable = !highlightWeekday || isActiveDay;
+                    // 九年級已畢業時，該課程停用、不可被選為調代課對象
+                    const isGraduated = this.dataManager.isGrade9Disabled()
+                        && this.dataManager.isGraduatedClass(course.className);
+                    // 如果有高亮設定，只有該天的課程可選擇；已畢業課程一律不可選
+                    const isSelectable = (!highlightWeekday || isActiveDay) && !isGraduated;
                     const cellClasses = [
                         'schedule-cell',
                         'schedule-course',
                         isActiveDay ? 'today-highlight' : '',
+                        isGraduated ? 'disabled-course' : '',
                         isSelectable ? 'selectable' : 'disabled'
                     ].filter(Boolean).join(' ');
 
@@ -2117,7 +2125,8 @@ class SubstituteTeacherApp {
      */
     showRecommendations() {
         const date = document.getElementById('sub-date').value;
-        const scheduleData = this.dataManager.getScheduleData();
+        // 使用「有效課表」：九年級已畢業時排除其課程，避免已畢業班級擋住可代課老師
+        const scheduleData = this.dataManager.getActiveScheduleData();
         const teachers = this.dataManager.getTeachers();
         const substituteRecords = this.dataManager.getSubstituteRecords();
 
@@ -3021,7 +3030,8 @@ class SubstituteTeacherApp {
             return;
         }
 
-        const scheduleData = this.dataManager.getScheduleData();
+        // 使用有效課表：九年級已畢業時，其課程不再造成批次調課的假衝突
+        const scheduleData = this.dataManager.getActiveScheduleData();
         const conflicts = [];
 
         // 收集所有教師的移動：從哪個 date+period 移走，到哪個 date+period
@@ -3719,6 +3729,53 @@ class SubstituteTeacherApp {
             this._activeImportCtx = 'tab';
             this.cancelImport();
         });
+
+        // === 九年級已畢業開關 ===
+        const grade9Toggle = document.getElementById('grade9-disabled-toggle');
+        if (grade9Toggle) {
+            grade9Toggle.checked = this.dataManager.isGrade9Disabled();
+            grade9Toggle.addEventListener('change', (e) => {
+                this.handleGrade9Toggle(e.target.checked);
+            });
+        }
+    }
+
+    /**
+     * 處理「九年級已畢業」開關切換
+     * @param {boolean} disabled - true 表示停用九年級課程
+     */
+    handleGrade9Toggle(disabled) {
+        this.dataManager.setGrade9Disabled(disabled);
+        this.saveDataToStorage();
+
+        // 重新渲染目前可見的教師週課表（讓灰底標記即時生效）
+        if (this.editorCurrentTeacher) {
+            this.renderEditorSchedule();
+        }
+        const originalSchedule = document.getElementById('original-schedule');
+        if (originalSchedule && !originalSchedule.classList.contains('hidden')) {
+            // 重新渲染調代課申請的原課表
+            const teacherName = document.getElementById('sub-teacher')?.value;
+            if (teacherName) {
+                const weekSchedule = this.dataManager.getTeacherWeekSchedule(teacherName);
+                this.renderTeacherSchedule(weekSchedule, teacherName);
+            }
+        }
+
+        this.showToast(
+            disabled ? '已停用九年級課程，調代課將不受其影響' : '已恢復九年級課程',
+            'success'
+        );
+    }
+
+    /**
+     * 同步「九年級已畢業」開關的顯示狀態（資料載入/同步後呼叫）
+     */
+    syncGrade9Toggle() {
+        const grade9Toggle = document.getElementById('grade9-disabled-toggle');
+        if (grade9Toggle) {
+            grade9Toggle.checked = this.dataManager.isGrade9Disabled();
+        }
     }
 
     /**
@@ -3999,14 +4056,22 @@ class SubstituteTeacherApp {
 
                 if (courses.length > 0) {
                     const course = courses[0];
+                    const isGraduated = this.dataManager.isGrade9Disabled()
+                        && this.dataManager.isGraduatedClass(course.className);
+                    const courseCellClass = isGraduated
+                        ? 'schedule-cell editor-course disabled-course'
+                        : 'schedule-cell editor-course';
+                    const courseTitle = isGraduated
+                        ? `九年級已畢業（停用）：${course.className} ${course.subject}`
+                        : `點擊編輯：${course.className} ${course.subject}`;
                     html += `
-                        <div class="schedule-cell editor-course"
+                        <div class="${courseCellClass}"
                              data-weekday="${dayName}"
                              data-period="${period}"
                              data-class="${course.className}"
                              data-subject="${course.subject}"
                              data-domain="${course.domain || ''}"
-                             title="點擊編輯：${course.className} ${course.subject}">
+                             title="${courseTitle}">
                             <span class="course-class">${course.className}</span>
                             <span class="course-subject">${course.subject}</span>
                         </div>
@@ -4309,6 +4374,9 @@ class SubstituteTeacherApp {
             try {
                 const data = JSON.parse(savedData);
                 this.dataManager.loadFromStorage(data);
+
+                // 同步「九年級已畢業」開關狀態
+                this.syncGrade9Toggle();
 
                 // 更新 UI
                 if (data.scheduleData && data.scheduleData.length > 0) {
