@@ -2614,6 +2614,61 @@ body {
     gap: 0.2rem;
 }
 
+/* 科目領域對應表 */
+.subject-domain-add-row {
+    display: flex;
+    gap: 0.4rem;
+    margin-bottom: 0.6rem;
+    flex-wrap: wrap;
+}
+
+.subject-domain-add-row input {
+    flex: 1;
+    min-width: 100px;
+    padding: 0.3rem 0.5rem;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    font-size: 0.85rem;
+}
+
+.subject-domain-table-wrap {
+    max-height: 320px;
+    overflow-y: auto;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+}
+
+.subject-domain-table {
+    width: 100%;
+    margin: 0;
+}
+
+.subject-domain-table th {
+    position: sticky;
+    top: 0;
+    background: var(--background-color);
+    z-index: 1;
+}
+
+.subject-domain-table td:first-child {
+    white-space: nowrap;
+    font-weight: 500;
+}
+
+.subject-domain-input {
+    width: 100%;
+    padding: 0.25rem 0.4rem;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    font-size: 0.85rem;
+}
+
+.btn-xs {
+    padding: 0.15rem 0.5rem;
+    font-size: 0.75rem;
+    border-radius: 4px;
+}
+
 /* 課程編輯對話框 */
 #course-edit-modal .modal-content {
     max-width: 420px;
