@@ -811,6 +811,19 @@ body {
     font-weight: 500;
 }
 
+/* 午休橫列：跨整列灰色間隔，分隔上午/下午課程 */
+.schedule-lunch {
+    grid-column: 1 / -1;
+    background-color: #e2e8f0;
+    color: var(--text-muted);
+    font-weight: 600;
+    letter-spacing: 0.5em;
+    text-indent: 0.5em;
+    min-height: 24px;
+    padding: 0.2rem;
+    font-size: 0.75rem;
+}
+
 .schedule-course {
     cursor: pointer;
     transition: all 0.2s ease;
