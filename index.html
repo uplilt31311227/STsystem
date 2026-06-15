@@ -209,7 +209,9 @@
                             </div>
                             <div class="form-group" style="margin-bottom: 1rem;">
                                 <label for="course-modal-subject">科目：<span style="color: red;">*</span></label>
-                                <input type="text" id="course-modal-subject" placeholder="如：數學">
+                                <input type="text" id="course-modal-subject" placeholder="如：數學" list="subject-datalist" autocomplete="off">
+                                <datalist id="subject-datalist"></datalist>
+                                <p class="hint" style="margin:0.25rem 0 0;">可從清單選擇，選後自動帶出領域；亦可手動輸入新科目</p>
                             </div>
                             <div class="form-group" style="margin-bottom: 1rem;">
                                 <label for="course-modal-domain">領域：</label>
@@ -814,6 +816,32 @@
                                 <span class="hint">開啟後停用九年級（9年X班）所有課程，讓這些時段的老師可正常被安排調代課；資料完整保留，可隨時關閉還原。</span>
                             </span>
                         </label>
+                    </div>
+                </div>
+
+                <div class="card compact-card">
+                    <h3>科目領域對應表</h3>
+                    <p class="hint">匯入課表時自動擷取「科目→領域」對應；課表編輯選擇科目時會據此自動帶出領域。可在此手動增修。一個科目可對應多個領域（編輯課程時預設帶第一個）。</p>
+
+                    <div class="data-management-section">
+                        <div class="subject-domain-add-row">
+                            <input type="text" id="subject-map-new-subject" placeholder="科目（如：數學）">
+                            <input type="text" id="subject-map-new-domain" placeholder="領域（多個用、分隔）" list="domain-datalist">
+                            <datalist id="domain-datalist"></datalist>
+                            <button class="btn btn-primary btn-sm" id="subject-map-add-btn">新增</button>
+                        </div>
+                        <div class="subject-domain-table-wrap">
+                            <table class="data-table data-table-compact subject-domain-table">
+                                <thead>
+                                    <tr><th>科目</th><th>領域（可編輯，多個用、分隔）</th><th></th></tr>
+                                </thead>
+                                <tbody id="subject-domain-tbody"></tbody>
+                            </table>
+                            <p class="hint" id="subject-domain-empty" style="display:none;">尚無對應資料，請先匯入課表或在上方手動新增。</p>
+                        </div>
+                        <div style="margin-top:0.5rem; display:flex; gap:0.4rem;">
+                            <button class="btn btn-secondary btn-sm" id="subject-map-rebuild-btn">從目前課表重新擷取</button>
+                        </div>
                     </div>
                 </div>
 

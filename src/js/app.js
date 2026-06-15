@@ -543,6 +543,9 @@ class SubstituteTeacherApp {
         // 同步「九年級已畢業」開關狀態
         this.syncGrade9Toggle();
 
+        // 重新渲染科目領域對應表
+        this.renderSubjectDomainTable();
+
         // 更新教師表格
         this.updateTeacherTable();
 
@@ -721,6 +724,10 @@ class SubstituteTeacherApp {
                 this.dataManager.setScheduleData(parseResult.scheduleData);
                 this.dataManager.setTeachers(parseResult.teachers);
                 this.dataManager.setClasses(parseResult.classes);
+
+                // 從課表自動擷取「科目→領域」對應表（合併既有手動編輯）
+                this.dataManager.buildSubjectDomainMap(true);
+                this.renderSubjectDomainTable();
 
                 // 更新 UI 顯示
                 this.updateScheduleStatus(parseResult);
@@ -3723,6 +3730,126 @@ class SubstituteTeacherApp {
                 this.handleGrade9Toggle(e.target.checked);
             });
         }
+
+        // === 科目領域對應表 ===
+        document.getElementById('subject-map-add-btn')?.addEventListener('click', () => {
+            this.addSubjectDomainEntry();
+        });
+        document.getElementById('subject-map-rebuild-btn')?.addEventListener('click', () => {
+            this.rebuildSubjectDomainMap();
+        });
+        // 表格內編輯/刪除採事件委派（只綁一次）
+        const tbody = document.getElementById('subject-domain-tbody');
+        if (tbody) {
+            tbody.addEventListener('change', (e) => {
+                const input = e.target.closest('.subject-domain-input');
+                if (input) this.saveSubjectDomainRow(input.dataset.subject, input.value);
+            });
+            tbody.addEventListener('click', (e) => {
+                const btn = e.target.closest('.subject-domain-del-btn');
+                if (btn) this.deleteSubjectDomainEntry(btn.dataset.subject);
+            });
+        }
+        this.renderSubjectDomainTable();
+    }
+
+    /**
+     * 渲染科目↔領域對應表
+     */
+    renderSubjectDomainTable() {
+        const tbody = document.getElementById('subject-domain-tbody');
+        if (!tbody) return;
+        const map = this.dataManager.getSubjectDomainMap();
+        const subjects = this.dataManager.getSubjects();
+
+        tbody.innerHTML = subjects.map(subject => {
+            const domains = (map[subject] || []).join('、');
+            return `<tr>
+                <td>${esc(subject)}</td>
+                <td><input type="text" class="subject-domain-input" data-subject="${esc(subject)}"
+                     value="${esc(domains)}" placeholder="（無）"></td>
+                <td><button class="btn btn-danger btn-xs subject-domain-del-btn" data-subject="${esc(subject)}">刪</button></td>
+            </tr>`;
+        }).join('');
+
+        const emptyHint = document.getElementById('subject-domain-empty');
+        if (emptyHint) emptyHint.style.display = subjects.length === 0 ? 'block' : 'none';
+
+        // 同步領域 datalist（手動輸入時可選既有領域）
+        const domainList = document.getElementById('domain-datalist');
+        if (domainList) {
+            domainList.innerHTML = this.dataManager.getAllKnownDomains()
+                .map(d => `<option value="${esc(d)}">`).join('');
+        }
+    }
+
+    /**
+     * 設定頁：新增一筆科目→領域對應
+     */
+    addSubjectDomainEntry() {
+        const subjectEl = document.getElementById('subject-map-new-subject');
+        const domainEl = document.getElementById('subject-map-new-domain');
+        if (!subjectEl || !domainEl) return;
+        const subject = subjectEl.value.trim();
+        const domain = domainEl.value.trim();
+        if (!subject) {
+            this.showToast('請輸入科目', 'warning');
+            return;
+        }
+        // 與既有合併（保留原有領域，補上新輸入的）
+        // 不用「/」分隔，領域名本身可能含斜線
+        const existing = this.dataManager.getDomainsForSubject(subject);
+        const incoming = domain.split(/[,，、]/).map(d => d.trim()).filter(Boolean);
+        const merged = [...existing];
+        incoming.forEach(d => { if (!merged.includes(d)) merged.push(d); });
+        this.dataManager.setSubjectDomains(subject, merged);
+
+        subjectEl.value = '';
+        domainEl.value = '';
+        this.saveDataToStorage();
+        this.renderSubjectDomainTable();
+        this.showToast(`已新增/更新科目「${subject}」`, 'success');
+    }
+
+    /**
+     * 設定頁：儲存某科目編輯後的領域
+     */
+    saveSubjectDomainRow(subject, domainsText) {
+        this.dataManager.setSubjectDomains(subject, domainsText);
+        this.saveDataToStorage();
+        // 同步 datalist（不整表重繪，避免打斷使用者編輯下一格）
+        const domainList = document.getElementById('domain-datalist');
+        if (domainList) {
+            domainList.innerHTML = this.dataManager.getAllKnownDomains()
+                .map(d => `<option value="${esc(d)}">`).join('');
+        }
+    }
+
+    /**
+     * 設定頁：刪除某科目對應
+     */
+    deleteSubjectDomainEntry(subject) {
+        this.dataManager.removeSubject(subject);
+        this.saveDataToStorage();
+        this.renderSubjectDomainTable();
+        this.showToast(`已刪除科目「${subject}」`, 'success');
+    }
+
+    /**
+     * 設定頁：從目前課表重新擷取對應表（合併保留手動編輯）
+     */
+    rebuildSubjectDomainMap() {
+        if (this.dataManager.getScheduleData().length === 0) {
+            this.showToast('目前沒有課表資料可擷取', 'warning');
+            return;
+        }
+        if (!confirm('將以「目前課表」完全重建科目領域對應表，依出現次數重新排序，並覆蓋你手動的增修。確定要繼續嗎？')) {
+            return;
+        }
+        this.dataManager.buildSubjectDomainMap(false);
+        this.saveDataToStorage();
+        this.renderSubjectDomainTable();
+        this.showToast('已從目前課表重新擷取科目領域對應', 'success');
     }
 
     /**
@@ -3955,6 +4082,11 @@ class SubstituteTeacherApp {
             this.editorSaveCourse();
         });
 
+        // 科目變更 → 依對應表自動帶出領域
+        document.getElementById('course-modal-subject')?.addEventListener('change', () => {
+            this.onCourseSubjectChange();
+        });
+
         document.getElementById('course-modal-delete-btn')?.addEventListener('click', () => {
             this.editorDeleteCourse();
         });
@@ -4122,6 +4254,16 @@ class SubstituteTeacherApp {
         const classes = this.dataManager.getClasses();
         datalist.innerHTML = classes.map(c => `<option value="${c}">`).join('');
 
+        // 填充科目 datalist（來自科目↔領域對應表）
+        const subjectList = document.getElementById('subject-datalist');
+        if (subjectList) {
+            subjectList.innerHTML = this.dataManager.getSubjects()
+                .map(s => `<option value="${esc(s)}">`).join('');
+        }
+
+        // 重建領域下拉選項（標準領域 ∪ 對應表內的所有領域，確保非標準領域也可選）
+        this.populateDomainSelect(courseData ? courseData.domain : '');
+
         // 填充表單
         if (isEdit && courseData) {
             document.getElementById('course-modal-class').value = courseData.className || '';
@@ -4137,6 +4279,38 @@ class SubstituteTeacherApp {
 
         modal.classList.remove('hidden');
         document.getElementById('course-modal-class').focus();
+    }
+
+    /**
+     * 重建課程編輯對話框的「領域」下拉選項
+     * @param {string} [ensureValue] - 確保此值存在於選項中並選取
+     */
+    populateDomainSelect(ensureValue = '') {
+        const select = document.getElementById('course-modal-domain');
+        if (!select) return;
+        const domains = this.dataManager.getAllKnownDomains();
+        if (ensureValue && !domains.includes(ensureValue)) domains.push(ensureValue);
+        let html = '<option value="">請選擇領域</option>';
+        html += domains.map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join('');
+        select.innerHTML = html;
+        select.value = ensureValue || '';
+    }
+
+    /**
+     * 課程編輯：科目變更時，依對應表自動帶出領域
+     * 一科目可對多個領域時，預設帶最常出現的（仍可手動改選）
+     */
+    onCourseSubjectChange() {
+        const subject = document.getElementById('course-modal-subject').value.trim();
+        const domainSelect = document.getElementById('course-modal-domain');
+        if (!subject || !domainSelect) return;
+
+        const domains = this.dataManager.getDomainsForSubject(subject);
+        if (domains.length === 0) return; // 無對應，保留現值讓使用者自行選
+
+        // populateDomainSelect 已含對應表所有領域；預設選第一個（最常出現），使用者仍可改選
+        this.populateDomainSelect(domains[0]);
+        domainSelect.value = domains[0];
     }
 
     /**
@@ -4194,6 +4368,16 @@ class SubstituteTeacherApp {
 
         // 更新班級清單
         this.dataManager.refreshClasses();
+
+        // 回饋科目↔領域對應表（非破壞性：新科目登錄、既有科目補新領域）
+        if (subject) {
+            const existing = this.dataManager.getDomainsForSubject(subject);
+            if (existing.length === 0) {
+                this.dataManager.setSubjectDomains(subject, domain ? [domain] : []);
+            } else if (domain && !existing.includes(domain)) {
+                this.dataManager.setSubjectDomains(subject, [...existing, domain]);
+            }
+        }
 
         // 更新教師領域
         this.dataManager.refreshTeacherDomains(teacherName);
@@ -4362,6 +4546,9 @@ class SubstituteTeacherApp {
 
                 // 同步「九年級已畢業」開關狀態
                 this.syncGrade9Toggle();
+
+                // 重新渲染科目領域對應表
+                this.renderSubjectDomainTable();
 
                 // 更新 UI
                 if (data.scheduleData && data.scheduleData.length > 0) {
