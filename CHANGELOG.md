@@ -2,29 +2,8 @@
 
 ## [Unreleased - v2.0.0-alpha] - feature/permission-system branch
 
-> 本段變更僅存在於 `feature/permission-system` 分支，尚未合併回 master。穩定版 `組長穩定版1.0` 不受影響。
-
-### 改善（2026-06-15）
-- **課表編輯：午休間隔**：課表編輯的週課表在第四節與第五節之間，新增一條跨整列的灰色「午休」橫列，分隔上午/下午課程，提升辨識度。（`app.js` renderEditorSchedule、`style.css` `.schedule-lunch`）
-
-### 新增（2026-06-15：科目領域對應表）
-- **科目↔領域對應設定表**（設定頁 → 科目領域對應表）：匯入課表時自動擷取「科目→領域」對應（依出現次數排序），存成可手動增修的對應表。
-- **課表編輯下拉選科目自動帶領域**：課程編輯對話框的「科目」改為 datalist（可選可輸入）；選科目後依對應表自動帶出「領域」。一科目可對多個領域時，預設帶最常出現的，使用者仍可手動改選。
-- **領域選項動態化**：領域下拉改為動態建立（標準領域 ∪ 對應表內所有領域），非標準領域（如「統整性主題/專題/議題探究」）也能正確顯示與選取。
-- **設定頁可維護**：手動新增/編輯/刪除科目領域對應；「從目前課表重新擷取」按鈕（含確認）可依最新課表重建。編輯課程時新科目/新領域會非破壞性回饋進對應表。
-- **持久化**：存入 `settings.subjectDomainMap`，同步至 localStorage 與 Firebase 雲端。
-- **資料安全**：領域名含斜線不會被分隔符拆碎（分隔符限「、, ，」）；渲染全程 `esc()` 跳脫。
-- 相關檔案：`dataManager.js`（建表/查詢/持久化）、`app.js`（編輯下拉串接＋設定表 UI）、`index.html`（科目 datalist＋對應表卡片）、`style.css`。單元測試：`test/test-subject-domain.mjs`（12 項通過）。
-
-### 新增（2026-06-15：九年級畢業停用課程）
-- **「九年級已畢業」開關**（設定頁 → 學年度管理）：一鍵停用所有九年級（9年X班）課程，讓這些時段的老師可正常被安排調代課，不再被已畢業班級的課擋住。資料完整保留，可隨時關閉還原。
-- **判斷依據**：班級名稱前綴，涵蓋 `9年X班` / `九年X班` / `9XX`（如 901）等格式。
-- **影響範圍**（停用時排除九年級課的計算）：代課推薦、教師忙碌判斷、代課送出衝堂攔截、單次調課衝突清單、批次調課衝突檢查。
-- **不影響**：月結算與 PDF 生成仍使用原始課表，保留歷史紀錄完整。
-- **持久化**：開關狀態存入 `settings.grade9Disabled`，同步至 localStorage 與 Firebase 雲端（多裝置一致）。
-- **視覺標記**：課表上九年級停用課以灰底＋刪除線顯示；課表編輯器中仍可點擊編輯以管理資料。
-- 相關檔案：`dataManager.js`（核心邏輯＋持久化）、`app.js`（推薦/衝突/UI 串接）、`index.html`（開關 UI）、`style.css`（停用樣式）。
-- 計畫文件：`docs/PLAN_grade9_graduation.md`；單元測試：`test/test-grade9.mjs`（18 項通過）。
+> 本段為 `feature/permission-system` 分支的 V2 多角色權限系統變更，尚未合併回 master 正式釋出。
+> 註：午休間隔、科目領域對應表、九年級畢業停用課程、雲端即時重繪等功能已隨 master 正式釋出（見下方 v1.12.0–v1.13.2）；本分支已於 2026-06-18 合併 master 取得這些功能與修復。
 
 ### 新增（V2 權限系統）
 - **角色制度**：`admin`（組長）與 `teacher`（教師）雙角色
@@ -36,69 +15,71 @@
 - **待辦清單頁籤**：顯示「待我同意」「我已發起」兩區塊
 - **組長代發起模式**：組長可代任一教師直接建立紀錄，跳過同意流程
 - **完整操作日誌**：所有寫入事件（create_request / approve / reject / cancel / admin_create / edit / delete / teacher_bind_email / role_change / login_denied / permission_denied 等）都寫入 `operationLogs` 集合；組長看全部、教師只看相關
-- **全新 Firestore Schema**：`schools/default/`（與舊 `users/{uid}/data/…` 完全物理隔離）
+- **三層角色擴充（接續路徑，2026-05-29 起）**：`director`（教務主任）/ `section_chief`（教學組長）/ `teacher`（教師）；SCHOOL_ID 從 `default` 改為 `inhu`；firestore.rules v2.2；Email/密碼雙軌登入 + 主任寄密碼信；課表匯入自動串接教師管理。詳見 `docs/PLAN_v2.0.0.md` §0 進度索引。
+- **全新 Firestore Schema**：`schools/{schoolId}/`（與舊 `users/{uid}/data/…` 完全物理隔離）
 
-### 新增檔案
-- `src/js/v2-app.js`（V2 入口）
-- `src/js/modules/v2/schemaConstants.js`
-- `src/js/modules/v2/envDetector.js`
-- `src/js/modules/v2/firebaseV2.js`
-- `src/js/modules/v2/schoolDataService.js`
-- `src/js/modules/v2/roleService.js`
-- `src/js/modules/v2/operationLogger.js`
-- `src/js/modules/v2/teacherAccountManager.js`
-- `src/js/modules/v2/pendingRequestService.js`
-- `src/js/modules/v2/authGuardV2.js`
-- `src/js/modules/v2/README.md`
-- `docs/V2_PERMISSION_SYSTEM.md`
+### V2 新增檔案
+- `src/js/v2-app.js`、`src/js/modules/v2/`（schemaConstants / envDetector / firebaseV2 / schoolDataService / roleService / operationLogger / teacherAccountManager / pendingRequestService / authGuardV2 / README）
+- `docs/V2_PERMISSION_SYSTEM.md`、`docs/V2_E2E_CHECKLIST.md`、`scripts/firestore-*.js`
 
 ### 相容性
-- 穩定版 master 的 `index.html`、`app.js`、Firestore 資料路徑完全未動
-- V2 僅在 URL `?v2=1` 或 hostname 含 `preview` 時啟動
-- 啟動時透過 `body.v2-active` class 顯示 V2 專屬頁籤，隱藏/取代既有行為
+- V2 僅在 URL `?v2=1` 或 hostname 含 `preview` 時啟動；穩定版 master 路徑完全未動
+- 啟動時透過 `body.v2-active` class 顯示 V2 專屬頁籤
 
-### 2026-04-20（部署）Firestore 初始資料 + 安全規則發布
-- **`schools/default/config/main` 文件已建立**：schoolName="XX 國中"、initialAdminEmails=["uplilt31311227@gmail.com"]
-- **Firestore 安全規則 v2 發布**：新增 `schools/{schoolId}/{document=**}` 允許登入者讀寫，保留原 `users/{uid}/{document=**}` 僅擁有者讀寫
-- 規則檔提交至 repo (`firestore.rules`) 作為 source of truth
-- 測試階段規則寬鬆；正式上線前需改為依 email 白名單與 role 判讀
-
-### 2026-04-20（補丁）衝堂檢查 + 紀錄頁籤清理 + gitignore
-- **V2 衝堂檢查修復**：新增同步 cache (`_v2RecordsCache` / `_v2PendingCache`)，由 onSnapshot 更新，`dm.checkExistingRecord` 在 V2 模式下改查 cache（含 pending 尚未被處理者），解決原 local 陣列空導致偵測不到 V2 既有紀錄的問題
-- **V2 下隱藏原紀錄表格**：CSS 隱藏 `#records-no-data` 與 `#records-content`，避免空表格與 V2 全校紀錄表格並存造成混淆；V2 紀錄區塊改為頁籤主內容
-- **擴充 .gitignore**：排除 uv/pyproject 產物、test-results/、test PDFs、schedule xls、臨時 analysis/extracted_text 檔
-- **冒煙測試擴充**：新增 `test/v2-patch-test.js`（驗證 patch 套用）與 `test/v2-isolation-test.js`（驗證穩定版 URL 未被污染）
-
-### 2026-04-29（規則正式版 + 驗證工具）
-- **Firestore 安全規則 v2.1 撰寫完成**（`firestore.rules`，待部署）：
-  - 新增 helpers：`isInitialAdmin` / `myTeacherId` / `myTeacherDoc` / `isAdmin(schoolId)`
-  - `teachers`：建立／刪除僅 admin；初始管理員可 bootstrap 自己的 admin 檔
-  - `pendingRequests`：建立要求 `initiatedBy == 自己`；更新限 `requiredApproverId` 或 admin；刪除限 `initiatedBy` / `requiredApproverId` / admin
-  - `substituteRecords`：建立要求 `approvedBy` 或 `requiredApproverId == 自己`（同意人成立）或 admin；編輯／刪除僅 admin
-  - `userMappings`：自己讀寫自己；admin 全可
-  - `operationLogs`：任何登入者可寫，不可改／刪
-  - master `users/{uid}/{document=**}` 規則維持不變
-- **新增部署腳本 `scripts/firestore-deploy-rules.js`**：用 gcloud token 透過 firebaserules.googleapis.com 建 ruleset 並發布 release，支援 `--dry` / `--list`
-- **新增健康檢查腳本 `scripts/firestore-health-check.js`**：驗證 config、teachers、userMappings、pendingRequests、substituteRecords、operationLogs 結構完整性
-- **新增 `docs/V2_E2E_CHECKLIST.md`**：7 大情境（admin bootstrap / 未綁定拒絕 / 教師管理 / pending 流程 / admin 代發起 / 規則攻擊測試 / master 隔離）的人工驗證清單
-- **不合併回 master**：所有變更僅存於 `feature/permission-system` 與 preview repo
-
-### 2026-04-20（補丁）同意前不產 PDF + rejected 保留狀態
-- **同意前完全不產 PDF**：教師發起 pending 時不再產生 PDF，避免使用者誤以為紀錄已成立；同意方按「同意並產生 PDF」後才在同意方瀏覽器下載
-- **攔截 app 層 PDF 生成**：`patchPdfGenerators()` 包裹 `generateSubstitutePDF` / `generateMultiCoursePDF`，對含 `__v2NeedsApproval` 標記的 record 略過；同時吞掉 app.js 原「PDF 已生成」toast
-- **rejected 狀態保留**：`rejectRequest` 改 soft-reject（status=rejected），發起人在「我已發起」看到「❌ 被拒絕」與拒絕原因，按「我知道了」（`dismissRejectedRequest`）才真正刪除
-- **送出 toast 重寫**：pending 送出改顯示「已送出給 ○○ 同意。對方同意後紀錄才會正式成立並產生 PDF。」
-- **紀錄列表新增「下載 PDF」**：發起人當下不在線時，可在「全校調代課紀錄」事後補下載 PDF
-- **相關檔案**：
-  - `src/js/modules/v2/pendingRequestService.js`（soft-reject、dismissRejectedRequest）
-  - `src/js/modules/v2/schoolDataService.js`（updatePendingRequest）
-  - `src/js/v2-app.js`（v2NeedsApproval、patchPdfGenerators、generatePdfForRecord、rejected 徽章、下載 PDF 按鈕）
+### 維護
+- **2026-06-18 合併 master**：取得 v1.13.1（`esc()` 修復）與 v1.13.2（雲端即時重繪 + 監聽器洩漏修正），解決 feature 分支同樣會發生的初始化中斷問題。
 
 ---
 
-## [1.11.0] - 2026-05-20
+## [1.13.2] - 2026-06-18
 
-> 由 master 合併進來。本段在 v1.11.0 釋出時對 master 與 feature/permission-system 同步生效。
+### 修復（雲端同步即時重繪）
+- **雲端翻轉「九年級已畢業」開關時，已開啟的推薦/調課面板不即時重繪**：他機翻轉開關後，本機即時同步只回寫雲端、不刷新 UI，導致已開啟的「代課推薦／調課互換」面板與課表灰底維持舊狀態，需手動重新觸發。
+  - 即時同步監聽器加入開關狀態比對，偵測雲端翻轉時自動同步勾選框並重繪相依 UI。
+  - 抽出共用方法 `refreshGrade9DependentUI()`（課表編輯灰底／原課表灰底／推薦或調課面板），由本機切換、即時同步、雲端下載/合併三條路徑共用，行為一致。
+  - 補強：`refreshUIAfterSync()`（下載/合併/衝突解決路徑）原本只更新開關勾選框，現一併重繪面板與灰底。
+- **修掉 v1.12.0 潛在 bug**：`handleGrade9Toggle()` 呼叫的 `renderEditorSchedule()` 並不存在（正確為 `renderEditableScheduleGrid()`），編輯課表（已選教師）時切換開關會丟 `TypeError` 並中斷後續重繪與提示。
+- **順帶修正即時同步監聽器洩漏**：`enableRealtimeSyncAndListen()` 原本每次呼叫都重複註冊 `onDataChange` 監聽器（5 個呼叫點），導致每次雲端變更觸發多次 `syncToCloud()` 寫入放大；改為僅註冊一次。
+
+### 測試
+- 新增 `test/test-grade9-refresh.mjs`（11 項通過，涵蓋翻轉偵測與面板重繪決策）；既有 `test/test-grade9.mjs`（18 項）回歸通過。
+- 計畫文件：`docs/PLAN_grade9_realtime_refresh.md`。
+
+## [1.13.1] - 2026-06-18
+
+### 修復（嚴重：正式站初始化中斷）
+- **`esc is not defined` 導致全站初始化停擺**：1.13.0 的「科目領域對應表」渲染呼叫了 `esc()` HTML 跳脫函式，但該函式從未被定義。`renderSubjectDomainTable()` 在 `bindDataManagementEvents()` 內被無條件呼叫，且位於 `init()` 中 `initFirebase()` 之前，導致建構子拋出 `ReferenceError` 後中止 —— **Firebase 未初始化、Google 登入按鈕未綁定、localStorage 既有資料未載入**，雲端同步完全失效。
+- **修法**：於 `app.js` 模組層補上 `esc()` HTML 跳脫工具函式（`& < > " '` → 對應實體）。
+- **驗證**：本機瀏覽器重測，初始化日誌完整輸出「Firebase 初始化成功／完成」，無任何 `PAGEERROR`，登入按鈕恢復綁定。
+
+## [1.13.0] - 2026-06-15
+
+### 新增（科目領域對應表）
+- **科目↔領域對應設定表**（設定頁 → 科目領域對應表）：匯入課表時自動擷取「科目→領域」對應（依出現次數排序），存成可手動增修的對應表。
+- **課表編輯下拉選科目自動帶領域**：課程編輯對話框的「科目」改為 datalist（可選可輸入）；選科目後依對應表自動帶出「領域」。一科目可對多個領域時，預設帶最常出現的，使用者仍可手動改選。
+- **領域選項動態化**：領域下拉改為動態建立（標準領域 ∪ 對應表內所有領域），非標準領域（如「統整性主題/專題/議題探究」）也能正確顯示與選取。
+- **設定頁可維護**：手動新增/編輯/刪除科目領域對應；「從目前課表重新擷取」（含確認）可依最新課表重建。編輯課程時新科目/新領域會非破壞性回饋進對應表。
+- **持久化**：存入 `settings.subjectDomainMap`，同步至 localStorage 與 Firebase 雲端。
+- **資料安全**：領域名含斜線不會被分隔符拆碎（分隔符限「、, ，」）；渲染全程 `esc()` 跳脫。
+
+### 改善（課表編輯：午休間隔）
+- 課表編輯的週課表在第四節與第五節之間，新增一條跨整列的灰色「午休」橫列，分隔上午/下午課程，提升辨識度。
+
+### 測試
+- 新增 `test/test-subject-domain.mjs`（12 項通過）。
+
+## [1.12.0] - 2026-06-15
+
+### 新增（九年級畢業停用課程）
+- **「九年級已畢業」開關**（設定頁 → 學年度管理）：一鍵停用所有九年級（9年X班）課程，讓這些時段的老師可正常被安排調代課，不再被已畢業班級的課擋住。資料完整保留，可隨時關閉還原。
+- **判斷依據**：班級名稱前綴，涵蓋 `9年X班` / `九年X班` / `9XX`（如 901）等格式。
+- **影響範圍**（停用時排除九年級課的計算）：代課推薦、教師忙碌判斷、代課送出衝堂攔截、單次調課衝突清單、批次調課衝突檢查。
+- **不影響**：月結算與 PDF 生成仍使用原始課表，保留歷史紀錄完整。
+- **持久化**：開關狀態存入 `settings.grade9Disabled`，同步至 localStorage 與 Firebase 雲端（多裝置一致）。
+- **視覺標記**：課表上九年級停用課以灰底＋刪除線顯示；課表編輯器中仍可點擊編輯以管理資料。
+- 計畫文件：`docs/PLAN_grade9_graduation.md`；單元測試：`test/test-grade9.mjs`（18 項通過）。
+
+## [1.11.0] - 2026-05-20
 
 ### 新增（週彙整通知單）
 - **「列印本週彙整」按鈕**：在「調代課紀錄」頁籤 toolbar 新增按鈕，選週後一鍵產生整週綜合 PDF
@@ -145,8 +126,6 @@
 
 ## [1.10.0] - 2026-05-20
 
-> 由 master 合併進來。本段在 v1.10.0 釋出時對 master 與 feature/permission-system 同步生效；feature 分支的 `checkScheduleConflicts` 已合併 esc() XSS 跳脫包裹。
-
 ### 新增（衝突檢查強化）
 - **代課教師重複指派檢查**：推薦引擎 `RecommendationEngine.getRecommendations` 新增 `substituteRecords` 參數；同日同節已被指派為代課/調課的教師會被視為 busy，不再出現在推薦清單，避免同時段重複指派造成實際衝堂
   - 新增 helper `getAssignedTeachers(substituteRecords, date, period)`
@@ -155,7 +134,7 @@
   - 新增 `DataManager.checkSubstituteTeacherConflict(name, date, weekday, period, excludeId)`
   - 同時檢查（1）該老師原課表是否有自己的課；（2）同日同節是否已被指派為其他代課/調課
   - 衝突時顯示 toast 並阻擋送出
-- **課表上傳：班級衝突檢查**：`checkScheduleConflicts` 除既有「同教師同時段多班級」外，新增「同班級同時段多教師」檢查（協同教學/課表錯誤可能來源），分區塊呈現；feature 分支版本額外保留 esc() 跳脫包裹
+- **課表上傳：班級衝突檢查**：`checkScheduleConflicts` 除既有「同教師同時段多班級」外，新增「同班級同時段多教師」檢查（協同教學/課表錯誤可能來源），分區塊呈現
 - **CSS**：新增 `.schedule-conflict-section` 樣式（衝突清單分區用）
 
 ---
