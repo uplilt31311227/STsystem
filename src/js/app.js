@@ -44,6 +44,22 @@ import {
 } from './modules/cloudSyncService.js';
 
 /**
+ * HTML 跳脫工具 — 將字串中的特殊字元轉為 HTML 實體，
+ * 供 template literal 動態組 HTML 時防止 XSS / 破版。
+ * @param {*} value - 任意值，會先轉成字串
+ * @returns {string}
+ */
+function esc(value) {
+    if (value === null || value === undefined) return '';
+    return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+/**
  * 主應用程式類別
  */
 class SubstituteTeacherApp {
@@ -356,8 +372,24 @@ class SubstituteTeacherApp {
         // 啟用即時同步
         this.dataManager.enableRealtimeSync();
 
-        // 監聽資料變更，自動同步
+        // 記錄目前開關狀態，作為偵測雲端翻轉「九年級已畢業」的基準
+        this._syncedGrade9Disabled = this.dataManager.isGrade9Disabled();
+
+        // 資料變更監聽僅註冊一次，避免重複觸發（既有路徑會多次呼叫本方法）
+        if (this._dataChangeListenerBound) return;
+        this._dataChangeListenerBound = true;
+
+        // 監聽資料變更（onSnapshot 已過濾本地寫入，僅他機雲端變更會觸發）
         this.dataManager.onDataChange(async () => {
+            // 偵測雲端是否翻轉了「九年級已畢業」開關 → 即時重繪相依 UI
+            const current = this.dataManager.isGrade9Disabled();
+            if (current !== this._syncedGrade9Disabled) {
+                this._syncedGrade9Disabled = current;
+                this.syncGrade9Toggle();
+                this.refreshGrade9DependentUI();
+            }
+
+            // 自動回寫雲端
             if (isSignedIn()) {
                 await this.dataManager.syncToCloud();
             }
@@ -590,6 +622,9 @@ class SubstituteTeacherApp {
             };
             this.updateScheduleStatus(parseResult);
         }
+
+        // 雲端下載/合併可能翻轉「九年級已畢業」開關 → 重繪課表灰底與已開啟的推薦/調課面板
+        this.refreshGrade9DependentUI();
     }
 
     /**
@@ -3875,13 +3910,28 @@ class SubstituteTeacherApp {
         this.dataManager.setGrade9Disabled(disabled);
         this.saveDataToStorage();
 
-        // 重新渲染目前可見的教師週課表（讓灰底標記即時生效）
+        // 重新渲染所有受開關影響的可見區塊（課表灰底、推薦/調課面板）
+        this.refreshGrade9DependentUI();
+
+        this.showToast(
+            disabled ? '已停用九年級課程，調代課將不受其影響' : '已恢復九年級課程',
+            'success'
+        );
+    }
+
+    /**
+     * 重新渲染所有受「九年級已畢業」開關影響的可見區塊
+     * 供本機切換開關與雲端同步翻轉開關時共用，確保 UI 即時反映
+     */
+    refreshGrade9DependentUI() {
+        // 課表編輯：教師週課表灰底
         if (this.editorCurrentTeacher) {
-            this.renderEditorSchedule();
+            this.renderEditableScheduleGrid();
         }
+
+        // 調代課申請：原課表灰底
         const originalSchedule = document.getElementById('original-schedule');
         if (originalSchedule && !originalSchedule.classList.contains('hidden')) {
-            // 重新渲染調代課申請的原課表
             const teacherName = document.getElementById('sub-teacher')?.value;
             if (teacherName) {
                 const weekSchedule = this.dataManager.getTeacherWeekSchedule(teacherName);
@@ -3889,10 +3939,29 @@ class SubstituteTeacherApp {
             }
         }
 
-        this.showToast(
-            disabled ? '已停用九年級課程，調代課將不受其影響' : '已恢復九年級課程',
-            'success'
-        );
+        // 調代課申請：已開啟的「代課推薦 / 調課互換」面板
+        this.refreshActiveSubstitutePanels();
+    }
+
+    /**
+     * 重新渲染目前開啟的調代課面板（代課推薦清單或調課互換清單）
+     * 僅在步驟四面板可見且已選定課程時才重繪
+     */
+    refreshActiveSubstitutePanels() {
+        const infoPanel = document.getElementById('selected-course-info');
+        if (!infoPanel || infoPanel.classList.contains('hidden') || !this.selectedCourse) {
+            return;
+        }
+
+        const changeType = document.getElementById('change-type')?.value;
+        if (changeType === 'swap') {
+            // 調課模式：更新時段 A 資訊與可互換課程列表
+            this.updateSwapSlotAInfo();
+            this.updateSwapCourseList();
+        } else {
+            // 代課模式：重算並顯示推薦代課教師
+            this.showRecommendations();
+        }
     }
 
     /**
@@ -4273,6 +4342,16 @@ class SubstituteTeacherApp {
         const datalist = document.getElementById('class-datalist');
         const classes = this.dataManager.getClasses();
         datalist.innerHTML = classes.map(c => `<option value="${esc(c)}">`).join('');
+
+        // 填充科目 datalist（來自科目↔領域對應表）
+        const subjectList = document.getElementById('subject-datalist');
+        if (subjectList) {
+            subjectList.innerHTML = this.dataManager.getSubjects()
+                .map(s => `<option value="${esc(s)}">`).join('');
+        }
+
+        // 重建領域下拉選項（標準領域 ∪ 對應表內的所有領域，確保非標準領域也可選）
+        this.populateDomainSelect(courseData ? courseData.domain : '');
 
         // 填充科目 datalist（來自科目↔領域對應表）
         const subjectList = document.getElementById('subject-datalist');
