@@ -35,6 +35,22 @@ import {
 } from './modules/cloudSyncService.js';
 
 /**
+ * HTML 跳脫工具 — 將字串中的特殊字元轉為 HTML 實體，
+ * 供 template literal 動態組 HTML 時防止 XSS / 破版。
+ * @param {*} value - 任意值，會先轉成字串
+ * @returns {string}
+ */
+function esc(value) {
+    if (value === null || value === undefined) return '';
+    return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+/**
  * 主應用程式類別
  */
 class SubstituteTeacherApp {
