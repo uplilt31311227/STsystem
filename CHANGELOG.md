@@ -1,5 +1,19 @@
 # 版本紀錄 (Changelog)
 
+## [1.13.2] - 2026-06-18
+
+### 修復（雲端同步即時重繪）
+- **雲端翻轉「九年級已畢業」開關時，已開啟的推薦/調課面板不即時重繪**：他機翻轉開關後，本機即時同步只回寫雲端、不刷新 UI，導致已開啟的「代課推薦／調課互換」面板與課表灰底維持舊狀態，需手動重新觸發。
+  - 即時同步監聽器加入開關狀態比對，偵測雲端翻轉時自動同步勾選框並重繪相依 UI。
+  - 抽出共用方法 `refreshGrade9DependentUI()`（課表編輯灰底／原課表灰底／推薦或調課面板），由本機切換、即時同步、雲端下載/合併三條路徑共用，行為一致。
+  - 補強：`refreshUIAfterSync()`（下載/合併/衝突解決路徑）原本只更新開關勾選框，現一併重繪面板與灰底。
+- **修掉 v1.12.0 潛在 bug**：`handleGrade9Toggle()` 呼叫的 `renderEditorSchedule()` 並不存在（正確為 `renderEditableScheduleGrid()`），編輯課表（已選教師）時切換開關會丟 `TypeError` 並中斷後續重繪與提示。
+- **順帶修正即時同步監聽器洩漏**：`enableRealtimeSyncAndListen()` 原本每次呼叫都重複註冊 `onDataChange` 監聽器（5 個呼叫點），導致每次雲端變更觸發多次 `syncToCloud()` 寫入放大；改為僅註冊一次。
+
+### 測試
+- 新增 `test/test-grade9-refresh.mjs`（11 項通過，涵蓋翻轉偵測與面板重繪決策）；既有 `test/test-grade9.mjs`（18 項）回歸通過。
+- 計畫文件：`docs/PLAN_grade9_realtime_refresh.md`。
+
 ## [1.13.1] - 2026-06-18
 
 ### 修復（嚴重：正式站初始化中斷）

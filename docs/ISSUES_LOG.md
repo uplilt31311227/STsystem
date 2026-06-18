@@ -19,6 +19,18 @@ tags:
 
 ---
 
+## 雲端翻轉「九年級已畢業」開關時，已開啟的推薦/調課面板不即時重繪
+
+- **日期**: 2026-06-18
+- **狀態**: 🟢 已解決（v1.13.2）
+- **描述**: 他機翻轉「九年級已畢業」開關後，本機即時同步雖更新記憶體資料，但已開啟的「代課推薦／調課互換」面板與課表灰底維持舊狀態，需手動重新觸發才更新。為 HANDOVER_2026-06-15.md 列出的未完成項。
+- **原因**: realtime 路徑為 `onSnapshot → loadFromCloud → notifyDataChange → onDataChange 監聽器`，而該監聽器只做 `syncToCloud()`、不刷新任何 UI。`refreshUIAfterSync()`（下載/合併路徑）也只更新開關勾選框、未重繪面板與灰底。另查出 `handleGrade9Toggle()` 呼叫的 `renderEditorSchedule()` 方法不存在（latent bug），以及 `enableRealtimeSyncAndListen()` 每次呼叫都重複註冊監聽器（洩漏）。
+- **解決方案**: 即時同步監聽器加開關狀態比對、翻轉時自動 `syncGrade9Toggle()` + 共用方法 `refreshGrade9DependentUI()` 重繪；`refreshUIAfterSync()` 末端一併呼叫；修正方法名為 `renderEditableScheduleGrid()`；以 `_dataChangeListenerBound` 旗標確保監聽器僅註冊一次。
+- **驗證**: `test/test-grade9-refresh.mjs`（11 項）+ `test/test-grade9.mjs`（18 項回歸）通過；`node --check` 語法通過；high-effort 多 agent code review。
+- **相關檔案**: `src/js/app.js`（`enableRealtimeSyncAndListen` ~362、`handleGrade9Toggle`/`refreshGrade9DependentUI`/`refreshActiveSubstitutePanels` ~3892、`refreshUIAfterSync` ~557）
+
+---
+
 ## 正式站初始化中斷：esc is not defined（Google 登入／雲端同步全失效）
 
 - **日期**: 2026-06-18
