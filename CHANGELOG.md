@@ -1,5 +1,12 @@
 # 版本紀錄 (Changelog)
 
+## [1.13.1] - 2026-06-18
+
+### 修復（嚴重：正式站初始化中斷）
+- **`esc is not defined` 導致全站初始化停擺**：1.13.0 的「科目領域對應表」渲染呼叫了 `esc()` HTML 跳脫函式，但該函式從未被定義。`renderSubjectDomainTable()` 在 `bindDataManagementEvents()` 內被無條件呼叫，且位於 `init()` 中 `initFirebase()` 之前，導致建構子拋出 `ReferenceError` 後中止 —— **Firebase 未初始化、Google 登入按鈕未綁定、localStorage 既有資料未載入**，雲端同步完全失效。
+- **修法**：於 `app.js` 模組層補上 `esc()` HTML 跳脫工具函式（`& < > " '` → 對應實體）。
+- **驗證**：本機瀏覽器重測，初始化日誌完整輸出「Firebase 初始化成功／完成」，無任何 `PAGEERROR`，登入按鈕恢復綁定。
+
 ## [1.13.0] - 2026-06-15
 
 ### 新增（科目領域對應表）

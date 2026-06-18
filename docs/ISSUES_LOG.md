@@ -19,6 +19,18 @@ tags:
 
 ---
 
+## 正式站初始化中斷：esc is not defined（Google 登入／雲端同步全失效）
+
+- **日期**: 2026-06-18
+- **狀態**: 🟢 已解決（v1.13.1）
+- **描述**: 正式站開啟後 JS 初始化即拋出 `ReferenceError: esc is not defined`（`app.js:3782`），`window.app` 未建立、`window.firebaseModules` 為 false。Google 登入按鈕顯示但無作用、雲端同步完全失效、localStorage 既有資料未載入。實機煙霧測試（CDP/puppeteer 連線正式站）確認。
+- **原因**: v1.13.0「科目領域對應表」的 `renderSubjectDomainTable()` 以 template literal 呼叫 `esc()` 做 HTML 跳脫，但 `esc()` 從未在 `app.js` 任何處定義。此函式在 `bindDataManagementEvents()` 內被無條件呼叫，且位於 `init()` 中 `initFirebase()`（行 104）之前（行 90），建構子拋例外後整個 `init` 中止，行 90 之後的綁定/初始化全部未執行。當時 code review 僅跑 Node 單元測試、未實際渲染 DOM，故未攔截。
+- **解決方案**: 於 `src/js/app.js` 模組層新增 `esc(value)` HTML 跳脫工具函式（`& < > " '` → HTML 實體，null/undefined 回空字串）。
+- **驗證**: 本機 `http.server` + 瀏覽器（CDP）重測，無 `PAGEERROR`，初始化日誌完整輸出「Firebase 初始化成功／完成」、`window.app` 與 `firebaseModules` 皆正常，登入按鈕恢復綁定。
+- **相關檔案**: `src/js/app.js`（esc 定義；renderSubjectDomainTable `app.js:3759`）
+
+---
+
 ## 九年級畢業後課程擋住調代課
 
 - **日期**: 2026-06-15
