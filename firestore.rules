@@ -217,25 +217,40 @@ service cloud.firestore {
       // ----- 操作日誌（稽核軌跡，不可改/刪） -----
       // 讀取：approver（director + section_chief）皆可查 audit trail
       // 寫入：任何登入者；欄位白名單與型別嚴格驗證
+      //   欄位需對齊 operationLogger.log()：action / actor / timestamp(ISO 字串)
+      //   / targetType / targetId / details(map)。login_denied 在綁定前寫入，
+      //   此時 actor 各欄為 null，故不強制 actor.uid == auth.uid。
       match /operationLogs/{logId} {
         allow read:   if isApprover(schoolId);
         allow create: if isSignedIn()
-          && request.resource.data.keys().hasOnly(['action', 'actor', 'timestamp', 'target', 'detail'])
+          && request.resource.data.keys().hasOnly(['action', 'actor', 'timestamp', 'targetType', 'targetId', 'details'])
           && request.resource.data.action is string
           && request.resource.data.action.size() < 100
-          && request.resource.data.timestamp == request.time
-          && (request.resource.data.detail is map || request.resource.data.detail == null);
+          && request.resource.data.timestamp is string
+          && request.resource.data.actor is map
+          && (request.resource.data.details is map || request.resource.data.details == null);
         allow update, delete: if false;  // 稽核軌跡不可改／刪
       }
 
       // ----- Google uid → teacherId 映射 -----
+      // ⚠ 安全關鍵：整套 isDirector/isApprover/myTeacherId 都信任這條映射的 linkedTeacherId，
+      //   因此「自己寫自己」時必須驗證 linkedTeacherId 指向的教師檔 email == 本人登入 email，
+      //   否則任一教師可把自己映射到 director 的 teacherId 而提權為主任。
       match /userMappings/{uid} {
         // 自己讀自己；approver 可讀全部（核准時需要看對方身份）
         allow read: if isSignedIn() && (request.auth.uid == uid || isApprover(schoolId));
 
-        // 自己 upsert 自己（authGuardV2 登入完成寫入）；director 可代寫（補綁定）
+        // director 可代寫（補綁定，linkedTeacherId 不受限）；
+        // 自己 upsert 自己（authGuardV2 登入完成寫入）：linkedTeacherId 必須指向
+        //   email 等於本人登入 email 的教師檔（只能映射到自己，杜絕提權）。
         allow create, update: if isDirector(schoolId)
-          || (isSignedIn() && request.auth.uid == uid);
+          || (
+            isSignedIn()
+            && request.auth.uid == uid
+            && request.resource.data.linkedTeacherId is string
+            && exists(/databases/$(database)/documents/schools/$(schoolId)/teachers/$(request.resource.data.linkedTeacherId))
+            && get(/databases/$(database)/documents/schools/$(schoolId)/teachers/$(request.resource.data.linkedTeacherId)).data.email == userEmail()
+          );
 
         // 刪除：只有 director
         allow delete: if isDirector(schoolId);

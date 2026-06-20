@@ -1,12 +1,35 @@
 ---
 created: 2026-04-10
-updated: 2026-06-18
+updated: 2026-06-20
 tags:
   - issues
   - troubleshooting
 ---
 
 # 問題追蹤：國中調代課自動化系統
+
+## V2 Phase 1 資安修補（2026-06-20，多 agent code review）
+
+### operationLogs 稽核日誌全數寫入失敗
+
+- **日期**: 2026-06-20
+- **狀態**: 🟡 規則已修，**待重新部署** firestore.rules 才生效
+- **描述**: V2 任何操作的稽核日誌都寫不進 `schools/inhu/operationLogs`，含 login_denied。
+- **原因**: `firestore.rules` operationLogs create 的欄位白名單為 `['action','actor','timestamp','target','detail']` 且要求 `timestamp == request.time`、`detail is map`；但 `operationLogger.log()` 實際寫 `targetType/targetId/details` + ISO 字串 timestamp（roleService.filterLogsForCurrent 與 v2-app:418 也都讀此 schema）。三處不符 → `hasOnly` 失敗 → 寫入 DENY。
+- **解決方案**: 改規則對齊程式碼一致使用的 schema：`hasOnly(['action','actor','timestamp','targetType','targetId','details'])`、`timestamp is string`、`actor is map`、`details is map`，保留 update/delete:false 的不可竄改性。
+- **相關檔案**: `firestore.rules`（operationLogs match）、`src/js/modules/v2/operationLogger.js`
+
+### userMappings 自寫提權（任一教師可提權為主任）
+
+- **日期**: 2026-06-20
+- **狀態**: 🟡 規則已修，**待重新部署** firestore.rules 才生效
+- **描述**: 任一登入教師可透過 DevTools 對自己的 `userMappings/{uid}` 寫入，把 `linkedTeacherId` 指向某 director 教師的 teacherId，藉此取得 director 全權限（改學校設定、刪教師、刪正式紀錄）。
+- **原因**: rules helper `myTeacherId/isDirector/isApprover` 全部信任使用者自寫的 `userMappings.linkedTeacherId`，而原 create/update 規則只檢查 `auth.uid == uid`、不限制欄位內容。屬與 operationLogs 同根因（規則漏限欄位）。
+- **解決方案**: 自寫映射時新增條件——`linkedTeacherId` 指向的教師檔 `email` 必須等於本人登入 email（只能映射到自己）。director 代寫不受限；bootstrap 與正常 Google 登入不受影響。
+- **相關檔案**: `firestore.rules`（userMappings match）、`src/js/modules/v2/authGuardV2.js`
+- **延後項（Phase 3/4）**: `substituteRecords` 偽造已核准紀錄、`pendingRequests` 同意人全欄竄改 — 待對調/多重流程落地時用 runTransaction + affectedKeys 收緊（見 `docs/PLAN_v2.0.0.md` §0.5）。
+
+---
 
 ## 狀態說明
 
