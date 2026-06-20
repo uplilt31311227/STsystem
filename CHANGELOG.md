@@ -5,6 +5,12 @@
 > 本段為 `feature/permission-system` 分支的 V2 多角色權限系統變更，尚未合併回 master 正式釋出。
 > 註：午休間隔、科目領域對應表、九年級畢業停用課程、雲端即時重繪等功能已隨 master 正式釋出（見下方 v1.12.0–v1.13.2）；本分支已於 2026-06-18 合併 master 取得這些功能與修復。
 
+### 資安修補（2026-06-20，Phase 1 多 agent code review）
+- **🔴 修復 operationLogs 稽核日誌全數寫入失敗**：`firestore.rules` 的欄位白名單（`target/detail/request.time`）與 `operationLogger.log()` 實際 schema（`targetType/targetId/details` + ISO timestamp）不符，導致每筆日誌寫入被 DENY（含 login_denied）。改規則對齊程式碼實際 schema。
+- **🔴 封堵 userMappings 自寫提權**：整套 `isDirector/isApprover/myTeacherId` 信任使用者自寫的 `userMappings/{uid}.linkedTeacherId`，原規則未限欄位 → 任一教師可映射到 director 的 teacherId 而提權為主任。改為自寫時 `linkedTeacherId` 必須指向 email 等於本人登入 email 的教師檔。
+- **⚠️ 待重新部署**：以上只改 `firestore.rules` 檔，需 `node scripts/firestore-deploy-rules.js` 重新發布才生效。
+- 已記錄延後 Phase 3/4 處理：`substituteRecords` 偽造已核准、`pendingRequests` 同意人全欄竄改（詳見 `docs/PLAN_v2.0.0.md` §0.5）。
+
 ### 新增（V2 權限系統）
 - **角色制度**：`admin`（組長）與 `teacher`（教師）雙角色
   - 組長識別依 `schools/default/config/main.initialAdminEmails` 或 `teachers/{id}.role`

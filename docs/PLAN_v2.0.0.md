@@ -1,17 +1,20 @@
 ---
 created: 2026-05-29
-updated: 2026-05-29
+updated: 2026-06-18
 tags:
   - plan
   - v2.0.0
   - permissions
-status: 規劃中（等待 V2 路徑裁決）
+status: 開發中｜裁決已定（接續路徑）｜Phase 1 程式碼完成，待實機驗收
 ---
 
 # v2.0.0 多角色協作 + 審核工作流升級計畫
 
 > 目標版本：v2.0.0｜主分支：`feature/permission-system`｜建立日期：2026-05-29
 > 本文件由 master 與 feature 分支共用，中斷後回來可直接接續。
+
+> **⚠️ 接續者請注意（2026-06-18 更新）**：V2「路徑裁決」**早已定案 = 接續路徑**，Phase 1～1.6 程式碼皆完成，目前**唯一卡點是 Phase 1 實機驗收**（需手動到 Firebase Console 啟用 Email/Password provider + 三角色登入測試，見下方驗收待辦）。不是還在等裁決。
+> **分支狀態**：`feature/permission-system` 已於 2026-06-18 合併 master，取得 v1.13.1（`esc()` 修復）+ v1.13.2（雲端即時重繪），feature 現可正常啟動、落後 master 0 commits。
 
 ---
 
@@ -20,9 +23,10 @@ status: 規劃中（等待 V2 路徑裁決）
 | 階段 | 狀態 | 完成日 | 備註 |
 |---|---|---|---|
 | Phase 0：master 備份 + tag | ✅ 完成 | 2026-05-29 | tag `v1.11.0-stable`、commit `2f274b5` + `e1fc1ce`，已 push origin/master |
+| **master→feature 同步（取得 v1.13.x 修復）** | ✅ 完成 | 2026-06-18 | merge commit `59ef017`，解 7 衝突、41 測試通過 |
 | V2 評估報告 | ✅ 完成 | 2026-05-29 | 見下方 §1 |
 | V2 路徑裁決 | ✅ 接續 | 2026-05-29 | tag `v2.0.0-alpha2-backup` 標記擴充前 V2 |
-| Phase 1：基礎建設（三層角色 + rules v2.2） | 🟡 程式碼完成，待實機驗收 | 2026-05-29 | commit `4fded65`(模組) + `40c7c19`(rules) + `5072b99`(語法修正) |
+| Phase 1：基礎建設（三層角色 + rules v2.2） | 🟡 程式碼完成 + 資安修補，待**重新部署 rules** 與實機驗收 | 2026-06-20 | commit `4fded65`(模組) + `40c7c19`(rules) + `5072b99`(語法修正)；2026-06-20 修補見下方 §0.5 |
 | Phase 1.5：bootstrap schools/inhu + 組長 uplilt313 | ✅ 完成 | 2026-05-29 | rules v2.2 已部署 `ruleset 14413047-...`、config/main + teacher uplilt313 已寫入。commit `bdc7a06` |
 | Phase 1.6.a：課表匯入 → 教師管理串接 | ✅ 完成 | 2026-05-29 | dataManager.setTeachers 攔截 + 自動 importFromLegacyTeachers + 浮動跳轉 toast + 未指派 email 高亮。commit `4d8d6d3` |
 | Phase 1.6.b：Email/密碼雙軌登入 + 主任寄密碼信 | ✅ 程式碼完成，**需先在 Firebase Console 啟用 Email/Password provider** | 2026-05-29 | authService 加 4 API + v2-app 雙軌登入 modal + 教師管理寄信按鈕。commit `f37dcf3` |
@@ -33,17 +37,39 @@ status: 規劃中（等待 V2 路徑裁決）
 | Phase 6：通知精緻化 + 審計 | ⏸️ | — | |
 | 合回 master + v2.0.0 tag | ⏸️ | — | |
 
+### 0.5 Phase 1 資安修補（2026-06-20，多 agent code review 發現）
+
+審查 V2 Phase 1 安全面（firestore.rules ↔ 各 service）發現規則與程式碼欄位不一致／規則漏限欄位，已修兩項 **critical / blocker**：
+
+| # | 嚴重度 | 問題 | 修法 |
+|---|---|---|---|
+| 1 | 🔴 blocker | **operationLogs 寫入全被 DENY**：規則欄位白名單為 `target/detail/request.time`，但 `operationLogger.log()` 實際寫 `targetType/targetId/details` + ISO 字串 timestamp。三處不符 → 每筆稽核日誌寫入失敗（含 login_denied）。 | 改規則對齊程式碼實際 schema（整個 app 一致用此 schema：logger 寫、roleService 過濾、v2-app 渲染）。 |
+| 2 | 🔴 critical | **userMappings 自寫提權**：整套 `isDirector/isApprover/myTeacherId` 都信任使用者自寫的 `userMappings/{uid}.linkedTeacherId`，原規則只檢查 `auth.uid==uid` 不限欄位 → 任一教師可把自己映射到 director 的 teacherId，提權為主任。 | 自寫映射時，`linkedTeacherId` 必須指向 email 等於本人登入 email 的教師檔（只能映射到自己）。director 代寫不受限；bootstrap 與正常登入不受影響。 |
+
+**⚠️ 待重新部署**：以上兩項只改了 `firestore.rules` 檔案，**尚未部署到 Firestore**。實機驗收前必須先 `node scripts/firestore-deploy-rules.js`（或 Firebase Console 貼上）重新發布規則，否則日誌仍寫不進、提權漏洞仍在。
+
+**延後到 Phase 3/4 處理（已記錄，目前無 UI 觸發）**：
+- 🟠 `substituteRecords` create 允許 `approvedBy==自己` 的教師偽造「已核准」紀錄 → 待 Phase 3 改由 `runTransaction` 交叉驗證來源 pendingRequest，create 收緊為 `isApprover`。
+- 🟠 `pendingRequests` update 對同意人無 `affectedKeys` 限制（違反 §4「僅能改 swapConsents/status」）→ 待 Phase 3/4 落地 array-contains 時一併加欄位限制。
+- ⚪ `isValidRoleValue()` 死碼（定義後未被任何規則引用）→ 建議併入 teachers create 規則做 role 列舉校驗。
+
 ### Phase 1 / 1.6 驗收待辦（使用者實機操作）
 
 #### 自動可驗的部分已通過
-- ✅ ES module 語法檢查（node --check 全綠）
-- ✅ 本地 HTTP 200 OK 載入測試
+- ✅ ES module 語法檢查（node --check 全綠，含全部 v2 模組）
+- ✅ 三層角色實作完整：schemaConstants（ROLES/REQUEST_TYPES/legacy alias）、roleService（isDirector/isSectionChief/isApprover/canManageRoster）、authGuardV2（director bootstrap + 白名單拒絕）、v2-app（body class `v2-director/v2-section-chief/v2-teacher` + 徽章「教務主任/教學組長/教師」）
 - ✅ `SCHOOL_ID = 'inhu'` 已落地
-- ✅ firestore.rules v2.2 已部署到 stsystem-9d5fe（ruleset 14413047-...）
+- ✅ rules ↔ 程式碼 schema 一致性審查（teachers/userMappings/data 路徑皆對齊；operationLogs/userMappings 已修）
+- ⚠️ firestore.rules **需重新部署**（2026-06-20 資安修補後，舊 ruleset `14413047-...` 已過期）
 - ✅ schools/inhu/config/main 建立完成（initialAdminEmails 含主任）
 - ✅ schools/inhu/teachers 已有 uplilt313（組長角色）
 
 #### 待實機操作（步驟）
+
+**0. 重新部署 firestore.rules**（2026-06-20 資安修補後必做，否則日誌寫不進 + 提權漏洞仍在）
+
+   `node scripts/firestore-deploy-rules.js`（先 `--dry` 驗證語法，再正式發布）
+   或 Firebase Console → Firestore → 規則 → 貼上 `firestore.rules` → 發布。
 
 **1. Firebase Console 啟用 Email/Password provider**（Phase 1.6.b 前置）
 
@@ -67,6 +93,11 @@ status: 規劃中（等待 V2 路徑裁決）
 **4. 規則攻擊測試**：
    - teacher 帳號用 DevTools 直接 POST `schools/inhu/teachers/anything` 應被 DENY
    - section_chief 帳號改 teacher.role 應被 DENY（只有 director 能改 role）
+   - **（2026-06-20 新增）提權測試**：teacher 帳號用 DevTools 把自己的
+     `userMappings/{自己uid}.linkedTeacherId` 改成某 director 教師的 teacherId → 應被 DENY
+     （email 不符，封堵自我提權為主任）
+   - **（2026-06-20 新增）日誌寫入測試**：任一登入者操作後，`schools/inhu/operationLogs`
+     應**成功新增**紀錄（修補前會 permission denied）；且嘗試 update/delete 既有 log 應被 DENY
    - 其他細項見 `docs/V2_E2E_CHECKLIST.md`
 
 ---
