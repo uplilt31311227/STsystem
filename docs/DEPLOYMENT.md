@@ -12,11 +12,16 @@ tags:
 | 環境 | URL | branch / repo | 說明 | 狀態 |
 |------|-----|---------------|------|------|
 | Production | GitHub Pages（本 repo master） | master | 組長穩定版1.0（v1.9.0） | 🟢 運行中 |
-| Preview (V2) | https://uplilt31311227.github.io/STsystem-preview/ | STsystem-preview main（源自 feature/permission-system） | V2 權限系統 | 🟢 已部署 |
+| Preview (V2) | https://uplilt31311227.github.io/STsystem-preview/ | STsystem-preview main（源自 feature/permission-system） | V2 權限系統（Phase 1 三層角色 + 資安修補） | 🟢 已部署 |
 | Development | http://localhost:8000 | — | 本地開發伺服器 | — |
 
 > V2 預覽站點詳見 [`V2_PERMISSION_SYSTEM.md`](./V2_PERMISSION_SYSTEM.md)。
 > 更新 Preview：`git push preview feature/permission-system:main`
+>
+> **回朔（rollback）**：每次更新 preview 前先把舊 main 存成備份分支。
+> 2026-06-25 部署 Phase 1 前的備份點 = `90db3b4`（分支 `backup-pre-phase1-20260625`）。
+> 一鍵回朔：`git push preview 90db3b4:main -f`（或 `git push preview backup-pre-phase1-20260625:main -f`）。
+> ⚠️ Google 登入需 `uplilt31311227.github.io` 在 Firebase Console → Authentication → Settings → Authorized domains 內（preview 站既有，通常已授權）。
 
 ## 部署方式
 
@@ -82,3 +87,4 @@ node scripts/firestore-deploy-rules.js --dry    # 只建立 ruleset 不發布
 | 2026-04-13 | v1.9.0 | 全站緊湊布局改造、Toast 通知、備份還原 |
 | 2026-04-20 | v2.0.0-alpha | V2 權限系統初版，部署至獨立 preview repo |
 | 2026-04-29 | v2.0.0-alpha2 | Firestore 規則 v2.1（角色判讀）+ 部署/健康檢查腳本 + E2E checklist |
+| 2026-06-25 | v2.0.0 Phase 1 | Preview 部署三層角色 + rules v2.2 資安修補（commit `e00e89f`）；回朔點 `90db3b4`（分支 `backup-pre-phase1-20260625`） |
