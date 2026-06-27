@@ -8,15 +8,6 @@
  * 4. 月結算與時數統計
  */
 
-/**
- * XSS 防護：對使用者可控字串進行 HTML 跳脫
- * 用於所有 innerHTML 內插使用者輸入的欄位（教師名、課程名、班級名等）
- *
- * @param {*} s - 任意值，轉為字串後跳脫
- * @returns {string} 安全的 HTML 跳脫字串
- */
-const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-
 // 匯入模組
 import { DataManager } from './modules/dataManager.js';
 import { ScheduleParser } from './modules/scheduleParser.js';
@@ -4342,16 +4333,6 @@ class SubstituteTeacherApp {
         const datalist = document.getElementById('class-datalist');
         const classes = this.dataManager.getClasses();
         datalist.innerHTML = classes.map(c => `<option value="${esc(c)}">`).join('');
-
-        // 填充科目 datalist（來自科目↔領域對應表）
-        const subjectList = document.getElementById('subject-datalist');
-        if (subjectList) {
-            subjectList.innerHTML = this.dataManager.getSubjects()
-                .map(s => `<option value="${esc(s)}">`).join('');
-        }
-
-        // 重建領域下拉選項（標準領域 ∪ 對應表內的所有領域，確保非標準領域也可選）
-        this.populateDomainSelect(courseData ? courseData.domain : '');
 
         // 填充科目 datalist（來自科目↔領域對應表）
         const subjectList = document.getElementById('subject-datalist');
