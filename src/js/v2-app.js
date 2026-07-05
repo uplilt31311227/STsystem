@@ -163,6 +163,7 @@ function fmtDate(iso) {
 async function renderPendingTab() {
     const host = document.getElementById('v2-pending-list');
     if (!host) return;
+    const _gen = _v2IdentityGen;
     host.innerHTML = '<p>載入中…</p>';
 
     const me = roleSvc.getCurrentIdentity();
@@ -207,6 +208,7 @@ async function renderPendingTab() {
             </div>`).join('');
     };
 
+    if (isStaleRender(_gen)) return;   // 期間身份已切換 → 放棄回填，保持 reset 清空的狀態
     host.innerHTML = `
         <div class="v2-section-header"><h3>待我同意</h3></div>
         ${render(incoming, 'incoming', '目前沒有等待您同意的請求', r =>
@@ -278,6 +280,7 @@ async function renderTeachersAdminTab() {
     if (!host) return;
     if (!roleSvc.canManageRoster()) { host.innerHTML = '<p>僅教務主任可存取此頁籤。教學組長與一般教師無此權限。</p>'; return; }
 
+    const _gen = _v2IdentityGen;
     host.innerHTML = '<p>載入中…</p>';
     const teachers = await teacherMgr.listAllTeachers();
     const roleLabel = (role) => {
@@ -286,6 +289,7 @@ async function renderTeachersAdminTab() {
     };
     const missingEmailCount = teachers.filter(t => !t.email).length;
 
+    if (isStaleRender(_gen)) return;   // 期間身份已切換 → 放棄回填教師名單
     host.innerHTML = `
         <div class="v2-section-header">
             <h3>
@@ -397,10 +401,12 @@ async function renderLogsTab() {
     const host = document.getElementById('v2-logs');
     if (!host) return;
 
+    const _gen = _v2IdentityGen;
     host.innerHTML = '<p>載入中…</p>';
     const all = await logger.fetchLogs({ limit: 300 });
     const visible = roleSvc.filterLogsForCurrent(all);
 
+    if (isStaleRender(_gen)) return;   // 期間身份已切換 → 放棄回填操作日誌
     host.innerHTML = `
         <div class="v2-section-header">
             <h3>操作日誌 <small style="color:#6b7280;font-weight:normal;">（${visible.length} 筆）</small></h3>
@@ -435,11 +441,13 @@ async function renderRecordsTab() {
         host.className = 'card compact-card';
         original.appendChild(host);
     }
+    const _gen = _v2IdentityGen;
     const all       = await dataSvc.listSubstituteRecords();
     const visible   = roleSvc.filterRecordsForCurrent(all);
     const isApprover = roleSvc.isApprover();
     const APPROVER_ROLES_FOR_BADGE = ['admin', 'director', 'section_chief'];
 
+    if (isStaleRender(_gen)) return;   // 期間身份已切換 → 放棄回填全校紀錄
     host.innerHTML = `
         <div class="v2-section-header">
             <h3>全校調代課紀錄 <small style="color:#6b7280;font-weight:normal;">（${visible.length} 筆｜${isApprover ? '核准者視圖' : '個人相關'}）</small></h3>
@@ -499,6 +507,53 @@ function bindV2TabSwitches() {
             if (tab === 'records')     await renderRecordsTab();
         }, { passive: true });
     });
+}
+
+// 每次身份「實際切換」+1；非同步渲染據此判斷手上的結果是否已過期（見 isStaleRender）。
+let _v2IdentityGen = 0;
+
+/** 非同步 render 取回資料後、寫入 DOM 前呼叫：若期間身份已切換則放棄本次繪製，避免舊身份資料回填。 */
+function isStaleRender(gen) { return gen !== _v2IdentityGen; }
+
+/**
+ * 直接以 class 操作切到指定頁籤（不經 canSwitchToTab 守門，供身份切換重置用）。
+ * 沿用 app.js bindTabEvents 的 active/hidden 規則，保持 UI 一致。
+ */
+function forceActivateTab(dataTab) {
+    const targetBtn = document.querySelector(`.tab-btn[data-tab="${dataTab}"]`);
+    const targetPane = document.getElementById(dataTab + '-tab');
+    if (!targetBtn || !targetPane) return;
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => {
+        c.classList.remove('active');
+        c.classList.add('hidden');
+    });
+    targetBtn.classList.add('active');
+    targetPane.classList.add('active');
+    targetPane.classList.remove('hidden');
+}
+
+// 所有「由登入身份動態渲染、含個資」的容器 id。切換身份時必須全部清空。
+// 集中一處列舉：日後新增受限頁籤只需在此補一個 id，避免遺漏造成殘留外洩。
+const V2_IDENTITY_CONTENT_HOSTS = ['v2-teachers-admin', 'v2-logs', 'v2-pending-list', 'v2-records-section'];
+
+/**
+ * 身份切換 / 登出時重置 V2 視圖狀態（資安）。僅在身份「實際改變」時呼叫
+ * （見 onAuthStateChange 的 identityChanged 守門），故不會誤刪同帳號 re-emit 的未存輸入。
+ *   1. 清空所有含個資的渲染容器（教師名單 / 操作日誌 / 待辦 / 全校紀錄），杜絕前一身份殘留
+ *   2. 清空衝堂檢查快取，避免殘留他人紀錄
+ *   3. 彈回中性預設頁籤「課表匯入」（等同重新整理後的初始頁），避免新身份落在
+ *      對其 display:none 的 .active 面板而看見空白、或殘留看見上一身份內容
+ * 必須在套用新 body 角色 class 與重新渲染「之前」呼叫。
+ */
+function resetV2ViewState() {
+    V2_IDENTITY_CONTENT_HOSTS.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.innerHTML = '';
+    });
+    _v2RecordsCache = [];
+    _v2PendingCache = [];
+    forceActivateTab('import');
 }
 
 /* ===== 調課送出攔截（P5/P7 重點）===== */
@@ -961,9 +1016,20 @@ async function bootstrap() {
 
     let unsubs = [];
     const clearSubs = () => { unsubs.forEach(u => { try { u(); } catch (_) {} }); unsubs = []; };
+    let lastAuthUid;   // 追蹤上一個登入 uid，區分「真的換人／登出」與 Firebase 對同帳號 re-emit
 
     authMod.onAuthStateChange(async (user) => {
         clearSubs();
+        const newUid = user ? user.uid : null;
+        const identityChanged = newUid !== lastAuthUid;
+        lastAuthUid = newUid;
+        // 資安：只有身份「實際改變」（換人 / 登出 / 首次登入）才重置視圖與遞增世代，
+        // 杜絕「登出主任→登入組長」未重整時仍看見主任階段渲染的教師名單／待辦／全校紀錄；
+        // 同帳號 re-emit 時跳過，避免誤刪未存表單輸入或無謂彈回頁籤。
+        if (identityChanged) {
+            _v2IdentityGen++;
+            resetV2ViewState();
+        }
         if (!user) {
             roleSvc.clearCurrentIdentity();
             document.body.classList.remove('v2-admin', 'v2-director', 'v2-section-chief', 'v2-teacher', 'v2-approver');
