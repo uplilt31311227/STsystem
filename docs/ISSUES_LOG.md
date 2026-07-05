@@ -42,6 +42,21 @@ tags:
 
 ---
 
+## 同頁面切換身份（登出主任→登入組長）未重整時，權限與敏感內容殘留
+
+- **日期**: 2026-07-05
+- **狀態**: 🟢 已解決（feature/permission-system）
+- **描述**: P1 實機驗收發現——同一瀏覽器分頁先登入主任、登出後再登入組長，UI 權限未即時刷新：組長仍看得見「教師管理」頁籤與**主任階段渲染的真實教師名單**，需手動重新整理才恢復正常。屬跨身份資料外洩。
+- **原因**: 兩層疊加問題。(1) **分類錯誤**：`index.html` 中「教師管理」頁籤按鈕與面板標 `v2-admin-only`（= approver 可見，含組長），應為 `v2-director-only`；「操作日誌」亦誤標 admin-only。(2) **切換殘留**：`onAuthStateChange` 只更新 body 角色 class，未清除前一身份已渲染的敏感容器，且登出分支提早 return、`body.v2-active` 未移除，當前作用中的受限 `.active` 面板（含個資）與其內容留在 DOM。high-effort 多 agent code review 另指出：初版修法只清 2 個容器（漏 `#v2-pending-list`、`#v2-records-section` → 待辦與全校紀錄仍外洩）、且對同帳號 re-emit 無條件重置會誤刪未存輸入、以及 in-flight 非同步渲染可能於清空後回填舊身份資料。
+- **解決方案**:
+  - `index.html`：教師管理改 `v2-director-only`、操作日誌改 `v2-approver-only`（組長維持可見）。
+  - `src/js/v2-app.js`：新增 `resetV2ViewState()`，於身份**實際改變**時（`identityChanged` 守門、以 `lastAuthUid` 比對，避免同帳號 re-emit 誤刪輸入）清空全部四個含個資容器（`V2_IDENTITY_CONTENT_HOSTS`）+ 衝堂快取，並彈回中性頁籤「課表匯入」（等同重整初始頁）。
+  - 新增身份世代計數器 `_v2IdentityGen` + `isStaleRender()`，四個 render 函式取回資料後、寫入 DOM 前檢查，身份已切換即放棄回填（杜絕 in-flight 渲染回填舊身份資料）。
+- **驗證**: `node --check` 全綠；high-effort 多 agent code review（2 CONFIRMED 外洩 + 3 PLAUSIBLE 皆已據以修補）。preview 站三角色切換待使用者複測。
+- **相關檔案**: `index.html`（v2-teachers/v2-logs 按鈕與面板 65-66、892-896）、`src/js/v2-app.js`（`resetV2ViewState`/`forceActivateTab`/`isStaleRender`、`onAuthStateChange`、四個 render 函式）
+
+---
+
 ## 雲端翻轉「九年級已畢業」開關時，已開啟的推薦/調課面板不即時重繪
 
 - **日期**: 2026-06-18
