@@ -144,7 +144,7 @@ function showLoginDenied(email) {
     box.innerHTML = `
         <h3>🔒 此帳號尚未被授權使用本系統</h3>
         <p>登入的 Google 帳號 <strong>${email || '(未知)'}</strong> 尚未綁定任何教師身份。</p>
-        <p>請聯絡組長在「教師管理」頁籤為您指派 email 後再試。</p>
+        <p>請聯絡管理員在「教師管理」頁籤為您指派 email 後再試。</p>
         <button class="btn btn-secondary" id="v2-denied-logout">重新登入</button>
     `;
     document.getElementById('v2-denied-logout')?.addEventListener('click', async () => {
