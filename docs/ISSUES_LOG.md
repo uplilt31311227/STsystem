@@ -42,6 +42,25 @@ tags:
 
 ---
 
+## 登出後整個 app 未鎖定，仍可操作本機頁面（月結算報表可下載）
+
+- **日期**: 2026-07-06
+- **狀態**: 🟢 已解決（feature/permission-system）
+- **描述**: P1 驗收發現——登出後 app 沒有回到「未登入鎖定」狀態，非 V2 的頁籤（月結算等）仍完全可操作，甚至能下載月結算報表。屬登出後未鎖定的資料外洩。
+- **原因**: V1 的登入模型是「app 永遠可用（localStorage），登入只為雲端同步」——`auth-logged-out`/`auth-logged-in` 只切換**表頭**登入按鈕，從不遮罩內容。V2 疊上強制登入但未處理登出鎖定，底層 V1 app 仍可操作本機記憶體資料。
+- **解決方案**: `src/js/v2-app.js` 新增全視窗登入遮罩 `#v2-auth-gate`（z-index 9990，內含 Google/Email 登入入口）；`lockV2App/unlockV2App/setAppLocked` 單一入口在未授權時對 `.app-container` 上 `inert`（同時擋滑鼠/鍵盤/焦點）+ `body.v2-locked` 遮罩；授權身份確認**且初次渲染完成**才 `unlockV2App`。
+- **high-effort code review 補強**（第二輪，5 CONFIRMED + 2 PLAUSIBLE）:
+  - catch 路徑永不解鎖 → 授權者遇暫時性錯誤永久卡死：改 catch 設 `_v2GateError` + 維持鎖定並顯示「錯誤+重試」。
+  - 遮罩只擋滑鼠、鍵盤可 Tab 到底層月結算：改用 `.app-container[inert]` 一併封鎖鍵盤/焦點。
+  - 拒絕訊息依賴 signOut→re-emit 鏈，signOut 失敗則不顯示：改先 `lockV2App()` 保證顯示拒絕，再 try/catch 嘗試 signOut。
+  - `dataManager.clearAll()` 只清記憶體不清 localStorage、且會導致再登入資料看似遺失/覆蓋：**移除 clearAll**，改以 inert+遮罩阻擋存取為真正邊界。
+  - unlock 在 render 前 → render 丟錯留半渲染可操作畫面：unlock 移到 4 個初次渲染完成之後。
+  - email 未逸出即入 innerHTML（XSS）：加 `escapeHtml`；`renderAuthGate` 加 renderKey 防重複重繪。
+- **驗證**: `node --check` 全綠；兩輪 high-effort 多 agent code review。preview 站待使用者複測登出鎖定。
+- **相關檔案**: `src/js/v2-app.js`（`injectV2AuthGate`/`renderAuthGate`/`setAppLocked`/`lockV2App`/`unlockV2App`、`onAuthStateChange`）、`src/js/modules/dataManager.js`（`clearAll` 660）
+
+---
+
 ## 同頁面切換身份（登出主任→登入組長）未重整時，權限與敏感內容殘留
 
 - **日期**: 2026-07-05

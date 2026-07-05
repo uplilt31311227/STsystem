@@ -101,6 +101,35 @@ function injectV2Styles() {
     }
     .v2-email-login-trigger:hover { color: #1d4ed8; }
 
+    /* 登入遮罩：V2 模式未授權時鎖定整個 app，阻擋所有互動（含月結算下載）。
+       z-index 9990 低於登入 modal(10000)/toast(9999)，故登入 modal 仍可疊上操作。 */
+    #v2-auth-gate { display: none; }
+    body.v2-locked { overflow: hidden; }
+    body.v2-locked #v2-auth-gate {
+        position: fixed; inset: 0; z-index: 9990;
+        display: flex; align-items: center; justify-content: center;
+        background: linear-gradient(135deg, #1e3a8a 0%, #1e40af 100%);
+    }
+    .v2-auth-gate-card {
+        background: #fff; border-radius: 12px; padding: 2.5rem 2rem;
+        width: 92%; max-width: 420px; text-align: center;
+        box-shadow: 0 20px 50px rgba(0,0,0,0.35);
+    }
+    .v2-auth-gate-card h2 { margin: 0 0 0.6rem; color: #1f2937; font-size: 1.25rem; }
+    .v2-auth-gate-card p { margin: 0 0 1.5rem; color: #6b7280; font-size: 0.9rem; line-height: 1.6; }
+    .v2-auth-gate-card p.v2-gate-denied { color: #b91c1c; font-weight: 600; }
+    .v2-auth-gate-actions { display: flex; flex-direction: column; gap: 0.8rem; align-items: center; }
+    #v2-gate-google {
+        display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+        padding: 10px 22px; border: 1px solid #d1d5db; border-radius: 8px;
+        background: #fff; color: #1f2937; font-size: 0.95rem; font-weight: 600; cursor: pointer;
+    }
+    #v2-gate-google:hover { background: #f9fafb; }
+    #v2-gate-email {
+        color: #2563eb; font-size: 0.85rem; cursor: pointer;
+        background: none; border: none; text-decoration: underline; padding: 4px;
+    }
+
     .v2-modal-backdrop {
         position: fixed; inset: 0; background: rgba(0,0,0,0.45);
         display: flex; align-items: center; justify-content: center;
@@ -130,27 +159,89 @@ function injectV2Styles() {
     document.head.appendChild(style);
 }
 
-/* ===== 登入拒絕畫面 ===== */
+/* ===== 登入遮罩（V2 未授權時鎖定整個 app）===== */
 
-function showLoginDenied(email) {
-    const main = document.querySelector('main.main-content') || document.body;
-    let box = document.getElementById('v2-login-denied');
-    if (!box) {
-        box = document.createElement('div');
-        box.id = 'v2-login-denied';
-        box.className = 'v2-login-denied';
-        main.prepend(box);
-    }
-    box.innerHTML = `
-        <h3>🔒 此帳號尚未被授權使用本系統</h3>
-        <p>登入的 Google 帳號 <strong>${email || '(未知)'}</strong> 尚未綁定任何教師身份。</p>
-        <p>請聯絡管理員在「教師管理」頁籤為您指派 email 後再試。</p>
-        <button class="btn btn-secondary" id="v2-denied-logout">重新登入</button>
+// 遮罩狀態：拒絕帳號 email（非 null 顯示「尚未授權」）、驗證錯誤旗標（顯示錯誤+重試）。
+// 授權登入成功後由 unlockV2App 一併清除。
+let _v2GateDeniedEmail = null;
+let _v2GateError = false;
+
+/** 最小 HTML 逸出，避免 email 等外部值注入遮罩 innerHTML。 */
+function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c =>
+        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+/** 注入登入遮罩元素（只需一次）。實際顯隱由 body.v2-locked + .app-container[inert] 控制。 */
+function injectV2AuthGate() {
+    if (document.getElementById('v2-auth-gate')) return;
+    const gate = document.createElement('div');
+    gate.id = 'v2-auth-gate';
+    document.body.appendChild(gate);
+    renderAuthGate();
+}
+
+/** 依目前狀態渲染遮罩內容（預設登入 / 拒絕 / 錯誤），並綁定登入入口。相同狀態不重繪。 */
+function renderAuthGate() {
+    const gate = document.getElementById('v2-auth-gate');
+    if (!gate) return;
+    const key = _v2GateError ? 'error'
+              : _v2GateDeniedEmail ? 'denied:' + _v2GateDeniedEmail
+              : 'default';
+    if (gate.dataset.renderKey === key) return;   // 相同狀態免重繪 / 重綁監聽
+    gate.dataset.renderKey = key;
+
+    const msg = _v2GateError
+        ? `<p class="v2-gate-denied">⚠ 登入驗證時發生錯誤，請點下方按鈕重試，或重新整理頁面。</p>`
+        : _v2GateDeniedEmail
+            ? `<p class="v2-gate-denied">🔒 帳號 ${escapeHtml(_v2GateDeniedEmail)} 尚未被授權。<br>請改用已授權的帳號登入，或聯絡管理員在「教師管理」為您指派 email。</p>`
+            : `<p>本系統為全校共用，請先登入以使用。</p>`;
+    gate.innerHTML = `
+        <div class="v2-auth-gate-card">
+            <h2>國中調代課自動化系統</h2>
+            ${msg}
+            <div class="v2-auth-gate-actions">
+                <button id="v2-gate-google">
+                    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                        <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                        <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                        <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/>
+                        <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+                    </svg>
+                    使用 Google 登入
+                </button>
+                <button id="v2-gate-email">使用 Email / 密碼登入</button>
+            </div>
+        </div>
     `;
-    document.getElementById('v2-denied-logout')?.addEventListener('click', async () => {
-        await authMod.signOutUser();
-        box.remove();
+    // 直接呼叫既有處理器（不依賴遮罩下 DOM id；底層 .app-container 已 inert，程式化呼叫不受影響）
+    gate.querySelector('#v2-gate-google')?.addEventListener('click', () => {
+        window.app?.handleGoogleSignIn?.();
     });
+    gate.querySelector('#v2-gate-email')?.addEventListener('click', () => openAuthModal('signin'));
+}
+
+/**
+ * 設定鎖定狀態的單一入口：切 body.v2-locked（顯示遮罩）並對 .app-container 上 inert。
+ * inert 會一併阻擋鍵盤導覽 / 焦點 / 滑鼠，杜絕「Tab 跳過遮罩操作底層月結算」。
+ */
+function setAppLocked(locked) {
+    const appContainer = document.querySelector('.app-container');
+    if (appContainer) appContainer.inert = locked;
+    document.body.classList.toggle('v2-locked', locked);
+}
+
+/** 鎖定整個 app（未授權 / 登出 / 驗證錯誤）：渲染遮罩並封鎖底層互動。 */
+function lockV2App() {
+    renderAuthGate();
+    setAppLocked(true);
+}
+
+/** 解鎖 app（授權身份確認且初次渲染完成後）：清除拒絕/錯誤狀態並解除封鎖。 */
+function unlockV2App() {
+    _v2GateDeniedEmail = null;
+    _v2GateError = false;
+    setAppLocked(false);
 }
 
 /* ===== 渲染（待辦 / 教師管理 / 操作日誌） ===== */
@@ -1012,6 +1103,9 @@ async function bootstrap() {
     }
 
     injectEmailLoginTrigger();
+    injectV2AuthGate();
+    // 預設鎖定：授權身份解析成功前，整個 app（含底層月結算）都被遮罩 + inert 擋住。
+    lockV2App();
     await authMod.initAuthService();
 
     let unsubs = [];
@@ -1035,6 +1129,9 @@ async function bootstrap() {
             document.body.classList.remove('v2-admin', 'v2-director', 'v2-section-chief', 'v2-teacher', 'v2-approver');
             _v2RecordsCache = [];
             _v2PendingCache = [];
+            // 登出即鎖定整個 app：遮罩 + .app-container inert 阻擋所有互動（含鍵盤跳至月結算下載）。
+            // 不再 clearAll()——那只清記憶體不清 localStorage，反而會讓再登入資料看似遺失並有覆蓋風險。
+            lockV2App();
             return;
         }
         try {
@@ -1046,8 +1143,10 @@ async function bootstrap() {
                 providerId,
             });
             if (!identity) {
-                await authMod.signOutUser();
-                showLoginDenied(user.email);
+                // 未授權：立即在遮罩顯示拒絕訊息（不依賴 signOut 的 re-emit；signOut 失敗也看得到原因），再嘗試登出
+                _v2GateDeniedEmail = user.email || '(未知)';
+                lockV2App();
+                try { await authMod.signOutUser(); } catch (err) { console.error('[v2] 拒絕後登出失敗:', err); }
                 return;
             }
             // v2.0.0 三層角色 body class：
@@ -1078,6 +1177,8 @@ async function bootstrap() {
             if (roleSvc.isApprover()) {
                 await renderLogsTab();
             }
+            // 初次渲染皆完成才解鎖，避免半渲染的可操作畫面外露；render 若丟錯則走 catch 維持鎖定。
+            unlockV2App();
 
             // 即時同步：更新同步 cache + 重新渲染（cache 供 checkExistingRecord 使用）
             unsubs.push(await dataSvc.subscribePendingRequests((items) => {
@@ -1097,7 +1198,9 @@ async function bootstrap() {
             _v2PendingCache = await dataSvc.listPendingRequests();
         } catch (e) {
             console.error('[v2] resolveIdentity 失敗:', e);
-            alert('V2 身份綁定失敗：' + e.message);
+            // 維持鎖定並在遮罩顯示錯誤+重試入口，避免授權者被永久卡在誤導的「請登入」畫面。
+            _v2GateError = true;
+            lockV2App();
         }
     });
 
