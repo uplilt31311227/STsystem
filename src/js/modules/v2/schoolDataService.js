@@ -245,6 +245,16 @@ export async function subscribeSubstituteRecords(callback) {
     });
 }
 
+// P2 全校課表共享：訂閱單一 schedule doc（schools/{schoolId}/data/schedule）。
+// 首次註冊即回傳目前值；之後任何 approver 上傳/編輯課表都會即時推播給全校教師。
+export async function subscribeSchedule(callback) {
+    const fs  = await getV2Firestore();
+    const ref = fs.doc(fs.db, SCHEMA_PATHS.scheduleDoc());
+    return fs.onSnapshot(ref, (snap) => {
+        callback(snap.exists() ? snap.data() : null);
+    });
+}
+
 export async function subscribeOperationLogs(callback, { limit: lim = 200 } = {}) {
     const fs  = await getV2Firestore();
     const col = fs.collection(fs.db, SCHEMA_PATHS.logsCol());

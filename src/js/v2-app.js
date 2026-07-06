@@ -812,10 +812,95 @@ function v2CheckExistingRecord(date, period, className, originalTeacher) {
     return null;
 }
 
+/* ===== P2 全校課表共享 ===== */
+
+// 課表同步節流：in-flight 時再來的請求記 pending，寫完再補跑一次（避免丟失最後一次變更）。
+let _v2ScheduleSyncInFlight = false;
+let _v2ScheduleSyncPending = false;
+// 已套用的遠端課表簽章（updatedAt|長度），用來略過重複快照（含 approver 自己的 echo）。
+let _v2LastAppliedScheduleSig = null;
+
+/**
+ * 把全校課表快照（schools/{schoolId}/data/schedule）套用到本機 dataManager 並刷新 UI。
+ * 所有角色登入 / 收到即時推播時呼叫；教師端因此看到與 approver 同一份課表。
+ * 直接寫欄位（不走 setter / loadFromCloud），避免觸發 notifyDataChange → 個人雲端回寫。
+ */
+function applyRemoteSchedule(doc) {
+    const dm = window.app?.dataManager;
+    if (!dm || !doc || !Array.isArray(doc.scheduleData)) return;
+    // 相同快照（含自己剛寫入的 echo）不重複套用 / 重繪
+    const sig = (doc.updatedAt || '') + '|' + doc.scheduleData.length;
+    if (sig === _v2LastAppliedScheduleSig) return;
+    _v2LastAppliedScheduleSig = sig;
+
+    dm.scheduleData = doc.scheduleData;
+    if (Array.isArray(doc.teachers)) dm.teachers = doc.teachers;
+    if (Array.isArray(doc.classes))  dm.classes  = doc.classes;
+    if (typeof doc.schoolName === 'string') dm.schoolName = doc.schoolName;
+    if (doc.subjectDomainMap && dm.settings) dm.settings.subjectDomainMap = doc.subjectDomainMap;
+
+    // 落地 localStorage（V2 停用個人雲端，此為本機主要儲存；否則離線 / 重整前會看不到課表）
+    try { window.app?.saveDataToStorage?.(); } catch (e) { console.warn('[V2] 課表本機儲存失敗:', e); }
+    // 沿用雲端同步後的既有刷新流程（課表狀態 / 教師表 / 下拉 / 頁籤鎖等）
+    try { window.app?.refreshUIAfterSync?.(); } catch (e) { console.warn('[V2] 課表 UI 刷新失敗:', e); }
+}
+
+/**
+ * approver 匯入 / 編輯課表後，把本機完整快照寫回全校 schedule doc。
+ * 由 patched setScheduleData / addScheduleEntry / updateScheduleEntry / removeScheduleEntry
+ * 以 microtask 延後呼叫，確保同批 setTeachers/setClasses 已完成。
+ * 允許空課表寫入（approver 清空時需傳播）；in-flight 時記 pending，寫完補跑，不丟最後變更。
+ */
+async function syncScheduleToV2() {
+    if (!roleSvc.isApprover()) return;
+    const dm = window.app?.dataManager;
+    if (!dm) return;
+    if (_v2ScheduleSyncInFlight) { _v2ScheduleSyncPending = true; return; }
+
+    _v2ScheduleSyncInFlight = true;
+    try {
+        do {
+            _v2ScheduleSyncPending = false;
+            const scheduleData = dm.getScheduleData?.() || dm.scheduleData || [];
+            if (!Array.isArray(scheduleData)) break;
+            const me = roleSvc.getCurrentIdentity();
+            await dataSvc.saveSchedule({
+                scheduleData,
+                teachers:         dm.getTeachers?.() || dm.teachers || [],
+                classes:          dm.classes || [],
+                schoolName:       dm.schoolName || '',
+                subjectDomainMap: dm.settings?.subjectDomainMap || {},
+                meta: {
+                    uploadedByName:      me?.name || '',
+                    uploadedByTeacherId: me?.teacherId || null,
+                },
+            });
+            await logger.log(LOG_ACTIONS.SCHEDULE_IMPORT, LOG_TARGET_TYPES.SCHEDULE, null, {
+                entries: scheduleData.length,
+            });
+        } while (_v2ScheduleSyncPending);
+        window.app?.showToast?.('✅ 全校課表已更新，所有教師即時同步', 'success', 3500);
+    } catch (err) {
+        console.error('[V2] 全校課表同步失敗:', err);
+        window.app?.showToast?.('全校課表同步失敗：' + (err?.message || err), 'error', 5000);
+    } finally {
+        _v2ScheduleSyncInFlight = false;
+    }
+}
+
 function patchDataManager() {
     const dm = window.app?.dataManager;
     if (!dm || dm.__v2_patched) return;
     dm.__v2_patched = true;
+
+    // P2：V2 模式改以全校 schools/{schoolId}/data 為課表真相來源，徹底切斷 V1 個人雲端（users/{uid}）。
+    // 這裡（bootstrap 的 await 之後、window.app 已存在）才安全覆寫；放在 await 之前會因 window.app
+    // 尚未由 app.js 的 DOMContentLoaded 建立而被跳過。
+    if (typeof window.app.checkAndHandleSync === 'function') {
+        window.app.checkAndHandleSync = async () => {};   // 停用登入時個人雲端讀取 / 合併視窗
+    }
+    dm.syncToCloud = async () => {};                       // 停用所有個人雲端寫入（含 saveDataToStorage 內）
+    try { dm.disableRealtimeSync?.(); } catch (_) {}
 
     const origAdd = dm.addSubstituteRecord.bind(dm);
     dm.addSubstituteRecord = function(record) {
@@ -861,6 +946,29 @@ function patchDataManager() {
             console.warn('[V2] 自動同步教師清單失敗：', err);
         });
     };
+
+    /**
+     * P2：approver 對課表的任何變更都回寫全校 schedule doc。
+     * 需涵蓋「整批替換」(setScheduleData，匯入 / 教師刪除) 與「單格增修刪」
+     * (addScheduleEntry / updateScheduleEntry / removeScheduleEntry，課表編輯頁)。
+     * 套用遠端課表用 applyRemoteSchedule 直接設欄位、不經這些方法，故不會自我觸發迴圈。
+     * microtask 延後：讓同批 setTeachers/setClasses 先跑完，快照才完整。
+     */
+    const queueScheduleSync = () => {
+        if (!roleSvc.isApprover()) return;   // 教師無寫入權（rules 亦擋），不回寫
+        queueMicrotask(() => { syncScheduleToV2(); });
+    };
+    const wrapScheduleMutator = (name) => {
+        if (typeof dm[name] !== 'function') return;
+        const orig = dm[name].bind(dm);
+        dm[name] = function(...args) {
+            const r = orig(...args);
+            queueScheduleSync();
+            return r;
+        };
+    };
+    ['setScheduleData', 'addScheduleEntry', 'updateScheduleEntry', 'removeScheduleEntry']
+        .forEach(wrapScheduleMutator);
 }
 
 let _autoSyncInFlight = false;
@@ -1108,6 +1216,11 @@ async function bootstrap() {
     lockV2App();
     await authMod.initAuthService();
 
+    // window.app 於此（initAuthService 之後）已由 app.js 的 DOMContentLoaded 建立。
+    // 必須在註冊 onAuthStateChange 前套用 dataManager patch（含停用 V1 個人雲端 + 課表攔截），
+    // 確保任何 auth 回呼觸發的資料流都已走 V2 規則。
+    patchDataManager();
+
     let unsubs = [];
     const clearSubs = () => { unsubs.forEach(u => { try { u(); } catch (_) {} }); unsubs = []; };
     let lastAuthUid;   // 追蹤上一個登入 uid，區分「真的換人／登出」與 Firebase 對同帳號 re-emit
@@ -1189,6 +1302,11 @@ async function bootstrap() {
                 _v2RecordsCache = Array.isArray(items) ? items : [];
                 renderRecordsTab();
             }));
+            // P2：訂閱全校課表——首次即回傳目前值（教師端載入 approver 上傳的課表），
+            // 之後任何 approver 上傳/編輯都即時套用到本機並重繪。
+            unsubs.push(await dataSvc.subscribeSchedule((sched) => {
+                if (sched) applyRemoteSchedule(sched);
+            }));
             if (roleSvc.isApprover()) {
                 unsubs.push(await dataSvc.subscribeOperationLogs(() => renderLogsTab()));
             }
@@ -1206,7 +1324,6 @@ async function bootstrap() {
 
     bindV2TabSwitches();
     interceptSubmitButton();
-    patchDataManager();
     patchPdfGenerators();
 
     console.log('[V2] 權限系統已啟動');
