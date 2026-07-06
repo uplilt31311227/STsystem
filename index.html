@@ -57,7 +57,7 @@
             </div>
             <nav class="nav-tabs">
                 <button class="tab-btn active" data-tab="import">課表匯入</button>
-                <button class="tab-btn" data-tab="schedule-editor">課表編輯</button>
+                <button class="tab-btn v2-approver-only" data-tab="schedule-editor">課表編輯</button>
                 <button class="tab-btn" data-tab="substitute">調代課申請</button>
                 <button class="tab-btn" data-tab="records">調代課紀錄</button>
                 <button class="tab-btn" data-tab="settlement">月結算</button>
@@ -76,7 +76,7 @@
                     <div class="import-left">
                         <div class="card compact-card">
                             <h3>匯入課表資料</h3>
-                            <div class="upload-area upload-area-compact" id="schedule-upload">
+                            <div class="upload-area upload-area-compact v2-approver-only" id="schedule-upload">
                                 <div class="upload-icon-compact">📅</div>
                                 <p>拖放課表檔案或<label for="schedule-file" class="upload-link">點擊選擇</label></p>
                                 <span class="upload-hint">支援 .xls / .xlsx / .csv</span>
@@ -161,7 +161,7 @@
             </section>
 
             <!-- 頁籤：課表編輯 -->
-            <section id="schedule-editor-tab" class="tab-content hidden">
+            <section id="schedule-editor-tab" class="tab-content hidden v2-approver-only">
                 <div class="card compact-card">
                     <div class="editor-toolbar">
                         <div class="editor-toolbar-left">
