@@ -1,11 +1,46 @@
 ---
 created: 2026-03-12
-updated: 2026-05-29
+updated: 2026-07-09
 tags:
   - changelog
 ---
 
 # 版本紀錄
+
+---
+
+## [2026-07-09]（feature/permission-system）
+
+### 新增
+- **V2 Phase 3 三種審核流程分支**（PLAN_v2.0.0.md §5 Phase 3 全項）：
+  - 申請分流：代課（substitute）直接進組長核准；調課（swap）先對方同意再核准；多重調課（multi_swap）全員同意才進核准，任一人拒絕整批 rejected
+  - 核准改為 approver（主任/組長）專用，`runTransaction` 原子完成「建紀錄 + 更新請求 + 寫日誌」；並發核准後到者顯示「已被處理」
+  - UI 三段式：「待我同意」（swap / multi_swap 分列）、「待我審核」（approver 專用含數量徽章）、「我的申請」（含對象顯示與駁回 dismiss）
+  - PDF 改於核准成功後產生（原為同意當下）
+  - 舊 alpha 期 `status='pending'` 文件讀取期自動映射，免遷移
+
+### 安全
+- `firestore.rules` 收緊（§0.5 延後項全數完成 + 多輪對抗驗收發現）：
+  - `substituteRecords` create 封掉教師自寫「已核准」紀錄；自我調課快速路徑鎖 type 與三個 teacherId 欄位，杜絕灌代課費
+  - `pendingRequests` create 強制狀態機初始狀態、同意名單非空且不含發起人、禁止預填核准欄位
+  - `pendingRequests` update 加 affectedKeys 欄位白名單（申請內容 create 後不可改）、status 轉換限制、approver 與同意人分支雙終態鎖（approved/rejected 不可復活）
+  - requiredApproverId 相容條款收緊為僅 legacy 文件適用，已同意者不得再取得 update 權
+  - `isValidRoleValue()` 接入 teachers create/update，杜絕列舉外 role
+- 修復致命 bug：駁回操作因資料層自動注入 `updatedAt` 違反規則白名單而全面 permission-denied（改交易直寫）
+
+### 重構
+- 刪除死碼 `canApprove` 與 `REQUEST_STATUS.CANCELLED`；`genId` 匯出重用；pending 快取統一 normalize；`listTeachers` 單次化；核准後三個獨立 await 平行化
+
+---
+
+## [2026-07-06]（feature/permission-system）
+
+### 新增
+- **V2 P2 全校課表共享**：approver 上傳/編輯課表即時同步全校教師（commit 614e4ff）
+
+### 安全
+- 登出後以遮罩 + inert 鎖定整個 app，杜絕未登入操作月結算與報表下載（詳見 ISSUES_LOG 2026-07-06）
+- 修補同頁切換身份的權限殘留與跨身份資料外洩（2026-07-05）
 
 ---
 

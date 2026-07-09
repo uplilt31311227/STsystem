@@ -26,13 +26,13 @@ status: 開發中｜裁決已定（接續路徑）｜Phase 1 程式碼完成，�
 | **master→feature 同步（取得 v1.13.x 修復）** | ✅ 完成 | 2026-06-18 | merge commit `59ef017`，解 7 衝突、41 測試通過 |
 | V2 評估報告 | ✅ 完成 | 2026-05-29 | 見下方 §1 |
 | V2 路徑裁決 | ✅ 接續 | 2026-05-29 | tag `v2.0.0-alpha2-backup` 標記擴充前 V2 |
-| Phase 1：基礎建設（三層角色 + rules v2.2） | 🟡 程式碼完成 + 資安修補，待**重新部署 rules** 與實機驗收 | 2026-06-20 | commit `4fded65`(模組) + `40c7c19`(rules) + `5072b99`(語法修正)；2026-06-20 修補見下方 §0.5 |
+| Phase 1：基礎建設（三層角色 + rules v2.2） | 🟡 程式碼 + rules 完成並部署（2026-06-25 byte 級驗證），**待三角色實機驗收** | 2026-06-20 | commit `4fded65`(模組) + `40c7c19`(rules) + `5072b99`(語法修正)；2026-06-20 修補見下方 §0.5 |
 | Phase 1.5：bootstrap schools/inhu + 組長 uplilt313 | ✅ 完成 | 2026-05-29 | rules v2.2 已部署 `ruleset 14413047-...`、config/main + teacher uplilt313 已寫入。commit `bdc7a06` |
 | Phase 1.6.a：課表匯入 → 教師管理串接 | ✅ 完成 | 2026-05-29 | dataManager.setTeachers 攔截 + 自動 importFromLegacyTeachers + 浮動跳轉 toast + 未指派 email 高亮。commit `4d8d6d3` |
 | Phase 1.6.b：Email/密碼雙軌登入 + 主任寄密碼信 | ✅ 程式碼完成，**需先在 Firebase Console 啟用 Email/Password provider** | 2026-05-29 | authService 加 4 API + v2-app 雙軌登入 modal + 教師管理寄信按鈕。commit `f37dcf3` |
-| Phase 2：全校課表共享 | ⏸️ 待 Phase 1 / 1.6 驗收後 | — | |
-| Phase 3：申請與審核工作流 | ⏸️ | — | |
-| Phase 4：對調同意 + 多重調課 | ⏸️ | — | |
+| Phase 2：全校課表共享 | ✅ 完成 | 2026-07-06 | commit `614e4ff`——approver 上傳/編輯即時同步全校教師，已部署 preview |
+| Phase 3：申請與審核工作流 | ✅ 程式碼完成 + 三輪對抗驗收 + code review 通過，待 preview 實機驗收 | 2026-07-09 | 8 commits（`f8dd218` → `debe4cd`）；含 §0.5 延後資安項全數收緊 + 6 個驗收發現修補（見 ISSUES_LOG 2026-07-09）|
+| Phase 4：對調同意 + 多重調課 | ✅ 已併入 Phase 3 實作（swap 雙簽 + multi_swap 全員同意）| 2026-07-09 | 注意：§5 定義的「Phase 4 — Director 教師白名單批次匯入 UI」仍待做 |
 | Phase 5：資料遷移 + Legacy | ⏸️ | — | |
 | Phase 6：通知精緻化 + 審計 | ⏸️ | — | |
 | 合回 master + v2.0.0 tag | ⏸️ | — | |
