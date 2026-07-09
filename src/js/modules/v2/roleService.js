@@ -94,6 +94,20 @@ export function canApprove(requiredApproverId) {
     return currentIdentity.teacherId === requiredApproverId;
 }
 
+/**
+ * Phase 3：是否為此請求「待同意」名單中的教師（swap / multi_swap 同意階段）。
+ * 優先看 pendingConsentTeacherIds 陣列；沒有該欄位（理論上不會發生，因
+ * pendingRequestService.normalizeLegacyRequest 已補齊）時退回比對舊欄位 requiredApproverId。
+ */
+export function canConsentRequest(request) {
+    if (!currentIdentity?.teacherId || !request) return false;
+    const tid = currentIdentity.teacherId;
+    if (Array.isArray(request.pendingConsentTeacherIds) && request.pendingConsentTeacherIds.includes(tid)) {
+        return true;
+    }
+    return request.requiredApproverId === tid;
+}
+
 export function canCancelRequest(request) {
     if (!currentIdentity || !request) return false;
     if (isApprover()) return true;
