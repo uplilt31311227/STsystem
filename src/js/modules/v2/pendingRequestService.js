@@ -296,35 +296,55 @@ export async function approveRequest(reqId) {
  * 拒絕：同意階段（pendingConsentTeacherIds 內任一人）或核准階段（approver）皆可拒絕。
  * soft-reject（標記 status=rejected，保留文件讓發起人看到），發起人確認後由
  * dismissRejectedRequest() 真正刪除。
+ *
+ * 比照 consentRequest/approveRequest 用 runTransaction + tx.update 直寫（不經
+ * dataSvc.updatePendingRequest wrapper——wrapper 會注入 updatedAt，不在 rules
+ * affectedKeys 白名單內，部署後所有駁回都會 permission-denied）；交易內確認
+ * status 仍是 pending_swap_consent / pending_approval，否則丟
+ * RequestAlreadyProcessedError（防止把已 approved 的請求覆寫成 rejected）。
  */
 export async function rejectRequest(reqId, note = '') {
-    const req = await dataSvc.getPendingRequest(reqId);
-    if (!req) throw new Error('找不到此請求');
-    const normalized = normalizeLegacyRequest(req);
-
     const me = roleSvc.getCurrentIdentity();
     if (!me) throw new Error('尚未登入');
 
-    const isPendingConsenter = Array.isArray(normalized.pendingConsentTeacherIds)
-        && normalized.pendingConsentTeacherIds.includes(me.teacherId);
-    const allowed = roleSvc.isApprover() || isPendingConsenter;
+    const fs  = await getV2Firestore();
+    const ref = fs.doc(fs.db, SCHEMA_PATHS.pendingDoc(reqId));
 
-    if (!allowed) {
-        await logger.log(LOG_ACTIONS.PERMISSION_DENIED, LOG_TARGET_TYPES.PENDING_REQUEST, reqId, {
-            reason: 'reject_not_authorized',
+    const normalized = await fs.runTransaction(fs.db, async (tx) => {
+        const snap = await tx.get(ref);
+        if (!snap.exists()) throw new Error('找不到此請求');
+        const data = normalizeLegacyRequest({ reqId, ...snap.data() });
+
+        if (data.status !== REQUEST_STATUS.PENDING_SWAP_CONSENT
+            && data.status !== REQUEST_STATUS.PENDING_APPROVAL) {
+            throw new RequestAlreadyProcessedError('此請求已被處理（可能已被核准或已被駁回）');
+        }
+
+        const isPendingConsenter = Array.isArray(data.pendingConsentTeacherIds)
+            && data.pendingConsentTeacherIds.includes(me.teacherId);
+        if (!roleSvc.isApprover() && !isPendingConsenter) {
+            throw new Error('您無權拒絕此請求');
+        }
+
+        const now = new Date().toISOString();
+        tx.update(ref, {
+            status:          REQUEST_STATUS.REJECTED,
+            rejectedAt:      now,
+            rejectedBy:      me.teacherId,
+            rejectedByName:  me.name,
+            rejectNote:      note || '',
+            statusUpdatedAt: now,
         });
-        throw new Error('您無權拒絕此請求');
-    }
-
-    const now = new Date().toISOString();
-    await dataSvc.updatePendingRequest(reqId, {
-        status:          REQUEST_STATUS.REJECTED,
-        rejectedAt:      now,
-        rejectedBy:      me.teacherId,
-        rejectedByName:  me.name,
-        rejectNote:      note || '',
-        statusUpdatedAt: now,
+        return data;
+    }).catch(async (err) => {
+        if (err.message === '您無權拒絕此請求') {
+            await logger.log(LOG_ACTIONS.PERMISSION_DENIED, LOG_TARGET_TYPES.PENDING_REQUEST, reqId, {
+                reason: 'reject_not_authorized',
+            });
+        }
+        throw err;
     });
+
     await logger.log(
         LOG_ACTIONS.REJECT,
         LOG_TARGET_TYPES.PENDING_REQUEST,

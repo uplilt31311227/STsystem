@@ -364,6 +364,7 @@ async function renderPendingTab() {
         return `<button class="btn btn-danger btn-sm v2-cancel-btn" data-id="${r.reqId}">撤回</button>`;
     };
 
+
     if (isStaleRender(_gen)) return;   // 期間身份已切換 → 放棄回填，保持 reset 清空的狀態
     host.innerHTML = `
         <div class="v2-section-header"><h3>待我同意・調課</h3></div>
@@ -426,8 +427,19 @@ async function renderPendingTab() {
     host.querySelectorAll('.v2-reject-btn').forEach(btn =>
         btn.addEventListener('click', async () => {
             const note = prompt('拒絕原因（可留空，對方會看到）：') || '';
-            try { await requestSvc.rejectRequest(btn.dataset.id, note); await renderPendingTab(); }
-            catch (e) { alert(e.message); }
+            btn.disabled = true;
+            try {
+                await requestSvc.rejectRequest(btn.dataset.id, note);
+                await renderPendingTab();
+            } catch (e) {
+                if (e.code === 'ALREADY_PROCESSED') {
+                    window.app?.showToast?.(e.message || '此請求已被處理', 'warning', 4000);
+                    await renderPendingTab();
+                } else {
+                    alert(e.message);
+                    btn.disabled = false;
+                }
+            }
         }));
     host.querySelectorAll('.v2-cancel-btn').forEach(btn =>
         btn.addEventListener('click', async () => {

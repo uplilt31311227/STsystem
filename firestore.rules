@@ -251,12 +251,26 @@ service cloud.firestore {
                ])
             && request.resource.data.status in
                  [resource.data.status, 'pending_approval', 'approved', 'rejected']
+            // 終態鎖：status 有變動時，原 status 必須仍是進行中狀態——
+            // approved / rejected 為終態，不可再被改寫（例如把已核准的請求覆寫成 rejected）。
+            // 與 approveRequest（pending_approval→approved）、rejectRequest（pending*→rejected）、
+            // legacy（'pending'）皆相容。
+            && (
+              request.resource.data.status == resource.data.status
+              || resource.data.status in ['pending', 'pending_swap_consent', 'pending_approval']
+            )
           )
           || (
             isSignedIn()
             && myTeacherId(schoolId) != ''
             && (
-              resource.data.requiredApproverId == myTeacherId(schoolId)
+              // requiredApproverId 相容條款僅限 legacy 文件（DB 中無 pendingConsentTeacherIds 欄位）；
+              // 新流程文件（createRequest 一律寫入陣列）以陣列為唯一依據——
+              // 已同意者已被移出陣列，不得再透過舊欄位取得 update 權。
+              (
+                !('pendingConsentTeacherIds' in resource.data)
+                && resource.data.requiredApproverId == myTeacherId(schoolId)
+              )
               || (
                 resource.data.pendingConsentTeacherIds is list
                 && resource.data.pendingConsentTeacherIds.hasAny([myTeacherId(schoolId)])
