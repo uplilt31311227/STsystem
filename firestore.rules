@@ -116,30 +116,38 @@ service cloud.firestore {
         allow read: if isSignedIn();
 
         // 建立：director；或初始主任第一次登入自建 director 教師檔（bootstrap）
-        allow create: if isDirector(schoolId)
-          || (
-            isInitialDirector(schoolId)
-            && request.resource.data.email == userEmail()
-            && request.resource.data.role in ['director', 'admin']
-          );
+        // Phase 3 資安收緊：isValidRoleValue() 併入驗證，杜絕寫入列舉外的 role 字串
+        allow create: if (
+            isDirector(schoolId)
+            || (
+              isInitialDirector(schoolId)
+              && request.resource.data.email == userEmail()
+              && request.resource.data.role in ['director', 'admin']
+            )
+          )
+          && isValidRoleValue(request.resource.data.role);
 
         // 更新：director；或初始主任把自己的教師檔升級為 director（bootstrap 補登）；
         //       section_chief 可改一般欄位但不能改 role 或 email；
         //       Phase 1.6.c：自己對應的 teacher doc 可改 authProvider（只准動該欄位 + updatedAt）
-        allow update: if isDirector(schoolId)
-          || (
-            isInitialDirector(schoolId)
-            && resource.data.email == userEmail()
-          )
-          || (
-            isApprover(schoolId)
-            && request.resource.data.role == resource.data.role
-            && request.resource.data.email == resource.data.email
-          )
-          || (
-            isSignedIn()
-            && myTeacherId(schoolId) == teacherId
-            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['authProvider', 'updatedAt'])
+        // Phase 3 資安收緊：director / 初始主任 途徑一併驗證 isValidRoleValue()
+        allow update: if (
+            (isDirector(schoolId) && isValidRoleValue(request.resource.data.role))
+            || (
+              isInitialDirector(schoolId)
+              && resource.data.email == userEmail()
+              && isValidRoleValue(request.resource.data.role)
+            )
+            || (
+              isApprover(schoolId)
+              && request.resource.data.role == resource.data.role
+              && request.resource.data.email == resource.data.email
+            )
+            || (
+              isSignedIn()
+              && myTeacherId(schoolId) == teacherId
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['authProvider', 'updatedAt'])
+            )
           );
 
         // 刪除：只有 director 能刪教師
@@ -157,15 +165,19 @@ service cloud.firestore {
         // 全員可讀（教師端由 roleService.filterRecordsForCurrent 過濾）
         allow read: if isSignedIn();
 
-        // 建立：approver（adminCreate / approveRequest）；或同意人
+        // 建立：僅 approver（adminCreate 代發起 / approveRequest 核准後 runTransaction 建立）；
+        // 或教師自己對自己的「自我調課」（isSelfSwap，originalTeacherId 與 swapTeacherId
+        // 皆等於自己）——沿用既有 writeV2Record 快速路徑，不需組長/主任審核。
+        // Phase 3 資安收緊：移除原「approvedBy==自己」／「requiredApproverId==自己」教師自寫路徑——
+        //   該路徑允許任一教師偽造「已核准」紀錄或冒名他人調課同意（0.5 節記錄的 blocker）；
+        //   新流程下（自我調課以外）record 一律由 approver 端的 approveRequest 建立。
         allow create: if isApprover(schoolId)
           || (
             isSignedIn()
             && myTeacherId(schoolId) != ''
-            && (
-              request.resource.data.approvedBy == myTeacherId(schoolId)
-              || request.resource.data.requiredApproverId == myTeacherId(schoolId)
-            )
+            && request.resource.data.isSelfSwap == true
+            && request.resource.data.originalTeacherId == myTeacherId(schoolId)
+            && request.resource.data.swapTeacherId == myTeacherId(schoolId)
           );
 
         // 編輯：approver
@@ -187,9 +199,24 @@ service cloud.firestore {
             && request.resource.data.initiatedBy == myTeacherId(schoolId)
           );
 
-        // 更新：approver；或被邀請人（同意 / 拒絕）；
-        //       Phase 4 多重調課全員同意：被列入 pendingConsentTeacherIds 的教師可改自己的同意欄位
-        allow update: if isApprover(schoolId)
+        // 更新：
+        //  - approver：核准 / 駁回，僅能動工作流欄位（不可竄改申請內容：節次/日期/教師等，
+        //    create 後即不可變）
+        //  - 同意人（pendingConsentTeacherIds 內；含舊資料 requiredApproverId 相容）：
+        //    同意 / 拒絕，僅能動工作流欄位；status 只能維持原值（多重調課部分同意）
+        //    或轉成 pending_approval / rejected（不可越級寫成 approved）
+        // Phase 3 資安收緊：兩邊都加 affectedKeys 白名單，欄位需對齊
+        //   pendingRequestService 的 consentRequest / approveRequest / rejectRequest 實際寫入欄位。
+        allow update: if (
+            isApprover(schoolId)
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                 'status', 'approvedAt', 'approvedBy', 'approvedByName',
+                 'rejectedAt', 'rejectedBy', 'rejectedByName', 'rejectNote',
+                 'statusUpdatedAt', 'pendingConsentTeacherIds', 'swapConsents'
+               ])
+            && request.resource.data.status in
+                 [resource.data.status, 'pending_approval', 'approved', 'rejected']
+          )
           || (
             isSignedIn()
             && myTeacherId(schoolId) != ''
@@ -200,6 +227,12 @@ service cloud.firestore {
                 && resource.data.pendingConsentTeacherIds.hasAny([myTeacherId(schoolId)])
               )
             )
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                 'status', 'rejectedAt', 'rejectedBy', 'rejectedByName', 'rejectNote',
+                 'statusUpdatedAt', 'pendingConsentTeacherIds', 'swapConsents'
+               ])
+            && request.resource.data.status in
+                 [resource.data.status, 'pending_approval', 'rejected']
           );
 
         // 刪除：approver；發起人；被邀請人（同意後可清掉草稿）
