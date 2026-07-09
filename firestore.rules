@@ -282,6 +282,11 @@ service cloud.firestore {
                ])
             && request.resource.data.status in
                  [resource.data.status, 'pending_approval', 'rejected']
+            // 終態鎖（與 approver 分支對稱）：rejected/approved 後同意人不得再改 status「復活」請求
+            && (
+              request.resource.data.status == resource.data.status
+              || resource.data.status in ['pending', 'pending_swap_consent']
+            )
           );
 
         // 刪除：approver；發起人；被邀請人（同意後可清掉草稿）
