@@ -1,6 +1,6 @@
 ---
 created: 2026-04-10
-updated: 2026-06-20
+updated: 2026-07-09
 tags:
   - issues
   - troubleshooting
@@ -13,7 +13,7 @@ tags:
 ### operationLogs 稽核日誌全數寫入失敗
 
 - **日期**: 2026-06-20
-- **狀態**: 🟡 規則已修，**待重新部署** firestore.rules 才生效
+- **狀態**: 🟢 已解決（rules 已於 2026-06-25 部署並 byte 級驗證，release `05f9b203`）
 - **描述**: V2 任何操作的稽核日誌都寫不進 `schools/inhu/operationLogs`，含 login_denied。
 - **原因**: `firestore.rules` operationLogs create 的欄位白名單為 `['action','actor','timestamp','target','detail']` 且要求 `timestamp == request.time`、`detail is map`；但 `operationLogger.log()` 實際寫 `targetType/targetId/details` + ISO 字串 timestamp（roleService.filterLogsForCurrent 與 v2-app:418 也都讀此 schema）。三處不符 → `hasOnly` 失敗 → 寫入 DENY。
 - **解決方案**: 改規則對齊程式碼一致使用的 schema：`hasOnly(['action','actor','timestamp','targetType','targetId','details'])`、`timestamp is string`、`actor is map`、`details is map`，保留 update/delete:false 的不可竄改性。
@@ -22,12 +22,33 @@ tags:
 ### userMappings 自寫提權（任一教師可提權為主任）
 
 - **日期**: 2026-06-20
-- **狀態**: 🟡 規則已修，**待重新部署** firestore.rules 才生效
+- **狀態**: 🟢 已解決（rules 已於 2026-06-25 部署並 byte 級驗證，release `05f9b203`）
 - **描述**: 任一登入教師可透過 DevTools 對自己的 `userMappings/{uid}` 寫入，把 `linkedTeacherId` 指向某 director 教師的 teacherId，藉此取得 director 全權限（改學校設定、刪教師、刪正式紀錄）。
 - **原因**: rules helper `myTeacherId/isDirector/isApprover` 全部信任使用者自寫的 `userMappings.linkedTeacherId`，而原 create/update 規則只檢查 `auth.uid == uid`、不限制欄位內容。屬與 operationLogs 同根因（規則漏限欄位）。
 - **解決方案**: 自寫映射時新增條件——`linkedTeacherId` 指向的教師檔 `email` 必須等於本人登入 email（只能映射到自己）。director 代寫不受限；bootstrap 與正常 Google 登入不受影響。
 - **相關檔案**: `firestore.rules`（userMappings match）、`src/js/modules/v2/authGuardV2.js`
-- **延後項（Phase 3/4）**: `substituteRecords` 偽造已核准紀錄、`pendingRequests` 同意人全欄竄改 — 待對調/多重流程落地時用 runTransaction + affectedKeys 收緊（見 `docs/PLAN_v2.0.0.md` §0.5）。
+- **延後項（Phase 3/4）**: `substituteRecords` 偽造已核准紀錄、`pendingRequests` 同意人全欄竄改 — ✅ 已於 2026-07-09 Phase 3 全數收緊完成（見下方 2026-07-09 條目）。
+
+---
+
+## V2 Phase 3 多輪對抗驗收與 code review 發現（2026-07-09）
+
+- **日期**: 2026-07-09
+- **狀態**: 🟢 已解決（feature/permission-system，8 commits：f8dd218 → debe4cd）
+- **描述**: Phase 3 審核工作流實作經三輪對抗驗收 + code-review（8 finder × 4 verifier）共修補 6 個資安/正確性缺陷，最嚴重者為：
+  1. 【致命】駁回操作全面 permission-denied——`updatePendingRequest` wrapper 自動注入 `updatedAt`，不在新 rules affectedKeys 白名單 → 改 `runTransaction` 直寫 + status 終態防護
+  2. 發起人可自帶 `pending_approval` + 空/含己同意名單跳過對方同意（create 端兩變體）→ rules 強制狀態機初始狀態 + 名單不含發起人
+  3. isSelfSwap 快速路徑可自寫假「已核准代課」灌月結算代課費 → 鎖 type 為調課類 + 三個 teacherId 全鎖本人
+  4. 已同意者可用殘留 `requiredApproverId` 身分清空名單跳過其餘同意人 → 相容條款收緊為僅 legacy 文件
+  5. rejected 請求可被名單內同意人「復活」→ 同意人分支補對稱終態鎖
+  6. `canConsentRequest` fallback 造成已同意者看到幽靈待辦 → 陣列存在時以陣列為唯一依據
+- **教訓**: rules 的 update 白名單改動必須逐欄比對「所有實際寫入路徑」的 payload（含資料層 wrapper 自動注入的欄位）；create 端與 update 端要分開對抗測試。
+- **已知可接受限制（延後）**:
+  - isSelfSwap 紀錄的姓名字串欄位未鎖本人（僅污染顯示統計，無計費影響）
+  - operationLog details 不再有 `requiredApproverId` 專屬欄位（資訊仍在 affectedTeacherIds）
+  - `v2NeedsApproval` 與 `resolveApproverInfo` 平行維護「是否需審核」判斷，未來改規則需同步兩處
+  - 多節課代課在 V2 下拆成 N 筆請求，approver 需逐筆核准、PDF 逐張產生
+- **相關檔案**: `firestore.rules`、`src/js/modules/v2/pendingRequestService.js`、`src/js/modules/v2/roleService.js`、`src/js/v2-app.js`
 
 ---
 
