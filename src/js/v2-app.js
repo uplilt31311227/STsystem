@@ -16,7 +16,7 @@ import * as dataSvc             from './modules/v2/schoolDataService.js';
 import * as teacherMgr          from './modules/v2/teacherAccountManager.js';
 import * as requestSvc          from './modules/v2/pendingRequestService.js';
 import * as logger              from './modules/v2/operationLogger.js';
-import { LOG_ACTIONS, LOG_TARGET_TYPES, ROLES, REQUEST_STATUS } from './modules/v2/schemaConstants.js';
+import { LOG_ACTIONS, LOG_TARGET_TYPES, ROLES, REQUEST_STATUS, REQUEST_TYPES } from './modules/v2/schemaConstants.js';
 import * as authMod from './modules/authService.js';
 
 /* ===== 樣式注入 ===== */
@@ -67,6 +67,10 @@ function injectV2Styles() {
                      font-size: 0.72rem; font-weight: 600; margin-right: 4px; }
     .v2-status-tag.pending  { background: #fef3c7; color: #92400e; }
     .v2-status-tag.rejected { background: #fee2e2; color: #991b1b; }
+    .v2-status-tag.approved { background: #d1fae5; color: #065f46; }
+
+    /* Phase 3：待辦清單頁籤上的紅點數量徽章（待我同意 + 待我審核 加總） */
+    .v2-tab-badge { position: relative; top: -1px; }
 
     /* V2 模式下隱藏原本地「調代課紀錄」表格與查詢，避免與 V2 全校紀錄混淆 */
     body.v2-active #records-tab > #records-no-data,
@@ -251,6 +255,30 @@ function fmtDate(iso) {
     catch { return iso || ''; }
 }
 
+/** 待辦清單頁籤上的紅點數量徽章：待我同意 + 待我審核 加總。 */
+function updatePendingNavBadge(count) {
+    const btn = document.querySelector('.tab-btn[data-tab="v2-pending"]');
+    if (!btn) return;
+    let badge = btn.querySelector('.v2-tab-badge');
+    if (count > 0) {
+        if (!badge) {
+            badge = document.createElement('span');
+            badge.className = 'v2-badge v2-tab-badge';
+            btn.appendChild(badge);
+        }
+        badge.textContent = String(count);
+    } else if (badge) {
+        badge.remove();
+    }
+}
+
+/**
+ * Phase 3：待辦清單改為三段：
+ *   1. 待我同意（consent-inbox）— swap / multi_swap 分開呈現，供 pendingConsentTeacherIds 內的教師同意/拒絕
+ *   2. 待我審核（approval-queue）— approver only，核准後才建立 record + 產生 PDF
+ *   3. 我的申請（my-requests）— 發起人自己看全狀態，含 rejected 的 dismiss 流程
+ * 三段共用同一個 #v2-pending-list 容器（沿用既有單頁籤機制，角色可見性以 JS 過濾實現）。
+ */
 async function renderPendingTab() {
     const host = document.getElementById('v2-pending-list');
     if (!host) return;
@@ -260,72 +288,141 @@ async function renderPendingTab() {
     const me = roleSvc.getCurrentIdentity();
     if (!me) { host.innerHTML = '<p>尚未登入。</p>'; return; }
 
-    const all = await dataSvc.listPendingRequests();
-    // 被邀請方的待辦只顯示 pending（不含已拒絕）
-    const incoming = all.filter(r =>
-        r.requiredApproverId === me.teacherId
-        && (r.status || REQUEST_STATUS.PENDING) === REQUEST_STATUS.PENDING
-    );
-    // 發起人的看板同時顯示 pending + rejected（讓發起人知道被拒絕）
-    const outgoing = all.filter(r => r.initiatedBy === me.teacherId);
+    const rawAll = await dataSvc.listPendingRequests();
+    // 舊 alpha 期 status=pending 文件一律映射為「調課雙簽、對方尚未同意」（不寫回資料庫）
+    const all = rawAll.map(r => requestSvc.normalizeLegacyRequest(r));
 
-    const statusBadge = (r) => {
-        const s = r.status || REQUEST_STATUS.PENDING;
-        if (s === REQUEST_STATUS.REJECTED) return '<span class="v2-status-tag rejected">❌ 被拒絕</span>';
-        return '<span class="v2-status-tag pending">⏳ 等待中</span>';
+    // 1. 待我同意：我在 pendingConsentTeacherIds（或舊 requiredApproverId）名單中，且仍在同意階段
+    const consentMine = all.filter(r =>
+        r.status === REQUEST_STATUS.PENDING_SWAP_CONSENT && roleSvc.canConsentRequest(r)
+    );
+    const consentSwap      = consentMine.filter(r => r.requestType !== REQUEST_TYPES.MULTI_SWAP);
+    const consentMultiSwap = consentMine.filter(r => r.requestType === REQUEST_TYPES.MULTI_SWAP);
+
+    // 2. 待我審核：僅 approver（director / section_chief）可見
+    const isApprover    = roleSvc.isApprover();
+    const approvalQueue = isApprover ? all.filter(r => r.status === REQUEST_STATUS.PENDING_APPROVAL) : [];
+
+    // 3. 我的申請：發起人為自己（含全部狀態）
+    const mine = all.filter(r => r.initiatedBy === me.teacherId);
+
+    updatePendingNavBadge(consentMine.length + approvalQueue.length);
+
+    const stageLabel = (r) => {
+        switch (r.status) {
+            case REQUEST_STATUS.PENDING_SWAP_CONSENT: return '<span class="v2-status-tag pending">⏳ 待同意</span>';
+            case REQUEST_STATUS.PENDING_APPROVAL:      return '<span class="v2-status-tag pending">📋 待核准</span>';
+            case REQUEST_STATUS.APPROVED:              return '<span class="v2-status-tag approved">✅ 已核准</span>';
+            case REQUEST_STATUS.REJECTED:              return '<span class="v2-status-tag rejected">❌ 被拒絕</span>';
+            default: return '';
+        }
     };
 
-    const outgoingActions = (r) => {
-        const s = r.status || REQUEST_STATUS.PENDING;
-        if (s === REQUEST_STATUS.REJECTED) {
+    const typeLabel = (r) => ({
+        [REQUEST_TYPES.SUBSTITUTE]: '代課',
+        [REQUEST_TYPES.SWAP]:       '調課',
+        [REQUEST_TYPES.MULTI_SWAP]: '多重調課',
+    }[r.requestType] || r.type || '調課');
+
+    const consentRemainMeta = (r) => {
+        const remain = Array.isArray(r.pendingConsentTeacherIds) ? r.pendingConsentTeacherIds.length : 0;
+        return r.requestType === REQUEST_TYPES.MULTI_SWAP ? ` ・ 尚待 ${remain} 人同意` : '';
+    };
+
+    const itemCard = (r, cls, actionsHtml, extraMeta = '') => `
+        <div class="v2-pending-item ${cls}" data-id="${r.reqId}">
+            <div>
+                ${stageLabel(r)}
+                <strong>${typeLabel(r)}</strong> ・ ${r.date || ''} 第 ${r.period || '?'} 節 ・ ${r.className || ''} ${r.subject || ''}
+            </div>
+            <div class="v2-pending-meta">
+                發起：${r.initiatedByName || r.initiatedBy || ''}${extraMeta} ・ ${fmtDate(r.createdAt)}
+                ${r.status === REQUEST_STATUS.REJECTED && r.rejectNote ? `<br>拒絕原因：${r.rejectNote}` : ''}
+            </div>
+            <div class="v2-pending-actions">${actionsHtml}</div>
+        </div>`;
+
+    const renderList = (items, cls, emptyMsg, actionsFn, extraMetaFn) =>
+        items.length
+            ? items.map(r => itemCard(r, cls, actionsFn(r), extraMetaFn ? extraMetaFn(r) : '')).join('')
+            : `<p class="muted">${emptyMsg}</p>`;
+
+    // 同意按鈕：文案改為純「同意」（Phase 3 前是「同意並產生 PDF」，PDF 現在改到 approver 核准後才產）
+    const consentActions = (r) =>
+        `<button class="btn btn-primary btn-sm v2-consent-btn" data-id="${r.reqId}">同意</button>
+         <button class="btn btn-secondary btn-sm v2-reject-btn" data-id="${r.reqId}">拒絕</button>`;
+
+    const approvalActions = (r) =>
+        `<button class="btn btn-primary btn-sm v2-final-approve-btn" data-id="${r.reqId}">核准並產生 PDF</button>
+         <button class="btn btn-secondary btn-sm v2-reject-btn" data-id="${r.reqId}">駁回</button>`;
+
+    const mineActions = (r) => {
+        if (r.status === REQUEST_STATUS.REJECTED) {
             return `<button class="btn btn-secondary btn-sm v2-dismiss-btn" data-id="${r.reqId}">我知道了</button>`;
         }
+        if (r.status === REQUEST_STATUS.APPROVED) return '';
         return `<button class="btn btn-danger btn-sm v2-cancel-btn" data-id="${r.reqId}">撤回</button>`;
-    };
-
-    const render = (items, cls, emptyMsg, actionsFn, showStatus) => {
-        if (!items.length) return `<p class="muted">${emptyMsg}</p>`;
-        return items.map(r => `
-            <div class="v2-pending-item ${cls}" data-id="${r.reqId}">
-                <div>
-                    ${showStatus ? statusBadge(r) + ' ' : ''}
-                    <strong>${r.type || '調課'}</strong> ・ ${r.date || ''} 第 ${r.period || '?'} 節 ・ ${r.className || ''} ${r.subject || ''}
-                </div>
-                <div class="v2-pending-meta">
-                    發起：${r.initiatedByName || r.initiatedBy || ''} ・ 對象：${r.requiredApproverName || r.requiredApproverId || ''} ・ ${fmtDate(r.createdAt)}
-                    ${r.status === REQUEST_STATUS.REJECTED && r.rejectNote ? `<br>拒絕原因：${r.rejectNote}` : ''}
-                </div>
-                <div class="v2-pending-actions">${actionsFn(r)}</div>
-            </div>`).join('');
     };
 
     if (isStaleRender(_gen)) return;   // 期間身份已切換 → 放棄回填，保持 reset 清空的狀態
     host.innerHTML = `
-        <div class="v2-section-header"><h3>待我同意</h3></div>
-        ${render(incoming, 'incoming', '目前沒有等待您同意的請求', r =>
-            `<button class="btn btn-primary btn-sm v2-approve-btn" data-id="${r.reqId}">同意並產生 PDF</button>
-             <button class="btn btn-secondary btn-sm v2-reject-btn" data-id="${r.reqId}">拒絕</button>`,
-            false
-        )}
-        <div class="v2-section-header" style="margin-top:2rem;"><h3>我已發起</h3></div>
-        ${render(outgoing, 'outgoing', '目前沒有您發起中的請求', outgoingActions, true)}
+        <div class="v2-section-header"><h3>待我同意・調課</h3></div>
+        ${renderList(consentSwap, 'incoming', '目前沒有等待您同意的調課請求', consentActions)}
+
+        <div class="v2-section-header" style="margin-top:2rem;"><h3>待我同意・多重調課</h3></div>
+        ${renderList(consentMultiSwap, 'incoming', '目前沒有等待您同意的多重調課請求', consentActions, consentRemainMeta)}
+
+        ${isApprover ? `
+        <div class="v2-section-header" style="margin-top:2rem;">
+            <h3>待我審核 ${approvalQueue.length ? `<span class="v2-badge">${approvalQueue.length}</span>` : ''}</h3>
+        </div>
+        ${renderList(approvalQueue, 'incoming', '目前沒有待核准的申請', approvalActions)}
+        ` : ''}
+
+        <div class="v2-section-header" style="margin-top:2rem;"><h3>我的申請</h3></div>
+        ${renderList(mine, 'outgoing', '目前沒有您發起中的請求', mineActions)}
     `;
 
-    host.querySelectorAll('.v2-approve-btn').forEach(btn =>
+    host.querySelectorAll('.v2-consent-btn').forEach(btn =>
+        btn.addEventListener('click', async () => {
+            btn.disabled = true;
+            try {
+                await requestSvc.consentRequest(btn.dataset.id);
+                window.app?.showToast?.('已同意，等待其他同意人與組長/主任核准', 'success', 3500);
+                await renderPendingTab();
+            } catch (e) {
+                if (e.code === 'ALREADY_PROCESSED') {
+                    window.app?.showToast?.(e.message || '此請求已被處理', 'warning', 4000);
+                    await renderPendingTab();
+                } else {
+                    alert(e.message);
+                    btn.disabled = false;
+                }
+            }
+        }));
+
+    host.querySelectorAll('.v2-final-approve-btn').forEach(btn =>
         btn.addEventListener('click', async () => {
             btn.disabled = true;
             try {
                 const saved = await requestSvc.approveRequest(btn.dataset.id);
-                // 同意方當場取得 PDF（正式成立後才產）
+                // 核准成功後才產生 PDF（Phase 3：PDF 產生時機從「同意時」移到「核准後」）
                 await generatePdfForRecord(saved);
-                window.app?.showToast?.(`已同意並產生 PDF`, 'success', 3500);
+                window.app?.showToast?.('已核准並產生 PDF', 'success', 3500);
                 await renderPendingTab();
                 await renderRecordsTab();
             } catch (e) {
-                alert(e.message);
-                btn.disabled = false;
+                if (e.code === 'ALREADY_PROCESSED') {
+                    // 兩位 approver 並發核准：後到者顯示「已被處理」並刷新列表
+                    window.app?.showToast?.(e.message || '此請求已被處理', 'warning', 4500);
+                    await renderPendingTab();
+                } else {
+                    alert(e.message);
+                    btn.disabled = false;
+                }
             }
         }));
+
     host.querySelectorAll('.v2-reject-btn').forEach(btn =>
         btn.addEventListener('click', async () => {
             const note = prompt('拒絕原因（可留空，對方會看到）：') || '';
@@ -687,29 +784,84 @@ async function resolveApproverInfo(record) {
     const originalTeacherId   = findId(record.originalTeacher);
     const substituteTeacherId = findId(record.substituteTeacher);
     const swapTeacherId       = findId(record.swapTeacher);
+    // Phase 3：使用者若在多重調課提示框額外勾選教師（見 promptAdditionalConsentTeachers），
+    // record.additionalConsentTeachers 是姓名陣列，這裡一併解析成 teacherId。
+    const additionalConsentTeacherIds = Array.isArray(record.additionalConsentTeachers)
+        ? record.additionalConsentTeachers.map(findId).filter(Boolean)
+        : [];
 
     let requiredApproverId   = null;
     let requiredApproverName = null;
+    let requestType          = REQUEST_TYPES.SUBSTITUTE;
 
     if (record.isSelfSwap) {
-        // 自我調課不需他人同意
+        // 自我調課不需他人同意，也不需組長/主任核准（見 substituteRecords rules 的 isSelfSwap 快速路徑）
         requiredApproverId   = null;
         requiredApproverName = null;
     } else if (record.type === '代課') {
+        // Phase 3：代課為單簽，不需代課教師本人同意，直接進入組長/主任核准佇列
         requiredApproverId   = substituteTeacherId;
         requiredApproverName = record.substituteTeacher || null;
+        requestType          = REQUEST_TYPES.SUBSTITUTE;
     } else if (record.type === '調課') {
         requiredApproverId   = swapTeacherId || substituteTeacherId;
         requiredApproverName = record.swapTeacher || record.substituteTeacher || null;
+        // 有額外同意教師時升級為多重調課（全員同意）；否則維持雙簽調課
+        requestType          = additionalConsentTeacherIds.length ? REQUEST_TYPES.MULTI_SWAP : REQUEST_TYPES.SWAP;
     }
 
     return {
         originalTeacherId,
         substituteTeacherId,
         swapTeacherId,
+        additionalConsentTeacherIds,
         requiredApproverId,
         requiredApproverName,
+        requestType,
     };
+}
+
+/**
+ * Phase 3：調課（非自我調課、非 approver 代發起）時詢問「是否還有其他教師需一併同意」，
+ * 讓一般調課雙簽升級為多重調課全員同意。純 v2-app.js 內動態注入的 modal，
+ * 不改動 app.js / index.html 既有調課表單與批次調課流程。
+ * 回傳勾選的教師姓名陣列（可能是空陣列 = 維持雙簽調課）。
+ */
+function promptAdditionalConsentTeachers(record, allTeachers) {
+    return new Promise((resolve) => {
+        const excludeNames = new Set([record.originalTeacher, record.swapTeacher].filter(Boolean));
+        const candidates = allTeachers.filter(t => t.name && !excludeNames.has(t.name));
+        if (!candidates.length) { resolve([]); return; }
+
+        const backdrop = document.createElement('div');
+        backdrop.className = 'v2-modal-backdrop';
+        backdrop.innerHTML = `
+            <div class="v2-modal" style="max-width:420px;">
+                <h3>多重調課：還有其他教師需一併同意嗎？</h3>
+                <p style="font-size:0.8rem;color:#6b7280;margin-top:-0.4rem;">
+                    若本次調課牽動其他教師課務（例如三方輪調），請勾選需一併同意的教師；
+                    僅雙方調課請直接點「僅雙方調課」送出。
+                </p>
+                <div class="v2-consent-teacher-list" style="max-height:220px;overflow:auto;margin:0.6rem 0;border:1px solid #e5e7eb;border-radius:6px;padding:6px 10px;">
+                    ${candidates.map(t => `
+                        <label style="display:block;padding:4px 0;font-size:0.9rem;">
+                            <input type="checkbox" class="v2-extra-consent-cb" value="${escapeHtml(t.name)}"> ${escapeHtml(t.name)}
+                        </label>`).join('')}
+                </div>
+                <div class="v2-modal-actions">
+                    <button class="btn btn-secondary" id="v2-extra-consent-skip">僅雙方調課</button>
+                    <button class="btn btn-primary" id="v2-extra-consent-confirm">送出</button>
+                </div>
+            </div>`;
+        document.body.appendChild(backdrop);
+
+        const cleanup = (result) => { backdrop.remove(); resolve(result); };
+        backdrop.querySelector('#v2-extra-consent-skip').addEventListener('click', () => cleanup([]));
+        backdrop.querySelector('#v2-extra-consent-confirm').addEventListener('click', () => {
+            const names = Array.from(backdrop.querySelectorAll('.v2-extra-consent-cb:checked')).map(cb => cb.value);
+            cleanup(names);
+        });
+    });
 }
 
 /**
@@ -739,14 +891,31 @@ async function writeV2Record(record) {
     const me = roleSvc.getCurrentIdentity();
     if (!me) throw new Error('尚未登入');
 
+    // Phase 3：一般教師發起的「單筆」調課（非自我調課）先詢問是否還有其他教師需一併同意，
+    // 藉此升級為多重調課。admin 代發起、自我調課、既有「多重調課批次」（isMultiSwap，
+    // 一次送出多筆各自獨立的雙方調課，見 app.js submitSwapBatch）皆不問——
+    // 批次調課本身已是使用者逐筆挑定的雙方組合，維持既有 UX，不重疊詢問全員同意名單。
+    if (record.type === '調課' && !record.isSelfSwap && !record.isMultiSwap && !roleSvc.isAdmin()
+        && !Array.isArray(record.additionalConsentTeachers)) {
+        const teachers = await dataSvc.listTeachers();
+        record.additionalConsentTeachers = await promptAdditionalConsentTeachers(record, teachers);
+    }
+
     const ids = await resolveApproverInfo(record);
     const payload = {
         ...record,
         ...ids,
+        requestType: ids.requestType,
+        // 多重調課才帶 consentTeacherIds；createRequest 未收到此欄位時會退回 swapTeacherId 單簽。
+        ...(ids.requestType === REQUEST_TYPES.MULTI_SWAP
+            ? { consentTeacherIds: [ids.swapTeacherId, ...ids.additionalConsentTeacherIds].filter(Boolean) }
+            : {}),
         initiatedByName: record.originalTeacher || me.name,
     };
-    // 同步已標記於 record.__v2NeedsApproval，避免傳到 Firestore
+    // 同步已標記於 record.__v2NeedsApproval，避免傳到 Firestore；additionalConsentTeachers 是姓名陣列，
+    // 已在 resolveApproverInfo 解析成 additionalConsentTeacherIds，不需再寫入文件。
     delete payload.__v2NeedsApproval;
+    delete payload.additionalConsentTeachers;
 
     if (roleSvc.isAdmin()) {
         payload.initiatedBy = ids.originalTeacherId || me.teacherId;
@@ -756,7 +925,7 @@ async function writeV2Record(record) {
     payload.initiatedBy = me.teacherId;
 
     if (!ids.requiredApproverId) {
-        // 自我調課或無其他教師涉入 → 直接成立
+        // 自我調課或無其他教師涉入 → 直接成立（rules 僅放行 isSelfSwap 這條快速路徑）
         const now = new Date().toISOString();
         const created = await dataSvc.createSubstituteRecord({
             ...payload,
@@ -773,8 +942,11 @@ async function writeV2Record(record) {
     }
 
     const saved = await requestSvc.createRequest(payload);
-    // 顯示正確的送出訊息（pending，尚未產 PDF）
-    const msg = `已送出給 ${ids.requiredApproverName} 同意。對方同意後紀錄才會正式成立並產生 PDF。`;
+    // 顯示正確的送出訊息（pending，尚未產 PDF；PDF 改到組長/主任核准後才產生）
+    const extraCount = ids.additionalConsentTeacherIds.length;
+    const msg = ids.requestType === REQUEST_TYPES.SUBSTITUTE
+        ? `已送出，等待組長/主任核准。核准後才會正式成立並產生 PDF。`
+        : `已送出給 ${ids.requiredApproverName}${extraCount ? ` 等 ${1 + extraCount} 位教師` : ''}同意。全員同意並經組長/主任核准後才會正式成立並產生 PDF。`;
     if (window.app?.showToast) window.app.showToast(msg, 'info', 5000);
     else setTimeout(() => alert(msg), 100);
     return saved;
@@ -796,18 +968,23 @@ function conflictMatches(item, date, period, className, originalTeacher) {
 }
 
 /**
- * V2 下的衝堂檢查：合併 substituteRecords（已成立）與 pendingRequests（尚待同意）。
+ * V2 下的衝堂檢查：合併 substituteRecords（已成立）與 pendingRequests（尚待同意/尚待核准）。
  * pending 也視為衝突：若已送出請求未處理，就不該再送第二筆同樣時段。
+ * Phase 3：狀態值從單一 'pending' 拆成 pending_swap_consent / pending_approval 兩種在途狀態，
+ * 兩者都仍算「尚未定案、應擋下重複申請」；只有 approved（已轉入 substituteRecords，
+ * 由 _v2RecordsCache 涵蓋）與 rejected（已無效）才不算衝突。
  * 回傳與 dataManager.checkExistingRecord 相容的紀錄物件，或 null。
  */
 function v2CheckExistingRecord(date, period, className, originalTeacher) {
     const args = [date, period, className, originalTeacher];
     const r = _v2RecordsCache.find(x => conflictMatches(x, ...args));
     if (r) return r;
-    const p = _v2PendingCache.find(x =>
-        conflictMatches(x, ...args)
-        && (x.status || 'pending') === 'pending'   // 排除 rejected（已無效）
-    );
+    const p = _v2PendingCache.find(x => {
+        if (!conflictMatches(x, ...args)) return false;
+        const normalized = requestSvc.normalizeLegacyRequest(x);
+        const status = normalized.status || REQUEST_STATUS.PENDING_SWAP_CONSENT;
+        return status === REQUEST_STATUS.PENDING_SWAP_CONSENT || status === REQUEST_STATUS.PENDING_APPROVAL;
+    });
     if (p) return { ...p, type: p.type || '代課', __v2Pending: true };
     return null;
 }
