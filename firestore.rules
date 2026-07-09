@@ -228,6 +228,8 @@ service cloud.firestore {
                 && request.resource.data.status == 'pending_swap_consent'
                 && request.resource.data.pendingConsentTeacherIds is list
                 && request.resource.data.pendingConsentTeacherIds.size() > 0
+                // 同意名單不可含發起人本人（封掉「自列唯一同意人再自我同意」跳過對方同意）
+                && !request.resource.data.pendingConsentTeacherIds.hasAny([request.resource.data.initiatedBy])
               )
             )
           );
