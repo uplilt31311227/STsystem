@@ -1,6 +1,6 @@
 ---
 created: 2026-04-10
-updated: 2026-04-20
+updated: 2026-07-10
 tags:
   - deployment
 ---
@@ -12,7 +12,7 @@ tags:
 | 環境 | URL | branch / repo | 說明 | 狀態 |
 |------|-----|---------------|------|------|
 | Production | GitHub Pages（本 repo master） | master | 組長穩定版1.0（v1.9.0） | 🟢 運行中 |
-| Preview (V2) | https://uplilt31311227.github.io/STsystem-preview/ | STsystem-preview main（源自 feature/permission-system） | V2 權限系統（Phase 1 三層角色 + 資安修補） | 🟢 已部署 |
+| Preview (V2) | https://uplilt31311227.github.io/STsystem-preview/ | STsystem-preview main（源自 feature/permission-system） | V2 權限系統（Phase 1-3：三層角色 + 全校課表共享 + 三種審核流程） | 🟢 已部署 |
 | Development | http://localhost:8000 | — | 本地開發伺服器 | — |
 
 > V2 預覽站點詳見 [`V2_PERMISSION_SYSTEM.md`](./V2_PERMISSION_SYSTEM.md)。
@@ -20,6 +20,9 @@ tags:
 >
 > **回朔（rollback）**：每次更新 preview 前先把舊 main 存成備份分支。
 > 2026-06-25 部署 Phase 1 前的備份點 = `90db3b4`（分支 `backup-pre-phase1-20260625`）。
+> 2026-07-10 部署 Phase 3 前的備份點 = `614e4ff`（分支 `backup-pre-phase3-20260710`）；
+> 同日 firestore.rules 已發布 release → ruleset `0ad89275-0df4-46c6-99c8-825a6cc94889`
+> （前一版 ruleset = `05f9b203-10fb-4df0-bef3-ecfec905fe16`，rules 回朔可用 Firebase Console 或 PATCH release 指回）。
 > 一鍵回朔：`git push preview 90db3b4:main -f`（或 `git push preview backup-pre-phase1-20260625:main -f`）。
 > ⚠️ Google 登入需 `uplilt31311227.github.io` 在 Firebase Console → Authentication → Settings → Authorized domains 內（preview 站既有，通常已授權）。
 
