@@ -166,18 +166,24 @@ service cloud.firestore {
         allow read: if isSignedIn();
 
         // 建立：僅 approver（adminCreate 代發起 / approveRequest 核准後 runTransaction 建立）；
-        // 或教師自己對自己的「自我調課」（isSelfSwap，originalTeacherId 與 swapTeacherId
-        // 皆等於自己）——沿用既有 writeV2Record 快速路徑，不需組長/主任審核。
+        // 或教師自己對自己的「自我調課」——沿用既有 writeV2Record 快速路徑，不需組長/主任審核。
         // Phase 3 資安收緊：移除原「approvedBy==自己」／「requiredApproverId==自己」教師自寫路徑——
-        //   該路徑允許任一教師偽造「已核准」紀錄或冒名他人調課同意（0.5 節記錄的 blocker）；
-        //   新流程下（自我調課以外）record 一律由 approver 端的 approveRequest 建立。
+        //   該路徑允許任一教師偽造「已核准」紀錄或冒名他人調課同意（0.5 節記錄的 blocker）。
+        // 自我調課路徑同時約束「內容欄位」：type 必須是調課類且 originalTeacherId /
+        //   swapTeacherId / substituteTeacherId 三者皆等於自己——封掉教師自寫
+        //   type='代課' + substituteTeacher=自己 的假紀錄灌代課費
+        //   （settlementCalculator 以 substituteTeacher===teacherName 且 type!=='調課' 計代課節數）。
+        //   合法自我調課實際寫入（app.js buildSwapRecord + v2-app resolveApproverInfo）：
+        //   type='調課'、teacherB===teacherA，三個 teacherId 欄位皆解析為本人，不受影響。
         allow create: if isApprover(schoolId)
           || (
             isSignedIn()
             && myTeacherId(schoolId) != ''
             && request.resource.data.isSelfSwap == true
+            && request.resource.data.type in ['調課', 'swap']
             && request.resource.data.originalTeacherId == myTeacherId(schoolId)
             && request.resource.data.swapTeacherId == myTeacherId(schoolId)
+            && request.resource.data.substituteTeacherId == myTeacherId(schoolId)
           );
 
         // 編輯：approver
@@ -191,12 +197,39 @@ service cloud.firestore {
       match /pendingRequests/{reqId} {
         allow read: if isSignedIn();
 
-        // 建立：approver（代發）；或發起人本人
-        allow create: if isApprover(schoolId)
+        // 建立：approver（代發，較寬但同樣不可自帶已核准欄位）；或發起人本人。
+        // Phase 3 資安收緊（create 端）：發起人本人 create 必須符合狀態機初始狀態——
+        //   substitute → status 只能是 pending_approval；
+        //   swap / multi_swap → status 只能是 pending_swap_consent 且 pendingConsentTeacherIds 非空
+        //   （封掉自帶 status='pending_approval' + 空同意名單跳過對方同意的路徑）；
+        //   一律禁止 create 就自帶 approvedBy/approvedAt/approvedByName 或預填 swapConsents。
+        // 欄位對齊 pendingRequestService.createRequest 實際寫入（swapConsents 固定寫入空 map）。
+        allow create: if (
+            isApprover(schoolId)
+            && request.resource.data.status != 'approved'
+            && !request.resource.data.keys().hasAny(['approvedBy', 'approvedAt', 'approvedByName'])
+          )
           || (
             isSignedIn()
             && myTeacherId(schoolId) != ''
             && request.resource.data.initiatedBy == myTeacherId(schoolId)
+            && !request.resource.data.keys().hasAny(['approvedBy', 'approvedAt', 'approvedByName'])
+            && (
+              !('swapConsents' in request.resource.data)
+              || (request.resource.data.swapConsents is map && request.resource.data.swapConsents.size() == 0)
+            )
+            && (
+              (
+                request.resource.data.requestType == 'substitute'
+                && request.resource.data.status == 'pending_approval'
+              )
+              || (
+                request.resource.data.requestType in ['swap', 'multi_swap']
+                && request.resource.data.status == 'pending_swap_consent'
+                && request.resource.data.pendingConsentTeacherIds is list
+                && request.resource.data.pendingConsentTeacherIds.size() > 0
+              )
+            )
           );
 
         // 更新：

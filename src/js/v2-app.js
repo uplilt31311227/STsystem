@@ -925,7 +925,14 @@ async function writeV2Record(record) {
     payload.initiatedBy = me.teacherId;
 
     if (!ids.requiredApproverId) {
-        // 自我調課或無其他教師涉入 → 直接成立（rules 僅放行 isSelfSwap 這條快速路徑）
+        // Phase 3：rules 只放行 isSelfSwap 的直接成立快速路徑。若非自我調課卻解析不到
+        // 核准對象（對方教師姓名在 V2 teachers 集合查無帳號），直接丟明確錯誤——
+        // 否則會被 rules 靜默 DENY，使用者只看到不知所云的 permission denied。
+        // （錯誤訊息由 addSubstituteRecord 的 catch 以 alert 顯示，沿用既有錯誤呈現方式。）
+        if (!record.isSelfSwap) {
+            throw new Error(`無法辨識「${record.substituteTeacher || record.swapTeacher || '對方教師'}」的教師帳號，請聯絡管理員在「教師管理」確認名單後再送出。`);
+        }
+        // 自我調課 → 直接成立（rules 僅放行 isSelfSwap 這條快速路徑）
         const now = new Date().toISOString();
         const created = await dataSvc.createSubstituteRecord({
             ...payload,
