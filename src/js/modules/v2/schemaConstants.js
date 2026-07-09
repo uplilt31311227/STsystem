@@ -79,7 +79,6 @@ export const REQUEST_STATUS = Object.freeze({
     PENDING_APPROVAL:      'pending_approval',       // 對方已同意，等組長/主任核准
     APPROVED:              'approved',
     REJECTED:              'rejected',
-    CANCELLED:             'cancelled',
 });
 
 export const LOG_ACTIONS = Object.freeze({

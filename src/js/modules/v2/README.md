@@ -20,7 +20,7 @@
 | `envDetector.js` | 判定是否進入 V2 模式 |
 | `firebaseV2.js` | 動態載入擴充 Firestore 操作（addDoc/updateDoc/query…） |
 | `schoolDataService.js` | 全校集合 CRUD（teachers / schedule / substitute / pending / logs / userMapping） |
-| `roleService.js` | 當前身份與權限閘（canInitiateFor / canApprove…） |
+| `roleService.js` | 當前身份與權限閘（canInitiateFor / canConsentRequest / isApprover…） |
 | `operationLogger.js` | 統一寫入 `operationLogs` |
 | `authGuardV2.js` | Google 登入後 email → teacher 綁定與拒絕 |
 | `teacherAccountManager.js` | 管理教師清單、指派 email、切換角色 |

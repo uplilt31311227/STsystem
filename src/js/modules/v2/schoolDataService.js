@@ -10,7 +10,7 @@
 import { getV2Firestore } from './firebaseV2.js';
 import { SCHEMA_PATHS }   from './schemaConstants.js';
 
-function genId(prefix) {
+export function genId(prefix) {
     return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 }
 

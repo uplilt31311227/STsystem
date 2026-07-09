@@ -364,6 +364,11 @@ async function renderPendingTab() {
         return `<button class="btn btn-danger btn-sm v2-cancel-btn" data-id="${r.reqId}">撤回</button>`;
     };
 
+    // 「我的申請」補對象資訊：multi_swap 顯示尚待同意人數，其餘顯示對象教師姓名
+    const mineMeta = (r) => {
+        if (r.requestType === REQUEST_TYPES.MULTI_SWAP) return consentRemainMeta(r);
+        return r.requiredApproverName ? ` ・ 對象：${r.requiredApproverName}` : '';
+    };
 
     if (isStaleRender(_gen)) return;   // 期間身份已切換 → 放棄回填，保持 reset 清空的狀態
     host.innerHTML = `
@@ -381,7 +386,7 @@ async function renderPendingTab() {
         ` : ''}
 
         <div class="v2-section-header" style="margin-top:2rem;"><h3>我的申請</h3></div>
-        ${renderList(mine, 'outgoing', '目前沒有您發起中的請求', mineActions)}
+        ${renderList(mine, 'outgoing', '目前沒有您發起中的請求', mineActions, mineMeta)}
     `;
 
     host.querySelectorAll('.v2-consent-btn').forEach(btn =>
@@ -407,11 +412,14 @@ async function renderPendingTab() {
             btn.disabled = true;
             try {
                 const saved = await requestSvc.approveRequest(btn.dataset.id);
-                // 核准成功後才產生 PDF（Phase 3：PDF 產生時機從「同意時」移到「核准後」）
-                await generatePdfForRecord(saved);
+                // 核准成功後才產生 PDF（Phase 3：PDF 產生時機從「同意時」移到「核准後」）；
+                // PDF 與兩個列表重繪互不相依，並行執行縮短等待。
+                await Promise.all([
+                    generatePdfForRecord(saved),
+                    renderPendingTab(),
+                    renderRecordsTab(),
+                ]);
                 window.app?.showToast?.('已核准並產生 PDF', 'success', 3500);
-                await renderPendingTab();
-                await renderRecordsTab();
             } catch (e) {
                 if (e.code === 'ALREADY_PROCESSED') {
                     // 兩位 approver 並發核准：後到者顯示「已被處理」並刷新列表
@@ -789,8 +797,9 @@ function interceptSubmitButton() {
 
 /* ===== dataManager patch：V2 模式下改走 V2 寫入 ===== */
 
-async function resolveApproverInfo(record) {
-    const teachers = await dataSvc.listTeachers();
+async function resolveApproverInfo(record, teachers = null) {
+    // 呼叫端（writeV2Record）已抓過教師清單時直接沿用，避免同一次送出重複 listTeachers
+    if (!teachers) teachers = await dataSvc.listTeachers();
     const findId   = (n) => teachers.find(t => t.name === n)?.teacherId || null;
 
     const originalTeacherId   = findId(record.originalTeacher);
@@ -903,17 +912,19 @@ async function writeV2Record(record) {
     const me = roleSvc.getCurrentIdentity();
     if (!me) throw new Error('尚未登入');
 
+    // 教師清單整個送出流程只抓一次，供 promptAdditionalConsentTeachers 與 resolveApproverInfo 共用
+    const teachers = await dataSvc.listTeachers();
+
     // Phase 3：一般教師發起的「單筆」調課（非自我調課）先詢問是否還有其他教師需一併同意，
     // 藉此升級為多重調課。admin 代發起、自我調課、既有「多重調課批次」（isMultiSwap，
     // 一次送出多筆各自獨立的雙方調課，見 app.js submitSwapBatch）皆不問——
     // 批次調課本身已是使用者逐筆挑定的雙方組合，維持既有 UX，不重疊詢問全員同意名單。
     if (record.type === '調課' && !record.isSelfSwap && !record.isMultiSwap && !roleSvc.isAdmin()
         && !Array.isArray(record.additionalConsentTeachers)) {
-        const teachers = await dataSvc.listTeachers();
         record.additionalConsentTeachers = await promptAdditionalConsentTeachers(record, teachers);
     }
 
-    const ids = await resolveApproverInfo(record);
+    const ids = await resolveApproverInfo(record, teachers);
     const payload = {
         ...record,
         ...ids,
@@ -998,10 +1009,10 @@ function v2CheckExistingRecord(date, period, className, originalTeacher) {
     const args = [date, period, className, originalTeacher];
     const r = _v2RecordsCache.find(x => conflictMatches(x, ...args));
     if (r) return r;
+    // _v2PendingCache 寫入點已統一過 normalizeLegacyRequest，這裡直接看 status 即可
     const p = _v2PendingCache.find(x => {
         if (!conflictMatches(x, ...args)) return false;
-        const normalized = requestSvc.normalizeLegacyRequest(x);
-        const status = normalized.status || REQUEST_STATUS.PENDING_SWAP_CONSENT;
+        const status = x.status || REQUEST_STATUS.PENDING_SWAP_CONSENT;
         return status === REQUEST_STATUS.PENDING_SWAP_CONSENT || status === REQUEST_STATUS.PENDING_APPROVAL;
     });
     if (p) return { ...p, type: p.type || '代課', __v2Pending: true };
@@ -1489,9 +1500,11 @@ async function bootstrap() {
             // 初次渲染皆完成才解鎖，避免半渲染的可操作畫面外露；render 若丟錯則走 catch 維持鎖定。
             unlockV2App();
 
-            // 即時同步：更新同步 cache + 重新渲染（cache 供 checkExistingRecord 使用）
+            // 即時同步：更新同步 cache + 重新渲染（cache 供 checkExistingRecord 使用）。
+            // pending cache 一律先過 normalizeLegacyRequest（舊 status='pending' 文件
+            // 映射為 pending_swap_consent），下游（衝堂檢查等）不必再逐項 normalize。
             unsubs.push(await dataSvc.subscribePendingRequests((items) => {
-                _v2PendingCache = Array.isArray(items) ? items : [];
+                _v2PendingCache = (Array.isArray(items) ? items : []).map(requestSvc.normalizeLegacyRequest);
                 renderPendingTab();
             }));
             unsubs.push(await dataSvc.subscribeSubstituteRecords((items) => {
@@ -1509,7 +1522,7 @@ async function bootstrap() {
 
             // 首次塞 cache（onSnapshot 首次觸發前）— 讓即刻的衝堂檢查可用
             _v2RecordsCache = await dataSvc.listSubstituteRecords();
-            _v2PendingCache = await dataSvc.listPendingRequests();
+            _v2PendingCache = (await dataSvc.listPendingRequests()).map(requestSvc.normalizeLegacyRequest);
         } catch (e) {
             console.error('[v2] resolveIdentity 失敗:', e);
             // 維持鎖定並在遮罩顯示錯誤+重試入口，避免授權者被永久卡在誤導的「請登入」畫面。

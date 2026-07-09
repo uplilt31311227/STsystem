@@ -248,7 +248,7 @@ export async function approveRequest(reqId) {
         }
 
         const now       = new Date().toISOString();
-        const recordId  = `rec_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+        const recordId  = dataSvc.genId('rec');
         const recordRef = fs.doc(fs.db, SCHEMA_PATHS.substituteDoc(recordId));
 
         const record = { ...data };

@@ -89,11 +89,6 @@ export function canInitiateFor(targetTeacherId) {
     return currentIdentity.teacherId && currentIdentity.teacherId === targetTeacherId;
 }
 
-export function canApprove(requiredApproverId) {
-    if (!currentIdentity) return false;
-    return currentIdentity.teacherId === requiredApproverId;
-}
-
 /**
  * Phase 3：是否為此請求「待同意」名單中的教師（swap / multi_swap 同意階段）。
  * pendingConsentTeacherIds 陣列存在時以陣列為唯一依據（已同意者已被移出陣列，
