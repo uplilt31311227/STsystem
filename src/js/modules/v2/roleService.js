@@ -96,14 +96,15 @@ export function canApprove(requiredApproverId) {
 
 /**
  * Phase 3：是否為此請求「待同意」名單中的教師（swap / multi_swap 同意階段）。
- * 優先看 pendingConsentTeacherIds 陣列；沒有該欄位（理論上不會發生，因
- * pendingRequestService.normalizeLegacyRequest 已補齊）時退回比對舊欄位 requiredApproverId。
+ * pendingConsentTeacherIds 陣列存在時以陣列為唯一依據（已同意者已被移出陣列，
+ * 不可再退回 requiredApproverId 比對，否則已同意者會看到幽靈待辦項目）；
+ * 僅在陣列不存在（未經 normalizeLegacyRequest 的 legacy 文件）時退回比對舊欄位。
  */
 export function canConsentRequest(request) {
     if (!currentIdentity?.teacherId || !request) return false;
     const tid = currentIdentity.teacherId;
-    if (Array.isArray(request.pendingConsentTeacherIds) && request.pendingConsentTeacherIds.includes(tid)) {
-        return true;
+    if (Array.isArray(request.pendingConsentTeacherIds)) {
+        return request.pendingConsentTeacherIds.includes(tid);
     }
     return request.requiredApproverId === tid;
 }
