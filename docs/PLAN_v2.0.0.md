@@ -62,21 +62,26 @@ status: 開發中｜Phase 1-3 完成｜商用上線實戰化中（錯誤處理�
 - ✅ 三層角色實作完整：schemaConstants（ROLES/REQUEST_TYPES/legacy alias）、roleService（isDirector/isSectionChief/isApprover/canManageRoster）、authGuardV2（director bootstrap + 白名單拒絕）、v2-app（body class `v2-director/v2-section-chief/v2-teacher` + 徽章「教務主任/教學組長/教師」）
 - ✅ `SCHOOL_ID = 'inhu'` 已落地
 - ✅ rules ↔ 程式碼 schema 一致性審查（teachers/userMappings/data 路徑皆對齊；operationLogs/userMappings 已修）
-- ✅ firestore.rules **已部署並 byte 級驗證**（線上 release `05f9b203-...` == 本地修補版，2026-06-25 確認）
+- ✅ firestore.rules **已部署並 byte 級驗證**（現行線上 release `0ad89275-0df4-46c6-99c8-825a6cc94889`，
+  2026-07-10 隨 Phase 3 資安收緊版部署，取代前一版 `05f9b203-10fb-4df0-bef3-ecfec905fe16`；
+  詳見 `docs/DEPLOYMENT.md` 部署歷史，2026-07-29 更正此處過時的 ruleset 參照）
 - ✅ schools/inhu/config/main 建立完成（initialAdminEmails 含主任）
 - ✅ schools/inhu/teachers 已有 uplilt313（組長角色）
 
 #### 待實機操作（步驟）
 
-**0. 重新部署 firestore.rules**（2026-06-20 資安修補後必做，否則日誌寫不進 + 提權漏洞仍在）
+**0. 重新部署 firestore.rules** → ✅ 已完成（2026-07-29 更正：此處原把部署講成待辦，已過時）
 
+   原「2026-06-20 資安修補後必做」的部署已於 2026-06-25 完成並驗證；同一份規則其後又於
+   2026-07-10 隨 Phase 3 資安收緊再次部署，現行線上 release 為 `0ad89275-0df4-46c6-99c8-825a6cc94889`
+   （詳見 `docs/DEPLOYMENT.md` 部署歷史）。**若未來再修改 `firestore.rules`**，重新部署指令仍為：
    `node scripts/firestore-deploy-rules.js`（先 `--dry` 驗證語法，再正式發布）
    或 Firebase Console → Firestore → 規則 → 貼上 `firestore.rules` → 發布。
 
-**1. Firebase Console 啟用 Email/Password provider**（Phase 1.6.b 前置）
+**1. Firebase Console 啟用 Email/Password provider** → ✅ 已完成（Phase 1.6.b 前置條件）
 
-   到 Firebase Console → Authentication → Sign-in method → Email/Password → 啟用。
-   若不啟用，Email 登入 modal 與寄密碼信會回 `auth/operation-not-allowed`。
+   已於 2026-07-29 查證 `signIn.email.enabled=true`；「需手動到 Firebase Console 啟用」之說法已過時
+   （見本文件頂部 2026-06-18 更新註記）。
 
 **2. 三角色登入測試**（本機 `?v2=1`）：
    - **director 帳號**（uplilt31311227@gmail.com）：Google 登入 → body 應有 `v2-director v2-approver v2-admin`、頭部徽章顯示「教務主任」、可看到「教師管理」「操作日誌」頁籤
