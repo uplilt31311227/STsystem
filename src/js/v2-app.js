@@ -1134,10 +1134,16 @@ async function writeV2Record(record) {
     const teachers = await dataSvc.listTeachers();
 
     // Phase 3：一般教師發起的「單筆」調課（非自我調課）先詢問是否還有其他教師需一併同意，
-    // 藉此升級為多重調課。admin 代發起、自我調課、既有「多重調課批次」（isMultiSwap，
-    // 一次送出多筆各自獨立的雙方調課，見 app.js submitSwapBatch）皆不問——
-    // 批次調課本身已是使用者逐筆挑定的雙方組合，維持既有 UX，不重疊詢問全員同意名單。
-    if (record.type === '調課' && !record.isSelfSwap && !record.isMultiSwap && !roleSvc.isAdmin()
+    // 藉此升級為多重調課。admin 代發起、自我調課、既有「多重調課批次」（見 app.js
+    // submitSwapBatch，一次送出多筆各自獨立的雙方調課）皆不問——批次調課本身已是使用者
+    // 逐筆挑定的雙方組合，維持既有 UX，不重疊詢問全員同意名單。
+    // 注意：判斷「是否為批次調課」刻意用 record.batchId，不用 record.isMultiSwap——app.js
+    // 的 buildSwapRecord() 對單次與批次調課都無條件寫死 isMultiSwap: true（V1 從未讀取這個
+    // 欄位，是誤導性的死欄位；this.isMultiSwapMode 才是 V1 真正在用的獨立 UI 狀態），沿用它
+    // 當守門條件會恆為 false，這個 modal 永遠不會出現。batchId 只有 submitSwapBatch 批次送出
+    // 時才會賦值（在呼叫 addSubstituteRecord 之前設定，見 app.js:3224），單次調課沒有此欄位，
+    // 可精確區分兩者。請勿改回 isMultiSwap。
+    if (record.type === '調課' && !record.isSelfSwap && !record.batchId && !roleSvc.isAdmin()
         && !Array.isArray(record.additionalConsentTeachers)) {
         record.additionalConsentTeachers = await promptAdditionalConsentTeachers(record, teachers);
     }
@@ -1361,8 +1367,19 @@ function patchDataManager() {
      * 不再 push 進 dm.substituteRecords（見上方 patch），若不連帶修補這裡，getSubstituteRecords()
      * 會永遠讀到空陣列（或殘留的舊 localStorage 資料），月結算等下游功能形同壞掉。
      * 真相來源改為 _v2RecordsCache（由 subscribeSubstituteRecords 即時同步，見本檔案下方）。
-     * 教師（非 approver）僅能看到與自己相關的紀錄，approver（director/section_chief）看全校，
-     * 與「調代課紀錄」頁籤（renderRecordsTab）套用同一條 roleSvc.filterRecordsForCurrent() 規則。
+     *
+     * 刻意回傳「未過濾」的全校紀錄，不套 roleSvc.filterRecordsForCurrent()。取捨理由：
+     *   1. app.js:2164 showRecommendations()（代課推薦，全角色可見）也吃這個方法；若在此過濾成
+     *      只剩與自己相關的紀錄，一般教師會看不到其他教師既有的代課安排，導致推薦引擎無法排除
+     *      已被排課的候選人——這是正確性 bug，優先於在這一層做身份過濾。
+     *   2. firestore.rules 對 substituteRecords 的 read 規則本來就是 isSignedIn() 即放行全部，
+     *      任何登入教師用 DevTools 都能直接讀到完整集合，這裡過濾不提供任何實質保護，純粹是
+     *      前端體驗層——不是安全邊界，未來請勿誤當成安全漏洞「修」回去。
+     *   3. 真正需要「僅顯示與自己相關」的顯示層——調代課紀錄頁籤（renderRecordsTab，見本檔案
+     *      下方）——並未透過這個方法取資料，而是自行呼叫 dataSvc.listSubstituteRecords() 後
+     *      再套 roleSvc.filterRecordsForCurrent()，不受這裡影響，過濾行為仍然存在。
+     *   4. 月結算頁籤已於 commit 5ec4561 加上 .v2-approver-only，一般教師連分頁都進不去，不會
+     *      經由 generateSettlement() / exportSettlementExcel() 間接看到全校結算。
      * 注意：原函式支援的 (startDate, endDate, teacherFilter) 篩選參數在此分支不會被套用——
      * 目前僅有的兩個會傳這些參數的呼叫點（週彙整 PDF、紀錄頁籤內建查詢）在 V2 模式下已被
      * CSS 隱藏（#records-content），非目前可觸及路徑；若之後在 V2 開放這兩個入口，需要另外處理。
@@ -1370,7 +1387,7 @@ function patchDataManager() {
     const origGet = dm.getSubstituteRecords.bind(dm);
     dm.getSubstituteRecords = function(...args) {
         if (roleSvc.isSignedIn()) {
-            return roleSvc.filterRecordsForCurrent(_v2RecordsCache);
+            return _v2RecordsCache;
         }
         return origGet(...args);
     };
@@ -1392,8 +1409,13 @@ function patchDataManager() {
 
     /**
      * P2：approver 對課表的任何變更都回寫全校 schedule doc。
-     * 需涵蓋「整批替換」(setScheduleData，匯入 / 教師刪除) 與「單格增修刪」
-     * (addScheduleEntry / updateScheduleEntry / removeScheduleEntry，課表編輯頁)。
+     * 需涵蓋「整批替換」(setScheduleData，匯入 / 教師刪除)、「單格增修刪」
+     * (addScheduleEntry / updateScheduleEntry / removeScheduleEntry，課表編輯頁)，
+     * 以及「設定學校名稱」(setSchoolName，課表匯入頁確認學校名稱按鈕)——
+     * syncScheduleToV2() 的 payload 早已包含 schoolName 欄位，缺的只是觸發點：
+     * 若不掛勾這裡，全校 schedule doc 的 schoolName 會永遠是空字串，而 app.js
+     * canSwitchToTab() 同時要求 hasSchedule 與 schoolName 才放行大部分頁籤，
+     * 一般教師端會被永久卡在「請先設定學校名稱」（教師本身無權限設定）。
      * 套用遠端課表用 applyRemoteSchedule 直接設欄位、不經這些方法，故不會自我觸發迴圈。
      * microtask 延後：讓同批 setTeachers/setClasses 先跑完，快照才完整。
      */
@@ -1410,7 +1432,9 @@ function patchDataManager() {
             return r;
         };
     };
-    ['setScheduleData', 'addScheduleEntry', 'updateScheduleEntry', 'removeScheduleEntry']
+    // setSchoolName(name) 與 setScheduleData 等方法同形：單一參數、同步賦值、無回傳值，
+    // 泛用 wrapScheduleMutator 包裝可直接適用，不需另外處理。
+    ['setScheduleData', 'addScheduleEntry', 'updateScheduleEntry', 'removeScheduleEntry', 'setSchoolName']
         .forEach(wrapScheduleMutator);
 }
 
