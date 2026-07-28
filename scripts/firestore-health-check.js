@@ -2,9 +2,11 @@
 /**
  * Firestore V2 健康檢查
  *
- * 驗證 schools/default 結構與資料是否符合預期，列出潛在問題。
+ * 驗證 schools/{schoolId} 結構與資料是否符合預期，列出潛在問題。
  *
- * 用法：node scripts/firestore-health-check.js [--verbose]
+ * 用法：node scripts/firestore-health-check.js [--verbose] [--school=<id>]
+ *   --school: 指定 schoolId，預設 inhu（正式資料所在）。
+ *             --school=default 可查看 2026-04 alpha 期的舊備份。
  *
  * 檢查項：
  *   1. config/main 存在且 initialAdminEmails 為非空陣列
@@ -16,9 +18,10 @@
  */
 const { execSync } = require('child_process');
 
-const PROJECT  = 'stsystem-9d5fe';
-const BASE     = `https://firestore.googleapis.com/v1/projects/${PROJECT}/databases/(default)/documents`;
-const VERBOSE  = process.argv.includes('--verbose');
+const PROJECT   = 'stsystem-9d5fe';
+const SCHOOL_ID = process.argv.find(a => a.startsWith('--school='))?.split('=')[1] || 'inhu';
+const BASE      = `https://firestore.googleapis.com/v1/projects/${PROJECT}/databases/(default)/documents`;
+const VERBOSE   = process.argv.includes('--verbose');
 
 const issues = [];
 function fail(msg)  { issues.push({ level: 'FAIL', msg }); }
@@ -71,7 +74,7 @@ async function listAll(col) {
 
 async function checkConfig() {
     console.log('▶ Config');
-    const cfg = await api('schools/default/config/main');
+    const cfg = await api(`schools/${SCHOOL_ID}/config/main`);
     if (!cfg) return fail('config/main 不存在');
     const obj = docToObj(cfg);
     if (!Array.isArray(obj.initialAdminEmails) || obj.initialAdminEmails.length === 0) {
@@ -86,7 +89,7 @@ async function checkConfig() {
 
 async function checkTeachers() {
     console.log('▶ Teachers');
-    const teachers = await listAll('schools/default/teachers');
+    const teachers = await listAll(`schools/${SCHOOL_ID}/teachers`);
     if (teachers.length === 0) warn('teachers 集合為空（尚未匯入課表）');
     const emailMap = new Map();
     for (const t of teachers) {
@@ -109,7 +112,7 @@ async function checkTeachers() {
 
 async function checkUserMappings(teachers) {
     console.log('▶ UserMappings');
-    const mappings = await listAll('schools/default/userMappings');
+    const mappings = await listAll(`schools/${SCHOOL_ID}/userMappings`);
     const teacherIds = new Set(teachers.map(t => t._id));
     for (const m of mappings) {
         if (!m.linkedTeacherId) {
@@ -125,7 +128,7 @@ async function checkUserMappings(teachers) {
 
 async function checkPending() {
     console.log('▶ PendingRequests');
-    const pending = await listAll('schools/default/pendingRequests');
+    const pending = await listAll(`schools/${SCHOOL_ID}/pendingRequests`);
     for (const p of pending) {
         if (!p.initiatedBy) fail(`pending ${p._id} 缺 initiatedBy`);
         if (!p.requiredApproverId) fail(`pending ${p._id} 缺 requiredApproverId`);
@@ -138,7 +141,7 @@ async function checkPending() {
 
 async function checkRecords() {
     console.log('▶ SubstituteRecords');
-    const records = await listAll('schools/default/substituteRecords');
+    const records = await listAll(`schools/${SCHOOL_ID}/substituteRecords`);
     for (const r of records) {
         if (!r.date)   fail(`record ${r._id} 缺 date`);
         if (!r.period) fail(`record ${r._id} 缺 period`);
@@ -151,7 +154,7 @@ async function checkRecords() {
 
 async function checkLogs() {
     console.log('▶ OperationLogs（最近 50 筆）');
-    const logs = await listAll('schools/default/operationLogs');
+    const logs = await listAll(`schools/${SCHOOL_ID}/operationLogs`);
     logs.sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
     const recent = logs.slice(0, 50);
     let missingActor = 0;
@@ -164,6 +167,7 @@ async function checkLogs() {
 }
 
 (async () => {
+    console.log(`🏫 檢查對象：schools/${SCHOOL_ID}（專案 ${PROJECT}）\n`);
     try {
         await checkConfig();
         const teachers = await checkTeachers();

@@ -11,6 +11,20 @@
 - **⚠️ 待重新部署**：以上只改 `firestore.rules` 檔，需 `node scripts/firestore-deploy-rules.js` 重新發布才生效。
 - 已記錄延後 Phase 3/4 處理：`substituteRecords` 偽造已核准、`pendingRequests` 同意人全欄竄改（詳見 `docs/PLAN_v2.0.0.md` §0.5）。
 
+### Phase 3：三種審核流程分支（2026-07-09）
+- **申請分流**：代課（substitute）直接進組長核准；調課（swap）先對方同意再核准；多重調課（multi_swap）全員同意才進核准，任一人拒絕整批 rejected
+- **核准改為 approver（主任/組長）專用**：`runTransaction` 原子完成「建紀錄 + 更新請求 + 寫日誌」；並發核准後到者顯示「已被處理」
+- **UI 三段式**：「待我同意」（swap / multi_swap 分列）、「待我審核」（approver 專用含數量徽章）、「我的申請」（含對象顯示與駁回 dismiss）
+- PDF 改於核准成功後產生（原為同意當下）
+- **安全**：`firestore.rules` 收緊——`substituteRecords` create 封掉教師自寫「已核准」紀錄；`pendingRequests` create 強制狀態機初始狀態，update 加 `affectedKeys` 欄位白名單與雙終態鎖；`isValidRoleValue()` 接入 teachers create/update
+- 修復致命 bug：駁回操作因資料層自動注入 `updatedAt` 違反規則白名單而全面 permission-denied（改交易直寫）
+- 重構：刪除死碼 `canApprove` 與 `REQUEST_STATUS.CANCELLED`；pending 快取統一 normalize
+
+### Phase 2：全校課表共享（2026-07-06）
+- approver 上傳/編輯課表即時同步全校教師（commit `614e4ff`）
+- 登出後以遮罩 + inert 鎖定整個 app，杜絕未登入操作月結算與報表下載
+- 修補同頁切換身份的權限殘留與跨身份資料外洩（2026-07-05）
+
 ### 新增（V2 權限系統）
 - **角色制度**：`admin`（組長）與 `teacher`（教師）雙角色
   - 組長識別依 `schools/default/config/main.initialAdminEmails` 或 `teachers/{id}.role`
