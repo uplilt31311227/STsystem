@@ -15,6 +15,14 @@
 import { appendLog, listLogs } from './schoolDataService.js';
 import { getCurrentIdentity }  from './roleService.js';
 
+// 本次工作階段（頁面存活期間）寫入失敗的日誌項目，供 v2-app.js 的操作日誌頁籤橫幅提示使用。
+// 僅存於記憶體，重新整理頁面即清空；不影響 log() 本身「失敗不阻斷主流程」的行為。
+const failedLogs = [];
+
+export function getFailedLogCount() {
+    return failedLogs.length;
+}
+
 function safeActor() {
     const id = getCurrentIdentity();
     if (!id) {
@@ -42,6 +50,7 @@ export async function log(action, targetType, targetId, details = {}) {
         return await appendLog(entry);
     } catch (err) {
         console.error('[operationLogger] 寫入失敗:', err, entry);
+        failedLogs.push({ entry, error: (err && err.message) || String(err), at: new Date().toISOString() });
         return null;
     }
 }

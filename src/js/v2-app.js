@@ -18,6 +18,7 @@ import * as requestSvc          from './modules/v2/pendingRequestService.js';
 import * as logger              from './modules/v2/operationLogger.js';
 import { LOG_ACTIONS, LOG_TARGET_TYPES, ROLES, REQUEST_STATUS, REQUEST_TYPES } from './modules/v2/schemaConstants.js';
 import * as authMod from './modules/authService.js';
+import { notify, notifyError, setSyncStatus } from './modules/v2/uiFeedback.js';
 
 /* ===== 樣式注入 ===== */
 
@@ -78,6 +79,9 @@ function injectV2Styles() {
 
     .v2-log-table { width: 100%; font-size: 0.85rem; border-collapse: collapse; }
     .v2-log-table th, .v2-log-table td { padding: 4px 8px; border-bottom: 1px solid #e5e7eb; text-align: left; }
+
+    .v2-logs-failed-banner { background: #fee2e2; border: 1px solid #ef4444; color: #991b1b;
+        border-radius: 6px; padding: 8px 12px; margin-bottom: 0.8rem; font-size: 0.85rem; }
     .v2-log-table tbody tr:hover { background: #f9fafb; }
 
     .v2-teacher-row td { vertical-align: middle; }
@@ -401,7 +405,7 @@ async function renderPendingTab() {
                     window.app?.showToast?.(e.message || '此請求已被處理', 'warning', 4000);
                     await renderPendingTab();
                 } else {
-                    alert(e.message);
+                    notifyError(e, '同意請求');
                     btn.disabled = false;
                 }
             }
@@ -426,7 +430,7 @@ async function renderPendingTab() {
                     window.app?.showToast?.(e.message || '此請求已被處理', 'warning', 4500);
                     await renderPendingTab();
                 } else {
-                    alert(e.message);
+                    notifyError(e, '核准請求');
                     btn.disabled = false;
                 }
             }
@@ -444,7 +448,7 @@ async function renderPendingTab() {
                     window.app?.showToast?.(e.message || '此請求已被處理', 'warning', 4000);
                     await renderPendingTab();
                 } else {
-                    alert(e.message);
+                    notifyError(e, '拒絕請求');
                     btn.disabled = false;
                 }
             }
@@ -453,12 +457,12 @@ async function renderPendingTab() {
         btn.addEventListener('click', async () => {
             if (!confirm('確定撤回此調課請求？')) return;
             try { await requestSvc.cancelRequest(btn.dataset.id); await renderPendingTab(); }
-            catch (e) { alert(e.message); }
+            catch (e) { notifyError(e, '撤回請求'); }
         }));
     host.querySelectorAll('.v2-dismiss-btn').forEach(btn =>
         btn.addEventListener('click', async () => {
             try { await requestSvc.dismissRejectedRequest(btn.dataset.id); await renderPendingTab(); }
-            catch (e) { alert(e.message); }
+            catch (e) { notifyError(e, '清除已拒絕請求'); }
         }));
 }
 
@@ -550,9 +554,9 @@ async function renderTeachersAdminTab() {
             try {
                 await teacherMgr.assignEmail(id, em || null);
                 await teacherMgr.setRole(id, rl);
-                alert('已儲存');
+                notify('已儲存', 'success');
                 await renderTeachersAdminTab();
-            } catch (e) { alert('儲存失敗：' + e.message); }
+            } catch (e) { notifyError(e, '儲存教師資料'); }
         }));
 
     host.querySelectorAll('.v2-delete-teacher').forEach(btn =>
@@ -560,30 +564,30 @@ async function renderTeachersAdminTab() {
             const id = btn.closest('tr').dataset.id;
             if (!confirm('確定刪除此教師？此操作會寫入 log。')) return;
             try { await teacherMgr.deleteTeacher(id); await renderTeachersAdminTab(); }
-            catch (e) { alert('刪除失敗：' + e.message); }
+            catch (e) { notifyError(e, '刪除教師'); }
         }));
 
     host.querySelectorAll('.v2-send-reset').forEach(btn =>
         btn.addEventListener('click', async () => {
             const tr    = btn.closest('tr');
             const email = tr.querySelector('.v2-email-input').value.trim();
-            if (!email) { alert('此教師尚未填 email，請先儲存 email 再試。'); return; }
+            if (!email) { notify('此教師尚未填 email，請先儲存 email 再試。', 'warning'); return; }
             if (!confirm(`即將為 ${email} 建立 Auth 帳號（若不存在）並寄出密碼設定信。確認？`)) return;
             btn.disabled = true;
             const origText = btn.textContent;
             btn.textContent = '寄送中…';
             try {
                 const r = await authMod.createTeacherAuthAndSendReset(email);
-                alert(r.accountCreated
+                notify(r.accountCreated
                     ? `✓ 已建立帳號並寄出密碼設定信給 ${email}`
-                    : `✓ 該 email 已有帳號，已寄出密碼重置信給 ${email}`);
+                    : `✓ 該 email 已有帳號，已寄出密碼重置信給 ${email}`, 'success');
                 btn.textContent = '已寄出';
                 await logger.log(LOG_ACTIONS.TEACHER_BIND_EMAIL, LOG_TARGET_TYPES.TEACHER, tr.dataset.id, {
                     action: 'send_password_reset', email, accountCreated: r.accountCreated,
                 });
             } catch (e) {
                 console.error('寄密碼信失敗:', e);
-                alert('寄信失敗：' + (e.message || e.code || '未知錯誤'));
+                notifyError(e, '寄送密碼信');
                 btn.textContent = origText;
                 btn.disabled = false;
             }
@@ -593,14 +597,14 @@ async function renderTeachersAdminTab() {
         const name  = prompt('教師姓名：'); if (!name) return;
         const email = prompt('Email（可留空）：') || null;
         try { await teacherMgr.createTeacher({ name, email }); await renderTeachersAdminTab(); }
-        catch (e) { alert('新增失敗：' + e.message); }
+        catch (e) { notifyError(e, '新增教師'); }
     });
 
     document.getElementById('v2-import-legacy-teachers')?.addEventListener('click', async () => {
         const legacy = window.app?.dataManager?.teachers || [];
-        if (!legacy.length) { alert('找不到課表教師資料，請先於「課表匯入」載入課表'); return; }
+        if (!legacy.length) { notify('找不到課表教師資料，請先於「課表匯入」載入課表', 'warning'); return; }
         const created = await teacherMgr.importFromLegacyTeachers(legacy);
-        alert(`已匯入 ${created.length} 位教師`);
+        notify(`已匯入 ${created.length} 位教師`, 'success');
         await renderTeachersAdminTab();
     });
 }
@@ -613,9 +617,11 @@ async function renderLogsTab() {
     host.innerHTML = '<p>載入中…</p>';
     const all = await logger.fetchLogs({ limit: 300 });
     const visible = roleSvc.filterLogsForCurrent(all);
+    const failedCount = logger.getFailedLogCount();
 
     if (isStaleRender(_gen)) return;   // 期間身份已切換 → 放棄回填操作日誌
     host.innerHTML = `
+        ${failedCount > 0 ? `<div class="v2-logs-failed-banner">⚠ 本次工作階段有 ${failedCount} 筆稽核日誌寫入失敗</div>` : ''}
         <div class="v2-section-header">
             <h3>操作日誌 <small style="color:#6b7280;font-weight:normal;">（${visible.length} 筆）</small></h3>
             <button class="btn btn-secondary btn-sm" id="v2-refresh-logs">重新整理</button>
@@ -698,7 +704,7 @@ async function renderRecordsTab() {
             btn.addEventListener('click', async () => {
                 if (!confirm('確定刪除此紀錄？此操作會寫入 log。')) return;
                 try { await requestSvc.adminDeleteRecord(btn.dataset.id); await renderRecordsTab(); }
-                catch (e) { alert('刪除失敗：' + e.message); }
+                catch (e) { notifyError(e, '刪除紀錄'); }
             }));
     }
 }
@@ -785,7 +791,7 @@ function interceptSubmitButton() {
             ev.stopPropagation();
             ev.stopImmediatePropagation();
             ev.preventDefault();
-            alert(`您僅能發起自己的課務調代課。\n您的身份為「${me.name}」，但「原任課教師」選的是「${selectedName}」。`);
+            notify(`您僅能發起自己的課務調代課。\n您的身份為「${me.name}」，但「原任課教師」選的是「${selectedName}」。`, 'warning');
             logger.log(LOG_ACTIONS.PERMISSION_DENIED, LOG_TARGET_TYPES.SUBSTITUTE_RECORD, null, {
                 reason: 'non_admin_initiate_other',
                 attemptedTeacher: selectedName,
@@ -977,8 +983,7 @@ async function writeV2Record(record) {
     const msg = ids.requestType === REQUEST_TYPES.SUBSTITUTE
         ? `已送出，等待組長/主任核准。核准後才會正式成立並產生 PDF。`
         : `已送出給 ${ids.requiredApproverName}${extraCount ? ` 等 ${1 + extraCount} 位教師` : ''}同意。全員同意並經組長/主任核准後才會正式成立並產生 PDF。`;
-    if (window.app?.showToast) window.app.showToast(msg, 'info', 5000);
-    else setTimeout(() => alert(msg), 100);
+    notify(msg, 'info', 5000);
     return saved;
 }
 
@@ -1089,7 +1094,7 @@ async function syncScheduleToV2() {
         window.app?.showToast?.('✅ 全校課表已更新，所有教師即時同步', 'success', 3500);
     } catch (err) {
         console.error('[V2] 全校課表同步失敗:', err);
-        window.app?.showToast?.('全校課表同步失敗：' + (err?.message || err), 'error', 5000);
+        notifyError(err, '全校課表同步');
     } finally {
         _v2ScheduleSyncInFlight = false;
     }
@@ -1122,7 +1127,7 @@ function patchDataManager() {
                 })
                 .catch(err => {
                     console.error('[V2] 寫入失敗:', err);
-                    alert('V2 寫入失敗：' + err.message);
+                    notifyError(err, '寫入調代課紀錄');
                 });
             return; // 不 push local
         }
@@ -1466,7 +1471,10 @@ async function bootstrap() {
                 // 未授權：立即在遮罩顯示拒絕訊息（不依賴 signOut 的 re-emit；signOut 失敗也看得到原因），再嘗試登出
                 _v2GateDeniedEmail = user.email || '(未知)';
                 lockV2App();
-                try { await authMod.signOutUser(); } catch (err) { console.error('[v2] 拒絕後登出失敗:', err); }
+                try { await authMod.signOutUser(); } catch (err) {
+                    console.error('[v2] 拒絕後登出失敗:', err);
+                    notifyError(err, '登出');
+                }
                 return;
             }
             // v2.0.0 三層角色 body class：
@@ -1503,21 +1511,30 @@ async function bootstrap() {
             // 即時同步：更新同步 cache + 重新渲染（cache 供 checkExistingRecord 使用）。
             // pending cache 一律先過 normalizeLegacyRequest（舊 status='pending' 文件
             // 映射為 pending_swap_consent），下游（衝堂檢查等）不必再逐項 normalize。
+            // 每個訂閱皆傳入 onError：斷線/權限被撤時翻成人話提示 + 亮右上角同步中斷徽章；
+            // onNext 成功回資料時解除徽章（代表連線已恢復）。
+            const onSyncError = (err) => { notifyError(err, '即時同步'); setSyncStatus(false, err?.code); };
             unsubs.push(await dataSvc.subscribePendingRequests((items) => {
                 _v2PendingCache = (Array.isArray(items) ? items : []).map(requestSvc.normalizeLegacyRequest);
                 renderPendingTab();
-            }));
+                setSyncStatus(true);
+            }, onSyncError));
             unsubs.push(await dataSvc.subscribeSubstituteRecords((items) => {
                 _v2RecordsCache = Array.isArray(items) ? items : [];
                 renderRecordsTab();
-            }));
+                setSyncStatus(true);
+            }, onSyncError));
             // P2：訂閱全校課表——首次即回傳目前值（教師端載入 approver 上傳的課表），
             // 之後任何 approver 上傳/編輯都即時套用到本機並重繪。
             unsubs.push(await dataSvc.subscribeSchedule((sched) => {
                 if (sched) applyRemoteSchedule(sched);
-            }));
+                setSyncStatus(true);
+            }, onSyncError));
             if (roleSvc.isApprover()) {
-                unsubs.push(await dataSvc.subscribeOperationLogs(() => renderLogsTab()));
+                unsubs.push(await dataSvc.subscribeOperationLogs(() => {
+                    renderLogsTab();
+                    setSyncStatus(true);
+                }, {}, onSyncError));
             }
 
             // 首次塞 cache（onSnapshot 首次觸發前）— 讓即刻的衝堂檢查可用

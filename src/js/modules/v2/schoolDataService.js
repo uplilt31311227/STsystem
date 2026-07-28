@@ -227,39 +227,39 @@ export async function listLogs({ limit: lim = 200, since = null } = {}) {
 
 /* ===== 即時訂閱（onSnapshot） ===== */
 
-export async function subscribePendingRequests(callback) {
+export async function subscribePendingRequests(callback, onError) {
     const fs  = await getV2Firestore();
     const col = fs.collection(fs.db, SCHEMA_PATHS.pendingCol());
     const q   = fs.query(col, fs.orderBy('createdAt', 'desc'));
     return fs.onSnapshot(q, (snap) => {
         callback(snap.docs.map(d => ({ reqId: d.id, ...d.data() })));
-    });
+    }, onError);
 }
 
-export async function subscribeSubstituteRecords(callback) {
+export async function subscribeSubstituteRecords(callback, onError) {
     const fs  = await getV2Firestore();
     const col = fs.collection(fs.db, SCHEMA_PATHS.substituteCol());
     const q   = fs.query(col, fs.orderBy('createdAt', 'desc'));
     return fs.onSnapshot(q, (snap) => {
         callback(snap.docs.map(d => ({ recordId: d.id, ...d.data() })));
-    });
+    }, onError);
 }
 
 // P2 全校課表共享：訂閱單一 schedule doc（schools/{schoolId}/data/schedule）。
 // 首次註冊即回傳目前值；之後任何 approver 上傳/編輯課表都會即時推播給全校教師。
-export async function subscribeSchedule(callback) {
+export async function subscribeSchedule(callback, onError) {
     const fs  = await getV2Firestore();
     const ref = fs.doc(fs.db, SCHEMA_PATHS.scheduleDoc());
     return fs.onSnapshot(ref, (snap) => {
         callback(snap.exists() ? snap.data() : null);
-    });
+    }, onError);
 }
 
-export async function subscribeOperationLogs(callback, { limit: lim = 200 } = {}) {
+export async function subscribeOperationLogs(callback, { limit: lim = 200 } = {}, onError) {
     const fs  = await getV2Firestore();
     const col = fs.collection(fs.db, SCHEMA_PATHS.logsCol());
     const q   = fs.query(col, fs.orderBy('timestamp', 'desc'), fs.limit(lim));
     return fs.onSnapshot(q, (snap) => {
         callback(snap.docs.map(d => ({ logId: d.id, ...d.data() })));
-    });
+    }, onError);
 }
