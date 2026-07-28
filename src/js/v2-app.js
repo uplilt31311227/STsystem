@@ -163,6 +163,19 @@ function injectV2Styles() {
                     font-size: 0.85rem; }
     .v2-modal-msg.error   { background: #fee2e2; color: #991b1b; }
     .v2-modal-msg.success { background: #d1fae5; color: #065f46; }
+
+    /* Phase 4b：教師名單 CSV 批次匯入預覽對話框 */
+    .v2-roster-summary { display: flex; flex-wrap: wrap; gap: 8px; margin: 0.8rem 0; }
+    .v2-roster-stat { padding: 4px 10px; border-radius: 6px; font-size: 0.85rem; font-weight: 600;
+                      background: #f3f4f6; color: #374151; }
+    .v2-roster-stat.created { background: #d1fae5; color: #065f46; }
+    .v2-roster-stat.updated { background: #dbeafe; color: #1e40af; }
+    .v2-roster-stat.skipped { background: #f3f4f6; color: #4b5563; }
+    .v2-roster-stat.errors  { background: #fee2e2; color: #991b1b; }
+    .v2-roster-error-list { max-height: 220px; overflow: auto; border: 1px solid #e5e7eb; border-radius: 6px;
+        padding: 6px 10px; margin-bottom: 0.6rem; background: #fafafa; }
+    .v2-roster-error-row { font-size: 0.82rem; color: #991b1b; padding: 3px 0; border-bottom: 1px dashed #fecaca; }
+    .v2-roster-error-row:last-child { border-bottom: none; }
     `;
     document.head.appendChild(style);
 }
@@ -512,6 +525,8 @@ async function renderTeachersAdminTab() {
             </h3>
             <div>
                 <button class="btn btn-secondary btn-sm" id="v2-import-legacy-teachers">從課表匯入教師</button>
+                <button class="btn btn-secondary btn-sm" id="v2-import-roster-csv">📥 批次匯入 CSV</button>
+                <input type="file" id="v2-roster-csv-input" accept=".csv" style="display:none;">
                 <button class="btn btn-primary btn-sm" id="v2-add-teacher">新增教師</button>
             </div>
         </div>
@@ -606,6 +621,90 @@ async function renderTeachersAdminTab() {
         const created = await teacherMgr.importFromLegacyTeachers(legacy);
         notify(`已匯入 ${created.length} 位教師`, 'success');
         await renderTeachersAdminTab();
+    });
+
+    document.getElementById('v2-import-roster-csv')?.addEventListener('click', () => {
+        document.getElementById('v2-roster-csv-input')?.click();
+    });
+
+    document.getElementById('v2-roster-csv-input')?.addEventListener('change', async (ev) => {
+        const file = ev.target.files && ev.target.files[0];
+        ev.target.value = ''; // 清空，允許使用者重新選同一檔案時仍觸發 change
+        if (!file) return;
+        try {
+            const rows = await parseRosterCsvFile(file);
+            const preview = await teacherMgr.importRosterCsv(rows, { dryRun: true });
+            const confirmed = await promptRosterImportPreview(preview);
+            if (!confirmed) return;
+            const applied = await teacherMgr.importRosterCsv(rows, { dryRun: false });
+            notify(
+                `匯入完成：新增 ${applied.created.length} 筆／更新 ${applied.updated.length} 筆／略過 ${applied.skipped.length} 筆／錯誤 ${applied.errors.length} 筆`,
+                applied.errors.length ? 'warning' : 'success'
+            );
+            await renderTeachersAdminTab();
+        } catch (e) {
+            notifyError(e, 'CSV 批次匯入');
+        }
+    });
+}
+
+/** 用 PapaParse 解析教師名單 CSV 檔案為 header:true 物件陣列（欄位定義見 docs/V2_ROSTER_CSV.md）。 */
+function parseRosterCsvFile(file) {
+    return new Promise((resolve, reject) => {
+        Papa.parse(file, {
+            header: true,
+            encoding: 'UTF-8',
+            skipEmptyLines: true,
+            transformHeader: h => {
+                let s = h.trim();
+                if (s.charCodeAt(0) === 0xFEFF) s = s.slice(1); // 去除 UTF-8 BOM 可能殘留在第一個表頭欄位的情形
+                return s;
+            },
+            complete: (results) => resolve(results.data),
+            error: (err) => reject(new Error('CSV 解析失敗：' + err.message)),
+        });
+    });
+}
+
+/**
+ * Phase 4b：CSV 批次匯入教師名單前的預覽對話框。
+ * 顯示 dryRun 結果（新增/更新/略過/錯誤筆數 + 每筆錯誤的列號與原因），
+ * 使用者按「確認匯入」才會真正呼叫 importRosterCsv({ dryRun:false }) 寫入；
+ * 按「取消」或點背景關閉則放棄本次匯入，不寫入任何資料。
+ * 回傳 Promise<boolean>：true = 使用者確認匯入，false = 取消。
+ */
+function promptRosterImportPreview(preview) {
+    return new Promise((resolve) => {
+        const { created, updated, skipped, errors } = preview;
+        const hasImportable = (created.length + updated.length) > 0;
+
+        const backdrop = document.createElement('div');
+        backdrop.className = 'v2-modal-backdrop';
+        backdrop.innerHTML = `
+            <div class="v2-modal" style="max-width:520px;">
+                <h3>CSV 匯入預覽</h3>
+                <div class="v2-roster-summary">
+                    <span class="v2-roster-stat created">新增 ${created.length} 筆</span>
+                    <span class="v2-roster-stat updated">更新 ${updated.length} 筆</span>
+                    <span class="v2-roster-stat skipped">略過 ${skipped.length} 筆</span>
+                    <span class="v2-roster-stat errors">錯誤 ${errors.length} 筆</span>
+                </div>
+                ${errors.length ? `
+                <div class="v2-roster-error-list">
+                    ${errors.map(e => `<div class="v2-roster-error-row">第 ${e.row} 列．${escapeHtml(e.name || '（無姓名）')}．${escapeHtml(e.reason)}</div>`).join('')}
+                </div>` : ''}
+                ${!hasImportable ? '<p class="v2-modal-msg error" style="display:block;">沒有可匯入的資料，請修正 CSV 後重新上傳。</p>' : ''}
+                <div class="v2-modal-actions">
+                    <button class="btn btn-secondary" id="v2-roster-preview-cancel">取消</button>
+                    <button class="btn btn-primary" id="v2-roster-preview-confirm" ${hasImportable ? '' : 'disabled'}>確認匯入</button>
+                </div>
+            </div>`;
+        document.body.appendChild(backdrop);
+
+        const cleanup = (result) => { backdrop.remove(); resolve(result); };
+        backdrop.querySelector('#v2-roster-preview-cancel').addEventListener('click', () => cleanup(false));
+        backdrop.querySelector('#v2-roster-preview-confirm').addEventListener('click', () => cleanup(true));
+        backdrop.addEventListener('click', (e) => { if (e.target === backdrop) cleanup(false); });
     });
 }
 
