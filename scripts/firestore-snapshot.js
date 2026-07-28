@@ -2,16 +2,19 @@
 /**
  * Firestore V2 狀態快照
  *
- * 用法：node scripts/firestore-snapshot.js [which]
- *   which: all | teachers | pending | records | logs | mappings | config
+ * 用法：node scripts/firestore-snapshot.js [which] [--school=<id>]
+ *   which:    all | teachers | pending | records | logs | mappings | config
+ *   --school: 指定 schoolId，預設 inhu（正式資料所在）。
+ *             --school=default 可查看 2026-04 alpha 期的舊備份。
  *
  * 透過 gcloud auth print-access-token --account=uplilt31311227@gmail.com
  * 取得 access token 後直接呼叫 Firestore REST API。
  */
 const { execSync } = require('child_process');
 
-const PROJECT = 'stsystem-9d5fe';
-const BASE    = `https://firestore.googleapis.com/v1/projects/${PROJECT}/databases/(default)/documents`;
+const PROJECT   = 'stsystem-9d5fe';
+const SCHOOL_ID = process.argv.find(a => a.startsWith('--school='))?.split('=')[1] || 'inhu';
+const BASE      = `https://firestore.googleapis.com/v1/projects/${PROJECT}/databases/(default)/documents`;
 
 function getToken() {
     return execSync('gcloud auth print-access-token --account=uplilt31311227@gmail.com')
@@ -74,17 +77,19 @@ function fmt(obj) {
 }
 
 async function main() {
-    const which = process.argv[2] || 'all';
+    const which = process.argv.slice(2).find(a => !a.startsWith('--school=')) || 'all';
     const sep   = '='.repeat(60);
 
+    console.log(`🏫 檢查對象：schools/${SCHOOL_ID}（專案 ${PROJECT}）\n`);
+
     if (which === 'config' || which === 'all') {
-        const cfg = await get('schools/default/config/main');
-        console.log(`${sep}\nConfig (schools/default/config/main)\n${sep}`);
+        const cfg = await get(`schools/${SCHOOL_ID}/config/main`);
+        console.log(`${sep}\nConfig (schools/${SCHOOL_ID}/config/main)\n${sep}`);
         console.log(fmt(cfg));
     }
 
     if (which === 'teachers' || which === 'all') {
-        const teachers = await list('schools/default/teachers');
+        const teachers = await list(`schools/${SCHOOL_ID}/teachers`);
         console.log(`\n${sep}\nTeachers（${teachers.length} 位）\n${sep}`);
         teachers.forEach(t =>
             console.log(`  [${t._id.slice(-12)}] ${t.name}  | email=${t.email || '—'} | role=${t.role || '—'} | 領域=${(t.domains || []).join(',') || '—'}`)
@@ -92,7 +97,7 @@ async function main() {
     }
 
     if (which === 'mappings' || which === 'all') {
-        const maps = await list('schools/default/userMappings');
+        const maps = await list(`schools/${SCHOOL_ID}/userMappings`);
         console.log(`\n${sep}\nUserMappings（${maps.length} 筆）\n${sep}`);
         maps.forEach(m =>
             console.log(`  uid=${m._id.slice(0,10)}... | email=${m.email || '—'} | teacherId=${(m.linkedTeacherId || '').slice(-12)} | lastLogin=${m.lastLoginAt || '—'}`)
@@ -100,7 +105,7 @@ async function main() {
     }
 
     if (which === 'pending' || which === 'all') {
-        const pending = await list('schools/default/pendingRequests');
+        const pending = await list(`schools/${SCHOOL_ID}/pendingRequests`);
         console.log(`\n${sep}\nPendingRequests（${pending.length} 筆）\n${sep}`);
         pending.forEach(p =>
             console.log(`  [${p._id.slice(-10)}] status=${p.status || 'pending'} | ${p.date} ${p.period} ${p.className} | 發起=${p.initiatedByName} → 同意者=${p.requiredApproverName || '—'}`)
@@ -108,7 +113,7 @@ async function main() {
     }
 
     if (which === 'records' || which === 'all') {
-        const records = await list('schools/default/substituteRecords');
+        const records = await list(`schools/${SCHOOL_ID}/substituteRecords`);
         console.log(`\n${sep}\nSubstituteRecords（${records.length} 筆）\n${sep}`);
         records.slice(0, 10).forEach(r =>
             console.log(`  [${r._id.slice(-10)}] ${r.date} ${r.period} ${r.className} | ${r.type} | ${r.originalTeacher} → ${r.substituteTeacher || r.swapTeacher || '—'} | 發起=${r.initiatedByName}`)
@@ -117,7 +122,7 @@ async function main() {
     }
 
     if (which === 'logs' || which === 'all') {
-        const logs = await list('schools/default/operationLogs');
+        const logs = await list(`schools/${SCHOOL_ID}/operationLogs`);
         logs.sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
         console.log(`\n${sep}\nOperationLogs（${logs.length} 筆，最新 8）\n${sep}`);
         logs.slice(0, 8).forEach(l =>

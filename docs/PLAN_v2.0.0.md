@@ -1,11 +1,11 @@
 ---
 created: 2026-05-29
-updated: 2026-06-18
+updated: 2026-07-29
 tags:
   - plan
   - v2.0.0
   - permissions
-status: 開發中｜裁決已定（接續路徑）｜Phase 1 程式碼完成，待實機驗收
+status: 開發中｜Phase 1-3 完成｜商用上線實戰化中（錯誤處理強化／CSV 匯入／資料遷移／E2E 驗收進行中）
 ---
 
 # v2.0.0 多角色協作 + 審核工作流升級計畫
@@ -13,8 +13,9 @@ status: 開發中｜裁決已定（接續路徑）｜Phase 1 程式碼完成，�
 > 目標版本：v2.0.0｜主分支：`feature/permission-system`｜建立日期：2026-05-29
 > 本文件由 master 與 feature 分支共用，中斷後回來可直接接續。
 
-> **⚠️ 接續者請注意（2026-06-18 更新）**：V2「路徑裁決」**早已定案 = 接續路徑**，Phase 1～1.6 程式碼皆完成，目前**唯一卡點是 Phase 1 實機驗收**（需手動到 Firebase Console 啟用 Email/Password provider + 三角色登入測試，見下方驗收待辦）。不是還在等裁決。
+> **⚠️ 接續者請注意（2026-06-18 更新）**：V2「路徑裁決」**早已定案 = 接續路徑**，Phase 1～1.6 程式碼皆完成。Phase 1 實機驗收待辦僅剩三角色登入 + 規則攻擊測試（見下方）；**Email/Password provider 已於 2026-07-29 查證啟用**，舊版本此處「需手動到 Firebase Console 啟用」之說法已過時。不是還在等裁決。
 > **分支狀態**：`feature/permission-system` 已於 2026-06-18 合併 master，取得 v1.13.1（`esc()` 修復）+ v1.13.2（雲端即時重繪），feature 現可正常啟動、落後 master 0 commits。
+> **2026-07-29 更新**：Phase 2（2026-07-06）、Phase 3（2026-07-09）皆已完成，feature 分支已再次合併 master（commit `12f8bb4`），不再落後。目前進度見 §0。
 
 ---
 
@@ -29,13 +30,14 @@ status: 開發中｜裁決已定（接續路徑）｜Phase 1 程式碼完成，�
 | Phase 1：基礎建設（三層角色 + rules v2.2） | 🟡 程式碼 + rules 完成並部署（2026-06-25 byte 級驗證），**待三角色實機驗收** | 2026-06-20 | commit `4fded65`(模組) + `40c7c19`(rules) + `5072b99`(語法修正)；2026-06-20 修補見下方 §0.5 |
 | Phase 1.5：bootstrap schools/inhu + 組長 uplilt313 | ✅ 完成 | 2026-05-29 | rules v2.2 已部署 `ruleset 14413047-...`、config/main + teacher uplilt313 已寫入。commit `bdc7a06` |
 | Phase 1.6.a：課表匯入 → 教師管理串接 | ✅ 完成 | 2026-05-29 | dataManager.setTeachers 攔截 + 自動 importFromLegacyTeachers + 浮動跳轉 toast + 未指派 email 高亮。commit `4d8d6d3` |
-| Phase 1.6.b：Email/密碼雙軌登入 + 主任寄密碼信 | ✅ 程式碼完成，**需先在 Firebase Console 啟用 Email/Password provider** | 2026-05-29 | authService 加 4 API + v2-app 雙軌登入 modal + 教師管理寄信按鈕。commit `f37dcf3` |
+| Phase 1.6.b：Email/密碼雙軌登入 + 主任寄密碼信 | ✅ 已於 2026-07-29 查證 Email/Password provider 啟用 | 2026-05-29 | authService 加 4 API + v2-app 雙軌登入 modal + 教師管理寄信按鈕。commit `f37dcf3`；provider 啟用狀態 2026-07-29 查證（`signIn.email.enabled=true`），舊版「需先啟用」之說法已過時 |
 | Phase 2：全校課表共享 | ✅ 完成 | 2026-07-06 | commit `614e4ff`——approver 上傳/編輯即時同步全校教師，已部署 preview |
 | Phase 3：申請與審核工作流 | ✅ 程式碼完成 + 三輪對抗驗收 + code review 通過，待 preview 實機驗收 | 2026-07-09 | 8 commits（`f8dd218` → `debe4cd`）；含 §0.5 延後資安項全數收緊 + 6 個驗收發現修補（見 ISSUES_LOG 2026-07-09）|
-| Phase 4：對調同意 + 多重調課 | ✅ 已併入 Phase 3 實作（swap 雙簽 + multi_swap 全員同意）| 2026-07-09 | 注意：§5 定義的「Phase 4 — Director 教師白名單批次匯入 UI」仍待做 |
-| Phase 5：資料遷移 + Legacy | ⏸️ | — | |
-| Phase 6：通知精緻化 + 審計 | ⏸️ | — | |
-| 合回 master + v2.0.0 tag | ⏸️ | — | |
+| Phase 4a：對調同意 + 多重調課 | ✅ 已併入 Phase 3 完成（swap 雙簽 + multi_swap 全員同意） | 2026-07-09 | 原「Phase 4」定義中的審核流程部分，實作已隨 Phase 3 一併完成，內容見 Phase 3 |
+| Phase 4b：Director 教師名單 CSV 批次匯入 | 🟡 進行中 | 2026-07-29 | 原「Phase 4」定義中的批次匯入 UI 部分，§5 對應章節已改名 Phase 4b；與 4a 分屬不同工作項，獨立追蹤 |
+| Phase 5：資料遷移 + Legacy | 🟡 進行中 | 2026-07-29 | legacyMigrationService.js 開發中（偵測 `users/{uid}/data/substituteSystem` 舊路徑並提供遷移） |
+| Phase 6：E2E 驗收 + preview 全校試用 2 週 + 合回 master + v2.0.0 tag | 🟡 進行中 | 2026-07-29 | 定義已統一（原表格「通知精緻化 + 審計」與 §5 內文「E2E 驗收＋合回 master」分歧已收斂為本列；「通知精緻化 + 審計」移至 §10 v2.1 backlog）。含「合回 master + v2.0.0 tag」，不再獨立列一行 |
+| 2026-07-29 商用上線實戰化 | 🟡 進行中 | 2026-07-29 | 基準線建立 + 再次合併 master（commit `12f8bb4`）已完成；錯誤處理強化、CSV 匯入（Phase 4b）、資料遷移（Phase 5）、E2E 驗收（Phase 6）進行中 |
 
 ### 0.5 Phase 1 資安修補（2026-06-20，多 agent code review 發現）
 
@@ -48,10 +50,10 @@ status: 開發中｜裁決已定（接續路徑）｜Phase 1 程式碼完成，�
 
 **✅ 已部署並驗證（2026-06-25 更新）**：線上 release ruleset `05f9b203-10fb-4df0-bef3-ecfec905fe16`（建立於 2026-06-20T15:47Z）經 byte 級比對與本地修補版 `firestore.rules` **完全相同**，且確認含兩項修補（operationLogs schema 對齊、userMappings email 防提權）。`--dry` 伺服器端語法驗證亦通過。日誌寫入與提權封堵均已生效。（原「尚未部署」備註已過時，已更正。）
 
-**延後到 Phase 3/4 處理（已記錄，目前無 UI 觸發）**：
-- 🟠 `substituteRecords` create 允許 `approvedBy==自己` 的教師偽造「已核准」紀錄 → 待 Phase 3 改由 `runTransaction` 交叉驗證來源 pendingRequest，create 收緊為 `isApprover`。
-- 🟠 `pendingRequests` update 對同意人無 `affectedKeys` 限制（違反 §4「僅能改 swapConsents/status」）→ 待 Phase 3/4 落地 array-contains 時一併加欄位限制。
-- ⚪ `isValidRoleValue()` 死碼（定義後未被任何規則引用）→ 建議併入 teachers create 規則做 role 列舉校驗。
+**原「延後到 Phase 3/4 處理」項目 —— 已於 Phase 3（2026-07-09）全數收緊，狀態更新如下**：
+- ✅ `substituteRecords` create 偽造「已核准」紀錄 → 已解決。移除 `approvedBy==自己`／`requiredApproverId==自己` 教師自寫路徑，create 禁止預帶 `approvedBy/approvedAt/approvedByName`（`firestore.rules` 第 170、205-216 行）。
+- ✅ `pendingRequests` update 對同意人無 `affectedKeys` 限制 → 已解決。update 兩分支皆加 `affectedKeys` 白名單（`firestore.rules` 第 243-248、279 行）。
+- ✅ `isValidRoleValue()` 死碼 → 已過時，現已併入 teachers create/update 規則做 role 列舉校驗（`firestore.rules` 第 128、135、139 行引用）。
 
 ### Phase 1 / 1.6 驗收待辦（使用者實機操作）
 
@@ -266,7 +268,8 @@ userMappings: read/write 自己 or isDirector（沿用 V2）
   - 中途拒絕：整批 rejected
   - 兩位 approver 並發核准：transaction 失敗端顯示「已被處理」
 
-### Phase 4 — Director 教師白名單批次匯入 UI（1 天）
+### Phase 4b — Director 教師白名單批次匯入 UI（1 天）
+> 原「Phase 4」的另一半（對調同意 + 多重調課，即 4a）已併入 Phase 3 完成，見上方 Phase 3 章節。
 - 改 `src/js/modules/v2/teacherAccountManager.js`：補 importRosterCsv（姓名、email、角色）
 - 改 `src/js/v2-app.js`：教師管理頁籤新增 CSV 上傳欄位（director only）
 - 寫範例 CSV 與說明到 `docs/`
@@ -277,7 +280,7 @@ userMappings: read/write 自己 or isDirector（沿用 V2）
 - 紀錄頁籤加 legacy 篩選 + 灰底徽章
 - **驗收**：v1.11.0 主任帳號升級後一鍵匯入 → 舊紀錄全現
 
-### Phase 6 — E2E 驗收 + 合回 master + v2.0.0（0.5 天）
+### Phase 6 — E2E 驗收 + preview 全校試用 2 週 + 合回 master + v2.0.0 tag（0.5 天）
 - 更新 V2_E2E_CHECKLIST 三層角色 case
 - 在 preview 子站讓主任 / 組長試用 2 週
 - 通過後：刪 envDetector 雙軌邏輯（master 直接用 V2 路徑）
@@ -359,3 +362,14 @@ userMappings: read/write 自己 or isDirector（沿用 V2）
 - V2 設計文件：`docs/V2_PERMISSION_SYSTEM.md`（feature 分支）
 - E2E checklist：`docs/V2_E2E_CHECKLIST.md`（feature 分支）
 - V2 模組 README：`src/js/modules/v2/README.md`（feature 分支）
+
+---
+
+## 10. v2.1 backlog（v2.0.0 範圍外，暫緩項目）
+
+2026-07-29 整理：以下項目原列於 §0 進度索引表格的「Phase 6」一列，與 Phase 6 實際定義（E2E 驗收 + preview 全校試用 2 週 + 合回 master + v2.0.0 tag，詳見 §5）不符，兩處長期分歧。現統一 Phase 6 定義為後者，並把原內容移出 v2.0.0 範圍，留待 v2.1 規劃：
+
+- **通知精緻化**：「待我同意」「待我審核」等清單目前僅頁面內紅點與數量徽章，無 email／推播通知
+- **審計強化**：`operationLogs` 目前僅供 approver 於頁面內查閱，尚無匯出、篩選、留存政策等審計功能
+
+v2.0.0 合回 master 前不處理以上兩項；待 v2.1 排期時再定優先序。

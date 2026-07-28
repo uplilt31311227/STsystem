@@ -1,6 +1,6 @@
 ---
 created: 2026-04-10
-updated: 2026-07-10
+updated: 2026-07-29
 tags:
   - deployment
 ---
@@ -11,7 +11,7 @@ tags:
 
 | 環境 | URL | branch / repo | 說明 | 狀態 |
 |------|-----|---------------|------|------|
-| Production | GitHub Pages（本 repo master） | master | 組長穩定版1.0（v1.9.0） | 🟢 運行中 |
+| Production | GitHub Pages（本 repo master） | master | 組長穩定版1.0（v1.13.2） | 🟢 運行中 |
 | Preview (V2) | https://uplilt31311227.github.io/STsystem-preview/ | STsystem-preview main（源自 feature/permission-system） | V2 權限系統（Phase 1-3：三層角色 + 全校課表共享 + 三種審核流程） | 🟢 已部署 |
 | Development | http://localhost:8000 | — | 本地開發伺服器 | — |
 
@@ -91,3 +91,5 @@ node scripts/firestore-deploy-rules.js --dry    # 只建立 ruleset 不發布
 | 2026-04-20 | v2.0.0-alpha | V2 權限系統初版，部署至獨立 preview repo |
 | 2026-04-29 | v2.0.0-alpha2 | Firestore 規則 v2.1（角色判讀）+ 部署/健康檢查腳本 + E2E checklist |
 | 2026-06-25 | v2.0.0 Phase 1 | Preview 部署三層角色 + rules v2.2 資安修補（commit `e00e89f`）；回朔點 `90db3b4`（分支 `backup-pre-phase1-20260625`） |
+| 2026-07-10 | v2.0.0 Phase 3 | Preview 部署三種審核流程分支（代課單簽／調課雙簽／多重調課全員同意）+ firestore.rules 資安收緊；回朔點 `614e4ff`（分支 `backup-pre-phase3-20260710`）；同日 rules 發布 release → ruleset `0ad89275-0df4-46c6-99c8-825a6cc94889`（前一版 `05f9b203-10fb-4df0-bef3-ecfec905fe16`） |
+| 2026-07-29 | v2.0.0（開發中，基準線查核） | 商用上線前基準線：查證 Firebase Email/Password provider 已啟用（`signIn.email.enabled=true`）；production `schools/inhu` 資料現況盤點（teachers 29 筆、pendingRequests 0、substituteRecords 1 等）；feature 分支再次合併 master（commit `12f8bb4`），不再落後；preview 回朔點沿用 `614e4ff` |
