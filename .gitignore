@@ -84,3 +84,6 @@ schedule_*_backup.csv
 docs/backup/*.json
 docs/backup/*.csv
 
+# V2 規則矩陣測試（test/v2-rules-matrix.mjs）產生的文件清單，供事後清理，不進 git
+test/.last-test-docs.json
+
