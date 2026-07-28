@@ -60,7 +60,7 @@
                 <button class="tab-btn v2-approver-only" data-tab="schedule-editor">課表編輯</button>
                 <button class="tab-btn" data-tab="substitute">調代課申請</button>
                 <button class="tab-btn" data-tab="records">調代課紀錄</button>
-                <button class="tab-btn" data-tab="settlement">月結算</button>
+                <button class="tab-btn v2-approver-only" data-tab="settlement">月結算</button>
                 <button class="tab-btn v2-only" data-tab="v2-pending">待辦清單</button>
                 <button class="tab-btn v2-only v2-director-only" data-tab="v2-teachers">教師管理</button>
                 <button class="tab-btn v2-only v2-approver-only" data-tab="v2-logs">操作日誌</button>
@@ -594,7 +594,7 @@
             </section>
 
             <!-- 頁籤四：月結算 -->
-            <section id="settlement-tab" class="tab-content hidden">
+            <section id="settlement-tab" class="tab-content hidden v2-approver-only">
                 <!-- 未載入資料提示 -->
                 <div id="settlement-no-data" class="card compact-card notice-card notice-card-compact">
                     <h3>尚未載入課表資料</h3>
