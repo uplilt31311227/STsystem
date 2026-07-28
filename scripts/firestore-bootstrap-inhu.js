@@ -173,7 +173,8 @@ async function upsertTeacher({ name, email, role, domains, homeroom }) {
         // 更新 role / domains / homeroomClass / name（email 不動，保留為比對鍵）
         const updateMask = ['name', 'role', 'domains', 'homeroomClass', 'updatedAt'];
         await patchDoc(`schools/${SCHOOL_ID}/teachers/${existing.teacherId}`, fields, updateMask);
-        console.log(`✓ 教師 ${existing.teacherId.slice(-12)} 已更新（${existing.name} → ${name || existing.name}，role=${normalizedRole}）`);
+        // 印完整 teacherId（曾誤用 .slice(-12) 截斷成 tail-12，操作者拿截斷 id 去寫其他文件的關聯會直接失敗）。
+        console.log(`✓ 教師 ${existing.teacherId} 已更新（${existing.name} → ${name || existing.name}，role=${normalizedRole}）`);
         return { ...existing, ...fields, _action: 'updated' };
     }
 
@@ -182,7 +183,8 @@ async function upsertTeacher({ name, email, role, domains, homeroom }) {
     fields.teacherId = v.str(teacherId);
     fields.createdAt = v.time();
     await patchDoc(`schools/${SCHOOL_ID}/teachers/${teacherId}`, fields);
-    console.log(`✓ 教師 ${teacherId.slice(-12)} 已建立（${name}，email=${normalizedEmail}，role=${normalizedRole}）`);
+    // 印完整 teacherId（曾誤用 .slice(-12) 截斷成 tail-12，操作者拿截斷 id 去寫其他文件的關聯會直接失敗）。
+    console.log(`✓ 教師 ${teacherId} 已建立（${name}，email=${normalizedEmail}，role=${normalizedRole}）`);
     return { teacherId, _action: 'created' };
 }
 
