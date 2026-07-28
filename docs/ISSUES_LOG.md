@@ -8,6 +8,110 @@ tags:
 
 # 問題追蹤：國中調代課自動化系統
 
+## 商用上線實戰化實測（2026-07-29）
+
+第一次對 preview 站與 production Firestore 做真實三角色端到端實測（此前所有「待實機驗收」項目從未執行）。以下為實測發現。
+
+### approver 設定的學校名稱不回寫全校課表，導致全校教師永久卡在課表匯入頁
+
+- **日期**: 2026-07-29
+- **狀態**: 🟡 修補中
+- **描述**: approver 依標準順序「上傳課表 → 填學校名稱 → 確認」之後，`schools/inhu/data/schedule.schoolName` 仍是空字串。所有教師端登入後只能停留在「課表匯入」頁，點其他任何頁籤都沒反應（toast 提示「請先設定學校名稱」，但教師根本沒有權限設定）。
+- **原因**: `src/js/app.js:949-969` `canSwitchToTab()` 同時要求 `hasSchedule` 與 `schoolName`，缺一即擋下除 import/settings/schedule-editor 外的所有頁籤。使用者確認學校名稱走 `app.js:883` 的 `dataManager.setSchoolName(name)`，但 `src/js/v2-app.js` 觸發雲端回寫的方法白名單只有 `setScheduleData` / `addScheduleEntry` / `updateScheduleEntry` / `removeScheduleEntry` 四個，**不含 `setSchoolName`**。`syncScheduleToV2()` 的 payload 其實已經包含 `schoolName`，缺的只是觸發點。
+- **嚴重度**: 上線第一天必然發生，且症狀（教師點頁籤沒反應）不會指向真正原因。
+- **解決方案**: 把 `setSchoolName` 加進 v2-app.js 的課表回寫方法白名單。V2 專屬修改，不動 app.js。
+- **相關檔案**: `src/js/v2-app.js`（wrapScheduleMutator 白名單、syncScheduleToV2）、`src/js/app.js`（canSwitchToTab、setSchoolName 呼叫點，唯讀參照）
+
+### 多重調課全員同意在 UI 上永遠觸發不了，後端狀態機成死碼
+
+- **日期**: 2026-07-29
+- **狀態**: 🟡 修補中
+- **描述**: 一般教師走「調課」流程送出後，理應詢問「是否還有其他教師需一併同意」的彈窗永遠不出現，只會建立雙簽 swap，無法升級為 multi_swap。Phase 3 實作的多重調課全員同意狀態機（含 firestore.rules 的相關條款）從 UI 完全無法到達。
+- **原因**: `src/js/app.js:2923` `buildSwapRecord()` 對**單次與批次調課一律**寫死 `isMultiSwap: true`（該函式被 `app.js:2466` 單次與 `app.js:3219` 批次兩處共用），而 `src/js/v2-app.js:1140` 的守門條件含 `!record.isMultiSwap` → 恆為 false → modal 永不出現。`record.isMultiSwap` 在 V1 沒有任何讀取點（`this.isMultiSwapMode` 是另一個獨立的 UI 狀態屬性），屬誤導性死欄位。
+- **驗證後端無誤**: 以直接呼叫應用層函式繞過此觸發點，multi_swap 請求在教師乙、組長丙皆同意後正確轉 approved，產生的紀錄 `affectedTeacherIds` 含三人——問題純粹在觸發條件。
+- **解決方案**: 批次調課的紀錄在 `app.js:3224` 於 `addSubstituteRecord` 呼叫**之前**被賦予 `batchId`，單次調課沒有。守門條件改用 `!record.batchId` 精確區分，完全不需修改 app.js。
+- **相關檔案**: `src/js/v2-app.js`（writeV2Record 的多重調課詢問守門）
+
+### 三種審核流程首次端到端實測結果
+
+- **日期**: 2026-07-29
+- **狀態**: 🟢 代課單簽、調課雙簽、中途拒絕通過；多重調課因上述觸發缺陷卡關
+- **描述**: Phase 3 審核工作流自 2026-07-09 完成後從未有真人或自動化跑過完整流程。本次以三個測試帳號在真實環境跑完，並留下 36 張截圖（`test/e2e-screenshots/`，已於 .gitignore 排除不進版控）。
+- **結果**:
+  - 代課單簽：教師發起 → 組長核准 → 正確產生 substituteRecords，狀態 approved
+  - 調課雙簽：教師甲對教師乙發起 → 乙同意 → 組長核准 → 正確產生紀錄
+  - 多重調課：UI 觸發點失效（見上一條），後端狀態機經繞過驗證正確
+  - 中途拒絕：狀態正確轉 rejected，**未**產生 substituteRecords，發起人可見拒絕提示並可清除
+  - 教師身份的「調代課紀錄」範圍正確受限（教師 9 筆 / 組長 10 筆）
+  - 教師身份在「課表匯入」頁雖可見並點擊「+新增教師／儲存資料／匯入還原」，但實際點擊後 production 的 teachers 與 schedule 文件均無變化——rules 正確擋下，屬 UI 冗餘而非安全問題
+- **相關檔案**: `test/v2-approval-flows.mjs`（本次新增的端到端腳本）
+
+### 全校課表從未上傳，系統對教師是空殼
+
+- **日期**: 2026-07-29
+- **狀態**: 🟠 待使用者操作（非程式缺陷，但沒做等於沒上線）
+- **描述**: `schools/inhu/data` 集合 0 筆——Phase 2「全校課表共享」標記完成，實際上從未有任何課表寫入。以測試教師帳號登入 preview 站後，所有頁籤點擊無反應，畫面停在「尚未載入課表資料，請先至『課表匯入』頁籤上傳課表檔案」。
+- **原因**: `src/js/app.js:633` `canSwitchToTab()` 在無課表資料時鎖住所有頁籤。這是 V1 既有的正確行為，但 V2 的全校共享模式下，教師端不會自己上傳課表——必須由 approver 先上傳，教師才有東西可用。
+- **解決方案**: 上線前置作業——由教務主任或教學組長登入後至「課表匯入」上傳當學期人力資源網 2.0 課表。實測已上傳測試課表驗證此路徑可行（上傳後 `data` 集合出現 1 筆，教師端即時同步取得）。
+- **相關檔案**: `src/js/app.js`（canSwitchToTab）、`src/js/v2-app.js`（subscribeSchedule / applyRemoteSchedule）
+
+### 月結算頁籤對一般教師可見（權限標記漏加）
+
+- **日期**: 2026-07-29
+- **狀態**: 🟢 已解決（commit `5ec4561`）
+- **描述**: 以一般教師身份登入 preview 站，頁籤列出現「月結算」。
+- **原因**: `src/js/v2-app.js` `injectV2Styles` 的註解本身就載明「`.v2-approver-only` — 限 director 或 section_chief 可見（核准 / 紀錄 / **月結算** / 操作日誌）」，`docs/PLAN_v2.0.0.md` §6 也把 settlement 列為 approver 限定，但 `index.html` 的月結算頁籤按鈕與面板從未加上這個類別。屬實作遺漏而非設計決策。
+- **解決方案**: `index.html` 月結算頁籤按鈕（59-67 行區塊）與 `#settlement-tab` 面板各補 `v2-approver-only`。`.v2-approver-only` 的 CSS 以 `body.v2-active` 為前提且只存在於 V2 動態注入的 style，`src/css/style.css` 完全沒有 `.v2-` 規則，故 V1 正式站不受影響。
+- **驗證**: 本機 `?v2=1` 實測——教師甲頁籤列為「課表匯入/調代課申請/調代課紀錄/待辦清單/設定」（月結算已消失），組長丙仍保有月結算、課表編輯、操作日誌。`test/v2-isolation-test.js` V1 隔離回歸通過。
+- **相關檔案**: `index.html`
+
+### 運維腳本檢查錯誤的學校路徑
+
+- **日期**: 2026-07-29
+- **狀態**: 🟢 已解決（commit `f85328b`）
+- **描述**: `scripts/firestore-snapshot.js` 與 `scripts/firestore-health-check.js` 的集合路徑寫死 `schools/default`，但正式資料自 v2.0.0 起在 `schools/inhu`（`schemaConstants.js:14`）。
+- **原因**: schoolId 從 default 遷移到 inhu 時只改了應用程式端，運維腳本沒有同步。
+- **影響**: 健檢「全綠」一直是對 2026-04 alpha 期舊備份學校的結果，對正式環境毫無意義；快照備份也備錯對象。
+- **解決方案**: 兩支腳本改為 `--school=` 參數（預設 `inhu`），並在輸出開頭印出實際檢查對象，保留 `--school=default` 可檢視舊備份。
+- **相關檔案**: `scripts/firestore-snapshot.js`、`scripts/firestore-health-check.js`
+
+### director 有兩筆重複教師檔
+
+- **日期**: 2026-07-29
+- **狀態**: 🟠 待使用者確認後清理（production 資料，未自行刪除）
+- **描述**: `schools/inhu/teachers` 有兩筆同名同 email 同角色的主任檔：`tch_1780040513944_kl4wgr9`（`authProvider=google.com`，**使用中**——userMappings 指向它、既有正式紀錄的 `adminOperatorId` 也是它）與 `tch_1780040513944_qf7vp5g`（`authProvider` 空，**無任何文件引用**）。兩筆 `createdAt` 完全相同，應為 bootstrap 競態產生。
+- **風險**: `schoolDataService.js:48-53` `findTeacherByEmail` 回傳第一筆符合者，目前靠文件 ID 字典序（`k` < `q`）碰巧命中正在使用的那筆。若排序改變或有人編輯孤兒檔，身份綁定會飄移；教師管理 UI 也會看到主任重複出現。
+- **建議解法**: 確認無引用後刪除 `tch_1780040513944_qf7vp5g`（需 director 權限）。
+- **相關檔案**: `src/js/modules/v2/schoolDataService.js`（findTeacherByEmail）、`src/js/modules/v2/authGuardV2.js`
+
+### 全校調代課紀錄與待審請求對任何登入教師 API 可讀
+
+- **日期**: 2026-07-29
+- **狀態**: 🟠 設計層風險，待決策（不在本次修補範圍）
+- **描述**: `firestore.rules:166` `substituteRecords allow read: if isSignedIn()`；`rules:198` `pendingRequests` 同樣全員可讀。規則註解自承「教師端由 `roleService.filterRecordsForCurrent` 過濾」——過濾只發生在前端。
+- **影響**: 任一登入教師用瀏覽器 DevTools 直接查詢 Firestore，即可讀到全校同仁的調代課紀錄，其中 `leaveType` 含長期病假／喪假／事假／病假，屬敏感個資。UI 擋得住，API 擋不住。
+- **為何未於本次修補**: Firestore 規則無法對 list 查詢逐列過濾，要收緊必須同時改客戶端查詢（改為 `array-contains` 自己的 teacherId）與規則，並且會影響衝堂檢查所依賴的全量 cache（`_v2RecordsCache`），屬架構級變更。
+- **建議**: 上線前的風險決策點。若使用單位對個資要求嚴格，需排 v2.1 專案處理（可參考既有 `pendingConsentTeacherIds` 的 array-contains 設計）；若可接受，需在文件明載此限制並取得使用單位認可。
+- **相關檔案**: `firestore.rules`（substituteRecords / pendingRequests 的 read）、`src/js/modules/v2/roleService.js:150-162`
+
+### firestore.rules 安全矩陣首次自動化驗證：26/26 通過
+
+- **日期**: 2026-07-29
+- **狀態**: 🟢 通過（新增 `test/v2-rules-matrix.mjs`，commit `adf7fee`）
+- **描述**: `firestore.rules`（353 行 v2.2）經 Phase 3 三輪對抗修補，但從未有自動化測試。本次建立 26 案例矩陣，以真實測試帳號的 idToken 直打 Firestore REST 驗證線上規則。
+- **結果**: 12 個正向流程全 ALLOW、14 個攻擊全 DENY，**未發現任何規則缺陷**。攻擊涵蓋：自我提權、冒建教師檔、自帶 approvedBy、swap 跳過同意、自列唯一同意人、預填 swapConsents、同意人直寫 approved、竄改白名單外欄位、approved↔rejected 雙向終態鎖、教師自寫代課紀錄灌代課費、竄改稽核日誌、讀他人映射。
+- **相關檔案**: `test/v2-rules-matrix.mjs`、`firestore.rules`
+
+### 計畫文件記載的 Email/Password provider 卡點實際上不存在
+
+- **日期**: 2026-07-29
+- **狀態**: 🟢 已澄清（commit `f85328b`）
+- **描述**: `docs/PLAN_v2.0.0.md` §0 表格長期把 Phase 1.6.b 標記為「需先在 Firebase Console 啟用 Email/Password provider」，被視為阻擋驗收的前置條件。
+- **實況**: 查 Identity Toolkit admin API 得 `signIn.email.enabled=true`、`passwordRequired=true`，且三個測試帳號已實際以 email/密碼登入成功。該卡點不知何時已被解除但文件未更新，導致驗收一直沒有推進。
+- **相關檔案**: `docs/PLAN_v2.0.0.md`
+
+---
+
 ## V2 Phase 1 資安修補（2026-06-20，多 agent code review）
 
 ### operationLogs 稽核日誌全數寫入失敗
