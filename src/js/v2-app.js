@@ -16,6 +16,7 @@ import * as dataSvc             from './modules/v2/schoolDataService.js';
 import * as teacherMgr          from './modules/v2/teacherAccountManager.js';
 import * as requestSvc          from './modules/v2/pendingRequestService.js';
 import * as logger              from './modules/v2/operationLogger.js';
+import * as legacyMigration     from './modules/v2/legacyMigrationService.js';
 import { LOG_ACTIONS, LOG_TARGET_TYPES, ROLES, REQUEST_STATUS, REQUEST_TYPES } from './modules/v2/schemaConstants.js';
 import * as authMod from './modules/authService.js';
 import { notify, notifyError, setSyncStatus } from './modules/v2/uiFeedback.js';
@@ -176,6 +177,16 @@ function injectV2Styles() {
         padding: 6px 10px; margin-bottom: 0.6rem; background: #fafafa; }
     .v2-roster-error-row { font-size: 0.82rem; color: #991b1b; padding: 3px 0; border-bottom: 1px dashed #fecaca; }
     .v2-roster-error-row:last-child { border-bottom: none; }
+
+    /* Phase 5：V1 舊資料遷移卡片與 legacy 徽章 */
+    .v2-legacy-card { border: 1px solid #fbbf24; background: #fffbeb; border-radius: 8px;
+        padding: 0.9rem 1rem; margin-bottom: 1rem; }
+    .v2-legacy-card h4 { margin: 0 0 0.4rem; color: #92400e; font-size: 0.95rem; }
+    .v2-legacy-card p { margin: 0 0 0.6rem; font-size: 0.85rem; color: #78350f; }
+    .v2-legacy-badge { display: inline-block; padding: 1px 6px; border-radius: 8px;
+        font-size: 0.7rem; margin-left: 4px; background: #e5e7eb; color: #4b5563; }
+    .v2-records-filter { font-size: 0.85rem; padding: 3px 6px; border-radius: 6px;
+        border: 1px solid #d1d5db; margin-left: 8px; }
     `;
     document.head.appendChild(style);
 }
@@ -508,6 +519,7 @@ async function renderTeachersAdminTab() {
     const _gen = _v2IdentityGen;
     host.innerHTML = '<p>載入中…</p>';
     const teachers = await teacherMgr.listAllTeachers();
+    const legacyInfo = await legacyMigration.detectLegacyData();
     const roleLabel = (role) => {
         const r = (role === 'admin') ? 'director' : role;
         return { director: '主任', section_chief: '組長', teacher: '教師' }[r] || '教師';
@@ -516,6 +528,7 @@ async function renderTeachersAdminTab() {
 
     if (isStaleRender(_gen)) return;   // 期間身份已切換 → 放棄回填教師名單
     host.innerHTML = `
+        ${legacyInfo.source ? renderLegacyMigrationCard(legacyInfo) : ''}
         <div class="v2-section-header">
             <h3>
                 教師帳號管理
@@ -646,6 +659,83 @@ async function renderTeachersAdminTab() {
             notifyError(e, 'CSV 批次匯入');
         }
     });
+
+    bindLegacyMigrationCard();
+}
+
+/**
+ * Phase 5：教師管理頁的「V1 資料遷移」卡片內容，偵測到舊資料時才由 renderTeachersAdminTab 插入。
+ * info 為 legacyMigration.detectLegacyData() 的回傳值 { source, count, lastModified }。
+ */
+function renderLegacyMigrationCard(info) {
+    const sourceLabel = info.source === 'firestore' ? 'Firestore 雲端備份' : '瀏覽器本機 localStorage';
+    const lastModifiedLabel = info.lastModified ? fmtDate(info.lastModified) : '未知';
+    return `
+        <div class="v2-legacy-card" id="v2-legacy-card">
+            <h4>⚠ 偵測到 V1 舊系統資料尚未遷移</h4>
+            <p>
+                來源：${escapeHtml(sourceLabel)}｜筆數：${info.count} 筆｜最後修改：${escapeHtml(lastModifiedLabel)}<br>
+                按下按鈕會先強制下載完整備份 JSON 才開始遷移；遷移採冪等設計，重複執行不會產生重複紀錄，姓名對不到帳號的舊紀錄仍會匯入並提示。
+            </p>
+            <button class="btn btn-primary btn-sm" id="v2-legacy-migrate-btn">下載備份並開始遷移</button>
+        </div>`;
+}
+
+/** 綁定「V1 資料遷移」卡片按鈕事件；卡片未渲染（無舊資料）時安全跳過。 */
+function bindLegacyMigrationCard() {
+    const btn = document.getElementById('v2-legacy-migrate-btn');
+    if (!btn) return;
+    btn.addEventListener('click', async () => {
+        const originalText = btn.textContent;
+        btn.disabled = true;
+        try {
+            const backup = await legacyMigration.getLegacyBackupPayload();
+            if (!backup) {
+                notify('偵測到的舊資料已消失，請重新整理頁面後再試', 'warning');
+                return;
+            }
+            try {
+                downloadLegacyBackupJson(backup);
+            } catch (e) {
+                console.error('[V2] 遷移備份下載失敗:', e);
+                notifyError(e, '下載遷移備份');
+                return; // 備份下載失敗必須中止遷移，不可在沒有備份的情況下寫入
+            }
+
+            btn.textContent = '遷移中…';
+            const stats = await legacyMigration.migrateLegacyRecords({
+                onProgress: ({ done, total }) => { btn.textContent = `遷移中…${done}/${total}`; },
+            });
+
+            const parts = [`共 ${stats.total} 筆`, `新增 ${stats.created} 筆`, `略過 ${stats.skipped} 筆`];
+            if (stats.unmatchedNames.length) parts.push(`${stats.unmatchedNames.length} 位姓名對不到帳號（${stats.unmatchedNames.join('、')}）`);
+            if (stats.errors.length) parts.push(`${stats.errors.length} 筆發生錯誤`);
+            notify(`遷移完成：${parts.join('／')}`, stats.errors.length ? 'warning' : 'success', 8000);
+
+            await renderTeachersAdminTab();
+            await renderRecordsTab();
+        } catch (e) {
+            console.error('[V2] 資料遷移失敗:', e);
+            notifyError(e, '資料遷移');
+            btn.disabled = false;
+            btn.textContent = originalText;
+        }
+    });
+}
+
+/** 遷移前強制下載完整備份 JSON；任何步驟拋錯都會讓呼叫端（bindLegacyMigrationCard）中止遷移。 */
+function downloadLegacyBackupJson(backup) {
+    const uidPart  = backup.uid || 'unknown';
+    const datePart = new Date().toISOString().split('T')[0];
+    const blob = new Blob([JSON.stringify(backup.raw, null, 2)], { type: 'application/json' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = `STsystem-legacy-backup-${uidPart}-${datePart}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
 }
 
 /** 用 PapaParse 解析教師名單 CSV 檔案為 header:true 物件陣列（欄位定義見 docs/V2_ROSTER_CSV.md）。 */
@@ -760,10 +850,24 @@ async function renderRecordsTab() {
     const isApprover = roleSvc.isApprover();
     const APPROVER_ROLES_FOR_BADGE = ['admin', 'director', 'section_chief'];
 
+    // Phase 5：legacy 篩選（全部／僅新／僅舊）純前端過濾，不影響 visible 本身（PDF/刪除仍可對到完整紀錄）。
+    const displayed = _v2RecordsLegacyFilter === 'legacy' ? visible.filter(r => r.isLegacy)
+        : _v2RecordsLegacyFilter === 'new' ? visible.filter(r => !r.isLegacy)
+        : visible;
+
     if (isStaleRender(_gen)) return;   // 期間身份已切換 → 放棄回填全校紀錄
     host.innerHTML = `
         <div class="v2-section-header">
-            <h3>全校調代課紀錄 <small style="color:#6b7280;font-weight:normal;">（${visible.length} 筆｜${isApprover ? '核准者視圖' : '個人相關'}）</small></h3>
+            <h3>全校調代課紀錄 <small style="color:#6b7280;font-weight:normal;">（${displayed.length} 筆｜${isApprover ? '核准者視圖' : '個人相關'}）</small></h3>
+            <div>
+                <label style="font-size:0.85rem;color:#6b7280;">顯示
+                    <select id="v2-records-legacy-filter" class="v2-records-filter">
+                        <option value="all"    ${_v2RecordsLegacyFilter === 'all' ? 'selected' : ''}>全部</option>
+                        <option value="new"    ${_v2RecordsLegacyFilter === 'new' ? 'selected' : ''}>僅新</option>
+                        <option value="legacy" ${_v2RecordsLegacyFilter === 'legacy' ? 'selected' : ''}>僅舊</option>
+                    </select>
+                </label>
+            </div>
         </div>
         <table class="data-table data-table-compact">
             <thead><tr>
@@ -771,14 +875,14 @@ async function renderRecordsTab() {
                 <th>操作</th>
             </tr></thead>
             <tbody>
-            ${visible.map(r => `
+            ${displayed.map(r => `
                 <tr data-id="${r.recordId}">
                     <td>${r.date || ''}</td>
                     <td>${r.period || ''}</td>
                     <td>${r.className || ''}</td>
                     <td>${r.originalTeacher || ''}</td>
                     <td>${r.substituteTeacher || r.swapTeacher || ''}</td>
-                    <td>${r.type || ''}${APPROVER_ROLES_FOR_BADGE.includes(r.initiatedByRole) ? ' <span class="v2-role-tag director">代發</span>' : ''}</td>
+                    <td>${r.type || ''}${APPROVER_ROLES_FOR_BADGE.includes(r.initiatedByRole) ? ' <span class="v2-role-tag director">代發</span>' : ''}${r.isLegacy ? ' <span class="v2-legacy-badge" title="遷移自 V1 舊系統">舊系統</span>' : ''}</td>
                     <td>${r.initiatedByName || ''}</td>
                     <td>
                         <button class="btn btn-secondary btn-sm v2-download-pdf" data-id="${r.recordId}">下載 PDF</button>
@@ -788,6 +892,11 @@ async function renderRecordsTab() {
             </tbody>
         </table>
     `;
+
+    document.getElementById('v2-records-legacy-filter')?.addEventListener('change', (e) => {
+        _v2RecordsLegacyFilter = e.target.value;
+        renderRecordsTab();
+    });
 
     host.querySelectorAll('.v2-download-pdf').forEach(btn =>
         btn.addEventListener('click', async () => {
@@ -827,6 +936,10 @@ let _v2IdentityGen = 0;
 
 /** 非同步 render 取回資料後、寫入 DOM 前呼叫：若期間身份已切換則放棄本次繪製，避免舊身份資料回填。 */
 function isStaleRender(gen) { return gen !== _v2IdentityGen; }
+
+// Phase 5：全校紀錄頁籤的 legacy 篩選狀態（'all' | 'new' | 'legacy'），純前端顯示用，
+// 跨 renderRecordsTab 重繪需持續保留使用者的選擇，故拉到 module 層級。
+let _v2RecordsLegacyFilter = 'all';
 
 /**
  * 直接以 class 操作切到指定頁籤（不經 canSwitchToTab 守門，供身份切換重置用）。
@@ -1241,6 +1354,25 @@ function patchDataManager() {
             return v2CheckExistingRecord(date, period, className, originalTeacher);
         }
         return origCheck ? origCheck(date, period, className, originalTeacher) : null;
+    };
+
+    /**
+     * 月結算 / 智慧推薦等 V1 呼叫點的資料來源修補：V2 下 addSubstituteRecord 已改寫 Firestore、
+     * 不再 push 進 dm.substituteRecords（見上方 patch），若不連帶修補這裡，getSubstituteRecords()
+     * 會永遠讀到空陣列（或殘留的舊 localStorage 資料），月結算等下游功能形同壞掉。
+     * 真相來源改為 _v2RecordsCache（由 subscribeSubstituteRecords 即時同步，見本檔案下方）。
+     * 教師（非 approver）僅能看到與自己相關的紀錄，approver（director/section_chief）看全校，
+     * 與「調代課紀錄」頁籤（renderRecordsTab）套用同一條 roleSvc.filterRecordsForCurrent() 規則。
+     * 注意：原函式支援的 (startDate, endDate, teacherFilter) 篩選參數在此分支不會被套用——
+     * 目前僅有的兩個會傳這些參數的呼叫點（週彙整 PDF、紀錄頁籤內建查詢）在 V2 模式下已被
+     * CSS 隱藏（#records-content），非目前可觸及路徑；若之後在 V2 開放這兩個入口，需要另外處理。
+     */
+    const origGet = dm.getSubstituteRecords.bind(dm);
+    dm.getSubstituteRecords = function(...args) {
+        if (roleSvc.isSignedIn()) {
+            return roleSvc.filterRecordsForCurrent(_v2RecordsCache);
+        }
+        return origGet(...args);
     };
 
     /**

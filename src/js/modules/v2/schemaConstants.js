@@ -98,6 +98,7 @@ export const LOG_ACTIONS = Object.freeze({
     TEACHER_DELETE:     'teacher_delete',
     SCHEDULE_IMPORT:    'schedule_import',
     ROSTER_IMPORT:      'roster_import',
+    DATA_MIGRATE:       'data_migrate',
 });
 
 export const LOG_TARGET_TYPES = Object.freeze({
