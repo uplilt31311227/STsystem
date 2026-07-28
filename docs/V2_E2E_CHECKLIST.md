@@ -11,7 +11,7 @@ tags:
 > 對應分支：`feature/permission-system`
 > 對應 Preview URL：https://uplilt31311227.github.io/STsystem-preview/
 > 規則版本：firestore.rules v2.2（三層角色：director / section_chief / teacher）
-> 線上 ruleset id：`0ad89275-0df4-46c6-99c8-825a6cc94889`（`node scripts/firestore-deploy-rules.js --list` 核對 release 是否指向此 id）
+> 線上 ruleset id：`618f5d1e-d350-4e8e-950e-b551eab97490`（2026-07-29 重新部署，內容與前一版 `0ad89275-0df4-46c6-99c8-825a6cc94889` 經位元級比對**完全相同**，僅 id 不同；`node scripts/firestore-deploy-rules.js --list` 核對 release 是否指向此 id）
 > 取代舊版：本檔取代 2026-04-29 舊版（僅涵蓋 admin/teacher 兩角色、7 情境全未勾選）。全面改寫為 A-G 七組，對齊現行三角色 + 三種審核流（代課單簽／調課雙簽／多重調課全員同意）。
 
 標記 `[自動:檔名]` 的項目可重複執行取得客觀結果，改規則/改流程後應重跑。標記 `[人工]` 的項目需人工操作瀏覽器並記錄結果（Google OAuth 互動、UI 視覺確認、鍵盤導覽等目前無法自動化）。
@@ -20,7 +20,7 @@ tags:
 
 ## A. 前置與環境
 
-- [x] `[人工]` firestore.rules 線上 ruleset 已部署且 release 指向最新：目前 ruleset id `0ad89275-0df4-46c6-99c8-825a6cc94889`（`node scripts/firestore-deploy-rules.js --list` 核對）
+- [x] `[人工]` firestore.rules 線上 ruleset 已部署且 release 指向最新：目前 ruleset id `618f5d1e-d350-4e8e-950e-b551eab97490`（`node scripts/firestore-deploy-rules.js --list` 核對）
 - [x] `[人工]` Firebase Auth Email/Password provider 已啟用（2026-07-29 已查證；三個測試帳號 v2t1/v2t2/v2t3 皆用此方式登入，非 Google OAuth）
 - [ ] `[人工]` Firebase Auth Google OAuth provider 狀態複查（正式教師仍以 Google 登入為主，需確認未受上述變更影響）
 - [x] `[人工]` 測試帳號清單就緒（密碼統一 `V2test!2026#stsys`，來源見 `test/test-tokens.json` 或 `STSYSTEM_TEST_CREDS` 指向的憑證檔）：

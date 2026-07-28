@@ -104,7 +104,7 @@ node scripts/firestore-deploy-rules.js          # 正式發布
 | 情境 | 做法 |
 |---|---|
 | preview 站出問題 | `git push preview <備份分支>:main -f`，回朔點 `614e4ff`（Phase 3）、`fdc0678`（2026-07-29 商用整備完成） |
-| 安全規則出問題 | 把 release 指回前一個 ruleset：`0ad89275-0df4-46c6-99c8-825a6cc94889`（2026-07-09 部署，本次未改動規則） |
+| 安全規則出問題 | 把 release 指回前一個 ruleset：`0ad89275-0df4-46c6-99c8-825a6cc94889`。**現行 release 為 `618f5d1e-d350-4e8e-950e-b551eab97490`**（2026-07-29 重新部署，內容與前一版經位元級比對完全相同，本次未修改任何規則） |
 | 程式碼要回到今天之前 | 本地備份分支 `backup-pre-commercial-20260729`；tag `v1.13.2-stable` 為 V1 穩定版 |
 | 資料要還原 | 2026-07-29 基準快照見交接紀錄；遷移功能執行前一定會先下載 JSON 備份 |
 
