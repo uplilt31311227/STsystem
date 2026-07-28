@@ -77,8 +77,33 @@ async function publishRelease(rulesetName) {
     });
 }
 
+const KNOWN_FLAGS = ['--dry', '--list', '--help', '-h'];
+
+function printUsage() {
+    console.log('用法：');
+    console.log('  node scripts/firestore-deploy-rules.js          # 部署 firestore.rules（會實際發布到線上）');
+    console.log('  node scripts/firestore-deploy-rules.js --dry    # 只建立 ruleset，不發布');
+    console.log('  node scripts/firestore-deploy-rules.js --list   # 列出最近 5 個 ruleset 與目前 release');
+    console.log('  node scripts/firestore-deploy-rules.js --help   # 顯示本說明');
+}
+
 async function main() {
     const flag = process.argv[2] || '';
+
+    // 安全閘：未知旗標一律中止，不可退化成「不帶參數 = 正式部署」。
+    // 2026-07-29 事故——有人對本腳本下 --help（當時不支援），腳本忽略未知旗標後
+    // 直接把規則重新發布到線上 production。內容雖等價，但這種預設行為在
+    // 「規則有本地未提交改動」時會造成非預期的線上變更。
+    if (flag && !KNOWN_FLAGS.includes(flag)) {
+        console.error(`❌ 未知參數：${flag}`);
+        printUsage();
+        process.exit(2);
+    }
+
+    if (flag === '--help' || flag === '-h') {
+        printUsage();
+        return;
+    }
 
     if (flag === '--list') {
         const { rulesets, currentRulesetName } = await listRulesets();

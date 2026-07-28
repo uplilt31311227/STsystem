@@ -22,6 +22,7 @@ tags:
 > 2026-06-25 部署 Phase 1 前的備份點 = `90db3b4`（分支 `backup-pre-phase1-20260625`）。
 > 2026-07-10 部署 Phase 3 前的備份點 = `614e4ff`（分支 `backup-pre-phase3-20260710`）；
 > 同日 firestore.rules 已發布 release → ruleset `0ad89275-0df4-46c6-99c8-825a6cc94889`
+> **現行線上 release：`618f5d1e-d350-4e8e-950e-b551eab97490`**（2026-07-29 重新部署，內容與 `0ad89275` 及本地 `firestore.rules` 經位元級比對完全相同，規則本身未變更）
 > （前一版 ruleset = `05f9b203-10fb-4df0-bef3-ecfec905fe16`，rules 回朔可用 Firebase Console 或 PATCH release 指回）。
 > 一鍵回朔：`git push preview 90db3b4:main -f`（或 `git push preview backup-pre-phase1-20260625:main -f`）。
 > ⚠️ Google 登入需 `uplilt31311227.github.io` 在 Firebase Console → Authentication → Settings → Authorized domains 內（preview 站既有，通常已授權）。
