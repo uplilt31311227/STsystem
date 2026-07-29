@@ -137,7 +137,22 @@ export async function createRequest(payload) {
     delete req.consentTeacherIds;
     delete req.additionalConsentTeacherIds;
 
-    const saved = await dataSvc.createPendingRequest(req);
+    // 私有子文件（假別／事由）自帶 ACL：發起人＋對調對象＋全部同意人，去重去 null。
+    // pendingConsentTeacherIds 此時已是完整初始名單（swap 為對方一人、multi_swap 為全員），
+    // 涵蓋日後逐一同意時會被移出陣列的所有人，建立當下一次算好即可，不需隨同意進度更新。
+    const allowedTeacherIds = buildAffectedList(req);
+    const { publicPart, privatePart, hasSensitive } = dataSvc.splitSensitive(req, allowedTeacherIds);
+
+    const fs    = await getV2Firestore();
+    const reqId = dataSvc.genId('req');
+
+    // 先寫 private 再寫父文件：private 寫入失敗就中止，不留下「父文件存在但假別／事由
+    // 遺失」的狀態（假別遺失會讓月結算把不扣減的假別誤算為扣減）。沒有敏感欄位（例如
+    // 此類申請本就不帶 leaveType/reason）時略過，不建立空文件。
+    if (hasSensitive) {
+        await fs.setDoc(fs.doc(fs.db, SCHEMA_PATHS.pendingDetailDoc(reqId)), privatePart);
+    }
+    const saved = await dataSvc.createPendingRequest(publicPart, reqId);
 
     await logger.log(
         LOG_ACTIONS.CREATE_REQUEST,
@@ -148,13 +163,13 @@ export async function createRequest(payload) {
             requiredApproverId:       saved.requiredApproverId,
             requestType:              saved.requestType,
             pendingConsentTeacherIds: saved.pendingConsentTeacherIds,
-            affectedTeacherIds:       buildAffectedList(saved),
+            affectedTeacherIds:       allowedTeacherIds,
             summary: {
                 type: saved.type, date: saved.date, period: saved.period, className: saved.className,
             },
         }
     );
-    return saved;
+    return { ...saved, ...privatePart };
 }
 
 /**
@@ -235,8 +250,26 @@ export async function approveRequest(reqId) {
     const fs  = await getV2Firestore();
     const reqRef = fs.doc(fs.db, SCHEMA_PATHS.pendingDoc(reqId));
 
-    let createdRecordId = null;
-    let reqSnapshot      = null;
+    // Firestore 對單一 transaction 的 rules document access 有共用配額限制（約 20 次，
+    // 完整推導見 legacyMigrationService.js 檔頭註解）。交易內部 tx.get(reqRef)／tx.set(recordRef,...)
+    // 已各自觸發 isApprover(schoolId) 判斷鏈，若再把「新紀錄 private/detail」的 create 規則
+    // 判斷也塞進同一個交易，會逼近甚至超過共用配額。因此改為：交易「之前」非交易性地把
+    // recordId 定下來、讀出 request 的 private/detail 內容並先寫好新紀錄的 private/detail；
+    // 交易本身維持現狀不變，只讀寫兩個父文件（request 與新 record）。
+    const recordId  = dataSvc.genId('rec');
+    const reqDetail = await dataSvc.getRequestDetail(reqId);
+
+    if (reqDetail) {
+        // 複製請求的私有明細到新紀錄底下（同一批當事人，approver 本來就不受 ACL 限制，
+        // 不需要因為核准動作而擴增名單）。
+        const { allowedTeacherIds, ...sensitiveFields } = reqDetail;
+        await fs.setDoc(fs.doc(fs.db, SCHEMA_PATHS.substituteDetailDoc(recordId)), {
+            ...sensitiveFields,
+            allowedTeacherIds: Array.isArray(allowedTeacherIds) ? allowedTeacherIds : [],
+        });
+    }
+
+    let reqSnapshot = null;
 
     await fs.runTransaction(fs.db, async (tx) => {
         const snap = await tx.get(reqRef);
@@ -248,7 +281,6 @@ export async function approveRequest(reqId) {
         }
 
         const now       = new Date().toISOString();
-        const recordId  = dataSvc.genId('rec');
         const recordRef = fs.doc(fs.db, SCHEMA_PATHS.substituteDoc(recordId));
 
         const record = { ...data };
@@ -256,6 +288,9 @@ export async function approveRequest(reqId) {
         delete record.pendingConsentTeacherIds;
         delete record.swapConsents;
         delete record.__legacyPending;
+        // 敏感欄位一律不落父文件（已於上方複製到新紀錄的 private/detail）；新流程的
+        // request 父文件本就不含這三欄位，這裡刪除純屬防禦性寫法。
+        for (const field of dataSvc.SENSITIVE_RECORD_FIELDS) delete record[field];
         record.status          = REQUEST_STATUS.APPROVED;
         record.approvedAt      = now;
         record.approvedBy      = me.teacherId;
@@ -273,14 +308,13 @@ export async function approveRequest(reqId) {
             statusUpdatedAt: now,
         });
 
-        createdRecordId = recordId;
-        reqSnapshot      = record;
+        reqSnapshot = record;
     });
 
     await logger.log(
         LOG_ACTIONS.APPROVE,
         LOG_TARGET_TYPES.SUBSTITUTE_RECORD,
-        createdRecordId,
+        recordId,
         {
             fromRequestId:      reqId,
             initiatedBy:        reqSnapshot.initiatedBy,
@@ -289,7 +323,7 @@ export async function approveRequest(reqId) {
         }
     );
 
-    return { recordId: createdRecordId, ...reqSnapshot };
+    return { recordId, ...reqSnapshot };
 }
 
 /**

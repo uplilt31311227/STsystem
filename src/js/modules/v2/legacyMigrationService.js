@@ -228,6 +228,15 @@ export async function migrateLegacyRecords({ onProgress } = {}) {
                 if (legacy.originalTeacher && !originalTeacherId) unmatched.add(legacy.originalTeacher);
                 if (subName && !substituteTeacherId) unmatched.add(subName);
 
+                // 敏感欄位私有化（2026-07-29）：leaveType/leaveTypeName/reason 一律不落父文件，
+                // 由 dataSvc.createSubstituteRecord() 內部依 originalTeacherId/substituteTeacherId
+                // 自動拆到 private/detail 子文件、算出 allowedTeacherIds（上面兩行已算出的 id，
+                // 查不到的那側已是 null，會被拆分邏輯的 .filter(Boolean) 排除；兩側都查不到時
+                // ACL 降級為空陣列，只有 approver 可讀，屬合理降級）。本函式不需要自己處理
+                // 拆分——單一入口收斂在 schoolDataService.js，避免自我調課快速路徑／adminCreate／
+                // 本遷移三處各自重複一份拆分邏輯。這也不影響上方檔頭的 batch 配額推導：
+                // 每筆現在是兩次「各自獨立」的 setDoc（private + 父文件），仍非任何
+                // transaction/batch 成員，配額互不共用，逐筆呼叫的結論不變。
                 await svc.createSubstituteRecord({
                     ...legacy,
                     originalTeacherId,

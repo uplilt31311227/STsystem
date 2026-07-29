@@ -8,10 +8,16 @@
  * 藉此在不啟動 Firebase / 瀏覽器環境的情況下驗證：偵測兩種來源、取較新者、遷移冪等性、
  * 姓名對不到 ID 仍匯入、下載備份失敗中止遷移、以及 batch 大小的推導。
  * 全程不對 production Firestore（schools/inhu）做任何讀寫。
+ *
+ * 2026-07-29 敏感欄位私有化：mock 的 createSubstituteRecord 直接複用真正的
+ * splitSensitive/deriveAllowedTeacherIds（從 schoolDataService.js 匯入，而非另寫一份邏輯），
+ * 模擬「父文件 + private/detail」的拆分結果（存成 { ...publicPart, _private: privatePart }），
+ * 讓第 0 節與第 5/7/7c 節的斷言驗證的是真正會上線的拆分規則本身。
  */
 
 import * as legacyMigration from '../src/js/modules/v2/legacyMigrationService.js';
 import { LOG_ACTIONS } from '../src/js/modules/v2/schemaConstants.js';
+import { splitSensitive, deriveAllowedTeacherIds, SENSITIVE_RECORD_FIELDS } from '../src/js/modules/v2/schoolDataService.js';
 
 let pass = 0, fail = 0;
 function eq(actual, expected, label) {
@@ -37,9 +43,15 @@ function makeMockDataSvc(initialTeachers = [], initialRecords = []) {
         async createSubstituteRecord(record) {
             calls.createSubstituteRecord++;
             const now = new Date().toISOString();
-            const data = { recordId: `rec_mock_${seq++}`, ...record, createdAt: record.createdAt || now, approvedAt: record.approvedAt || now };
-            records.push(data);
-            return { ...data };
+            const base = { recordId: `rec_mock_${seq++}`, ...record, createdAt: record.createdAt || now, approvedAt: record.approvedAt || now };
+            // 模擬真正 schoolDataService.createSubstituteRecord 的拆分行為：直接呼叫真正的
+            // deriveAllowedTeacherIds/splitSensitive（非 mock 自己重寫一份），確保這裡驗證的
+            // 是真正會上線的拆分規則，不是 mock 腦補、與正式實作各說各話的假象。
+            const allowedTeacherIds = deriveAllowedTeacherIds(base);
+            const { publicPart, privatePart, hasSensitive } = splitSensitive(base, allowedTeacherIds);
+            const stored = hasSensitive ? { ...publicPart, _private: privatePart } : { ...publicPart };
+            records.push(stored);
+            return { ...base }; // 呼叫端拿到的仍是完整（未拆分）物件，符合 createSubstituteRecord 的回傳約定
         },
     };
 }
@@ -75,6 +87,37 @@ function legacyRecord(overrides = {}) {
         originalTeacher: '甲師', substituteTeacher: '乙師', type: '代課', leaveType: '事假',
         ...overrides,
     };
+}
+
+/* ================= 0. 直接測試 schoolDataService 的敏感欄位拆分 =================
+ * 遷移改動最核心的風險：dataSvc.createSubstituteRecord() 內部把 leaveType/leaveTypeName/
+ * reason 拆到 private/detail、並依 originalTeacherId/substituteTeacherId 算出
+ * allowedTeacherIds 的邏輯，對「遷移產生的紀錄形狀」（teacherId 可能為 null）是否正確運作。
+ * 直接呼叫真正的 splitSensitive/deriveAllowedTeacherIds（非重寫一份邏輯），下面 makeMockDataSvc
+ * 也呼叫同一組函式，兩者對得上才有意義。
+ */
+{
+    const record = { ...legacyRecord(), originalTeacherId: 'tch_1', substituteTeacherId: 'tch_2' };
+    const allowed = deriveAllowedTeacherIds(record);
+    eq(allowed, ['tch_1', 'tch_2'], 'deriveAllowedTeacherIds：從 originalTeacherId/substituteTeacherId 取得當事人');
+
+    const { publicPart, privatePart, hasSensitive } = splitSensitive(record, allowed);
+    ok(hasSensitive, 'splitSensitive：含 leaveType 時 hasSensitive 為 true');
+    ok(!('leaveType' in publicPart), 'splitSensitive：publicPart 不含 leaveType');
+    ok(!SENSITIVE_RECORD_FIELDS.some(f => f in publicPart), 'splitSensitive：publicPart 不含任何敏感欄位');
+    eq(privatePart.leaveType, '事假', 'splitSensitive：privatePart.leaveType 正確');
+    eq(privatePart.allowedTeacherIds, ['tch_1', 'tch_2'], 'splitSensitive：privatePart.allowedTeacherIds 正確帶入');
+
+    const bothNull = deriveAllowedTeacherIds({ ...legacyRecord(), originalTeacherId: null, substituteTeacherId: null });
+    eq(bothNull, [], 'deriveAllowedTeacherIds：全部教師 id 皆為 null 時回傳空陣列（合理降級：僅 approver 可讀）');
+
+    const { hasSensitive: noSensitive, privatePart: emptyPrivate } = splitSensitive({ date: '2026-01-01' }, ['tch_1']);
+    ok(!noSensitive, 'splitSensitive：payload 完全沒有敏感欄位時 hasSensitive 為 false');
+    eq(emptyPrivate, {}, 'splitSensitive：無敏感欄位時 privatePart 為空物件（呼叫端應略過 private 寫入）');
+
+    // updateSubstituteRecord 的用法：allowedTeacherIds 傳 null，不應覆蓋既有 ACL。
+    const { privatePart: updatePrivate } = splitSensitive({ reason: '補充說明' }, null);
+    ok(!('allowedTeacherIds' in updatePrivate), 'splitSensitive：allowedTeacherIds 傳 null 時 privatePart 不帶 allowedTeacherIds（避免 merge 覆蓋既有 ACL）');
 }
 
 /* ================= 1. 偵測：兩來源皆有 → 不做自動決勝，兩者都列出 =================
@@ -201,6 +244,12 @@ function legacyRecord(overrides = {}) {
     ok(created.every(x => x.migratedFrom && x.migratedFrom.source === 'firestore' && x.migratedFrom.legacyKey), '正常匯入：每筆皆帶 migratedFrom.source/legacyKey');
     ok(created.every(x => x.originalTeacherId === 'tch_1' && x.substituteTeacherId === 'tch_2'), '正常匯入：教師姓名正確反查 teacherId');
     ok(created.every(x => x.status === 'approved'), '正常匯入：預設 status 為 approved');
+    ok(created.every(x => !SENSITIVE_RECORD_FIELDS.some(f => f in x)), '正常匯入：父文件（公開部分）不含任何敏感欄位');
+    ok(created.every(x => x._private && x._private.leaveType === '事假'), '正常匯入：leaveType 被拆到 private/detail');
+    ok(created.every(x => Array.isArray(x._private.allowedTeacherIds)
+        && x._private.allowedTeacherIds.length === 2
+        && x._private.allowedTeacherIds.includes('tch_1')
+        && x._private.allowedTeacherIds.includes('tch_2')), '正常匯入：private/detail.allowedTeacherIds 為 [原任教師,代理教師]（去重）');
     eq(logger.entries.length, 1, '正常匯入：寫入 1 筆操作日誌');
     eq(logger.entries[0].action, LOG_ACTIONS.DATA_MIGRATE, '正常匯入：日誌 action 為 DATA_MIGRATE');
     eq(logger.entries[0].details.created, 2, '正常匯入：日誌 details.created 正確');
@@ -245,6 +294,23 @@ function legacyRecord(overrides = {}) {
     const rec = dataSvc._records[0];
     eq(rec.originalTeacherId, 'tch_1', '姓名對不到帳號：originalTeacherId 仍正確解析');
     eq(rec.substituteTeacherId, null, '姓名對不到帳號：substituteTeacherId 為 null（非拋錯或跳過）');
+    ok(rec._private && rec._private.leaveType === '事假', '姓名對不到帳號：leaveType 仍正確拆到 private/detail（不因對不到 ID 而遺失假別）');
+    eq(rec._private.allowedTeacherIds, ['tch_1'], '姓名對不到帳號：allowedTeacherIds 只保留查得到的 tch_1（null 已過濾）');
+}
+
+/* ================= 7c. 姓名兩邊都對不到帳號：allowedTeacherIds 降級為空陣列（僅 approver 可讀） ================= */
+{
+    const { dataSvc } = useMocks({
+        teachers: [], // 甲師、乙師皆不存在於教師名單
+        firestoreLegacy: { substituteRecords: [legacyRecord()], lastModified: '2026-06-01T00:00:00.000Z' },
+    });
+    const r = await legacyMigration.migrateLegacyRecords({});
+    eq(r.created, 1, '兩邊皆對不到帳號：仍然新增 1 筆');
+    const rec = dataSvc._records[0];
+    eq(rec.originalTeacherId, null, '兩邊皆對不到帳號：originalTeacherId 為 null');
+    eq(rec.substituteTeacherId, null, '兩邊皆對不到帳號：substituteTeacherId 為 null');
+    ok(rec._private && rec._private.leaveType === '事假', '兩邊皆對不到帳號：leaveType 仍拆到 private/detail（假別資料不因對不到帳號而遺失）');
+    eq(rec._private.allowedTeacherIds, [], '兩邊皆對不到帳號：allowedTeacherIds 降級為空陣列，僅 approver 可讀');
 }
 
 /* ================= 7b. 舊資料來源本身重複列：同批次內第二筆視為已存在，避免自我重複 ================= */
