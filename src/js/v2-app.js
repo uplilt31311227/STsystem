@@ -46,157 +46,15 @@ function injectV2Styles() {
     body.v2-active .v2-teacher-only { display: revert; }
     body.v2-active.v2-approver .v2-teacher-only { display: none; }
 
-    /* Stage 2 驗收缺陷修正：原本這裡有一條 body.v2-active.v2-director #teacher-editor-card
-       {display:none}，讓 director 看不到 V1 教師屬性表——但 V2 帳號表的「領域」欄是唯讀 td、
-       沒有導師班欄，而 domains 是推薦引擎比對代課人選的依據，director 因此完全無法編輯任教
-       領域/導師班級。裁定移除該規則：教師管理分頁內 director 同時看到教師屬性卡（可編輯
-       領域/導師班）與 V2 帳號卡（管理 email/角色），職責不同、可共存。 */
-
-    .v2-badge { display: inline-block; padding: 2px 6px; border-radius: 10px;
-                font-size: 0.72rem; margin-left: 4px; background: #e53e3e; color: #fff; }
-    .v2-role-tag { display: inline-block; padding: 2px 8px; border-radius: 10px;
-                   font-size: 0.75rem; font-weight: 600; }
-    .v2-role-tag.admin,
-    .v2-role-tag.director      { background: #b91c1c; color: #fff; }
-    .v2-role-tag.section_chief { background: #d97706; color: #fff; }
-    .v2-role-tag.teacher       { background: #2563eb; color: #fff; }
-
-    .v2-login-denied { max-width: 520px; margin: 3rem auto; padding: 2rem;
-                      background: #fff3cd; border: 1px solid #ffc107; border-radius: 8px; }
-    .v2-login-denied h3 { margin-top: 0; color: #856404; }
-
-    .v2-pending-item { border: 1px solid #e5e7eb; border-radius: 6px; padding: 0.8rem;
-                       margin-bottom: 0.6rem; background: #fafafa; }
-    .v2-pending-item.incoming { border-left: 4px solid #f59e0b; }
-    .v2-pending-item.outgoing { border-left: 4px solid #3b82f6; }
-    .v2-pending-meta { font-size: 0.85rem; color: #6b7280; margin-top: 4px; }
-    .v2-pending-actions { margin-top: 0.6rem; display: flex; gap: 0.4rem; }
-    .v2-status-tag { display: inline-block; padding: 2px 8px; border-radius: 10px;
-                     font-size: 0.72rem; font-weight: 600; margin-right: 4px; }
-    .v2-status-tag.pending  { background: #fef3c7; color: #92400e; }
-    .v2-status-tag.rejected { background: #fee2e2; color: #991b1b; }
-    .v2-status-tag.approved { background: #d1fae5; color: #065f46; }
-
-    /* Phase 3：待辦清單頁籤上的紅點數量徽章（待我同意 + 待我審核 加總） */
-    .v2-tab-badge { position: relative; top: -1px; }
-
     /* V2 模式下隱藏原本地「調代課紀錄」表格與查詢，避免與 V2 全校紀錄混淆。
        R1 修復（Stage 2）：改用純 id 選擇器，不依賴 #records-tab 的子代組合子——
-       records-tab 內部 DOM 結構調整時，這條隱私邊界規則不會意外失效。 */
+       records-tab 內部 DOM 結構調整時，這條隱私邊界規則不會意外失效。
+       Stage 3（CSS 重寫）：其餘視覺規則（badge/role-tag/pending-item/log-table/
+       auth-gate/modal 等 ~150 行）已全數搬到 src/css/components.css 與 features.css
+       並 token 化，此處只留角色顯隱與這條隱私邊界規則（雙保險之注入版，base.css 有
+       靜態版本兜底，兩者內容須保持一致）。 */
     body.v2-active #records-no-data,
     body.v2-active #records-content { display: none !important; }
-
-    .v2-log-table { width: 100%; font-size: 0.85rem; border-collapse: collapse; }
-    .v2-log-table th, .v2-log-table td { padding: 4px 8px; border-bottom: 1px solid #e5e7eb; text-align: left; }
-
-    .v2-logs-failed-banner { background: #fee2e2; border: 1px solid #ef4444; color: #991b1b;
-        border-radius: 6px; padding: 8px 12px; margin-bottom: 0.8rem; font-size: 0.85rem; }
-    .v2-log-table tbody tr:hover { background: #f9fafb; }
-
-    .v2-teacher-row td { vertical-align: middle; }
-    .v2-teacher-row input[type="email"] { width: 100%; max-width: 220px; }
-    .v2-row-needs-email { background: #fffbeb; }
-    .v2-row-needs-email td:first-child::before {
-        content: '⚠ '; color: #d97706; font-weight: bold;
-    }
-    .v2-auth-provider-chip {
-        display: inline-block; padding: 2px 8px; border-radius: 10px;
-        font-size: 0.75rem; font-weight: 500; vertical-align: middle;
-        margin-left: 4px;
-    }
-    .v2-auth-provider-chip.google { background: #dbeafe; color: #1e40af; }
-
-    .v2-section-header { display: flex; justify-content: space-between;
-                         align-items: center; margin-bottom: 1rem; }
-    .v2-section-header h3 { display: flex; align-items: center; gap: 8px; margin: 0; }
-
-    /* Phase 1.6.b 雙軌登入 */
-    .v2-email-login-trigger {
-        display: block; margin-top: 6px; padding: 4px 8px;
-        background: transparent; border: none; color: #2563eb;
-        font-size: 0.82rem; cursor: pointer; text-decoration: underline;
-    }
-    .v2-email-login-trigger:hover { color: #1d4ed8; }
-
-    /* 登入遮罩：V2 模式未授權時鎖定整個 app，阻擋所有互動（含月結算下載）。
-       z-index 改用 token：--z-authgate(1100) < --z-authmodal(1200) < --z-toast(1300)，
-       故登入 modal 仍可疊在遮罩之上，且 toast 一律蓋在登入 modal 之上
-       （Stage 1 修復 toast 被登入 modal 蓋住的問題）。 */
-    #v2-auth-gate { display: none; }
-    body.v2-locked { overflow: hidden; }
-    body.v2-locked #v2-auth-gate {
-        position: fixed; inset: 0; z-index: var(--z-authgate);
-        display: flex; align-items: center; justify-content: center;
-        background: linear-gradient(135deg, #1e3a8a 0%, #1e40af 100%);
-    }
-    .v2-auth-gate-card {
-        background: #fff; border-radius: 12px; padding: 2.5rem 2rem;
-        width: 92%; max-width: 420px; text-align: center;
-        box-shadow: 0 20px 50px rgba(0,0,0,0.35);
-    }
-    .v2-auth-gate-card h2 { margin: 0 0 0.6rem; color: #1f2937; font-size: 1.25rem; }
-    .v2-auth-gate-card p { margin: 0 0 1.5rem; color: #6b7280; font-size: 0.9rem; line-height: 1.6; }
-    .v2-auth-gate-card p.v2-gate-denied { color: #b91c1c; font-weight: 600; }
-    .v2-auth-gate-actions { display: flex; flex-direction: column; gap: 0.8rem; align-items: center; }
-    #v2-gate-google {
-        display: inline-flex; align-items: center; justify-content: center; gap: 8px;
-        padding: 10px 22px; border: 1px solid #d1d5db; border-radius: 8px;
-        background: #fff; color: #1f2937; font-size: 0.95rem; font-weight: 600; cursor: pointer;
-    }
-    #v2-gate-google:hover { background: #f9fafb; }
-    #v2-gate-email {
-        color: #2563eb; font-size: 0.85rem; cursor: pointer;
-        background: none; border: none; text-decoration: underline; padding: 4px;
-    }
-
-    .v2-modal-backdrop {
-        position: fixed; inset: 0; background: rgba(0,0,0,0.45);
-        display: flex; align-items: center; justify-content: center;
-        z-index: var(--z-authmodal);
-    }
-    .v2-modal {
-        background: #fff; border-radius: 10px; padding: 1.5rem;
-        width: 92%; max-width: 380px; box-shadow: 0 10px 25px rgba(0,0,0,0.2);
-    }
-    .v2-modal h3 { margin: 0 0 1rem 0; color: #1f2937; }
-    .v2-modal label { display: block; font-size: 0.85rem; color: #4b5563; margin-top: 0.6rem; }
-    .v2-modal input[type=email], .v2-modal input[type=password] {
-        width: 100%; padding: 8px 10px; border: 1px solid #d1d5db;
-        border-radius: 6px; font-size: 0.95rem; box-sizing: border-box;
-    }
-    .v2-modal-actions { display: flex; gap: 8px; margin-top: 1rem; }
-    .v2-modal-actions .btn { flex: 1; }
-    .v2-modal-links { margin-top: 0.8rem; display: flex; justify-content: space-between;
-                      font-size: 0.82rem; }
-    .v2-modal-links a { color: #2563eb; text-decoration: none; cursor: pointer; }
-    .v2-modal-links a:hover { text-decoration: underline; }
-    .v2-modal-msg { margin-top: 0.6rem; padding: 6px 10px; border-radius: 6px;
-                    font-size: 0.85rem; }
-    .v2-modal-msg.error   { background: #fee2e2; color: #991b1b; }
-    .v2-modal-msg.success { background: #d1fae5; color: #065f46; }
-
-    /* Phase 4b：教師名單 CSV 批次匯入預覽對話框 */
-    .v2-roster-summary { display: flex; flex-wrap: wrap; gap: 8px; margin: 0.8rem 0; }
-    .v2-roster-stat { padding: 4px 10px; border-radius: 6px; font-size: 0.85rem; font-weight: 600;
-                      background: #f3f4f6; color: #374151; }
-    .v2-roster-stat.created { background: #d1fae5; color: #065f46; }
-    .v2-roster-stat.updated { background: #dbeafe; color: #1e40af; }
-    .v2-roster-stat.skipped { background: #f3f4f6; color: #4b5563; }
-    .v2-roster-stat.errors  { background: #fee2e2; color: #991b1b; }
-    .v2-roster-error-list { max-height: 220px; overflow: auto; border: 1px solid #e5e7eb; border-radius: 6px;
-        padding: 6px 10px; margin-bottom: 0.6rem; background: #fafafa; }
-    .v2-roster-error-row { font-size: 0.82rem; color: #991b1b; padding: 3px 0; border-bottom: 1px dashed #fecaca; }
-    .v2-roster-error-row:last-child { border-bottom: none; }
-
-    /* Phase 5：V1 舊資料遷移卡片與 legacy 徽章 */
-    .v2-legacy-card { border: 1px solid #fbbf24; background: #fffbeb; border-radius: 8px;
-        padding: 0.9rem 1rem; margin-bottom: 1rem; }
-    .v2-legacy-card h4 { margin: 0 0 0.4rem; color: #92400e; font-size: 0.95rem; }
-    .v2-legacy-card p { margin: 0 0 0.6rem; font-size: 0.85rem; color: #78350f; }
-    .v2-legacy-badge { display: inline-block; padding: 1px 6px; border-radius: 8px;
-        font-size: 0.7rem; margin-left: 4px; background: #e5e7eb; color: #4b5563; }
-    .v2-records-filter { font-size: 0.85rem; padding: 3px 6px; border-radius: 6px;
-        border: 1px solid #d1d5db; margin-left: 8px; }
     `;
     document.head.appendChild(style);
 }
@@ -243,7 +101,7 @@ function renderAuthGate() {
             <h2>國中調代課自動化系統</h2>
             ${msg}
             <div class="v2-auth-gate-actions">
-                <button id="v2-gate-google">
+                <button id="v2-gate-google" class="btn btn-google">
                     <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
                         <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
                         <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
@@ -252,7 +110,7 @@ function renderAuthGate() {
                     </svg>
                     使用 Google 登入
                 </button>
-                <button id="v2-gate-email">使用 Email / 密碼登入</button>
+                <button id="v2-gate-email" class="btn btn-ghost btn-sm">使用 Email / 密碼登入</button>
             </div>
         </div>
     `;
@@ -368,7 +226,7 @@ async function renderPendingTab() {
     };
 
     const itemCard = (r, cls, actionsHtml, extraMeta = '') => `
-        <div class="v2-pending-item ${cls}" data-id="${r.reqId}">
+        <div class="list-item list-item-${cls}" data-id="${r.reqId}">
             <div>
                 ${stageLabel(r)}
                 <strong>${typeLabel(r)}</strong> ・ ${r.date || ''} 第 ${r.period || '?'} 節 ・ ${r.className || ''} ${r.subject || ''}
@@ -708,7 +566,7 @@ function renderLegacyMigrationCard(info) {
         : '';
 
     return `
-        <div class="v2-legacy-card" id="v2-legacy-card">
+        <div class="card-warning" id="v2-legacy-card">
             <h4>⚠ 偵測到 V1 舊系統資料尚未遷移</h4>
             <ul class="v2-legacy-sources">${rows}</ul>
             <p>
@@ -810,9 +668,10 @@ function promptRosterImportPreview(preview) {
         const hasImportable = (created.length + updated.length) > 0;
 
         const backdrop = document.createElement('div');
-        backdrop.className = 'v2-modal-backdrop';
+        backdrop.className = 'modal';
         backdrop.innerHTML = `
-            <div class="v2-modal" style="max-width:520px;">
+            <div class="modal-content" style="max-width:520px;">
+                <div class="modal-body">
                 <h3>CSV 匯入預覽</h3>
                 <div class="v2-roster-summary">
                     <span class="v2-roster-stat created">新增 ${created.length} 筆</span>
@@ -824,10 +683,11 @@ function promptRosterImportPreview(preview) {
                 <div class="v2-roster-error-list">
                     ${errors.map(e => `<div class="v2-roster-error-row">第 ${e.row} 列．${escapeHtml(e.name || '（無姓名）')}．${escapeHtml(e.reason)}</div>`).join('')}
                 </div>` : ''}
-                ${!hasImportable ? '<p class="v2-modal-msg error" style="display:block;">沒有可匯入的資料，請修正 CSV 後重新上傳。</p>' : ''}
-                <div class="v2-modal-actions">
+                ${!hasImportable ? '<p class="form-msg error" style="display:block;">沒有可匯入的資料，請修正 CSV 後重新上傳。</p>' : ''}
+                <div class="modal-actions">
                     <button class="btn btn-secondary" id="v2-roster-preview-cancel">取消</button>
                     <button class="btn btn-primary" id="v2-roster-preview-confirm" ${hasImportable ? '' : 'disabled'}>確認匯入</button>
+                </div>
                 </div>
             </div>`;
         document.body.appendChild(backdrop);
@@ -857,7 +717,7 @@ async function renderLogsTab() {
             <button class="btn btn-secondary btn-sm" id="v2-refresh-logs">重新整理</button>
         </div>
         <div class="table-wrap">
-        <table class="v2-log-table">
+        <table class="data-table data-table-compact v2-log-table">
             <thead><tr><th>時間</th><th>操作者</th><th>角色</th><th>動作</th><th>對象</th><th>詳情</th></tr></thead>
             <tbody>
             ${visible.map(l => `
@@ -884,7 +744,7 @@ async function renderRecordsTab() {
         if (!original) return;
         host = document.createElement('div');
         host.id = 'v2-records-section';
-        host.className = 'card compact-card';
+        host.className = 'card';
         original.appendChild(host);
     }
     const _gen = _v2IdentityGen;
@@ -1122,9 +982,10 @@ function promptAdditionalConsentTeachers(record, allTeachers) {
         if (!candidates.length) { resolve([]); return; }
 
         const backdrop = document.createElement('div');
-        backdrop.className = 'v2-modal-backdrop';
+        backdrop.className = 'modal';
         backdrop.innerHTML = `
-            <div class="v2-modal" style="max-width:420px;">
+            <div class="modal-content" style="max-width:420px;">
+                <div class="modal-body">
                 <h3>多重調課：還有其他教師需一併同意嗎？</h3>
                 <p style="font-size:0.8rem;color:#6b7280;margin-top:-0.4rem;">
                     若本次調課牽動其他教師課務（例如三方輪調），請勾選需一併同意的教師；
@@ -1136,9 +997,10 @@ function promptAdditionalConsentTeachers(record, allTeachers) {
                             <input type="checkbox" class="v2-extra-consent-cb" value="${escapeHtml(t.name)}"> ${escapeHtml(t.name)}
                         </label>`).join('')}
                 </div>
-                <div class="v2-modal-actions">
+                <div class="modal-actions">
                     <button class="btn btn-secondary" id="v2-extra-consent-skip">僅雙方調課</button>
                     <button class="btn btn-primary" id="v2-extra-consent-confirm">送出</button>
+                </div>
                 </div>
             </div>`;
         document.body.appendChild(backdrop);
@@ -1711,7 +1573,7 @@ function injectEmailLoginTrigger() {
     if (!loggedOutBox || document.getElementById('v2-email-login-trigger')) return;
     const link = document.createElement('button');
     link.id = 'v2-email-login-trigger';
-    link.className = 'v2-email-login-trigger';
+    link.className = 'btn btn-ghost btn-sm';
     link.textContent = '使用 Email / 密碼登入';
     link.addEventListener('click', () => openAuthModal('signin'));
     loggedOutBox.appendChild(link);
@@ -1725,7 +1587,7 @@ function openAuthModal(mode = 'signin') {
     closeAuthModal();
     const backdrop = document.createElement('div');
     backdrop.id = 'v2-auth-modal-backdrop';
-    backdrop.className = 'v2-modal-backdrop';
+    backdrop.className = 'modal';
 
     const titles = {
         signin:   'Email 登入',
@@ -1739,29 +1601,37 @@ function openAuthModal(mode = 'signin') {
     };
 
     backdrop.innerHTML = `
-        <div class="v2-modal">
+        <div class="modal-content">
+            <div class="modal-body">
             <h3>${titles[mode]}</h3>
             ${mode !== 'forgot' ? `
-                <label>Email</label>
-                <input type="email" id="v2-modal-email" placeholder="your@email.com" autocomplete="email">
-                <label>密碼${mode === 'register' ? '（至少 6 字元）' : ''}</label>
-                <input type="password" id="v2-modal-pwd" placeholder="••••••••" autocomplete="${mode === 'signin' ? 'current-password' : 'new-password'}">
+                <div class="form-group">
+                    <label>Email</label>
+                    <input type="email" id="v2-modal-email" placeholder="your@email.com" autocomplete="email">
+                </div>
+                <div class="form-group">
+                    <label>密碼${mode === 'register' ? '（至少 6 字元）' : ''}</label>
+                    <input type="password" id="v2-modal-pwd" placeholder="••••••••" autocomplete="${mode === 'signin' ? 'current-password' : 'new-password'}">
+                </div>
             ` : `
-                <label>Email</label>
-                <input type="email" id="v2-modal-email" placeholder="your@email.com" autocomplete="email">
+                <div class="form-group">
+                    <label>Email</label>
+                    <input type="email" id="v2-modal-email" placeholder="your@email.com" autocomplete="email">
+                </div>
             `}
-            <div class="v2-modal-msg" id="v2-modal-msg" style="display:none;"></div>
+            <div class="form-msg" id="v2-modal-msg" style="display:none;"></div>
             <p style="font-size:0.78rem; color:#6b7280; margin-top:0.6rem;">${helpText[mode]}</p>
-            <div class="v2-modal-actions">
+            <div class="modal-actions">
                 <button class="btn btn-secondary" id="v2-modal-cancel">取消</button>
                 <button class="btn btn-primary" id="v2-modal-submit">
                     ${mode === 'signin' ? '登入' : mode === 'forgot' ? '寄重置信' : '註冊'}
                 </button>
             </div>
-            <div class="v2-modal-links">
+            <div class="modal-links">
                 ${mode !== 'signin' ? `<a data-mode="signin">← 回登入</a>` : `<span></span>`}
                 ${mode !== 'forgot'   ? `<a data-mode="forgot">忘記密碼？</a>` : ''}
                 ${mode !== 'register' ? `<a data-mode="register">我是新教師（註冊）</a>` : ''}
+            </div>
             </div>
         </div>
     `;
@@ -1770,13 +1640,13 @@ function openAuthModal(mode = 'signin') {
     const msgEl = backdrop.querySelector('#v2-modal-msg');
     const showMsg = (text, kind = 'error') => {
         msgEl.textContent = text;
-        msgEl.className = 'v2-modal-msg ' + kind;
+        msgEl.className = 'form-msg ' + kind;
         msgEl.style.display = 'block';
     };
 
     backdrop.querySelector('#v2-modal-cancel').addEventListener('click', closeAuthModal);
     backdrop.addEventListener('click', (e) => { if (e.target === backdrop) closeAuthModal(); });
-    backdrop.querySelectorAll('.v2-modal-links a').forEach(a =>
+    backdrop.querySelectorAll('.modal-links a').forEach(a =>
         a.addEventListener('click', () => openAuthModal(a.dataset.mode)));
 
     backdrop.querySelector('#v2-modal-submit').addEventListener('click', async (ev) => {

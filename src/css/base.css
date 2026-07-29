@@ -1,0 +1,330 @@
+/* ===================================
+   Base — reset / 版面骨架 / 導覽 / 顯隱基礎
+   載入順序：tokens.css → base.css → components.css → features.css
+   F6：除下方三件套 reset 外，本檔（與 components/features）禁止新增裸元素全域選擇器；
+   class 前綴的複合選擇器（如 .data-table th）不受此限。
+   =================================== */
+
+/* ===== Reset（三件套，F6 PDF 保護：pdfGenerator.js 把 inline-styled DOM 掛到 body 餵
+   html2canvas，reset 維持現狀，不得擴充） ===== */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+/* ===== html/body 基礎 ===== */
+body {
+    font-family: var(--font-sans);
+    font-size: var(--fs-md);
+    line-height: var(--lh-base);
+    color: var(--color-text);
+    background-color: var(--color-bg);
+}
+
+/* ===== Typography（既有皆為 class 前綴，無裸 h1-h4/p/a 選擇器） ===== */
+.header h1 {
+    font-size: var(--fs-2xl);
+    font-weight: var(--fw-semibold);
+    color: var(--color-accent);
+    margin-bottom: var(--sp-4);
+}
+
+.guide-section h4 {
+    color: var(--color-accent);
+    margin-bottom: var(--sp-3);
+    font-size: var(--fs-lg);
+}
+
+.guide-section a {
+    color: var(--color-accent);
+    text-decoration: none;
+}
+
+.guide-section a:hover {
+    text-decoration: underline;
+}
+
+/* ===== Utility ===== */
+.hidden {
+    display: none !important;
+}
+
+.hint {
+    color: var(--color-text-muted);
+    font-size: var(--fs-sm);
+    margin-bottom: var(--sp-2);
+}
+
+.description {
+    color: var(--color-text-muted);
+    margin-bottom: var(--sp-4);
+    font-size: var(--fs-md);
+}
+
+/* 載入動畫（header 同步圖示 .sync-status.syncing .sync-icon 亦沿用同一 keyframe） */
+.loading {
+    display: inline-block;
+    width: 20px;
+    height: 20px;
+    border: 2px solid var(--color-border);
+    border-radius: 50%;
+    border-top-color: var(--color-accent);
+    animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+/* ===== 應用程式版面骨架 ===== */
+.app-container {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+.main-content {
+    flex: 1;
+    padding: var(--sp-4);
+    max-width: var(--content-max);
+    margin: 0 auto;
+    width: 100%;
+}
+
+@media (min-width: 1024px) {
+    .main-content {
+        padding: var(--sp-4) var(--sp-8);
+    }
+}
+
+/* ===== Header ===== */
+.header {
+    background-color: var(--color-surface);
+    border-bottom: var(--bd);
+    padding: var(--sp-4);
+    box-shadow: var(--sh-1);
+    position: sticky;
+    top: 0;
+    z-index: var(--z-sticky);
+}
+
+@media (min-width: 1024px) {
+    .header {
+        padding: var(--sp-4) var(--sp-8);
+    }
+}
+
+.header-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: var(--sp-4);
+    flex-direction: column;
+    gap: var(--sp-3);
+}
+
+@media (min-width: 640px) {
+    .header-top {
+        flex-direction: row;
+        gap: 0;
+    }
+}
+
+.user-auth-section {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-4);
+    width: 100%;
+    justify-content: flex-end;
+}
+
+@media (min-width: 640px) {
+    .user-auth-section {
+        width: auto;
+    }
+}
+
+.auth-state {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+}
+
+.auth-state.hidden {
+    display: none;
+}
+
+/* 同步狀態徽章 */
+.sync-status {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0.375rem var(--sp-3);
+    background-color: var(--color-bg);
+    border-radius: var(--r-pill);
+    font-size: var(--fs-xs);
+    color: var(--color-text-muted);
+    cursor: default;
+}
+
+.sync-status.synced  { background-color: var(--c-success-100); color: var(--c-success-800); }
+.sync-status.syncing { background-color: var(--c-primary-100); color: var(--c-primary-700); }
+.sync-status.pending { background-color: var(--c-warning-100); color: var(--c-warning-800); }
+.sync-status.error   { background-color: var(--c-danger-100);  color: var(--c-danger-800); }
+.sync-status.offline { background-color: var(--c-n-100);       color: var(--c-n-500); }
+
+.sync-icon { font-size: var(--fs-md); }
+.sync-status.syncing .sync-icon { animation: spin 1s linear infinite; }
+
+.user-info {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+}
+
+.user-avatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    border: 2px solid var(--color-border);
+}
+
+.user-name {
+    font-size: var(--fs-md);
+    font-weight: var(--fw-medium);
+    color: var(--color-text);
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+@media (max-width: 639px) {
+    .user-name { display: none; }
+}
+
+/* ===== 導覽頁籤（Stage 2 起：手機可捲 tab bar，取代舊 flex-wrap 版；
+   .tab-btn 查詢選擇器凍結不動，僅視覺收斂） ===== */
+.nav-tabs {
+    display: flex;
+    gap: var(--sp-2);
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    scroll-snap-type: x proximity;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+}
+
+.nav-tabs::-webkit-scrollbar {
+    display: none;
+}
+
+.nav-tabs__divider {
+    flex: 0 0 1px;
+    align-self: stretch;
+    background: var(--color-border);
+    margin-inline: var(--sp-1);
+}
+
+@media (min-width: 1024px) {
+    .nav-tabs {
+        overflow: visible;
+        flex-wrap: wrap;
+    }
+}
+
+.tab-btn {
+    flex: 0 0 auto;
+    scroll-snap-align: center;
+    white-space: nowrap;
+    padding: var(--sp-2) var(--sp-5);
+    border: none;
+    background-color: transparent;
+    color: var(--color-text-muted);
+    font-size: var(--fs-lg);
+    font-weight: var(--fw-medium);
+    cursor: pointer;
+    border-radius: var(--r-sm);
+    transition: all var(--dur) var(--ease);
+}
+
+.tab-btn:hover {
+    background-color: var(--color-bg);
+    color: var(--color-text);
+}
+
+.tab-btn.active {
+    background-color: var(--color-accent);
+    color: var(--color-text-invert);
+}
+
+/* F10：頁籤鎖定狀態改用 class 切換（app.js updateTabLockStatus），取代 inline
+   style.opacity/cursor 寫入，避免蓋掉 CSS */
+.tab-btn.is-locked {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* ===== 頁籤內容顯示控制（R8：display 語意一字不動） ===== */
+.tab-content {
+    display: none;
+}
+
+.tab-content.active {
+    display: block;
+}
+
+/* R1 縱深防禦（安全規則勿刪）：v2-app.js injectV2Styles() 內已有同樣兩條規則（隱藏 V1
+   全校紀錄表，防止 V2 模式下個資外洩），此處複製一份到一律載入的靜態 CSS 作為第二層保險
+   ——萬一 JS 注入樣式因故未執行（例如注入前拋錯），這條隱私邊界規則仍然生效。前綴
+   body.v2-active 僅在該 class 存在時才 match，對純 V1（body 永遠不會有此 class）零影響。
+   注入版本（v2-app.js injectV2Styles）保留不動，兩份規則內容應保持一致。 */
+body.v2-active #records-no-data,
+body.v2-active #records-content { display: none !important; }
+
+/* 修復既有缺陷（Stage 2 驗收時發現，非本階段新增）：.v2-only 的「預設隱藏」規則過去只存在於
+   v2-app.js injectV2Styles() 動態注入的 <style id="v2-styles">，只有 isV2Enabled() 成立
+   （?v2=1 或 preview 網域）時才會注入。純 V1 網址（無 ?v2=1）下 v2-app.js 的 bootstrap()
+   提早 return，永遠不會注入樣式，導致「待辦」「操作日誌」兩顆 v2-only 分頁按鈕在
+   V1 單機模式下也一直可見（可點但內容是空的）。此規則作為一律載入的靜態預設值：
+   v2-app.js 有注入時，其內部同名規則出現在 <head> 較後面，body.v2-active .v2-only
+   {display:revert} 的 selector specificity 較高，不論靜態或注入的 none 規則何者生效都會
+   被正確覆蓋，行為不變。 */
+.v2-only {
+    display: none;
+}
+
+/* 功能鎖定遮罩（尚未設定學校名稱時蓋住分頁內容） */
+.tab-locked {
+    position: relative;
+}
+
+.tab-locked::after {
+    content: '🔒 請先設定學校名稱';
+    position: absolute;
+    inset: 0;
+    background: rgba(255, 255, 255, 0.9);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: var(--fs-xl);
+    color: var(--c-n-500);
+    z-index: var(--z-veil);
+}
+
+/* ===== 底部資訊 ===== */
+.footer {
+    text-align: center;
+    padding: var(--sp-4);
+    color: var(--color-text-muted);
+    font-size: var(--fs-xs);
+    border-top: var(--bd);
+    background-color: var(--color-surface);
+}
+
+.footer .credit {
+    margin-top: var(--sp-2);
+    font-size: var(--fs-2xs);
+    opacity: 0.8;
+}

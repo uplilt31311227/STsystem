@@ -19,8 +19,10 @@
     <!-- html2canvas - HTML 轉圖片（用於 PDF 中文支援） -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 
-    <link rel="stylesheet" href="src/css/tokens.css?v=2.2.0">
-    <link rel="stylesheet" href="src/css/style.css?v=2.2.0">
+    <link rel="stylesheet" href="src/css/tokens.css?v=2.3.0">
+    <link rel="stylesheet" href="src/css/base.css?v=2.3.0">
+    <link rel="stylesheet" href="src/css/components.css?v=2.3.0">
+    <link rel="stylesheet" href="src/css/features.css?v=2.3.0">
 </head>
 <body>
     <div class="app-container">
@@ -52,7 +54,7 @@
                             <img class="user-avatar" id="user-avatar" src="" alt="使用者頭像">
                             <span class="user-name" id="user-name"></span>
                         </div>
-                        <button class="btn-signout" id="signout-btn" title="登出">登出</button>
+                        <button class="btn btn-ghost btn-sm" id="signout-btn" title="登出">登出</button>
                     </div>
                 </div>
             </div>
@@ -79,7 +81,7 @@
 
                 <!-- sub-view：課表匯入 -->
                 <div id="schedule-import-view" class="schedule-subview">
-                    <div class="card compact-card">
+                    <div class="card">
                         <h3>匯入課表資料</h3>
                         <div class="upload-area upload-area-compact v2-approver-only" id="schedule-upload">
                             <div class="upload-icon-compact">📅</div>
@@ -115,12 +117,12 @@
                         </div>
                     </div>
 
-                    <p class="hint schedule-backup-hint">💾 備份與還原請至「<button type="button" class="btn-link" id="schedule-goto-settings-btn">設定</button>」分頁</p>
+                    <p class="hint schedule-backup-hint">💾 備份與還原請至「<button type="button" class="btn btn-ghost" id="schedule-goto-settings-btn">設定</button>」分頁</p>
                 </div>
 
                 <!-- sub-view：課表編輯 -->
                 <div id="schedule-editor-view" class="schedule-subview hidden">
-                    <div class="card compact-card">
+                    <div class="card">
                         <div class="editor-toolbar">
                             <div class="editor-toolbar-left">
                                 <label for="editor-teacher-select">選擇教師：</label>
@@ -133,7 +135,7 @@
                     </div>
 
                     <!-- 課表編輯區域 -->
-                    <div id="editor-schedule-section" class="card compact-card hidden">
+                    <div id="editor-schedule-section" class="card hidden">
                         <div class="editor-schedule-header">
                             <h3>
                                 <span id="editor-teacher-name-display"></span> 的週課表
@@ -156,7 +158,7 @@
             <!-- 頁籤：教師管理（Stage 2 起集中：教師屬性表（編輯任教領域/導師班級）全員可見；
                  V2 帳號管理（email/角色）僅 director 另外可見，兩卡職責不同、director 同時看到兩張） -->
             <section id="teachers-tab" class="tab-content hidden v2-approver-only">
-                <div class="card compact-card" id="teacher-editor-card">
+                <div class="card" id="teacher-editor-card">
                     <div class="teacher-header">
                         <h3>教師屬性</h3>
                         <div class="teacher-header-actions">
@@ -192,7 +194,7 @@
             <!-- 頁籤：調代課申請 -->
             <section id="substitute-tab" class="tab-content hidden">
                 <!-- 未載入資料提示 -->
-                <div id="substitute-no-data" class="card compact-card notice-card notice-card-compact">
+                <div id="substitute-no-data" class="card notice-card notice-card-compact">
                     <h3>尚未載入課表資料</h3>
                     <p>請先至「課表管理」頁籤上傳課表檔案</p>
                 </div>
@@ -200,7 +202,7 @@
                 <div id="substitute-content" class="hidden">
                 <!-- 步驟一+二：教師日期 + 異動類型 並排 -->
                 <div class="sub-top-row">
-                    <div class="card compact-card sub-top-left">
+                    <div class="card sub-top-left">
                         <h3>步驟一：選擇教師與日期</h3>
                         <div class="form-row" style="margin-bottom:0;">
                             <div class="form-group" style="flex:1;">
@@ -216,7 +218,7 @@
                         </div>
                     </div>
 
-                    <div id="step-change-type" class="card compact-card sub-top-right">
+                    <div id="step-change-type" class="card sub-top-right">
                         <h3>步驟二：選擇異動類型</h3>
                         <div class="change-type-selector change-type-compact">
                             <label class="change-type-option">
@@ -282,7 +284,7 @@
                 </div>
 
                 <!-- 步驟三：選擇課程 -->
-                <div id="step-select-course" class="card compact-card hidden">
+                <div id="step-select-course" class="card hidden">
                     <div class="step-header-with-toggle">
                         <h3>步驟三：選擇課程</h3>
                         <!-- 多節課模式切換 -->
@@ -317,7 +319,7 @@
                 </div>
 
                 <!-- 步驟四：選中課程資訊與確認 -->
-                <div id="selected-course-info" class="card compact-card hidden">
+                <div id="selected-course-info" class="card hidden">
                     <h3>步驟四：確認調代課資訊</h3>
 
                     <!-- 單節課摘要（原有） -->
@@ -347,7 +349,7 @@
                             <span>共 <strong id="confirm-course-count">0</strong> 節課需要代課</span>
                         </div>
                         <div class="multi-course-table-wrapper">
-                            <table class="multi-course-table">
+                            <table class="data-table data-table-compact multi-course-table">
                                 <thead>
                                     <tr>
                                         <th>節次</th>
@@ -419,7 +421,7 @@
                 </div>
 
                 <!-- 多重調課批次面板（獨立 card，不隨步驟四隱藏） -->
-                <div id="multi-swap-batch-panel" class="card compact-card hidden">
+                <div id="multi-swap-batch-panel" class="card hidden">
                     <h3>多重調課批次</h3>
                     <p class="hint">逐一新增調課組合，新增時不設限制。系統會在整批送出時檢查衝突，全部無衝突才可產生表單。</p>
 
@@ -452,13 +454,13 @@
             <!-- 頁籤：調課紀錄 -->
             <section id="records-tab" class="tab-content hidden">
                 <!-- 未載入資料提示 -->
-                <div id="records-no-data" class="card compact-card notice-card notice-card-compact">
+                <div id="records-no-data" class="card notice-card notice-card-compact">
                     <h3>尚未載入課表資料</h3>
                     <p>請先至「課表管理」頁籤上傳課表檔案</p>
                 </div>
 
                 <div id="records-content" class="hidden">
-                <div class="card compact-card">
+                <div class="card">
                     <div class="toolbar-row">
                         <h3>調代課紀錄查詢</h3>
                         <div class="toolbar-controls">
@@ -509,13 +511,13 @@
             <!-- 頁籤：月結算 -->
             <section id="settlement-tab" class="tab-content hidden v2-approver-only">
                 <!-- 未載入資料提示 -->
-                <div id="settlement-no-data" class="card compact-card notice-card notice-card-compact">
+                <div id="settlement-no-data" class="card notice-card notice-card-compact">
                     <h3>尚未載入課表資料</h3>
                     <p>請先至「課表管理」頁籤上傳課表檔案</p>
                 </div>
 
                 <div id="settlement-content" class="hidden">
-                <div class="card compact-card">
+                <div class="card">
                     <div class="toolbar-row">
                         <h3>月結算報表</h3>
                         <div class="toolbar-controls">
@@ -584,7 +586,7 @@
                 <div class="settings-layout">
                 <!-- 左側：雲端同步 -->
                 <div class="settings-left">
-                <div class="card compact-card">
+                <div class="card">
                     <h3>雲端同步</h3>
                     <div class="cloud-sync-info cloud-sync-compact">
                         <div class="sync-feature">
@@ -631,7 +633,7 @@
                 <!-- 右側：資料管理 -->
                 <div class="settings-right">
 
-                <div class="card compact-card v2-approver-only">
+                <div class="card v2-approver-only">
                     <h3>學年度管理</h3>
 
                     <div class="data-management-section">
@@ -645,7 +647,7 @@
                     </div>
                 </div>
 
-                <div class="card compact-card v2-approver-only">
+                <div class="card v2-approver-only">
                     <h3>科目領域對應表</h3>
                     <p class="hint">匯入課表時自動擷取「科目→領域」對應；課表編輯選擇科目時會據此自動帶出領域。可在此手動增修。一個科目可對應多個領域（編輯課程時預設帶第一個）。</p>
 
@@ -671,7 +673,7 @@
                     </div>
                 </div>
 
-                <div class="card compact-card v2-approver-only">
+                <div class="card v2-approver-only">
                     <h3>資料管理</h3>
 
                     <div class="data-management-section">
@@ -806,7 +808,7 @@
                         請先選擇日期。
                     </div>
                     <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:14px;">
-                        <button class="btn btn-default btn-sm" id="cancel-weekly-summary-btn">取消</button>
+                        <button class="btn btn-secondary btn-sm" id="cancel-weekly-summary-btn">取消</button>
                         <button class="btn btn-primary btn-sm" id="confirm-weekly-summary-btn" disabled>產生 PDF</button>
                     </div>
                 </div>
@@ -857,7 +859,7 @@
                     </div>
 
                     <div class="conflict-warning">
-                        <p>⚠️ 建議先<button class="btn-link" id="export-before-sync-btn">匯出備份</button>再進行選擇</p>
+                        <p>⚠️ 建議先<button class="btn btn-ghost" id="export-before-sync-btn">匯出備份</button>再進行選擇</p>
                     </div>
 
                     <div class="modal-actions">
@@ -906,8 +908,8 @@
     </div>
 
     <!-- 載入 JavaScript 模組 -->
-    <script type="module" src="src/js/app.js?v=1.13.3"></script>
+    <script type="module" src="src/js/app.js?v=1.13.4"></script>
     <!-- V2 權限系統（?v2=1 或預覽站才啟用；對穩定版無影響） -->
-    <script type="module" src="src/js/v2-app.js?v=0.1.1"></script>
+    <script type="module" src="src/js/v2-app.js?v=0.1.2"></script>
 </body>
 </html>

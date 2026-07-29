@@ -262,7 +262,7 @@ async function submitAndMaybeSkipConsentModal(page, extraConsentName = null) {
     await page.click('#confirm-substitute-btn');
     let modalAppeared = false;
     try {
-        await page.waitForSelector('.v2-modal-backdrop', { timeout: 4000 });
+        await page.waitForSelector('.modal', { timeout: 4000 });
         modalAppeared = true;
     } catch (_) { /* 未出現 —— 見 P0 finding：buildSwapRecord 的 isMultiSwap 恆為 true */ }
     if (modalAppeared) {

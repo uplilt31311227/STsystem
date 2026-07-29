@@ -352,7 +352,7 @@ async function clickCourseCell(page, weekday, period) {
     let modalAppeared = false;
     let candidateCount = 0;
     try {
-        await teacherA.waitForSelector('.v2-modal-backdrop', { timeout: 5000 });
+        await teacherA.waitForSelector('.modal', { timeout: 5000 });
         modalAppeared = true;
         candidateCount = await teacherA.locator('.v2-extra-consent-cb').count();
     } catch (_) { /* 未出現 */ }
