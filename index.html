@@ -19,10 +19,10 @@
     <!-- html2canvas - HTML 轉圖片（用於 PDF 中文支援） -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 
-    <link rel="stylesheet" href="src/css/tokens.css?v=2.4.0">
-    <link rel="stylesheet" href="src/css/base.css?v=2.4.0">
-    <link rel="stylesheet" href="src/css/components.css?v=2.4.0">
-    <link rel="stylesheet" href="src/css/features.css?v=2.4.0">
+    <link rel="stylesheet" href="src/css/tokens.css?v=2.4.1">
+    <link rel="stylesheet" href="src/css/base.css?v=2.4.1">
+    <link rel="stylesheet" href="src/css/components.css?v=2.4.1">
+    <link rel="stylesheet" href="src/css/features.css?v=2.4.1">
 </head>
 <body>
     <div class="app-container">
@@ -428,15 +428,18 @@
                     <h3>多重調課批次</h3>
                     <p class="hint">逐一新增調課組合，新增時不設限制。系統會在整批送出時檢查衝突，全部無衝突才可產生表單。</p>
 
-                    <!-- 待處理調課清單標題列（與步驟三「已選課程」tray 統一視覺，清除鈕對齊右上） -->
-                    <div class="selection-tray-header">
-                        <span class="selected-count">已加入 <strong id="batch-swap-count">0</strong> 組調課</span>
-                        <button class="btn btn-sm btn-secondary" id="batch-clear-btn">清除全部</button>
-                    </div>
-
-                    <!-- 待處理調課清單 -->
-                    <div id="batch-swap-list" class="batch-swap-list selection-tray">
-                        <div class="batch-empty-message">尚未加入任何調課，請從上方課表選擇課程後點擊「加入批次」</div>
+                    <!-- 待處理調課清單（驗收缺陷修正：標題列移入 tray 容器內，與步驟三
+                         「已選課程」巢狀層級一致——外層 .selection-tray 負責視覺容器，
+                         內層 #batch-swap-list 維持純內容替換目標，id、內部結構與
+                         renderSwapBatch() 的 innerHTML 綁定完全不動，清除鈕對齊右上） -->
+                    <div class="batch-swap-container selection-tray">
+                        <div class="selection-tray-header">
+                            <span class="selected-count">已加入 <strong id="batch-swap-count">0</strong> 組調課</span>
+                            <button class="btn btn-sm btn-secondary" id="batch-clear-btn">清除全部</button>
+                        </div>
+                        <div id="batch-swap-list" class="batch-swap-list">
+                            <div class="batch-empty-message">尚未加入任何調課，請從上方課表選擇課程後點擊「加入批次」</div>
+                        </div>
                     </div>
 
                     <!-- 衝突檢查結果 -->

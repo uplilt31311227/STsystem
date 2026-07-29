@@ -384,7 +384,12 @@
 #multi-swap-batch-panel { border: 2px solid var(--c-primary-100); background: var(--color-surface-2); }
 #multi-swap-batch-panel h3 { color: var(--c-primary-800); }
 
-.batch-swap-list { margin: var(--sp-4) 0; }
+/* 驗收缺陷修正：margin 移到外層 .batch-swap-container（見 index.html 巢狀層級調整），
+   #batch-swap-list 現在只是內層純內容容器（與「已選課程」tray 的 #selected-courses-chips
+   同層級），不再需要自己的外距，避免疊加外層 .selection-tray 的 padding 造成雙倍留白。
+   .batch-swap-list class 保留在該 div 上（僅供語意辨識，未接其他樣式），id 與
+   renderSwapBatch() 的 innerHTML 綁定完全不動。 */
+.batch-swap-container { margin: var(--sp-4) 0; }
 .batch-empty-message {
     text-align: center;
     color: var(--c-n-400);
@@ -497,6 +502,11 @@
    只在手機層讓首欄（教師姓名）sticky，捲動時仍看得到是哪位教師的資料列。
    640+ 還原 static：桌機欄數少通常不需要橫捲，sticky 在無捲動時也不會有視覺差異，
    但仍明確還原以符合「僅手機層」的原始需求。 */
+/* 驗收缺陷修正：.data-table{width:100%} 會讓表格壓到跟 .table-wrap 一樣窄（手機下
+   永遠不會超出容器），使上面的首欄 sticky 沒有橫捲可以倚靠、視覺上完全無效，
+   窄版還會把表頭文字擠成一字斷三行。強制最小寬度撐開表格，讓 .table-wrap 真的
+   產生橫向捲動。640+ 桌機寬度通常本來就超過 640px，不需另外還原。 */
+#settlement-table { min-width: 640px; }
 #settlement-table th:first-child {
     position: sticky;
     left: 0;

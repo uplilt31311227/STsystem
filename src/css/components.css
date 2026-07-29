@@ -489,6 +489,11 @@
     .data-table-cards td::before { display: none; }
     .data-table-cards td.cell-primary { font-size: inherit; font-weight: inherit; }
     .data-table-cards td.cell-actions { border-top: 0; margin: 0; padding-top: var(--sp-3); }
+    /* 驗收缺陷修正：上一條 padding-top:var(--sp-3) 與 .data-table-compact.data-table-cards td
+       特異度同為 (0,2,1)，因載入順序在後而蓋掉緊湊版的 0.35rem，桌機（640+）5 張表每列
+       高度多 ~6px、操作欄按鈕比同列 input 低。這裡用 3-class 選擇器（特異度較高）補回緊湊值，
+       只影響同時掛 .data-table-compact 的表格，普通 .data-table-cards（若有）仍吃上一條 --sp-3。 */
+    .data-table-compact.data-table-cards td.cell-actions { padding-top: .35rem; }
 }
 
 /* ===================================
@@ -498,7 +503,11 @@
     position: fixed;
     left: var(--sp-4);
     right: var(--sp-4);
-    bottom: calc(var(--sp-4) + env(safe-area-inset-bottom));
+    /* 驗收缺陷修正：手機層改由上緣顯示。原本 bottom 釘底會與申請頁步驟四的
+       sticky action bar 重疊，代課衝突/星期不符等 5-6 秒 toast 正好蓋住使用者
+       需要重按的「確認並產生表單」鈕。640+ 桌機沒有 sticky action bar，還原右下。 */
+    top: calc(var(--sp-4) + env(safe-area-inset-top));
+    bottom: auto;
     z-index: var(--z-toast);
     display: flex;
     flex-direction: column;
@@ -509,6 +518,9 @@
     #toast-container {
         left: auto;
         right: var(--sp-6);
+        /* 明確還原 top:auto——若不還原，桌機會同時吃到手機層的 top 與這裡的 bottom，
+           position:fixed 元素在 top/bottom 都有值且無明確高度時會被撐開拉伸。 */
+        top: auto;
         bottom: var(--sp-6);
         max-width: 420px;
     }
