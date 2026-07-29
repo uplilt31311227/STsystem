@@ -78,11 +78,29 @@ export const __testHooks = {
     },
 };
 
+function recordCountOf(raw) {
+    return Array.isArray(raw?.substituteRecords) ? raw.substituteRecords.length : 0;
+}
+
 /**
- * 兩個舊資料來源都可能存在，取 lastModified 較新者；皆無資料回傳 null。
- * 回傳 { source, uid, raw, lastModified }，raw 為該來源的完整原始物件（供備份下載使用）。
+ * 收集所有「確實含有調代課紀錄」的舊資料來源。
+ *
+ * ⚠ 兩個設計重點（2026-07-29 對抗式審查後修正，請勿改回）：
+ *
+ * 1. **只認 substituteRecords 非空的來源**。V2 自己會持續重寫 localStorage 的
+ *    substituteSystemData（applyRemoteSchedule 與 saveAndProcessRecord 都會呼叫
+ *    saveDataToStorage），因此「物件存在」完全不代表「有舊紀錄」——舊版只看物件
+ *    存在就回報偵測到舊資料，導致任何開過 V2 的瀏覽器都永遠掛著「偵測到 V1 舊資料
+ *    ｜0 筆」的假警報。
+ *
+ * 2. **不做「取較新者」的自動決勝**。localStorage 的 payload 出自
+ *    dataManager.exportToStorage()，該物件根本沒有 lastModified 欄位，而 Firestore
+ *    版有——舊版的時間比較會讓 localStorage 恆判為最舊、Firestore 永遠勝出。主任若
+ *    長期離線使用本機，就會靜默遷到數月前的舊快照且無從察覺。改為回傳全部來源，由
+ *    呼叫端一併遷移（遷移本身以 legacyKey 去重，重疊部分不會重複匯入），取聯集而非
+ *    賭一個時間戳。
  */
-async function resolveLegacySource() {
+async function resolveLegacySources() {
     const identity = __testHooks.roleSvc.getCurrentIdentity();
     const uid = identity?.uid || null;
 
@@ -91,24 +109,36 @@ async function resolveLegacySource() {
         Promise.resolve(__testHooks.readLocalStorageLegacy()),
     ]);
 
-    const candidates = [];
-    if (fsData) candidates.push({ source: 'firestore', uid, raw: fsData, lastModified: fsData.lastModified || null });
-    if (lsData) candidates.push({ source: 'localStorage', uid, raw: lsData, lastModified: lsData.lastModified || null });
-
-    if (candidates.length === 0) return null;
-    if (candidates.length === 1) return candidates[0];
-
-    // 兩者皆有資料：取 lastModified 較新者；缺 lastModified 視為最舊（排序墊底，非拋錯）。
-    candidates.sort((a, b) => new Date(b.lastModified || 0).getTime() - new Date(a.lastModified || 0).getTime());
-    return candidates[0];
+    const sources = [];
+    if (recordCountOf(fsData) > 0) {
+        sources.push({ source: 'firestore', uid, raw: fsData, count: recordCountOf(fsData), lastModified: fsData.lastModified || null });
+    }
+    if (recordCountOf(lsData) > 0) {
+        sources.push({ source: 'localStorage', uid, raw: lsData, count: recordCountOf(lsData), lastModified: lsData.lastModified || null });
+    }
+    return sources;
 }
 
-/** 偵測舊資料：{ source: 'firestore'|'localStorage'|null, count, lastModified } */
+/**
+ * 偵測舊資料。
+ * 回傳 { source, count, lastModified, sources }：
+ *   - sources：所有含紀錄的來源明細（0、1 或 2 筆），UI 應據此顯示每個來源各有幾筆
+ *   - source/count/lastModified：相容欄位，來源數為 1 時即該來源；為 2 時 source 為
+ *     'both'、count 為兩者筆數合計（實際匯入會去重，故成立筆數可能少於此值）
+ */
 export async function detectLegacyData() {
-    const winner = await resolveLegacySource();
-    if (!winner) return { source: null, count: 0, lastModified: null };
-    const count = Array.isArray(winner.raw.substituteRecords) ? winner.raw.substituteRecords.length : 0;
-    return { source: winner.source, count, lastModified: winner.lastModified };
+    const sources = await resolveLegacySources();
+    if (sources.length === 0) return { source: null, count: 0, lastModified: null, sources: [] };
+    if (sources.length === 1) {
+        const s = sources[0];
+        return { source: s.source, count: s.count, lastModified: s.lastModified, sources };
+    }
+    return {
+        source: 'both',
+        count: sources.reduce((n, s) => n + s.count, 0),
+        lastModified: sources.map(s => s.lastModified).filter(Boolean).sort().pop() || null,
+        sources,
+    };
 }
 
 /**
@@ -116,9 +146,20 @@ export async function detectLegacyData() {
  * 回傳 null 代表偵測不到任何舊資料（呼叫端應中止遷移流程）。
  */
 export async function getLegacyBackupPayload() {
-    const winner = await resolveLegacySource();
-    if (!winner) return null;
-    return { source: winner.source, uid: winner.uid, lastModified: winner.lastModified, raw: winner.raw };
+    const sources = await resolveLegacySources();
+    if (sources.length === 0) return null;
+    // 備份必須涵蓋「將被遷移的所有來源」，不能只備份其中一份——否則遷移後想還原時
+    // 才發現另一來源的原始資料沒被保存下來。
+    return {
+        exportedAt: new Date().toISOString(),
+        uid: sources[0].uid,
+        sources: sources.map(s => ({
+            source: s.source,
+            count: s.count,
+            lastModified: s.lastModified,
+            raw: s.raw,
+        })),
+    };
 }
 
 /** 冪等鍵：date|period|className|originalTeacher|(substituteTeacher 或 swapTeacher) */
@@ -146,11 +187,17 @@ export async function migrateLegacyRecords({ onProgress } = {}) {
         throw new Error('僅教務主任可執行資料遷移');
     }
 
-    const result = { total: 0, created: 0, skipped: 0, unmatchedNames: [], errors: [] };
-    const winner = await resolveLegacySource();
-    if (!winner) return result;
+    const result = { total: 0, created: 0, skipped: 0, unmatchedNames: [], errors: [], migratedSources: [] };
+    const sources = await resolveLegacySources();
+    if (sources.length === 0) return result;
 
-    const legacyRecords = Array.isArray(winner.raw.substituteRecords) ? winner.raw.substituteRecords : [];
+    // 兩個來源都遷移（取聯集），不做「挑一個較新的」——見 resolveLegacySources 的註解。
+    // 重疊的紀錄由下方 existingKeys 去重，不會重複匯入。
+    const legacyRecords = [];
+    for (const s of sources) {
+        result.migratedSources.push({ source: s.source, count: s.count });
+        for (const r of s.raw.substituteRecords) legacyRecords.push({ record: r, source: s.source, uid: s.uid });
+    }
     result.total = legacyRecords.length;
     if (legacyRecords.length === 0) return result;
 
@@ -167,7 +214,8 @@ export async function migrateLegacyRecords({ onProgress } = {}) {
     const migratedAt = new Date().toISOString();
 
     let done = 0;
-    for (const legacy of legacyRecords) {
+    for (const entry of legacyRecords) {
+        const legacy = entry.record;
         const key = legacyKeyOf(legacy);
         if (existingKeys.has(key)) {
             result.skipped++;
@@ -186,7 +234,7 @@ export async function migrateLegacyRecords({ onProgress } = {}) {
                     substituteTeacherId,
                     status: legacy.status || 'approved',
                     isLegacy: true,
-                    migratedFrom: { source: winner.source, uid: winner.uid, legacyKey: key, migratedAt },
+                    migratedFrom: { source: entry.source, uid: entry.uid, legacyKey: key, migratedAt },
                 });
                 existingKeys.add(key); // 同批次內若舊資料本身重複，第二筆起視為已存在，避免自我重複匯入
                 result.created++;
@@ -204,7 +252,7 @@ export async function migrateLegacyRecords({ onProgress } = {}) {
 
     if (result.created > 0 || result.errors.length > 0) {
         await log.log(LOG_ACTIONS.DATA_MIGRATE, LOG_TARGET_TYPES.SUBSTITUTE_RECORD, null, {
-            source: winner.source,
+            source: result.migratedSources.map(s => s.source).join('+'),
             total: result.total,
             created: result.created,
             skipped: result.skipped,
