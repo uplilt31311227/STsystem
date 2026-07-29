@@ -74,6 +74,10 @@ class SubstituteTeacherApp {
         this.isMultiSwapMode = false;
         this.swapBatch = [];  // 待處理調課批次
 
+        // 統一 confirm 對話框（Stage 5）：目前開啟中的 confirmDialog() resolve callback，
+        // 供單例機制使用（重複呼叫時，前一個尚未關閉的 confirm 先以 resolve(false) 關閉）
+        this._confirmDialogResolve = null;
+
         // 課表編輯器相關
         this.editorCurrentTeacher = null;  // 目前編輯的教師
         this.editorEditingCell = null;     // 目前編輯的時段 { weekday, period }
@@ -416,22 +420,24 @@ class SubstituteTeacherApp {
     /**
      * 顯示合併確認對話框（學校相同時）
      */
-    showMergeConfirmModal(localData, cloudData) {
+    async showMergeConfirmModal(localData, cloudData) {
         const modal = document.getElementById('merge-confirm-modal');
         if (!modal) {
-            // 如果沒有對話框，使用 confirm
+            // 如果沒有對話框，使用統一 confirm（呼叫端 initFirebase 流程呼叫本方法後即 return，
+            // 改 async 不影響任何依賴同步完成時序的後續邏輯）
             const localRecords = localData?.substituteRecords?.length || 0;
             const cloudRecords = cloudData?.substituteRecords?.length || 0;
             const schoolName = localData?.schoolName || cloudData?.schoolName || '未設定';
 
-            const shouldMerge = confirm(
-                `偵測到本機和雲端都有「${schoolName}」的資料：\n\n` +
-                `本機：${localRecords} 筆調代課紀錄\n` +
-                `雲端：${cloudRecords} 筆調代課紀錄\n\n` +
-                `是否要合併資料？\n\n` +
-                `【確定】合併兩邊資料\n` +
-                `【取消】使用雲端資料（清除本機）`
-            );
+            const shouldMerge = await this.confirmDialog({
+                title: '資料同步確認',
+                message: `偵測到本機和雲端都有「${schoolName}」的資料：\n\n` +
+                    `本機：${localRecords} 筆調代課紀錄\n` +
+                    `雲端：${cloudRecords} 筆調代課紀錄\n\n` +
+                    `是否要合併資料？`,
+                confirmText: '合併兩邊資料',
+                cancelText: '使用雲端資料（清除本機）',
+            });
 
             if (shouldMerge) {
                 // 合併資料
@@ -747,11 +753,6 @@ class SubstituteTeacherApp {
         // 新增教師按鈕
         document.getElementById('add-teacher-btn')?.addEventListener('click', () => {
             this.addNewTeacherRow();
-        });
-
-        // 儲存資料按鈕
-        document.getElementById('save-data-btn')?.addEventListener('click', () => {
-            this.saveDataManually();
         });
 
         // 學校名稱確認按鈕
@@ -1218,14 +1219,14 @@ class SubstituteTeacherApp {
                     this.onChangeTypeSelected('swap');
                     document.getElementById('change-type').value = 'swap';
                     document.getElementById('multi-swap-batch-panel').classList.remove('hidden');
-                    document.getElementById('confirm-substitute-btn').textContent = '加入批次';
+                    this.setSubmitButtonMode(true);
                 } else {
                     this.isMultiSwapMode = false;
                     this.swapBatch = [];
                     this.onChangeTypeSelected(val);
                     document.getElementById('change-type').value = val;
                     document.getElementById('multi-swap-batch-panel').classList.add('hidden');
-                    document.getElementById('confirm-substitute-btn').textContent = '確認並產生表單';
+                    this.setSubmitButtonMode(false);
                 }
             });
         });
@@ -1253,8 +1254,12 @@ class SubstituteTeacherApp {
             this.onSwapCourseSelected(e.target.value);
         });
 
-        // 確認調課按鈕
+        // 確認調課按鈕（多重調課批次模式下改顯示「加入批次」鈕，語意不同但共用同一個
+        // confirmSubstitute()——內部已依 isMultiSwapMode 分流，見 confirmSubstitute() 尾端）
         document.getElementById('confirm-substitute-btn').addEventListener('click', () => {
+            this.confirmSubstitute();
+        });
+        document.getElementById('add-to-batch-btn')?.addEventListener('click', () => {
             this.confirmSubstitute();
         });
 
@@ -1311,7 +1316,7 @@ class SubstituteTeacherApp {
             document.getElementById('substitute-options-early').classList.add('hidden');
             document.getElementById('substitute-options').classList.add('hidden');
             document.getElementById('swap-options').classList.remove('hidden');
-            document.getElementById('confirm-substitute-btn').textContent = '加入批次';
+            this.setSubmitButtonMode(true);
         } else {
             // 重置異動類型為代課
             const substituteRadio = document.querySelector('input[name="change-type-radio"][value="substitute"]');
@@ -1354,6 +1359,18 @@ class SubstituteTeacherApp {
     }
 
     /**
+     * 切換步驟四送出鈕的顯示模式（F3/R2：拆同鈕兩語意為兩顆獨立按鈕）。
+     * 多重調課批次模式：顯示「加入批次」、隱藏「確認並產生表單」；反之相反。
+     * 兩顆鈕共用同一個 confirmSubstitute()（內部依 isMultiSwapMode 分流），
+     * 這裡只負責顯示哪一顆，不改寫任何按鈕文字。
+     * @param {boolean} isBatch
+     */
+    setSubmitButtonMode(isBatch) {
+        document.getElementById('confirm-substitute-btn')?.classList.toggle('hidden', isBatch);
+        document.getElementById('add-to-batch-btn')?.classList.toggle('hidden', !isBatch);
+    }
+
+    /**
      * 當異動類型變更時觸發（調課/代課）
      */
     onChangeTypeSelected(type) {
@@ -1361,6 +1378,9 @@ class SubstituteTeacherApp {
         const substituteOptions = document.getElementById('substitute-options');
         const swapOptions = document.getElementById('swap-options');
         const dateLabelHint = document.getElementById('date-label-hint');
+        // F4 修復：「一次選多節（同一天）」只支援代課，調課/多重調課下該 toggle 應完全不可見，
+        // 而非現有的「勾了也無效」（confirmMultiCourseSubstitute 開頭直接 return）。
+        const multiCourseToggle = document.querySelector('.multi-course-toggle');
 
         if (type === 'swap') {
             // 調課模式：隱藏假別選擇（步驟二）和代課教師推薦（步驟四）
@@ -1378,6 +1398,14 @@ class SubstituteTeacherApp {
                 this.updateSwapSlotAInfo();
                 this.updateSwapCourseList();
             }
+
+            // 隱藏「一次選多節（同一天）」toggle；若切換當下仍是開啟狀態，走既有清理路徑關閉它
+            multiCourseToggle?.classList.add('hidden');
+            if (this.isMultiCourseMode) {
+                const multiCourseModeInput = document.getElementById('multi-course-mode');
+                if (multiCourseModeInput) multiCourseModeInput.checked = false;
+                this.onMultiCourseModeToggle(false);
+            }
         } else {
             // 代課模式：顯示假別選擇和代課教師推薦
             substituteOptionsEarly.classList.remove('hidden');
@@ -1388,6 +1416,9 @@ class SubstituteTeacherApp {
             if (dateLabelHint) {
                 dateLabelHint.textContent = '';
             }
+
+            // 僅代課支援「一次選多節（同一天）」，還原顯示
+            multiCourseToggle?.classList.remove('hidden');
         }
     }
 
@@ -2397,13 +2428,16 @@ class SubstituteTeacherApp {
                 year: 'numeric', month: 'long', day: 'numeric'
             });
 
-            const confirmMsg = `日期與星期不符！\n\n` +
-                `選擇的課程是「${courseWeekday}」的課\n` +
+            const confirmMsg = `選擇的課程是「${courseWeekday}」的課\n` +
                 `但選擇的日期 ${formattedDate} 是「${dateWeekday}」\n\n` +
-                `建議調整為：${suggestedFormatted}（${courseWeekday}）\n\n` +
-                `是否自動調整日期？`;
+                `建議調整為：${suggestedFormatted}（${courseWeekday}）`;
 
-            if (confirm(confirmMsg)) {
+            const shouldAdjust = await this.confirmDialog({
+                title: '日期與星期不符',
+                message: confirmMsg,
+                confirmText: '自動調整日期',
+            });
+            if (shouldAdjust) {
                 document.getElementById('sub-date').value = suggestedDate;
                 this.showDateAdjustmentHint(courseWeekday, suggestedDate);
                 return;
@@ -2952,7 +2986,7 @@ class SubstituteTeacherApp {
             multiSwapRadio.disabled = false;
             multiSwapRadio.closest('.change-type-option').style.opacity = '1';
         }
-        document.getElementById('confirm-substitute-btn').textContent = '確認並產生表單';
+        this.setSubmitButtonMode(false);
     }
 
     // ==========================================
@@ -3233,8 +3267,13 @@ class SubstituteTeacherApp {
     /**
      * 清除批次
      */
-    clearSwapBatch() {
-        if (this.swapBatch.length > 0 && !confirm('確定要清除全部批次調課？')) return;
+    async clearSwapBatch() {
+        if (this.swapBatch.length > 0 && !(await this.confirmDialog({
+            title: '清除批次調課',
+            message: '確定要清除全部批次調課？',
+            confirmText: '清除',
+            danger: true,
+        }))) return;
         this.swapBatch = [];
         this.renderSwapBatch();
         this.checkBatchConflicts();
@@ -3256,7 +3295,11 @@ class SubstituteTeacherApp {
             return;
         }
 
-        if (!confirm(`確認送出 ${this.swapBatch.length} 筆調課？將同時產生調課紀錄與 PDF 表單。`)) {
+        if (!(await this.confirmDialog({
+            title: '送出多重調課',
+            message: `確認送出 ${this.swapBatch.length} 筆調課？將同時產生調課紀錄與 PDF 表單。`,
+            confirmText: '送出',
+        }))) {
             return;
         }
 
@@ -3507,8 +3550,14 @@ class SubstituteTeacherApp {
 
         // 綁定刪除按鈕
         tbody.querySelectorAll('.delete-record-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                if (confirm('確定要刪除此筆調代課紀錄嗎？')) {
+            btn.addEventListener('click', async (e) => {
+                const ok = await this.confirmDialog({
+                    title: '刪除調代課紀錄',
+                    message: '確定要刪除此筆調代課紀錄嗎？',
+                    confirmText: '刪除',
+                    danger: true,
+                });
+                if (ok) {
                     const id = e.target.dataset.id;
                     this.dataManager.removeSubstituteRecord(id);
                     this.saveDataToStorage();
@@ -3933,12 +3982,18 @@ class SubstituteTeacherApp {
     /**
      * 設定頁：從目前課表重新擷取對應表（合併保留手動編輯）
      */
-    rebuildSubjectDomainMap() {
+    async rebuildSubjectDomainMap() {
         if (this.dataManager.getScheduleData().length === 0) {
             this.showToast('目前沒有課表資料可擷取', 'warning');
             return;
         }
-        if (!confirm('將以「目前課表」完全重建科目領域對應表，依出現次數重新排序，並覆蓋你手動的增修。確定要繼續嗎？')) {
+        const ok = await this.confirmDialog({
+            title: '重建科目領域對應表',
+            message: '將以「目前課表」完全重建科目領域對應表，依出現次數重新排序，並覆蓋你手動的增修。確定要繼續嗎？',
+            confirmText: '繼續重建',
+            danger: true,
+        });
+        if (!ok) {
             return;
         }
         this.dataManager.buildSubjectDomainMap(false);
@@ -4051,9 +4106,21 @@ class SubstituteTeacherApp {
     /**
      * 清除所有本機資料
      */
-    clearLocalData() {
-        if (confirm('確定要清除所有本機資料嗎？此操作無法復原！\n\n建議先使用「匯出本機資料」進行備份。')) {
-            if (confirm('再次確認：清除所有資料？')) {
+    async clearLocalData() {
+        const firstOk = await this.confirmDialog({
+            title: '清除所有本機資料',
+            message: '確定要清除所有本機資料嗎？此操作無法復原！\n\n建議先使用「匯出本機資料」進行備份。',
+            confirmText: '繼續',
+            danger: true,
+        });
+        if (firstOk) {
+            const secondOk = await this.confirmDialog({
+                title: '再次確認',
+                message: '再次確認：清除所有資料？',
+                confirmText: '清除所有資料',
+                danger: true,
+            });
+            if (secondOk) {
                 localStorage.removeItem('substituteSystemData');
                 localStorage.removeItem('gasUrl');
                 this.showToast('所有資料已清除，頁面將重新載入', 'success');
@@ -4147,13 +4214,19 @@ class SubstituteTeacherApp {
     /**
      * 確認匯入資料
      */
-    confirmImport() {
+    async confirmImport() {
         if (!this.pendingImportData) {
             this.showToast('沒有待匯入的資料', 'warning');
             return;
         }
 
-        if (!confirm('確定要匯入資料嗎？\n\n此操作將覆蓋目前的所有資料（課表、教師、調代課紀錄）。\n\n建議先匯出目前的資料作為備份。')) {
+        const ok = await this.confirmDialog({
+            title: '匯入資料確認',
+            message: '確定要匯入資料嗎？\n\n此操作將覆蓋目前的所有資料（課表、教師、調代課紀錄）。\n\n建議先匯出目前的資料作為備份。',
+            confirmText: '匯入並覆蓋',
+            danger: true,
+        });
+        if (!ok) {
             return;
         }
 
@@ -4215,6 +4288,10 @@ class SubstituteTeacherApp {
         document.getElementById('course-modal-save-btn')?.addEventListener('click', () => {
             this.editorSaveCourse();
         });
+
+        // 欄位驗證訊息：下次輸入任一欄位即清除（F：modal 內訊息列，不再用全域 toast）
+        document.getElementById('course-modal-class')?.addEventListener('input', () => this.clearCourseModalMsg());
+        document.getElementById('course-modal-subject')?.addEventListener('input', () => this.clearCourseModalMsg());
 
         // 科目變更 → 依對應表自動帶出領域
         document.getElementById('course-modal-subject')?.addEventListener('change', () => {
@@ -4440,6 +4517,7 @@ class SubstituteTeacherApp {
     openCourseEditModal(weekday, period, isEdit, courseData = null) {
         this.editorEditingCell = { weekday, period };
         this.editorIsEditMode = isEdit;
+        this.clearCourseModalMsg();
 
         const modal = document.getElementById('course-edit-modal');
         const title = document.getElementById('course-modal-title');
@@ -4520,6 +4598,32 @@ class SubstituteTeacherApp {
     closeCourseEditModal() {
         document.getElementById('course-edit-modal').classList.add('hidden');
         this.editorEditingCell = null;
+        this.clearCourseModalMsg();
+    }
+
+    /**
+     * 課程編輯對話框內的欄位驗證訊息（F：手機 toast 會遮住 modal 關閉鈕，改在 modal 內顯示）。
+     * 3 秒後或下次任一欄位輸入時自動清除。
+     * @param {string} text
+     */
+    showCourseModalMsg(text) {
+        const msgEl = document.getElementById('course-modal-msg');
+        if (!msgEl) return;
+        msgEl.textContent = text;
+        msgEl.classList.add('error');
+        msgEl.style.display = 'block';
+        clearTimeout(this._courseModalMsgTimer);
+        this._courseModalMsgTimer = setTimeout(() => this.clearCourseModalMsg(), 3000);
+    }
+
+    /** 清除課程編輯對話框的欄位驗證訊息。 */
+    clearCourseModalMsg() {
+        const msgEl = document.getElementById('course-modal-msg');
+        if (!msgEl) return;
+        clearTimeout(this._courseModalMsgTimer);
+        msgEl.textContent = '';
+        msgEl.classList.remove('error');
+        msgEl.style.display = 'none';
     }
 
     /**
@@ -4533,11 +4637,11 @@ class SubstituteTeacherApp {
         const domain = document.getElementById('course-modal-domain').value;
 
         if (!className) {
-            this.showToast('請輸入班級', 'warning');
+            this.showCourseModalMsg('請輸入班級');
             return;
         }
         if (!subject) {
-            this.showToast('請輸入科目', 'warning');
+            this.showCourseModalMsg('請輸入科目');
             return;
         }
 
@@ -4601,12 +4705,18 @@ class SubstituteTeacherApp {
     /**
      * 課表編輯器：刪除課程
      */
-    editorDeleteCourse() {
+    async editorDeleteCourse() {
         if (!this.editorEditingCell) return;
         const { weekday, period } = this.editorEditingCell;
         const teacherName = this.editorCurrentTeacher;
 
-        if (!confirm(`確定要刪除 ${weekday} ${period} 的課程嗎？`)) {
+        const ok = await this.confirmDialog({
+            title: '刪除課程',
+            message: `確定要刪除 ${weekday} ${period} 的課程嗎？`,
+            confirmText: '刪除',
+            danger: true,
+        });
+        if (!ok) {
             return;
         }
 
@@ -4636,7 +4746,7 @@ class SubstituteTeacherApp {
     /**
      * 課表編輯器：刪除教師
      */
-    editorDeleteTeacher() {
+    async editorDeleteTeacher() {
         const teacherName = this.editorCurrentTeacher;
         if (!teacherName) return;
 
@@ -4645,7 +4755,8 @@ class SubstituteTeacherApp {
             ? `確定要刪除教師「${teacherName}」嗎？\n該教師有 ${weeklyHours} 節課將一併刪除。`
             : `確定要刪除教師「${teacherName}」嗎？`;
 
-        if (!confirm(confirmMsg)) return;
+        const ok = await this.confirmDialog({ title: '刪除教師', message: confirmMsg, confirmText: '刪除', danger: true });
+        if (!ok) return;
 
         // 刪除該教師的所有課表資料
         const scheduleData = this.dataManager.getScheduleData();
@@ -4931,6 +5042,59 @@ class SubstituteTeacherApp {
         if (duration > 0) {
             setTimeout(dismiss, duration);
         }
+    }
+
+    /**
+     * 統一 confirm 對話框（Stage 5：取代原生 confirm()）。
+     * 單例：呼叫時若前一個 confirm 尚未關閉，先以 resolve(false) 關閉它，避免重疊。
+     * Esc 不處理（現有 modal 慣例本就沒有全域 Esc 關閉）；點背景＝取消（跟現有多數 modal 一致）。
+     * @param {Object} opts
+     * @param {string} opts.title - 標題
+     * @param {string} opts.message - 內容（換行以 \n 表示，會轉成 <br>）
+     * @param {string} [opts.confirmText='確認']
+     * @param {string} [opts.cancelText='取消']
+     * @param {boolean} [opts.danger=false] - true 時確認鈕改為 .btn-danger
+     * @returns {Promise<boolean>} 使用者按下確認為 true，取消/點背景為 false
+     */
+    confirmDialog({ title = '確認', message = '', confirmText = '確認', cancelText = '取消', danger = false } = {}) {
+        // 單例：前一個 confirm 尚未關閉時，先關閉它（resolve(false)）再開新的
+        if (this._confirmDialogResolve) {
+            const prevResolve = this._confirmDialogResolve;
+            this._confirmDialogResolve = null;
+            prevResolve(false);
+        }
+
+        const modal = document.getElementById('confirm-modal');
+        const titleEl = document.getElementById('confirm-modal-title');
+        const messageEl = document.getElementById('confirm-modal-message');
+        const confirmBtn = document.getElementById('confirm-modal-confirm-btn');
+        const cancelBtn = document.getElementById('confirm-modal-cancel-btn');
+
+        titleEl.textContent = title;
+        // esc() 防 XSS：message 目前皆為程式內建文字，仍統一跳脫以防未來誤傳入使用者資料
+        messageEl.innerHTML = esc(message).replace(/\n/g, '<br>');
+        confirmBtn.textContent = confirmText;
+        cancelBtn.textContent = cancelText;
+        confirmBtn.classList.toggle('btn-danger', !!danger);
+        confirmBtn.classList.toggle('btn-primary', !danger);
+
+        modal.classList.remove('hidden');
+
+        return new Promise((resolve) => {
+            const finish = (result) => {
+                modal.classList.add('hidden');
+                confirmBtn.onclick = null;
+                cancelBtn.onclick = null;
+                modal.onclick = null;
+                if (this._confirmDialogResolve === finish) this._confirmDialogResolve = null;
+                resolve(result);
+            };
+            this._confirmDialogResolve = finish;
+            confirmBtn.onclick = () => finish(true);
+            cancelBtn.onclick = () => finish(false);
+            // 點背景關閉（跟 course-edit-modal / record-detail-modal 等既有 modal 慣例一致）
+            modal.onclick = (e) => { if (e.target === modal) finish(false); };
+        });
     }
 }
 
