@@ -41,6 +41,14 @@ Stage 2（9→8 分頁重組）驗收過程中發現的既有缺陷與判斷取�
 - **後續建議**: 下次要跑 `v2-approval-flows.mjs`／`v2-verify-fixes.mjs` 前，先做上述改名並重新設計「一般教師課表管理頁可見性」那段斷言（應改為斷言分頁按鈕本身不可見，而非「可見但點擊無效」）。
 - **相關檔案**: `test/v2-approval-flows.mjs`、`test/v2-verify-fixes.mjs`
 
+### Stage 6 死碼待刪清單（累積記錄，非本階段處理）
+
+- **狀態**: 🟡 待 Stage 6（清理階段）統一處理
+- **描述**: 以下 CSS class 因 Stage 2 的 DOM 搬移／移除已無任何元素引用，定義本身留著不影響顯示（純死碼），集中記錄避免 Stage 6 漏刪：
+  - `.import-layout` / `.import-left` / `.import-right`（`src/css/style.css:136` 一帶）——課表匯入 sub-view 教師屬性卡搬走後，原本的兩欄 grid wrapper 已無存在必要，新結構改用單欄卡片堆疊
+  - `.backup-restore-card` / `.backup-restore-row`（`src/css/style.css:531`、`535`、`2808` 一帶，`2808` 是 Stage 1 hotfix 的 flex-wrap 清單其中一項）——課表管理頁的「資料備份還原卡」已移除，改為一行提示連結，這兩個 class 不再被任何元素使用
+- **相關檔案**: `src/css/style.css`
+
 ## 商用上線實戰化實測（2026-07-29）
 
 第一次對 preview 站與 production Firestore 做真實三角色端到端實測（此前所有「待實機驗收」項目從未執行）。以下為實測發現。

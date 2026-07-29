@@ -19,8 +19,8 @@
     <!-- html2canvas - HTML 轉圖片（用於 PDF 中文支援） -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 
-    <link rel="stylesheet" href="src/css/tokens.css?v=2.0.0">
-    <link rel="stylesheet" href="src/css/style.css?v=2.0.0">
+    <link rel="stylesheet" href="src/css/tokens.css?v=2.2.0">
+    <link rel="stylesheet" href="src/css/style.css?v=2.2.0">
 </head>
 <body>
     <div class="app-container">
@@ -153,8 +153,9 @@
                 </div>
             </section>
 
-            <!-- 頁籤：教師管理（Stage 2 起集中：V1／V2 approver 非 director 用教師屬性表；V2 director 用帳號管理，兩者互斥顯示） -->
-            <section id="teachers-tab" class="tab-content v2-approver-only">
+            <!-- 頁籤：教師管理（Stage 2 起集中：教師屬性表（編輯任教領域/導師班級）全員可見；
+                 V2 帳號管理（email/角色）僅 director 另外可見，兩卡職責不同、director 同時看到兩張） -->
+            <section id="teachers-tab" class="tab-content hidden v2-approver-only">
                 <div class="card compact-card" id="teacher-editor-card">
                     <div class="teacher-header">
                         <h3>教師屬性</h3>

@@ -46,11 +46,11 @@ function injectV2Styles() {
     body.v2-active .v2-teacher-only { display: revert; }
     body.v2-active.v2-approver .v2-teacher-only { display: none; }
 
-    /* Stage 2：教師管理分頁內 V1 教師屬性表（#teacher-editor-card）與 V2 教師帳號管理
-       （.v2-director-only 容器）互斥顯示。分頁本身是 v2-approver-only（section_chief + director
-       皆可進），此規則另外把 V1 版本從 director 眼中移除，避免同時看到兩份教師清單。
-       section_chief（approver 但非 director）看不到 .v2-director-only 容器，故只會看到這份 V1 表。 */
-    body.v2-active.v2-director #teacher-editor-card { display: none; }
+    /* Stage 2 驗收缺陷修正：原本這裡有一條 body.v2-active.v2-director #teacher-editor-card
+       {display:none}，讓 director 看不到 V1 教師屬性表——但 V2 帳號表的「領域」欄是唯讀 td、
+       沒有導師班欄，而 domains 是推薦引擎比對代課人選的依據，director 因此完全無法編輯任教
+       領域/導師班級。裁定移除該規則：教師管理分頁內 director 同時看到教師屬性卡（可編輯
+       領域/導師班）與 V2 帳號卡（管理 email/角色），職責不同、可共存。 */
 
     .v2-badge { display: inline-block; padding: 2px 6px; border-radius: 10px;
                 font-size: 0.72rem; margin-left: 4px; background: #e53e3e; color: #fff; }
@@ -648,7 +648,7 @@ async function renderTeachersAdminTab() {
 
     document.getElementById('v2-import-legacy-teachers')?.addEventListener('click', async () => {
         const legacy = window.app?.dataManager?.teachers || [];
-        if (!legacy.length) { notify('找不到課表教師資料，請先於「課表匯入」載入課表', 'warning'); return; }
+        if (!legacy.length) { notify('找不到課表教師資料，請先於「課表管理」載入課表', 'warning'); return; }
         const created = await teacherMgr.importFromLegacyTeachers(legacy);
         notify(`已匯入 ${created.length} 位教師`, 'success');
         await renderTeachersAdminTab();
