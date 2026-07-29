@@ -3572,6 +3572,8 @@ class SubstituteTeacherApp {
      * 綁定結算相關事件
      */
     bindSettlementEvents() {
+        this.populateSettlementYearOptions();
+
         document.getElementById('generate-settlement-btn').addEventListener('click', () => {
             this.generateSettlement();
         });
@@ -3584,6 +3586,37 @@ class SubstituteTeacherApp {
         document.getElementById('show-changed-only').addEventListener('change', (e) => {
             this.filterSettlementTable(e.target.checked);
         });
+    }
+
+    /**
+     * 取得指定日期所屬的學年度（民國）。
+     * 台灣學年度自 8 月起跳：8 月～翌年 7 月同屬一個學年度。
+     * 例：2026-07-31 → 民國 115 年 7 月，7 < 8，屬 114 學年度；
+     *     2026-08-01 → 民國 115 年 8 月，屬 115 學年度。
+     */
+    getCurrentAcademicYear(date = new Date()) {
+        const rocYear = date.getFullYear() - 1911;
+        return (date.getMonth() + 1) >= 8 ? rocYear : rocYear - 1;
+    }
+
+    /**
+     * 依當前日期動態產生月結算的「學年度」選項。
+     *
+     * 原本 index.html 把選項寫死為 114 / 113，跨到新學年度後就再也選不到當期資料，
+     * 月結算會直接失效（2026-07-29 上線驗收發現）。改為每次初始化時依實際日期產生
+     * 「當前學年度 +1 ～ -2」共 4 個選項，並預設選中當前學年度。
+     */
+    populateSettlementYearOptions() {
+        const select = document.getElementById('settle-year');
+        if (!select) return;
+
+        const current = this.getCurrentAcademicYear();
+        const years = [current + 1, current, current - 1, current - 2];
+
+        select.innerHTML = years
+            .map(y => `<option value="${y}"${y === current ? ' selected' : ''}>${y}</option>`)
+            .join('');
+        select.value = String(current);
     }
 
     /**
