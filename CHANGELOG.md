@@ -1,5 +1,53 @@
 # 版本紀錄 (Changelog)
 
+## [2026-07-30]（feature/permission-system）UI 重規劃 Stage 5：操作邏輯統一
+
+依 `docs/PLAN.md` Stage 5，統一 5 種回饋機制（alert/confirm/prompt/toast/notify）並拆解批次送出鈕的雙重語意。獨立 commit、獨立驗證。
+
+### 新增（A. 統一 confirm modal）
+- `app.js` 新增 `confirmDialog({title, message, confirmText, cancelText, danger}) → Promise<boolean>`：單例（重複呼叫時前一個以 `resolve(false)` 關閉）、danger 時確認鈕掛 `.btn-danger` 否則 `.btn-primary`、點背景＝取消（跟 `course-edit-modal`／`record-detail-modal` 等既有 modal 一致；全站無 Esc 關閉慣例，故未新增 Esc 處理）
+- `index.html` `#modal-root` 內新增靜態 `#confirm-modal`（`.modal>.modal-content>header/body/actions`，與現有 modal 結構一致）
+- 取代 `app.js` 全部 11 處與 `v2-app.js` 全部 4 處原生 `confirm()`（含 `clearLocalData()` 兩層巢狀確認、`showMergeConfirmModal()` 的 `!modal` 防禦分支）。`alert()` 兩檔皆為 0 處（已無殘留）
+
+### 新增（B. 殺 prompt()）
+- `v2-app.js` 新增 `promptRejectReason()`（拒絕原因 textarea modal）與 `promptNewTeacherModal()`（新增教師姓名＋Email 雙欄位 modal），沿用檔內既有 `promptAdditionalConsentTeachers()`／`openAuthModal()` 的動態掛載 modal 慣例
+- 拒絕原因刻意區分「取消」與「確定但留空」：取消／點背景 `resolve(null)` 中止拒絕動作；舊版 `prompt()` 不論取消或確定留空都會以空字串繼續執行拒絕，屬順手修正的行為收斂（非新增業務判斷）
+- 取代 `v2-app.js` 全部 3 處原生 `prompt()`
+
+### 新增（C. 移除假儲存鈕，F7）
+- 移除 `#save-data-btn`（教師屬性表本就 change 即存，`saveDataManually()` 除呼叫 `saveDataToStorage()` 外只更新旁邊 `#save-status` 提示文字，無其他副作用），原位置改靜態文字「變更即時自動儲存」（沿用既有 `.hint` class，即任務所指「`.text-muted` 級樣式」在本專案的對應命名）
+- `test/v2-approval-flows.mjs` 同步移除對已刪除按鈕的引用（原步驟 3c 會檢查其可見性並點擊驗證無生產環境寫入），避免既有 e2e 腳本因元素消失而卡死
+
+### 新增（D. V2 紀錄頁補篩選＋週彙整入口，F1 方式）
+- `v2-app.js` `renderRecordsTab()` 新增起訖日期＋教師 select 過濾（沿用 `.toolbar-row`/`.form-group-inline` 既有元件 class），過濾對象是函式內已經過權限過濾的 `visible` 集合，不觸碰 `dataSvc.listSubstituteRecords()` 資料層；教師選項取自 `visible` 內出現過的姓名，不另外呼叫 `listTeachers()`
+- 新增「📄 列印本週彙整」鈕（`.v2-approver-only` 顯隱），呼叫既有 `window.app.openWeeklySummaryModal()`；確認 V2 下 `dataManager.getSubstituteRecords()` 已被 patch 為讀 `_v2RecordsCache`，PDF 彙整會拿到正確的即時同步資料
+
+### 新增（E. 批次機制 UI 統一四動作，含 R2 安全關鍵）
+- `index.html` `#confirm-substitute-btn` 旁新增 `#add-to-batch-btn`（初始 `.hidden` class，非原計畫草案的原生 `hidden` 屬性——`.btn{display:inline-flex}` 是一般優先度的作者樣式，會贏過瀏覽器對 `[hidden]` 的預設值，若照草案字面實作按鈕不會真的被隱藏；沿用全站既有 `.hidden{display:none!important}` 慣例才是有效寫法）
+- `app.js` 新增 `setSubmitButtonMode(isBatch)` 統一 toggle 兩顆鈕的 `.hidden`，取代原本 4 處（非 3 處——多一處在 `resetSubstituteFlow()`）改寫 `#confirm-substitute-btn.textContent` 的寫法
+- **[R2 致命·安全]** `v2-app.js` `interceptSubmitButton()` 改為對 `['confirm-substitute-btn', 'add-to-batch-btn']` 兩個 id 迴圈攔截，與新增按鈕同一 commit
+- **[F4]** `onChangeTypeSelected(type)`：非代課（調課/多重調課皆走 `type==='swap'`）時隱藏 `.multi-course-toggle` 整個容器；若切換當下 `isMultiCourseMode` 仍為真，連帶 `checked=false` 並呼叫既有 `onMultiCourseModeToggle(false)` 清理路徑（不改 `confirmMultiCourseSubstitute()` 本身的 guard）
+- 文案：「多節課模式」→「一次選多節（同一天）」（含 toggle 標籤與旁邊 hint 說明文字、`onMultiCourseModeToggle()` 內停用調課選項時的 tooltip）；`#multi-swap-batch-panel` 標題「多重調課批次」→「待送出的調課組合」
+- `test/v2-approval-flows.mjs` 新增步驟 3d：教師甲把「原任課教師」選為教師乙（非本人）、切多重調課後點 `#add-to-batch-btn`，斷言 toast 出現攔截訊息且 `pendingRequests` 筆數未增加
+
+### 新增（F. 手機 toast 遮 modal 關閉鈕）
+- `index.html` `#course-edit-modal` 新增 `#course-modal-msg`（沿用既有 `.form-msg`/`.form-msg.error` class，非新命名）；`editorSaveCourse()` 兩處班級/科目驗證改寫入此元素而非 `showToast()`
+- 訊息 3 秒自動清除、任一欄位下次輸入時清除、modal 開啟/關閉時清除（`openCourseEditModal()`/`closeCourseEditModal()`）
+
+### 變更
+- CSS 版本號 `?v=2.4.1` → `?v=2.5.0`
+
+### 驗證
+- `npm run check`（27/27）、`node test/v2-smoke-test.js`、`node test/ui-rwd-check.mjs`（7/7 無橫向溢出）、`npm test`（41/41）全數通過
+- `grep -n "\balert(\|\bconfirm(\|\bprompt(" src/js/app.js src/js/v2-app.js` 只剩 3 處文件註解（描述被取代的舊機制），無任何實際呼叫殘留
+- 另寫一次性 Playwright 腳本（未進 repo，跑完即刪）驗證 21 項斷言全數通過：教師表 change 即存且重整後保留、無 `#save-data-btn`；多重調課模式下加入批次鈕獨立可見/主送出鈕隱藏，切回代課後反轉且 `.multi-course-toggle` 恢復可見，調課模式下 toggle 確認消失；刪除紀錄跳出 `#confirm-modal`（非原生 dialog）、取消不刪、確認才刪；`editorSaveCourse()` 空班級時 `#course-modal-msg` 顯示紅字、無全域 toast 產生、modal 不被誤關閉
+- 額外以 Playwright 檢查 `?v2=1` 下 `#add-to-batch-btn`／`#confirm-substitute-btn` 皆存在於 DOM 且無 console 錯誤（靜態驗證 `interceptSubmitButton()` 攔截清單可正確找到兩顆按鈕；R2 情境的完整權限攔截需要真實 Firebase 測試帳號，另補於 `test/v2-approval-flows.mjs` 步驟 3d，未實跑）
+
+### 已知取捨
+- R11 豁免清單：無。app.js 11 處＋v2-app.js 4 處 confirm()，逐處檢查呼叫端後全數確認可安全 async 化——要嘛呼叫端本身已在 async context 內（如 `confirmSubstitute()`、v2 各按鈕的 `async () => {}` click listener），要嘛是單純 fire-and-forget 的 click 綁定、沒有任何呼叫端依賴同步回傳值（`showMergeConfirmModal()` 的呼叫點在呼叫後立即 `return`，改 async 不影響時序）
+- `saveDataManually()`（`app.js`）與 `#save-status`（`index.html`）移除按鈕後成為無呼叫點的死碼，比照 Stage 4 對 `onTeacherSelected()` 的處理方式，留待 Stage 6 死碼清理一併處理，不在本輪個別刪除
+- `#change-type` 隱藏 select 未動（計畫列為 Stage 6 選配項目）
+
 ## [2026-07-29]（feature/permission-system）UI 重規劃 Stage 4 驗收缺陷修正
 
 派獨立 agent 驗收 Stage 4（commit `8d0acb8`，手機專屬模式）後回報的 5 項缺陷，全數修復，獨立 commit、獨立驗證（含 playwright 量測，前後對照見下方驗證段落）。

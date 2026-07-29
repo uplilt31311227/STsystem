@@ -330,7 +330,8 @@ async function renderPendingTab() {
 
     host.querySelectorAll('.v2-reject-btn').forEach(btn =>
         btn.addEventListener('click', async () => {
-            const note = prompt('拒絕原因（可留空，對方會看到）：') || '';
+            const note = await promptRejectReason();
+            if (note === null) return;   // 取消：中止拒絕動作（留空但按「確定」仍會繼續執行）
             btn.disabled = true;
             try {
                 await requestSvc.rejectRequest(btn.dataset.id, note);
@@ -347,7 +348,10 @@ async function renderPendingTab() {
         }));
     host.querySelectorAll('.v2-cancel-btn').forEach(btn =>
         btn.addEventListener('click', async () => {
-            if (!confirm('確定撤回此調課請求？')) return;
+            const ok = await window.app?.confirmDialog?.({
+                title: '撤回請求', message: '確定撤回此調課請求？', confirmText: '撤回', danger: true,
+            });
+            if (!ok) return;
             try { await requestSvc.cancelRequest(btn.dataset.id); await renderPendingTab(); }
             catch (e) { notifyError(e, '撤回請求'); }
         }));
@@ -466,7 +470,10 @@ async function renderTeachersAdminTab() {
     host.querySelectorAll('.v2-delete-teacher').forEach(btn =>
         btn.addEventListener('click', async () => {
             const id = btn.closest('tr').dataset.id;
-            if (!confirm('確定刪除此教師？此操作會寫入 log。')) return;
+            const ok = await window.app?.confirmDialog?.({
+                title: '刪除教師', message: '確定刪除此教師？此操作會寫入 log。', confirmText: '刪除', danger: true,
+            });
+            if (!ok) return;
             try { await teacherMgr.deleteTeacher(id); await renderTeachersAdminTab(); }
             catch (e) { notifyError(e, '刪除教師'); }
         }));
@@ -476,7 +483,12 @@ async function renderTeachersAdminTab() {
             const tr    = btn.closest('tr');
             const email = tr.querySelector('.v2-email-input').value.trim();
             if (!email) { notify('此教師尚未填 email，請先儲存 email 再試。', 'warning'); return; }
-            if (!confirm(`即將為 ${email} 建立 Auth 帳號（若不存在）並寄出密碼設定信。確認？`)) return;
+            const ok = await window.app?.confirmDialog?.({
+                title: '寄送密碼設定信',
+                message: `即將為 ${email} 建立 Auth 帳號（若不存在）並寄出密碼設定信。確認？`,
+                confirmText: '確認寄送',
+            });
+            if (!ok) return;
             btn.disabled = true;
             const origText = btn.textContent;
             btn.textContent = '寄送中…';
@@ -498,9 +510,9 @@ async function renderTeachersAdminTab() {
         }));
 
     document.getElementById('v2-add-teacher')?.addEventListener('click', async () => {
-        const name  = prompt('教師姓名：'); if (!name) return;
-        const email = prompt('Email（可留空）：') || null;
-        try { await teacherMgr.createTeacher({ name, email }); await renderTeachersAdminTab(); }
+        const info = await promptNewTeacherModal();
+        if (!info) return;
+        try { await teacherMgr.createTeacher(info); await renderTeachersAdminTab(); }
         catch (e) { notifyError(e, '新增教師'); }
     });
 
@@ -754,9 +766,22 @@ async function renderRecordsTab() {
     const APPROVER_ROLES_FOR_BADGE = ['admin', 'director', 'section_chief'];
 
     // Phase 5：legacy 篩選（全部／僅新／僅舊）純前端過濾，不影響 visible 本身（PDF/刪除仍可對到完整紀錄）。
-    const displayed = _v2RecordsLegacyFilter === 'legacy' ? visible.filter(r => r.isLegacy)
+    const legacyFiltered = _v2RecordsLegacyFilter === 'legacy' ? visible.filter(r => r.isLegacy)
         : _v2RecordsLegacyFilter === 'new' ? visible.filter(r => !r.isLegacy)
         : visible;
+
+    // Stage 5（F1 方式補篩選）：教師 select 選項取自 visible 本身出現過的姓名（不另外打 listTeachers，
+    // 維持本函式原本只讀一次 listSubstituteRecords 的資料存取範圍）。
+    const teacherNames = Array.from(new Set(
+        visible.flatMap(r => [r.originalTeacher, r.substituteTeacher, r.swapTeacher]).filter(Boolean)
+    )).sort((a, b) => a.localeCompare(b, 'zh-TW'));
+
+    // 起訖日／教師純前端過濾，只作用在「已過濾過權限的 visible 集合」之上。
+    const displayed = legacyFiltered
+        .filter(r => !_v2RecordsFilterStart || (r.date || '') >= _v2RecordsFilterStart)
+        .filter(r => !_v2RecordsFilterEnd || (r.date || '') <= _v2RecordsFilterEnd)
+        .filter(r => !_v2RecordsFilterTeacher ||
+            [r.originalTeacher, r.substituteTeacher, r.swapTeacher].includes(_v2RecordsFilterTeacher));
 
     if (isStaleRender(_gen)) return;   // 期間身份已切換 → 放棄回填全校紀錄
     host.innerHTML = `
@@ -770,6 +795,26 @@ async function renderRecordsTab() {
                         <option value="legacy" ${_v2RecordsLegacyFilter === 'legacy' ? 'selected' : ''}>僅舊</option>
                     </select>
                 </label>
+            </div>
+        </div>
+        <div class="toolbar-row">
+            <div class="toolbar-controls">
+                <div class="form-group form-group-inline">
+                    <label for="v2-record-start-date">起始</label>
+                    <input type="date" id="v2-record-start-date" value="${_v2RecordsFilterStart}">
+                </div>
+                <div class="form-group form-group-inline">
+                    <label for="v2-record-end-date">結束</label>
+                    <input type="date" id="v2-record-end-date" value="${_v2RecordsFilterEnd}">
+                </div>
+                <div class="form-group form-group-inline">
+                    <label for="v2-record-teacher">教師</label>
+                    <select id="v2-record-teacher">
+                        <option value="">全部</option>
+                        ${teacherNames.map(n => `<option value="${escapeHtml(n)}" ${n === _v2RecordsFilterTeacher ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('')}
+                    </select>
+                </div>
+                <button class="btn btn-secondary btn-sm v2-approver-only" id="v2-print-weekly-summary-btn" title="以週為單位彙整本週所有調代課，產生 1 份 PDF 精簡列印">📄 列印本週彙整</button>
             </div>
         </div>
         <div class="table-wrap">
@@ -803,6 +848,23 @@ async function renderRecordsTab() {
         renderRecordsTab();
     });
 
+    document.getElementById('v2-record-start-date')?.addEventListener('change', (e) => {
+        _v2RecordsFilterStart = e.target.value;
+        renderRecordsTab();
+    });
+    document.getElementById('v2-record-end-date')?.addEventListener('change', (e) => {
+        _v2RecordsFilterEnd = e.target.value;
+        renderRecordsTab();
+    });
+    document.getElementById('v2-record-teacher')?.addEventListener('change', (e) => {
+        _v2RecordsFilterTeacher = e.target.value;
+        renderRecordsTab();
+    });
+    // 週彙整 modal 定義於 app.js（#weekly-summary-modal 已在 #modal-root，V2 下可正常顯示）
+    document.getElementById('v2-print-weekly-summary-btn')?.addEventListener('click', () => {
+        window.app?.openWeeklySummaryModal?.();
+    });
+
     host.querySelectorAll('.v2-download-pdf').forEach(btn =>
         btn.addEventListener('click', async () => {
             const rec = visible.find(x => x.recordId === btn.dataset.id);
@@ -815,7 +877,10 @@ async function renderRecordsTab() {
     if (isApprover) {
         host.querySelectorAll('.v2-admin-delete').forEach(btn =>
             btn.addEventListener('click', async () => {
-                if (!confirm('確定刪除此紀錄？此操作會寫入 log。')) return;
+                const ok = await window.app?.confirmDialog?.({
+                    title: '刪除紀錄', message: '確定刪除此紀錄？此操作會寫入 log。', confirmText: '刪除', danger: true,
+                });
+                if (!ok) return;
                 try { await requestSvc.adminDeleteRecord(btn.dataset.id); await renderRecordsTab(); }
                 catch (e) { notifyError(e, '刪除紀錄'); }
             }));
@@ -845,6 +910,12 @@ function isStaleRender(gen) { return gen !== _v2IdentityGen; }
 // Phase 5：全校紀錄頁籤的 legacy 篩選狀態（'all' | 'new' | 'legacy'），純前端顯示用，
 // 跨 renderRecordsTab 重繪需持續保留使用者的選擇，故拉到 module 層級。
 let _v2RecordsLegacyFilter = 'all';
+
+// Stage 5（F1 方式補篩選）：起訖日／教師純前端顯示過濾，跨 renderRecordsTab 重繪保留選擇。
+// 只過濾「該函式內已過濾過權限的 visible 集合」，不動 dataSvc.listSubstituteRecords() 的資料層。
+let _v2RecordsFilterStart   = '';
+let _v2RecordsFilterEnd     = '';
+let _v2RecordsFilterTeacher = '';
 
 /**
  * 直接以 class 操作切到指定頁籤（不經 canSwitchToTab 守門，供身份切換重置用）。
@@ -894,32 +965,36 @@ function resetV2ViewState() {
 /* ===== 調課送出攔截（P5/P7 重點）===== */
 
 /**
- * V2 啟用時，在「確認並產生表單」click 的 capture 階段擋下：
- *   - 非 admin 若「原任課教師」不是自己 → 阻止並 alert
+ * V2 啟用時，在「確認並產生表單」與「加入批次」（F3/R2：拆同鈕兩語意後新增的獨立送出鈕，
+ * 兩者皆會走到 confirmSubstitute()）click 的 capture 階段擋下：
+ *   - 非 admin 若「原任課教師」不是自己 → 阻止並提示
  *   - admin 放行（可代任一教師發起）
+ * R2 致命｜權限繞過：新增任何送出鈕都必須同步加進這份清單，否則繞過權限閘門。
  */
 function interceptSubmitButton() {
-    const btn = document.getElementById('confirm-substitute-btn');
-    if (!btn) return;
+    ['confirm-substitute-btn', 'add-to-batch-btn'].forEach((btnId) => {
+        const btn = document.getElementById(btnId);
+        if (!btn) return;
 
-    btn.addEventListener('click', (ev) => {
-        if (!roleSvc.isSignedIn()) return;
-        if (roleSvc.isAdmin()) return;
+        btn.addEventListener('click', (ev) => {
+            if (!roleSvc.isSignedIn()) return;
+            if (roleSvc.isAdmin()) return;
 
-        const me = roleSvc.getCurrentIdentity();
-        const selectedName = document.getElementById('sub-teacher')?.value || '';
-        if (selectedName && selectedName !== me.name) {
-            ev.stopPropagation();
-            ev.stopImmediatePropagation();
-            ev.preventDefault();
-            notify(`您僅能發起自己的課務調代課。\n您的身份為「${me.name}」，但「原任課教師」選的是「${selectedName}」。`, 'warning');
-            logger.log(LOG_ACTIONS.PERMISSION_DENIED, LOG_TARGET_TYPES.SUBSTITUTE_RECORD, null, {
-                reason: 'non_admin_initiate_other',
-                attemptedTeacher: selectedName,
-                myTeacher: me.name,
-            });
-        }
-    }, true);
+            const me = roleSvc.getCurrentIdentity();
+            const selectedName = document.getElementById('sub-teacher')?.value || '';
+            if (selectedName && selectedName !== me.name) {
+                ev.stopPropagation();
+                ev.stopImmediatePropagation();
+                ev.preventDefault();
+                notify(`您僅能發起自己的課務調代課。\n您的身份為「${me.name}」，但「原任課教師」選的是「${selectedName}」。`, 'warning');
+                logger.log(LOG_ACTIONS.PERMISSION_DENIED, LOG_TARGET_TYPES.SUBSTITUTE_RECORD, null, {
+                    reason: 'non_admin_initiate_other',
+                    attemptedTeacher: selectedName,
+                    myTeacher: me.name,
+                });
+            }
+        }, true);
+    });
 }
 
 /* ===== dataManager patch：V2 模式下改走 V2 寫入 ===== */
@@ -1014,6 +1089,95 @@ function promptAdditionalConsentTeachers(record, allTeachers) {
             const names = Array.from(backdrop.querySelectorAll('.v2-extra-consent-cb:checked')).map(cb => cb.value);
             cleanup(names);
         });
+    });
+}
+
+/**
+ * Stage 5（殺 prompt()）：拒絕請求時的原因輸入，改為 textarea modal（原為 window.prompt()）。
+ * 原因可留空（對方會看到），故區分「取消」與「確定但留空」兩種結果：
+ *   - 取消／點背景：resolve(null) → 呼叫端應中止拒絕動作（跟舊版 prompt() 不同——
+ *     舊版不論取消或確定留空都會以空字串繼續執行拒絕，這裡改為取消真的會取消）。
+ *   - 確定（含留空）：resolve(該字串，可能是空字串)。
+ * @returns {Promise<string|null>}
+ */
+function promptRejectReason() {
+    return new Promise((resolve) => {
+        const backdrop = document.createElement('div');
+        backdrop.className = 'modal';
+        backdrop.innerHTML = `
+            <div class="modal-content" style="max-width:420px;">
+                <div class="modal-body">
+                <h3>拒絕原因</h3>
+                <div class="form-group">
+                    <label for="v2-reject-reason-input">原因（可留空，對方會看到）</label>
+                    <textarea id="v2-reject-reason-input" rows="3"></textarea>
+                </div>
+                <div class="modal-actions">
+                    <button class="btn btn-secondary" id="v2-reject-reason-cancel">取消</button>
+                    <button class="btn btn-primary" id="v2-reject-reason-confirm">確定</button>
+                </div>
+                </div>
+            </div>`;
+        document.body.appendChild(backdrop);
+
+        const textarea = backdrop.querySelector('#v2-reject-reason-input');
+        textarea.focus();
+
+        const cleanup = (result) => { backdrop.remove(); resolve(result); };
+        backdrop.querySelector('#v2-reject-reason-cancel').addEventListener('click', () => cleanup(null));
+        backdrop.querySelector('#v2-reject-reason-confirm').addEventListener('click', () => cleanup(textarea.value || ''));
+        backdrop.addEventListener('click', (e) => { if (e.target === backdrop) cleanup(null); });
+    });
+}
+
+/**
+ * Stage 5（殺 prompt()）：新增教師的姓名／Email 輸入，改為雙欄位 modal（原為兩次 window.prompt()）。
+ * 姓名必填（沿用原本語意：留空視同取消，不建立教師）；Email 選填，留空回傳 null。
+ * @returns {Promise<{name: string, email: string|null}|null>} 取消或姓名留空時回傳 null
+ */
+function promptNewTeacherModal() {
+    return new Promise((resolve) => {
+        const backdrop = document.createElement('div');
+        backdrop.className = 'modal';
+        backdrop.innerHTML = `
+            <div class="modal-content" style="max-width:420px;">
+                <div class="modal-body">
+                <h3>新增教師</h3>
+                <div class="form-group">
+                    <label for="v2-new-teacher-name">教師姓名 <span style="color:red;">*</span></label>
+                    <input type="text" id="v2-new-teacher-name">
+                </div>
+                <div class="form-group">
+                    <label for="v2-new-teacher-email">Email（可留空）</label>
+                    <input type="email" id="v2-new-teacher-email">
+                </div>
+                <p class="form-msg" id="v2-new-teacher-msg" style="display:none;"></p>
+                <div class="modal-actions">
+                    <button class="btn btn-secondary" id="v2-new-teacher-cancel">取消</button>
+                    <button class="btn btn-primary" id="v2-new-teacher-confirm">確定</button>
+                </div>
+                </div>
+            </div>`;
+        document.body.appendChild(backdrop);
+
+        const nameInput  = backdrop.querySelector('#v2-new-teacher-name');
+        const emailInput = backdrop.querySelector('#v2-new-teacher-email');
+        const msgEl      = backdrop.querySelector('#v2-new-teacher-msg');
+        nameInput.focus();
+
+        const cleanup = (result) => { backdrop.remove(); resolve(result); };
+        backdrop.querySelector('#v2-new-teacher-cancel').addEventListener('click', () => cleanup(null));
+        backdrop.querySelector('#v2-new-teacher-confirm').addEventListener('click', () => {
+            const name = nameInput.value.trim();
+            if (!name) {
+                msgEl.textContent = '請輸入教師姓名';
+                msgEl.style.display = 'block';
+                nameInput.focus();
+                return;
+            }
+            cleanup({ name, email: emailInput.value.trim() || null });
+        });
+        backdrop.addEventListener('click', (e) => { if (e.target === backdrop) cleanup(null); });
     });
 }
 

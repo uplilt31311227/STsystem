@@ -665,11 +665,13 @@ async function submitAndMaybeSkipConsentModal(page, extraConsentName = null) {
     log(`  教師是否被正確限制在與自己相關的紀錄：${teacherARecordRows <= chiefRecordRows ? '是（teacherA <= chief）' : '否（異常，teacherA 看到比 chief 還多）'}`);
 
     // 3c. 課表匯入頁教師可見按鈕
+    // Stage 5（F7）：「儲存資料」鈕（#save-data-btn）已移除（教師屬性表 change 即存，
+    // 假儲存鈕本身就是冗餘 UI），本案不再檢查該鈕的可見性與點擊後無寫入，
+    // 只留「+新增教師」「匯入還原」兩顆仍存在的按鈕。
     await clickTab(teacherA, 'import');
     const addTeacherVisible = await teacherA.locator('#add-teacher-btn').isVisible();
-    const saveDataVisible   = await teacherA.locator('#save-data-btn').isVisible();
     const importBtnVisible  = await teacherA.locator('#tab-import-btn').isVisible();
-    log(`  教師甲於「課表匯入」頁可見：+新增教師=${addTeacherVisible} 儲存資料=${saveDataVisible} 匯入還原=${importBtnVisible}`);
+    log(`  教師甲於「課表匯入」頁可見：+新增教師=${addTeacherVisible} 匯入還原=${importBtnVisible}`);
     await shot(teacherA, 'perm-teacherA-import-buttons-visible');
 
     const teachersBeforeBtnClicks = await fsList(`schools/${SCHOOL_ID}/teachers`);
@@ -678,9 +680,6 @@ async function submitAndMaybeSkipConsentModal(page, extraConsentName = null) {
     await teacherA.click('#add-teacher-btn');
     await teacherA.waitForTimeout(300);
     await shot(teacherA, 'perm-teacherA-after-add-teacher-click');
-    await teacherA.click('#save-data-btn');
-    await teacherA.waitForTimeout(300);
-    await shot(teacherA, 'perm-teacherA-after-save-data-click');
 
     teacherA.once('filechooser', () => {}); // 吞掉檔案選擇器事件，不提供檔案
     await teacherA.click('#tab-import-btn').catch(() => {});
@@ -690,8 +689,45 @@ async function submitAndMaybeSkipConsentModal(page, extraConsentName = null) {
     const scheduleAfterBtnClicks = await fsGet(`schools/${SCHOOL_ID}/data/schedule`);
     const teachersUnchanged = teachersBeforeBtnClicks.length === teachersAfterBtnClicks.length;
     const scheduleUnchanged = (scheduleBeforeBtnClicks?._updated || '') === (scheduleAfterBtnClicks?._updated || '');
-    log(`  教師甲點擊「+新增教師／儲存資料／匯入還原」後，production teachers 筆數是否不變：${teachersUnchanged ? '是' : '否！'}（${teachersBeforeBtnClicks.length} -> ${teachersAfterBtnClicks.length}）`);
+    log(`  教師甲點擊「+新增教師／匯入還原」後，production teachers 筆數是否不變：${teachersUnchanged ? '是' : '否！'}（${teachersBeforeBtnClicks.length} -> ${teachersAfterBtnClicks.length}）`);
     log(`  production schedule 文件 updateTime 是否不變：${scheduleUnchanged ? '是' : '否！'}`);
+
+    // ===================== 步驟 3d：非本人身分點 #add-to-batch-btn 應被攔截 =====================
+    // Stage 5（F3/R2）：「加入批次」是拆同鈕兩語意後新增的獨立送出鈕，
+    // interceptSubmitButton() 的攔截清單必須同步涵蓋它，否則非本人可繞過權限閘門發起他人的調代課。
+    // 仿照既有 #confirm-substitute-btn 攔截寫法（見 interceptSubmitButton() in v2-app.js）：
+    // 教師甲把「原任課教師」選成教師乙（非本人），切到多重調課讓「加入批次」成為可見送出鈕，
+    // 點擊後應被 capture 階段擋下（toast 提示 + 不建立任何 pendingRequests 文件）。
+    log('\n--- 步驟3d：非本人身分點 #add-to-batch-btn 應被攔截 ---');
+    await clickTab(teacherA, 'substitute');
+    await teacherA.selectOption('#sub-teacher', { value: ACCOUNTS.teacherB.name }); // 教師甲冒充選了「乙」
+    await teacherA.fill('#sub-date', DATES.flow2A); // 週二，教師乙在週二第二節有課
+    await teacherA.waitForTimeout(300);
+    await teacherA.click('input[name="change-type-radio"][value="multi-swap"] + .change-type-card');
+    await clickCourseCell(teacherA, '週二', '第二節');
+    await shot(teacherA, 'flow3d-teacherA-impersonate-before-click');
+
+    const pendingCountBeforeIntercept = (await fsList(`schools/${SCHOOL_ID}/pendingRequests`)).length;
+    await teacherA.click('#add-to-batch-btn');
+    await teacherA.waitForTimeout(1000);
+    const interceptToastMsg = await toastText(teacherA);
+    await shot(teacherA, 'flow3d-teacherA-after-blocked-click');
+    const pendingCountAfterIntercept = (await fsList(`schools/${SCHOOL_ID}/pendingRequests`)).length;
+    const addToBatchBtnIntercepted = interceptToastMsg.includes('僅能發起自己')
+        && pendingCountAfterIntercept === pendingCountBeforeIntercept;
+    log(`  教師甲選「原任課教師＝${ACCOUNTS.teacherB.name}」後點「加入批次」，toast: "${interceptToastMsg}"`);
+    log(`  攔截前後 pendingRequests 筆數：${pendingCountBeforeIntercept} -> ${pendingCountAfterIntercept}（應相同＝未建立任何請求）`);
+    log(`  [Stage5 R2] #add-to-batch-btn 非本人攔截：${addToBatchBtnIntercepted ? '通過' : '失敗！'}`);
+    testDocs.flows.addToBatchBtnPermissionIntercept = {
+        toastMessage: interceptToastMsg,
+        pendingRequestsBefore: pendingCountBeforeIntercept,
+        pendingRequestsAfter: pendingCountAfterIntercept,
+        pass: addToBatchBtnIntercepted,
+    };
+
+    // 還原：切回代課、選回自己，不留污染狀態
+    await teacherA.click('input[name="change-type-radio"][value="substitute"] + .change-type-card');
+    await teacherA.selectOption('#sub-teacher', { value: ACCOUNTS.teacherA.name });
 
     // ---------------------------------------------------------------------
     // 收尾：寫入 .last-test-docs.json、最終快照
@@ -705,8 +741,9 @@ async function submitAndMaybeSkipConsentModal(page, extraConsentName = null) {
         settlementShowsAllTeachersToPlainTeacher: settlementShowsOthers,
         settlementExportAvailableToPlainTeacher: settlementExportFired,
         recordsProperlyScopedForTeacher: teacherARecordRows <= chiefRecordRows,
-        importButtonsVisibleToTeacher: { addTeacherVisible, saveDataVisible, importBtnVisible },
+        importButtonsVisibleToTeacher: { addTeacherVisible, importBtnVisible },
         importButtonClicksCausedNoProductionWrite: teachersUnchanged && scheduleUnchanged,
+        addToBatchBtnPermissionIntercepted: addToBatchBtnIntercepted,
     };
     writeFileSync(DOCS_FILE, JSON.stringify(testDocs, null, 2), 'utf-8');
     log(`\n已寫入 ${DOCS_FILE}`);

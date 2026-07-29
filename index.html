@@ -19,10 +19,10 @@
     <!-- html2canvas - HTML 轉圖片（用於 PDF 中文支援） -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 
-    <link rel="stylesheet" href="src/css/tokens.css?v=2.4.1">
-    <link rel="stylesheet" href="src/css/base.css?v=2.4.1">
-    <link rel="stylesheet" href="src/css/components.css?v=2.4.1">
-    <link rel="stylesheet" href="src/css/features.css?v=2.4.1">
+    <link rel="stylesheet" href="src/css/tokens.css?v=2.5.0">
+    <link rel="stylesheet" href="src/css/base.css?v=2.5.0">
+    <link rel="stylesheet" href="src/css/components.css?v=2.5.0">
+    <link rel="stylesheet" href="src/css/features.css?v=2.5.0">
 </head>
 <body>
     <div class="app-container">
@@ -166,7 +166,7 @@
                         <h3>教師屬性</h3>
                         <div class="teacher-header-actions">
                             <button class="btn btn-secondary btn-sm" id="add-teacher-btn">+ 新增教師</button>
-                            <button class="btn btn-primary btn-sm" id="save-data-btn">儲存資料</button>
+                            <span class="hint" style="margin:0;">變更即時自動儲存</span>
                         </div>
                     </div>
                     <div id="teacher-editor" class="hidden">
@@ -294,12 +294,12 @@
                         <label class="multi-course-toggle">
                             <input type="checkbox" id="multi-course-mode">
                             <span class="toggle-slider"></span>
-                            <span class="toggle-label">多節課模式</span>
+                            <span class="toggle-label">一次選多節（同一天）</span>
                         </label>
                     </div>
                     <p class="hint" id="schedule-hint">點擊要調課的課程（僅顯示 <span id="selected-weekday"></span> 的課程）</p>
                     <p class="hint multi-course-hint hidden" id="multi-course-hint">
-                        <span class="hint-icon">💡</span> 多節課模式：可點擊選擇多節課程，再次點擊可取消選擇
+                        <span class="hint-icon">💡</span> 一次選多節（同一天）：可點擊選擇多節課程，再次點擊可取消選擇
                     </p>
 
                     <!-- 原任課教師週課表 -->
@@ -419,13 +419,14 @@
 
                     <div class="action-buttons" style="margin-top: 1rem;">
                         <button class="btn btn-primary btn-sm" id="confirm-substitute-btn">確認並產生表單</button>
+                        <button type="button" class="btn btn-primary btn-sm hidden" id="add-to-batch-btn">加入批次</button>
                         <button class="btn btn-secondary btn-sm" id="cancel-substitute-btn">重新選擇</button>
                     </div>
                 </div>
 
                 <!-- 多重調課批次面板（獨立 card，不隨步驟四隱藏） -->
                 <div id="multi-swap-batch-panel" class="card hidden">
-                    <h3>多重調課批次</h3>
+                    <h3>待送出的調課組合</h3>
                     <p class="hint">逐一新增調課組合，新增時不設限制。系統會在整批送出時檢查衝突，全部無衝突才可產生表單。</p>
 
                     <!-- 待處理調課清單（驗收缺陷修正：標題列移入 tray 容器內，與步驟三
@@ -743,6 +744,22 @@
     <!-- 所有 modal 集中於此（Stage 2 起：原本散落各分頁內，分頁非 active 時 modal 因祖先
          display:none 而打不開；全部只靠 getElementById 存取，搬到這裡後不受任何分頁切換影響） -->
     <div id="modal-root">
+        <!-- 統一 confirm 對話框（Stage 5：取代原生 confirm()，見 app.js confirmDialog()） -->
+        <div id="confirm-modal" class="modal hidden">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3 id="confirm-modal-title">確認</h3>
+                </div>
+                <div class="modal-body">
+                    <p id="confirm-modal-message"></p>
+                    <div class="modal-actions">
+                        <button type="button" class="btn btn-secondary" id="confirm-modal-cancel-btn">取消</button>
+                        <button type="button" class="btn btn-primary" id="confirm-modal-confirm-btn">確認</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- 課程編輯對話框（原在課表編輯 sub-view 內） -->
         <div id="course-edit-modal" class="modal hidden">
             <div class="modal-content">
@@ -781,6 +798,7 @@
                             <option value="其他">其他</option>
                         </select>
                     </div>
+                    <p class="form-msg" id="course-modal-msg" style="display:none;"></p>
                     <div class="modal-actions">
                         <button class="btn btn-primary" id="course-modal-save-btn">儲存</button>
                         <button class="btn btn-danger" id="course-modal-delete-btn" style="display: none;">刪除此課程</button>
