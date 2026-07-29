@@ -1409,16 +1409,35 @@ function patchDataManager() {
      *      再套 roleSvc.filterRecordsForCurrent()，不受這裡影響，過濾行為仍然存在。
      *   4. 月結算頁籤已於 commit 5ec4561 加上 .v2-approver-only，一般教師連分頁都進不去，不會
      *      經由 generateSettlement() / exportSettlementExcel() 間接看到全校結算。
-     * 注意：原函式支援的 (startDate, endDate, teacherFilter) 篩選參數在此分支不會被套用——
-     * 目前僅有的兩個會傳這些參數的呼叫點（週彙整 PDF、紀錄頁籤內建查詢）在 V2 模式下已被
-     * CSS 隱藏（#records-content），非目前可觸及路徑；若之後在 V2 開放這兩個入口，需要另外處理。
+     * 回傳的是**複本**而非 _v2RecordsCache 本身：該陣列同時是衝堂檢查（v2CheckExistingRecord）
+     * 的資料源，若把內部參考交出去，下游任何 .sort() / .splice() 都會就地汙染即時同步快取，
+     * 變成極難追查的偶發衝堂誤判。原實作（dataManager.js:486）也是回傳 [...] 複本。
+     *
+     * (startDate, endDate, teacherFilter) 三個篩選參數比照原實作套用，排序也比照原實作
+     * 「日期新到舊」——dataManager.getMonthlyRecords() 內部就是帶日期參數呼叫本方法，
+     * 若在此靜默忽略參數，那條路徑會拿到全部紀錄而完全沒有錯誤訊號。
      */
     const origGet = dm.getSubstituteRecords.bind(dm);
-    dm.getSubstituteRecords = function(...args) {
-        if (roleSvc.isSignedIn()) {
-            return _v2RecordsCache;
+    dm.getSubstituteRecords = function(startDate = '', endDate = '', teacherFilter = '') {
+        if (!roleSvc.isSignedIn()) {
+            return origGet(startDate, endDate, teacherFilter);
         }
-        return origGet(...args);
+        const norm = (d) => (typeof dm.normalizeDate === 'function' ? dm.normalizeDate(d) : d);
+        let records = [..._v2RecordsCache];
+        if (startDate) {
+            const s = norm(startDate);
+            records = records.filter(r => norm(r.date) >= s);
+        }
+        if (endDate) {
+            const e = norm(endDate);
+            records = records.filter(r => norm(r.date) <= e);
+        }
+        if (teacherFilter) {
+            records = records.filter(r =>
+                r.originalTeacher === teacherFilter || r.substituteTeacher === teacherFilter);
+        }
+        records.sort((a, b) => new Date(b.date) - new Date(a.date));
+        return records;
     };
 
     /**
@@ -1452,19 +1471,32 @@ function patchDataManager() {
         if (!roleSvc.isApprover()) return;   // 教師無寫入權（rules 亦擋），不回寫
         queueMicrotask(() => { syncScheduleToV2(); });
     };
-    const wrapScheduleMutator = (name) => {
+    const wrapScheduleMutator = (name, { requireSchedule = false } = {}) => {
         if (typeof dm[name] !== 'function') return;
         const orig = dm[name].bind(dm);
         dm[name] = function(...args) {
             const r = orig(...args);
+            // requireSchedule：本機課表為空時不觸發回寫。syncScheduleToV2 寫的是「本機完整
+            // 快照」且刻意允許空課表寫入（approver 清空課表時需要傳播），對前四個方法而言
+            // 那是正確的——它們本身就是課表異動。但 setSchoolName 不是：若 approver 在遠端
+            // 課表快照尚未抵達（subscribeSchedule 是非同步）或本機被清空時按下「確認學校
+            // 名稱」，就會用一份空課表覆蓋全校資料。
+            if (requireSchedule) {
+                const sched = dm.getScheduleData?.() || dm.scheduleData || [];
+                if (!Array.isArray(sched) || sched.length === 0) {
+                    console.warn(`[V2] ${name} 未觸發全校課表回寫：本機課表為空，避免以空課表覆蓋全校資料`);
+                    return r;
+                }
+            }
             queueScheduleSync();
             return r;
         };
     };
-    // setSchoolName(name) 與 setScheduleData 等方法同形：單一參數、同步賦值、無回傳值，
-    // 泛用 wrapScheduleMutator 包裝可直接適用，不需另外處理。
-    ['setScheduleData', 'addScheduleEntry', 'updateScheduleEntry', 'removeScheduleEntry', 'setSchoolName']
-        .forEach(wrapScheduleMutator);
+    ['setScheduleData', 'addScheduleEntry', 'updateScheduleEntry', 'removeScheduleEntry']
+        .forEach(n => wrapScheduleMutator(n));
+    // setSchoolName 與上述四者同形（單一參數、同步賦值、無回傳值），可共用包裝，
+    // 但必須加 requireSchedule 守門，理由見上方註解。
+    wrapScheduleMutator('setSchoolName', { requireSchedule: true });
 }
 
 let _autoSyncInFlight = false;
