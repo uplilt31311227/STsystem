@@ -20,8 +20,12 @@ export const SCHEMA_PATHS = {
     scheduleDoc:       ()    => `schools/${SCHOOL_ID}/data/schedule`,
     substituteCol:     ()    => `schools/${SCHOOL_ID}/substituteRecords`,
     substituteDoc:     (id)  => `schools/${SCHOOL_ID}/substituteRecords/${id}`,
+    // Phase 6（2026-07-29）：leaveType/leaveTypeName/reason 私有化，搬到父文件底下的
+    // private/detail 子文件，只有 approver 或 allowedTeacherIds 內的當事人可讀。
+    substituteDetailDoc: (id) => `schools/${SCHOOL_ID}/substituteRecords/${id}/private/detail`,
     pendingCol:        ()    => `schools/${SCHOOL_ID}/pendingRequests`,
     pendingDoc:        (id)  => `schools/${SCHOOL_ID}/pendingRequests/${id}`,
+    pendingDetailDoc:  (id)  => `schools/${SCHOOL_ID}/pendingRequests/${id}/private/detail`,
     logsCol:           ()    => `schools/${SCHOOL_ID}/operationLogs`,
     logDoc:            (id)  => `schools/${SCHOOL_ID}/operationLogs/${id}`,
     userMapCol:        ()    => `schools/${SCHOOL_ID}/userMappings`,

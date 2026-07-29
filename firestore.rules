@@ -1,6 +1,6 @@
 rules_version = '2';
 
-// STsystem V2 權限系統 Firestore 規則（v2.2 — 三層角色）
+// STsystem V2 權限系統 Firestore 規則（v2.3 — 三層角色 + 敏感欄位私有化）
 //
 // 設計原則：
 //   1. 兩條根路徑物理隔離
@@ -13,6 +13,11 @@ rules_version = '2';
 //   3. 舊 v2 alpha 期 teacher.role == 'admin' 仍兼容：在 rules 中視同 director。
 //      config.initialAdminEmails 欄位名稱維持，意義改為「初始主任白名單」。
 //   4. 寫入規則對齊應用層 pendingRequestService / authGuardV2 / teacherAccountManager 行為。
+//   5. Phase 6（2026-07-29）：substituteRecords / pendingRequests 底下新增 private/detail
+//      子文件，存放 leaveType/leaveTypeName/reason（原本任何登入教師皆可讀，屬敏感個資）。
+//      父文件不再寫入這三個欄位；private 文件自帶 allowedTeacherIds 清單（建立時由應用層
+//      算好寫入），規則不需 get() 父文件即可判斷可讀性。舊資料的三欄位仍留在父文件上，
+//      相容讀取由應用層處理（rules 對父文件的欄位不做限制，不需特別相容）。
 //
 // 部署：透過 gcloud REST API 或 Firebase Console（見 docs/V2_PERMISSION_SYSTEM.md）
 
@@ -93,6 +98,20 @@ service cloud.firestore {
     function isValidRoleValue(role) {
       // 接受三層角色 + 舊 admin（authGuardV2 bootstrap 與資料遷移需要）
       return role in ['director', 'section_chief', 'teacher', 'admin'];
+    }
+
+    // ---- private/detail 子文件共用邏輯（Phase 6：敏感欄位私有化）----
+    // leaveType/leaveTypeName/reason 搬到 substituteRecords/pendingRequests 底下的
+    // private/detail 子文件，文件自帶 allowedTeacherIds（當事人清單），規則不需 get()
+    // 父文件即可判斷可讀性，成本低且沒有寫入順序限制。
+    function hasPrivateDetailAccess(schoolId, data) {
+      return isApprover(schoolId)
+        || (myTeacherId(schoolId) != '' && myTeacherId(schoolId) in data.allowedTeacherIds);
+    }
+
+    function isValidPrivateDetailWrite(data) {
+      return data.keys().hasOnly(['leaveType', 'leaveTypeName', 'reason', 'allowedTeacherIds'])
+        && data.allowedTeacherIds is list;
     }
 
     // ================ V2: schools/{schoolId} ================
@@ -191,6 +210,29 @@ service cloud.firestore {
 
         // 刪除：只有 director 能刪除正式紀錄
         allow delete: if isDirector(schoolId);
+
+        // ----- 私有明細（假別／事由）-----
+        // ⚠ 非 approver 的 create 額外限制 leaveType 為調課類，理由與父文件的 isSelfSwap
+        //   快速路徑同源：教師唯一能直接寫進 substituteRecords 的情境就是自我調課
+        //   （leaveType 恆為 '調課'）。若不限制，教師可對「尚無 private 文件」的紀錄
+        //   自行補建一份並把 leaveType 注入為公假／長期病假／喪假等不扣減假別，
+        //   藉此規避月結算的授課時數扣減——與 Phase 3 封掉的「自寫代課紀錄灌代課費」同類。
+        //   代課請求的假別由教師在 pendingRequests 申報、經 approver 核准後才由 approver
+        //   寫入紀錄，審核才是該路徑的控制點，故不受此限。
+        match /private/{docId} {
+          allow read:   if hasPrivateDetailAccess(schoolId, resource.data);
+          allow create: if isValidPrivateDetailWrite(request.resource.data)
+                          && (
+                            isApprover(schoolId)
+                            || (
+                              myTeacherId(schoolId) != ''
+                              && myTeacherId(schoolId) in request.resource.data.allowedTeacherIds
+                              && request.resource.data.leaveType in ['調課', 'swap']
+                            )
+                          );
+          allow update: if isApprover(schoolId);
+          allow delete: if isDirector(schoolId);
+        }
       }
 
       // ----- 待同意 / 待核准請求 -----
@@ -299,6 +341,15 @@ service cloud.firestore {
               || resource.data.requiredApproverId == myTeacherId(schoolId)
             )
           );
+
+        // ----- 私有明細（假別／事由，Phase 6）-----
+        match /private/{docId} {
+          allow read:   if hasPrivateDetailAccess(schoolId, resource.data);
+          allow create: if hasPrivateDetailAccess(schoolId, request.resource.data)
+                          && isValidPrivateDetailWrite(request.resource.data);
+          allow update: if isApprover(schoolId);
+          allow delete: if isDirector(schoolId);
+        }
       }
 
       // ----- 操作日誌（稽核軌跡，不可改/刪） -----
