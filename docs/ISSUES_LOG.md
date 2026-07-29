@@ -12,6 +12,29 @@ tags:
 
 第一次對 preview 站與 production Firestore 做真實三角色端到端實測（此前所有「待實機驗收」項目從未執行）。以下為實測發現。
 
+### 收尾 opus 對抗式審查發現（2026-07-29）
+
+- **日期**: 2026-07-29
+- **狀態**: 🟢 全數已修（commits `c273c1b`、`63d97bc`、`e63b0f1`）
+- **描述**: 本次商用整備的 14 個 commit 由多個 agent 平行實作，收尾時派獨立 opus agent 做對抗式審查與商用就緒驗收，共找出 9 個問題。審查同時獨立查證並確認了 6 項實作者宣稱的假設（isMultiSwap 確為死欄位、batchId 時序正確、setSchoolName 僅使用者觸發、V1 行為完全不變、CSV 匯入冪等）。
+- **已修問題**:
+  1. 【critical】遷移來源挑選永遠挑錯——以 `lastModified` 決定「取較新者」，但 localStorage 的 payload 出自 `dataManager.exportToStorage()`，該物件根本沒有這個欄位，導致 localStorage 恆判為最舊、Firestore 永遠勝出。主任若長期離線用本機會靜默遷到舊快照。→ 改為兩來源都遷移取聯集，重疊由既有冪等鍵去重。
+  2. 【critical】遷移卡片永久假警報——只看來源物件存在、不看筆數，而 V2 自己會持續重寫該 localStorage key。→ 只認 `substituteRecords` 非空的來源。
+  3. 【major】`detectLegacyData()` 失敗會癱瘓整個教師管理頁（無 try/catch 且在 `innerHTML='載入中…'` 之後）。→ 降級為「無舊資料」。
+  4. 【major】patched `getSubstituteRecords` 回傳內部快取參考而非複本，下游 `.sort()`/`.splice()` 會汙染衝堂檢查的資料源；且 `(startDate,endDate,teacherFilter)` 參數被靜默吞掉（`getMonthlyRecords` 內部正是帶參數呼叫）。→ 回傳複本並比照原實作套用篩選與排序。
+  5. 【major】「確認學校名稱」會整包覆寫全校課表——`syncScheduleToV2` 寫本機完整快照且允許空課表寫入，若在遠端快照抵達前按下確認會用空課表覆蓋全校。→ 加 `requireSchedule` 守門，僅對 `setSchoolName` 啟用。
+- **教訓**: 多個 agent 平行修改同一個檔案時，各自的假設可能互相衝突（例如「加進課表回寫白名單」這個修法對課表異動方法成立、對 setSchoolName 不成立）；收尾一定要派沒有參與實作的 agent 做對抗式審查，實作者的合理化說詞會讓自驗失效。
+- **相關檔案**: `src/js/modules/v2/legacyMigrationService.js`、`src/js/v2-app.js`、`test/test-legacy-migration.mjs`
+
+### 月結算學年度下拉寫死 114/113，新學年度將結不出帳
+
+- **日期**: 2026-07-29
+- **狀態**: 🟢 已解決（commit `63d97bc`）
+- **描述**: 商用就緒驗收發現——`index.html` 的 `#settle-year` 只有 114 與 113 兩個寫死選項。發現當天是 2026-07-29（民國 115 年 7 月），下個月起即進入 115 學年度，屆時 `settlementCalculator` 的篩選永遠選不到當期資料，**上線第一個月的代課鐘點費就結不出來**。此缺陷 master 正式站同樣存在。
+- **解決方案**: `src/js/app.js` 新增 `getCurrentAcademicYear()`（台灣學年度自 8 月起跳）與 `populateSettlementYearOptions()`，於 `bindSettlementEvents` 初始化時依實際日期產生「當前學年度 +1 ～ -2」共 4 個選項並預設選中當前學年度；`index.html` 的 select 清空改由 JS 填入。
+- **驗證**: 邊界日期 2026-07-31→114、2026-08-01→115、2027-01-15→115 皆正確；V1 與 V2 模式實機皆產生 115/114/113/112 且選中 114。
+- **相關檔案**: `src/js/app.js`、`index.html`
+
 ### approver 設定的學校名稱不回寫全校課表，導致全校教師永久卡在課表匯入頁
 
 - **日期**: 2026-07-29
