@@ -50,6 +50,16 @@ body {
     display: none !important;
 }
 
+/* 手機專屬元素通用工具（Stage 4，如課表編輯器的 .day-switcher）：640+ 隱藏，
+   手機的顯示方式交給元素自己的 class 決定（不在此預設 display，避免蓋掉
+   該元素本身需要的 flex/inline 等值）。用 !important（同上面 .hidden 的作法）：
+   本檔在載入順序上先於 components/features.css，若目標元素自己的 class（如
+   .day-switcher{display:flex}）定義在後載入的檔案，同特異度時後載入者會贏，
+   沒有 !important 這條「640+ 隱藏」規則會被蓋掉而失效（實測發現，非理論假設）。 */
+@media (min-width: 640px) {
+    .hidden-desktop { display: none !important; }
+}
+
 .hint {
     color: var(--color-text-muted);
     font-size: var(--fs-sm);
@@ -202,7 +212,7 @@ body {
 }
 
 @media (min-width: 640px) {
-    .user-name { display: revert; }
+    .user-name { display: inline; }
 }
 
 /* ===== 導覽頁籤（Stage 2 起：手機可捲 tab bar，取代舊 flex-wrap 版；

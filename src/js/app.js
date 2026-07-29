@@ -79,6 +79,12 @@ class SubstituteTeacherApp {
         this.editorEditingCell = null;     // 目前編輯的時段 { weekday, period }
         this.editorIsEditMode = false;     // 是否為編輯模式（vs 新增）
 
+        // 手機日切換器（Stage 4）目前選取的星期：課表編輯器沒有「已選日期」可判斷單日，
+        // 初始預設今日星期，週末（週六、週日）沒有正課可編輯故 fallback 週一。
+        // 640+ 桌機恆顯示全週，此欄位僅影響手機單日檢視。
+        const todayWeekday = this.numberToWeekday(new Date().getDay());
+        this.editorActiveDay = (todayWeekday === '週六' || todayWeekday === '週日') ? '週一' : todayWeekday;
+
         // 初始化應用程式
         this.init();
     }
@@ -1093,19 +1099,19 @@ class SubstituteTeacherApp {
         teachers.forEach((teacher, index) => {
             const row = document.createElement('tr');
             row.innerHTML = `
-                <td>
+                <td data-label="教師姓名" class="cell-primary">
                     <input type="text" value="${esc(teacher.name)}"
                            data-index="${index}" data-field="name"
                            class="teacher-input">
                 </td>
-                <td>
+                <td data-label="任教領域">
                     <input type="text" value="${esc(teacher.domains.join(', '))}"
                            data-index="${index}" data-field="domains"
                            class="teacher-input"
                            title="多個領域請用逗號分隔，例如：國文, 英語"
                            placeholder="例如：國文, 英語">
                 </td>
-                <td>
+                <td data-label="導師班級">
                     <select data-index="${index}" data-field="homeroomClass" class="teacher-input">
                         <option value="">非導師</option>
                         ${this.dataManager.getClasses().map(c =>
@@ -1113,7 +1119,7 @@ class SubstituteTeacherApp {
             ).join('')}
                     </select>
                 </td>
-                <td>
+                <td class="cell-actions">
                     <button class="btn btn-sm btn-danger delete-teacher-btn" data-index="${index}">刪除</button>
                 </td>
             `;
@@ -1755,12 +1761,16 @@ class SubstituteTeacherApp {
 
         let html = '';
 
-        // 標題列
-        html += '<div class="schedule-cell schedule-header">節次</div>';
+        // 標題列（左上角「節次」與節次欄同屬「永遠顯示」的欄位，補 schedule-corner
+        // 讓手機單日檢視的隱藏規則排除它——它沒有 schedule-period/is-day-active，
+        // 若不排除會被 .schedule-grid-single 的隱藏規則誤蓋掉）
+        html += '<div class="schedule-cell schedule-header schedule-corner">節次</div>';
         days.forEach(day => {
             const dayName = '週' + day;
             const isActiveDay = highlightWeekday === dayName;
-            const headerClass = isActiveDay ? 'schedule-cell schedule-header active-day' : 'schedule-cell schedule-header';
+            const headerClass = isActiveDay
+                ? 'schedule-cell schedule-header active-day is-day-active'
+                : 'schedule-cell schedule-header';
             html += `<div class="${headerClass}">週${day}</div>`;
         });
 
@@ -1785,7 +1795,7 @@ class SubstituteTeacherApp {
                     const cellClasses = [
                         'schedule-cell',
                         'schedule-course',
-                        isActiveDay ? 'today-highlight' : '',
+                        isActiveDay ? 'today-highlight is-day-active' : '',
                         isGraduated ? 'disabled-course' : '',
                         isSelectable ? 'selectable' : 'disabled'
                     ].filter(Boolean).join(' ');
@@ -1805,14 +1815,19 @@ class SubstituteTeacherApp {
                     `;
                 } else {
                     const freeClasses = isActiveDay
-                        ? 'schedule-cell schedule-course free today-highlight'
+                        ? 'schedule-cell schedule-course free today-highlight is-day-active'
                         : 'schedule-cell schedule-course free';
-                    html += `<div class="${freeClasses}">空堂</div>`;
+                    // data-weekday 補上（原本空堂格缺這個屬性）：.schedule-grid-single 的手機
+                    // 單日檢視靠 .is-day-active 判斷顯隱，不依賴 data-weekday，但補上以利除錯與一致性。
+                    html += `<div class="${freeClasses}" data-weekday="${esc(dayName)}">空堂</div>`;
                 }
             });
         });
 
         grid.innerHTML = html;
+
+        // Stage 4：手機單日檢視——有 highlightWeekday 時只顯示節次欄＋當天欄；640+ 由 CSS 還原全週。
+        grid.classList.toggle('schedule-grid-single', !!highlightWeekday);
 
         // 綁定課程點擊事件（只綁定可選擇的課程）
         grid.querySelectorAll('.schedule-course.selectable:not(.free)').forEach(cell => {
@@ -3032,6 +3047,10 @@ class SubstituteTeacherApp {
      */
     renderSwapBatch() {
         const listEl = document.getElementById('batch-swap-list');
+        // Stage 4：selection-tray 標題列的即時筆數（與「已選課程」tray 的 #selected-course-count 對應）
+        const countEl = document.getElementById('batch-swap-count');
+        if (countEl) countEl.textContent = this.swapBatch.length;
+
         if (this.swapBatch.length === 0) {
             listEl.innerHTML = '<div class="batch-empty-message">尚未加入任何調課，請從上方課表選擇課程後點擊「加入批次」</div>';
             return;
@@ -3448,14 +3467,14 @@ class SubstituteTeacherApp {
             // esc() 防 XSS：record 欄位均為使用者/Firestore 可控資料
             return `
                 <tr>
-                    <td>${esc(record.date)}</td>
-                    <td>${esc(record.className)}</td>
-                    <td>${esc(record.weekday)} ${esc(record.period)}</td>
-                    <td>${esc(record.subject)}</td>
-                    <td>${esc(record.originalTeacher)}</td>
-                    <td>${record.isSelfSwap ? '自行調課' : esc(record.substituteTeacher)}</td>
-                    <td>${esc(leaveTypeName)}</td>
-                    <td>
+                    <td data-label="日期" class="cell-primary">${esc(record.date)}</td>
+                    <td data-label="班級">${esc(record.className)}</td>
+                    <td data-label="節次">${esc(record.weekday)} ${esc(record.period)}</td>
+                    <td data-label="科目">${esc(record.subject)}</td>
+                    <td data-label="原任課教師">${esc(record.originalTeacher)}</td>
+                    <td data-label="代課教師">${record.isSelfSwap ? '自行調課' : esc(record.substituteTeacher)}</td>
+                    <td data-label="假別">${esc(leaveTypeName)}</td>
+                    <td class="cell-actions">
                         <button class="btn btn-sm btn-secondary detail-btn" data-id="${esc(record.id)}">更多</button>
                         <button class="btn btn-sm btn-primary reprint-btn" data-id="${esc(record.id)}">重印</button>
                         <button class="btn btn-sm btn-danger delete-record-btn" data-id="${esc(record.id)}">刪除</button>
@@ -4293,10 +4312,13 @@ class SubstituteTeacherApp {
 
         let html = '';
 
-        // 標題列
-        html += '<div class="schedule-cell schedule-header">節次</div>';
+        // 標題列（左上角「節次」補 schedule-corner，理由同申請頁課表——見該處註解）
+        html += '<div class="schedule-cell schedule-header schedule-corner">節次</div>';
         days.forEach(day => {
-            html += `<div class="schedule-cell schedule-header">週${day}</div>`;
+            const dayName = '週' + day;
+            const isActiveDay = dayName === this.editorActiveDay;
+            const headerClass = isActiveDay ? 'schedule-cell schedule-header is-day-active' : 'schedule-cell schedule-header';
+            html += `<div class="${headerClass}">週${day}</div>`;
         });
 
         // 各節次
@@ -4305,6 +4327,7 @@ class SubstituteTeacherApp {
 
             days.forEach(day => {
                 const dayName = '週' + day;
+                const isActiveDay = dayName === this.editorActiveDay;
                 const courses = weekSchedule.filter(c =>
                     c.weekday === dayName && c.period === period
                 );
@@ -4313,9 +4336,12 @@ class SubstituteTeacherApp {
                     const course = courses[0];
                     const isGraduated = this.dataManager.isGrade9Disabled()
                         && this.dataManager.isGraduatedClass(course.className);
-                    const courseCellClass = isGraduated
-                        ? 'schedule-cell editor-course disabled-course'
-                        : 'schedule-cell editor-course';
+                    const courseCellClass = [
+                        'schedule-cell',
+                        'editor-course',
+                        isGraduated ? 'disabled-course' : '',
+                        isActiveDay ? 'is-day-active' : ''
+                    ].filter(Boolean).join(' ');
                     const courseTitle = isGraduated
                         ? `九年級已畢業（停用）：${course.className} ${course.subject}`
                         : `點擊編輯：${course.className} ${course.subject}`;
@@ -4332,8 +4358,9 @@ class SubstituteTeacherApp {
                         </div>
                     `;
                 } else {
+                    const emptyCellClass = isActiveDay ? 'schedule-cell editor-empty is-day-active' : 'schedule-cell editor-empty';
                     html += `
-                        <div class="schedule-cell editor-empty"
+                        <div class="${emptyCellClass}"
                              data-weekday="${dayName}"
                              data-period="${period}"
                              title="點擊新增課程">
@@ -4349,9 +4376,30 @@ class SubstituteTeacherApp {
         });
 
         grid.innerHTML = html;
+        // Stage 4：編輯器恆掛 schedule-grid-single——手機單日檢視（依 editorActiveDay），
+        // 640+ 由 CSS 還原全週顯示（與申請頁課表共用同一組規則）。
+        grid.classList.add('schedule-grid-single');
 
         // 更新每週節數
         document.getElementById('editor-weekly-hours').textContent = weekSchedule.length;
+
+        // 手機日切換器：每次 render 重建（innerHTML 覆寫會自動釋放舊 listener，見 R12），
+        // 640+ 由 .hidden-desktop 隱藏，不影響桌機（桌機固定顯示全週，不需要切換）。
+        const daySwitcher = document.getElementById('editor-day-switcher');
+        if (daySwitcher) {
+            daySwitcher.innerHTML = days.map(day => {
+                const dayName = '週' + day;
+                const isActive = dayName === this.editorActiveDay;
+                return `<button type="button" class="day-switcher-btn${isActive ? ' is-active' : ''}" data-weekday="${dayName}">${day}</button>`;
+            }).join('');
+
+            daySwitcher.querySelectorAll('.day-switcher-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    this.editorActiveDay = btn.dataset.weekday;
+                    this.renderEditableScheduleGrid();
+                });
+            });
+        }
 
         // 綁定格子點擊事件
         grid.querySelectorAll('.editor-empty').forEach(cell => {

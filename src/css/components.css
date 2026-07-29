@@ -86,8 +86,11 @@
 .btn-google-signin { padding: var(--sp-2); }
 
 @media (min-width: 640px) {
-    .btn-google-signin span { display: revert; }
-    .btn-google-signin { padding: revert; }
+    .btn-google-signin span { display: inline; }
+    /* 明確值取代 revert：revert 會跳過所有 author 層規則（含 .btn 本身的
+       padding），直接退回瀏覽器原生 button 樣式，與 .btn 疊加後不可預期。
+       這裡改為明確複製 .btn 的 padding 值，確保加了 .btn 基底後視覺穩定。 */
+    .btn-google-signin { padding: var(--sp-2) var(--sp-4); }
 }
 
 .upload-link {
@@ -258,20 +261,37 @@
     inset: 0;
     background-color: rgba(0, 0, 0, 0.5);
     display: flex;
-    align-items: center;
+    align-items: stretch;
     justify-content: center;
     z-index: var(--z-modal);
 }
 .modal.hidden { display: none; }
 
+/* Modal 手機全螢幕化（Stage 4）：<640 佔滿整個視口（100dvh，含安全區域動態視口高度），
+   ≥640 還原為原本的置中卡片（尺寸沿用現行桌機數值：500px/90%/80vh/r-md，零視覺變動）。
+   .modal-content 自己開 overflow:auto 兜底：部分靜態 modal 的內容沒有另外包一層
+   .modal-body（如舊版部分彈窗），沒有 .modal-body 可撐 flex:1 時，至少外層仍會捲動。 */
 .modal-content {
     background: var(--color-surface);
-    border-radius: var(--r-md);
     box-shadow: var(--sh-3);
-    max-width: 500px;
-    width: 90%;
-    max-height: 80vh;
+    width: 100%;
+    max-width: none;
+    height: 100dvh;
+    max-height: 100dvh;
+    border-radius: 0;
     overflow: auto;
+    display: flex;
+    flex-direction: column;
+}
+@media (min-width: 640px) {
+    .modal { align-items: center; }
+    .modal-content {
+        width: 90%;
+        max-width: 500px;
+        height: auto;
+        max-height: 80vh;
+        border-radius: var(--r-md);
+    }
 }
 
 .modal-header {
@@ -280,6 +300,7 @@
     align-items: center;
     padding: var(--sp-4) var(--sp-6);
     border-bottom: var(--bd);
+    flex-shrink: 0;
 }
 .modal-header h3 {
     margin: 0;
@@ -299,14 +320,35 @@
 
 .modal-body {
     padding: var(--sp-6);
+    flex: 1;
+    overflow: auto;
+    -webkit-overflow-scrolling: touch;
 }
 
+/* 手機：確認/取消等操作列貼底並隨捲動保持可見（sticky，相對 .modal-body 的捲動範圍）；
+   640+ 還原為原本隨內容排版的樣子（static、無邊框、無自身 padding，維持零視覺變動）。 */
 .modal-actions {
     display: flex;
     justify-content: flex-end;
     gap: var(--sp-2);
     margin-top: var(--sp-4);
     flex-wrap: wrap;
+    position: sticky;
+    bottom: 0;
+    background: var(--color-surface);
+    border-top: var(--bd);
+    padding: var(--sp-3) 0 0;
+    flex-shrink: 0;
+}
+.modal-actions .btn { flex: 1; }
+@media (min-width: 640px) {
+    .modal-actions {
+        position: static;
+        border-top: 0;
+        padding: 0;
+        margin-top: var(--sp-4);
+    }
+    .modal-actions .btn { flex: 0 0 auto; }
 }
 
 /* 原 v2-app.js 的 .v2-modal-links（登入 modal 的「回登入／忘記密碼／註冊」列） */
@@ -377,6 +419,77 @@
 .data-table-compact { font-size: var(--fs-sm); }
 .data-table-compact th,
 .data-table-compact td { padding: 0.35rem var(--sp-2); }
+
+/* 手機卡片化表格（Stage 4）：預設（<640）卡片，640+ 由上面 .data-table 樣式接手還原表格。
+   綁定選擇器全用 class／closest('tr').dataset.id，這裡只加視覺屬性，不影響任何綁定。 */
+.data-table-cards thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+.data-table-cards,
+.data-table-cards tbody,
+.data-table-cards tr,
+.data-table-cards td { display: block; }
+.data-table-cards tr {
+    border: var(--bd);
+    border-radius: var(--r-md);
+    background: var(--color-surface);
+    padding: var(--sp-3);
+    margin-bottom: var(--sp-2);
+    box-shadow: var(--sh-1);
+}
+.data-table-cards td {
+    display: flex;
+    gap: var(--sp-3);
+    justify-content: space-between;
+    align-items: baseline;
+    border: 0;
+    padding: var(--sp-1) 0;
+    min-width: 0;
+}
+.data-table-cards td::before {
+    content: attr(data-label);
+    flex: 0 0 6.5em;
+    color: var(--color-text-muted);
+    font-size: var(--fs-xs);
+    font-weight: var(--fw-semibold);
+}
+.data-table-cards td > * { min-width: 0; overflow-wrap: anywhere; }
+.data-table-cards td.cell-primary { font-size: var(--fs-lg); font-weight: var(--fw-bold); }
+.data-table-cards td.cell-actions {
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+    margin-top: var(--sp-2);
+    padding-top: var(--sp-2);
+    border-top: 1px dashed var(--color-border);
+}
+.data-table-cards td.cell-actions::before,
+.data-table-cards td[colspan]::before { display: none; }
+.data-table-cards td[colspan] { text-align: center; color: var(--color-text-muted); padding: var(--sp-6) 0; }
+.data-table-cards input,
+.data-table-cards select { width: 100%; }
+@media (min-width: 640px) {
+    /* 640+ 全部還原為 table 顯示模型。display 與 td 的 padding/border 都改用明確值，
+       不用 revert：revert 會整個跳過 .data-table/.data-table td 等 author 層規則，
+       直接退回瀏覽器原生 table 樣式，並非退回「下一條較低優先度的 author 規則」
+       （與前置小修 .btn-google-signin 的 revert 陷阱同一類問題，這裡直接避開）。 */
+    .data-table-cards { display: table; }
+    .data-table-cards tbody { display: table-row-group; }
+    .data-table-cards tr { display: table-row; border: 0; border-radius: 0; padding: 0; margin: 0; box-shadow: none; background: none; }
+    .data-table-cards td {
+        display: table-cell;
+        /* 明確複製 .data-table td 的 padding/border-bottom，取代 revert */
+        padding: var(--sp-3);
+        border-bottom: var(--bd);
+        min-width: auto;
+    }
+    /* 5 張套用卡片化的表格全部同時掛 .data-table-compact；此組合選擇器比上面
+       .data-table-cards td 多一個 class，特異度較高，確保緊湊版還原的是緊湊 padding
+       而非普通版的 --sp-3（避免桌機表格「不小心變寬鬆」的視覺回歸）。 */
+    .data-table-compact.data-table-cards td { padding: 0.35rem var(--sp-2); }
+    .data-table-cards thead { position: static; width: auto; height: auto; overflow: visible; clip: auto; }
+    .data-table-cards td::before { display: none; }
+    .data-table-cards td.cell-primary { font-size: inherit; font-weight: inherit; }
+    .data-table-cards td.cell-actions { border-top: 0; margin: 0; padding-top: var(--sp-3); }
+}
 
 /* ===================================
    Toast（2 套 → 1 套：桌機右下、手機底部滿寬）
@@ -527,4 +640,31 @@
     display: flex;
     gap: var(--sp-2);
     margin-bottom: var(--sp-4);
+}
+
+/* ===================================
+   Selection tray（Stage 4：申請流程「已選課程」與「多重調課批次清單」視覺統一）
+   只做視覺統一，不做手機收合互動。同頁若有 features.css 內更具體的既有規則
+   （如 .selected-courses-container 的淡藍底），因該規則類別數相同但檔案載入
+   順序在後，會繼續蓋過這裡的預設值——刻意保留，避免改變既有視覺重點色。
+   =================================== */
+.selection-tray {
+    background: var(--color-surface);
+    border: var(--bd);
+    border-radius: var(--r-md);
+    padding: var(--sp-4);
+}
+.selection-tray-header {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--sp-2);
+    margin-bottom: var(--sp-3);
+}
+@media (min-width: 640px) {
+    .selection-tray-header {
+        flex-direction: row;
+        justify-content: space-between;
+        align-items: center;
+    }
 }
