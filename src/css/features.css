@@ -14,7 +14,14 @@
     border: var(--bd);
     border-radius: var(--r-sm);
     overflow: hidden;
+    /* 防禦：理論上不會發生的「無 highlight 裸 grid」情境（見下方 .schedule-grid-single
+       說明）在手機維持可橫捲、不裁切，而非硬擠 6 欄。overflow-y 沿用上面 hidden
+       （圓角裁切用途不變），640+ 還原為原本的 hidden（桌機從未需要橫捲）。 */
+    overflow-x: auto;
     margin-top: var(--sp-4);
+}
+@media (min-width: 640px) {
+    .schedule-grid { overflow-x: hidden; }
 }
 
 .schedule-cell {
@@ -35,6 +42,35 @@
         padding: var(--sp-2);
         min-height: 60px;
         font-size: var(--fs-xs);
+    }
+}
+
+/* ===================================
+   課表手機單日檢視（Stage 4）
+   .is-day-active 是純結構標記（JS 依 highlightWeekday／editorActiveDay 算出），只用來讓
+   下面的手機隱藏規則判斷「這是不是目前選取的那一天」；視覺高亮仍沿用既有
+   .active-day／.today-highlight（申請頁）與 .day-switcher-btn.is-active（編輯器）。
+   單日欄型綁在 .schedule-grid-single（而非裸 .schedule-grid）：申請頁步驟三實務上
+   一定帶 highlightWeekday（見 onTeacherOrDateChanged 必先檢查教師+日期才會渲染），
+   課表編輯器則固定掛此 class（見 renderEditableScheduleGrid）；裸 .schedule-grid
+   理論上不會被渲染成單日，維持原本 6 欄可橫捲即可（上面 overflow-x:auto 已處理）。
+   =================================== */
+.schedule-grid-single {
+    grid-template-columns: 60px 1fr;
+}
+/* 隱藏規則與下面 640+ 的還原規則使用完全相同的選擇器（僅 display 值不同），確保兩者
+   特異度相等，還原規則才能單純靠「media query 內、來源順序在後」贏過隱藏規則—— 若還原
+   規則的選擇器比隱藏規則簡單（特異度較低），即使包在 @media(min-width:640px) 裡也會被
+   隱藏規則蓋掉（隱藏規則沒有 media query，寬度不限，兩者都會在桌機同時命中）。 */
+.schedule-grid-single > .schedule-cell:not(.schedule-period):not(.schedule-lunch):not(.is-day-active):not(.schedule-corner) {
+    display: none;
+}
+@media (min-width: 640px) {
+    .schedule-grid-single {
+        grid-template-columns: 60px repeat(5, 1fr);
+    }
+    .schedule-grid-single > .schedule-cell:not(.schedule-period):not(.schedule-lunch):not(.is-day-active):not(.schedule-corner) {
+        display: flex;
     }
 }
 
@@ -417,6 +453,25 @@
 /* 通用按鈕列（步驟四確認/批次面板送出等） */
 .action-buttons { display: flex; gap: var(--sp-2); margin-top: var(--sp-4); flex-wrap: wrap; }
 
+/* 步驟四（確認調代課資訊）按鈕列手機 sticky bottom：拇指最容易點到的位置。只鎖定
+   #selected-course-info 這個容器內的 .action-buttons（描述性選擇器，非改名），
+   不影響同樣使用 .action-buttons 的批次面板送出列（兩者可能同時顯示，各自獨立）。 */
+#selected-course-info .action-buttons {
+    position: sticky;
+    bottom: 0;
+    background: var(--color-surface);
+    border-top: var(--bd);
+    padding: var(--sp-3);
+    z-index: 1;
+}
+@media (min-width: 640px) {
+    #selected-course-info .action-buttons {
+        position: static;
+        border-top: 0;
+        padding: 0;
+    }
+}
+
 /* ===================================
    調課紀錄（詳細資料 modal 內容）
    =================================== */
@@ -437,6 +492,32 @@
 .settlement-increase { color: var(--c-success-600); font-weight: var(--fw-semibold); }
 .settlement-decrease { color: var(--c-danger-600); font-weight: var(--fw-semibold); }
 .settlement-no-change { color: var(--color-text-muted); }
+
+/* 月結算表不轉卡片（數值比較表，橫向對照才有意義），維持 .table-wrap 橫捲，
+   只在手機層讓首欄（教師姓名）sticky，捲動時仍看得到是哪位教師的資料列。
+   640+ 還原 static：桌機欄數少通常不需要橫捲，sticky 在無捲動時也不會有視覺差異，
+   但仍明確還原以符合「僅手機層」的原始需求。 */
+#settlement-table th:first-child {
+    position: sticky;
+    left: 0;
+    background: var(--color-bg);
+}
+#settlement-table td:first-child {
+    position: sticky;
+    left: 0;
+    background: var(--color-surface);
+}
+/* 「有變動」列的整列底色（.settlement-row-changed，見上方）畫在 tr 上；sticky 首欄
+   自己的不透明底色會蓋掉，這裡補回同色，讓 sticky 欄在手機也能顯示變動高亮。 */
+#settlement-table tr.settlement-row-changed td:first-child {
+    background-color: var(--c-warning-100);
+}
+@media (min-width: 640px) {
+    #settlement-table th:first-child,
+    #settlement-table td:first-child {
+        position: static;
+    }
+}
 
 /* ===================================
    設定頁
@@ -606,7 +687,42 @@
 .editor-schedule-header h2 { margin: 0; }
 .editor-schedule-stats { color: var(--color-text-muted); font-size: var(--fs-lg); }
 
-#course-edit-modal .modal-content { max-width: 420px; }
+/* 手機日切換器（Stage 4）：課表編輯器沒有「已選日期」上下文可判斷單日，改用這排按鈕
+   讓使用者手動切換 .editorActiveDay。640+ 桌機恆顯示全週，不需要切換器。 */
+.day-switcher {
+    display: flex;
+    gap: var(--sp-1);
+    flex-wrap: wrap;
+    margin-bottom: var(--sp-3);
+}
+.day-switcher-btn {
+    flex: 1 1 auto;
+    min-width: 2.75rem;
+    min-height: var(--ctl-h-touch);
+    padding: var(--sp-2);
+    border: var(--bd);
+    border-radius: var(--r-sm);
+    background: var(--color-surface);
+    color: var(--color-text);
+    font-size: var(--fs-md);
+    font-weight: var(--fw-medium);
+    cursor: pointer;
+    transition: all var(--dur) var(--ease);
+}
+.day-switcher-btn:hover { border-color: var(--color-accent); background: var(--c-primary-50); }
+.day-switcher-btn.is-active {
+    background: var(--color-accent);
+    color: var(--color-text-invert);
+    border-color: var(--color-accent);
+}
+
+/* 420px 上限原本無 media query（全寬度皆生效）。在 375×667 這類窄手機看不出差異
+   （420 本來就 > 375，cap 不生效），但在 390~639px 之間的手機／小平板（如常見的
+   414/428px 機型）會被這條規則錯誤地夾住，讓這顆 modal 沒辦法跟其他 modal 一樣
+   全螢幕——與「桌機特例」的原意不符，補 640+ 讓它只在桌機生效。 */
+@media (min-width: 640px) {
+    #course-edit-modal .modal-content { max-width: 420px; }
+}
 #course-edit-modal .course-modal-info { font-weight: var(--fw-semibold); color: var(--color-accent); }
 
 /* ===================================
@@ -633,8 +749,17 @@
 .v2-tab-badge { position: relative; top: -1px; }
 
 /* .v2-log-table 保留 alias（HTML 同時掛 .data-table.data-table-compact 取得共用外觀，
-   這裡只留其特有的 code 欄字級與 hover） */
-.v2-log-table code { font-size: var(--fs-xs); }
+   這裡只留其特有的 code 欄字級與 hover）。Stage 4：詳情欄 JSON 字串最長截到 160 字，
+   卡片化後一行 flex 容器塞不下，補 line-clamp 限高＋防溢出（桌機表格模式下也適用，
+   避免長 JSON 把整列撐高）。 */
+.v2-log-table code {
+    font-size: var(--fs-xs);
+    overflow-wrap: anywhere;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
 
 .v2-logs-failed-banner {
     background: var(--c-danger-100); border: 1px solid var(--c-danger-600); color: var(--c-danger-800);

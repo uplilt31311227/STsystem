@@ -418,7 +418,7 @@ async function renderTeachersAdminTab() {
             </div>
         </div>
         <div class="table-wrap">
-        <table class="data-table data-table-compact">
+        <table class="data-table data-table-compact data-table-cards">
             <thead><tr><th>姓名</th><th>Email（登入帳號）</th><th>角色</th><th>領域</th><th>操作</th></tr></thead>
             <tbody>
             ${teachers.map(t => {
@@ -426,9 +426,9 @@ async function renderTeachersAdminTab() {
                 const rowClass = t.email ? 'v2-teacher-row' : 'v2-teacher-row v2-row-needs-email';
                 return `
                 <tr class="${rowClass}" data-id="${t.teacherId}">
-                    <td>${t.name}</td>
-                    <td><input type="email" class="v2-email-input" value="${t.email || ''}" placeholder="未指派"></td>
-                    <td>
+                    <td data-label="姓名" class="cell-primary">${t.name}</td>
+                    <td data-label="Email（登入帳號）"><input type="email" class="v2-email-input" value="${t.email || ''}" placeholder="未指派"></td>
+                    <td data-label="角色">
                         <select class="v2-role-select">
                             <option value="teacher"       ${normRole === 'teacher' ? 'selected' : ''}>教師</option>
                             <option value="section_chief" ${normRole === 'section_chief' ? 'selected' : ''}>組長</option>
@@ -436,8 +436,8 @@ async function renderTeachersAdminTab() {
                         </select>
                         <span class="v2-role-tag ${normRole}" style="margin-left:6px;">${roleLabel(t.role)}</span>
                     </td>
-                    <td>${(t.domains || []).join('、')}</td>
-                    <td>
+                    <td data-label="領域">${(t.domains || []).join('、')}</td>
+                    <td class="cell-actions">
                         <button class="btn btn-primary btn-sm v2-save-teacher">儲存</button>
                         ${renderTeacherAuthAction(t)}
                         <button class="btn btn-danger btn-sm v2-delete-teacher">刪除</button>
@@ -717,17 +717,17 @@ async function renderLogsTab() {
             <button class="btn btn-secondary btn-sm" id="v2-refresh-logs">重新整理</button>
         </div>
         <div class="table-wrap">
-        <table class="data-table data-table-compact v2-log-table">
+        <table class="data-table data-table-compact v2-log-table data-table-cards">
             <thead><tr><th>時間</th><th>操作者</th><th>角色</th><th>動作</th><th>對象</th><th>詳情</th></tr></thead>
             <tbody>
             ${visible.map(l => `
                 <tr>
-                    <td>${fmtDate(l.timestamp)}</td>
-                    <td>${l.actor?.name || l.actor?.email || '—'}</td>
-                    <td><span class="v2-role-tag ${l.actor?.role || ''}">${l.actor?.role || '—'}</span></td>
-                    <td>${l.action}</td>
-                    <td>${l.targetType || ''}${l.targetId ? ' / ' + l.targetId.slice(-6) : ''}</td>
-                    <td><code style="font-size:0.75rem;">${JSON.stringify(l.details).slice(0, 160)}</code></td>
+                    <td data-label="時間">${fmtDate(l.timestamp)}</td>
+                    <td data-label="操作者">${l.actor?.name || l.actor?.email || '—'}</td>
+                    <td data-label="角色"><span class="v2-role-tag ${l.actor?.role || ''}">${l.actor?.role || '—'}</span></td>
+                    <td data-label="動作">${l.action}</td>
+                    <td data-label="對象">${l.targetType || ''}${l.targetId ? ' / ' + l.targetId.slice(-6) : ''}</td>
+                    <td data-label="詳情"><code style="font-size:0.75rem;">${JSON.stringify(l.details).slice(0, 160)}</code></td>
                 </tr>`).join('')}
             </tbody>
         </table>
@@ -773,7 +773,7 @@ async function renderRecordsTab() {
             </div>
         </div>
         <div class="table-wrap">
-        <table class="data-table data-table-compact">
+        <table class="data-table data-table-compact data-table-cards">
             <thead><tr>
                 <th>日期</th><th>節次</th><th>班級</th><th>原教師</th><th>代/調對象</th><th>類型</th><th>發起</th>
                 <th>操作</th>
@@ -781,14 +781,14 @@ async function renderRecordsTab() {
             <tbody>
             ${displayed.map(r => `
                 <tr data-id="${r.recordId}">
-                    <td>${r.date || ''}</td>
-                    <td>${r.period || ''}</td>
-                    <td>${r.className || ''}</td>
-                    <td>${r.originalTeacher || ''}</td>
-                    <td>${r.substituteTeacher || r.swapTeacher || ''}</td>
-                    <td>${r.type || ''}${APPROVER_ROLES_FOR_BADGE.includes(r.initiatedByRole) ? ' <span class="v2-role-tag director">代發</span>' : ''}${r.isLegacy ? ' <span class="v2-legacy-badge" title="遷移自 V1 舊系統">舊系統</span>' : ''}</td>
-                    <td>${r.initiatedByName || ''}</td>
-                    <td>
+                    <td data-label="日期" class="cell-primary">${r.date || ''}</td>
+                    <td data-label="節次">${r.period || ''}</td>
+                    <td data-label="班級">${r.className || ''}</td>
+                    <td data-label="原教師">${r.originalTeacher || ''}</td>
+                    <td data-label="代/調對象">${r.substituteTeacher || r.swapTeacher || ''}</td>
+                    <td data-label="類型">${r.type || ''}${APPROVER_ROLES_FOR_BADGE.includes(r.initiatedByRole) ? ' <span class="v2-role-tag director">代發</span>' : ''}${r.isLegacy ? ' <span class="v2-legacy-badge" title="遷移自 V1 舊系統">舊系統</span>' : ''}</td>
+                    <td data-label="發起">${r.initiatedByName || ''}</td>
+                    <td class="cell-actions">
                         <button class="btn btn-secondary btn-sm v2-download-pdf" data-id="${r.recordId}">下載 PDF</button>
                         ${isApprover ? `<button class="btn btn-danger btn-sm v2-admin-delete" data-id="${r.recordId}">刪除</button>` : ''}
                     </td>

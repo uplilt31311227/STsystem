@@ -9,6 +9,46 @@ tags:
 
 ---
 
+## [2026-07-29]（feature/permission-system）UI 重規劃 Stage 4：手機專屬模式
+
+依 `docs/PLAN.md` Stage 4，補齊手機場景的三個重點：表格卡片化、課表單日檢視、modal 全螢幕；並順手修掉上輪驗收遺留的 2 個小缺陷。獨立 commit、獨立驗證。
+
+### 前置小修（上輪複驗遺留）
+- **`#google-signin-btn` 缺 `.btn` 基底**：Stage 3 收斂後這顆按鈕只掛 `.btn-google-signin`，沒有 `.btn`，桌機下沒有 `border-radius`（`.btn-google-signin` 自己從未定義圓角，圓角只在 `.btn`）。`index.html` 補回 `class="btn btn-google-signin"`
+- **3 處 `display:revert`／`padding:revert` 換明確值**：`revert` 會整個跳過所有 author 層規則直接退回瀏覽器原生樣式，不是退回「下一條較低優先度的 author 規則」——`.btn-google-signin{padding:revert}` 若疊在新補上的 `.btn` 之上，會跳過 `.btn` 的 `padding` 直接吃瀏覽器原生 button padding，而非期待中的 `.btn` padding。`components.css`（`.btn-google-signin span`／`.btn-google-signin` padding）與 `base.css`（`.user-name`）三處改為明確值（`display:inline`／`padding:var(--sp-2) var(--sp-4)`）。v2-app.js `injectV2Styles()` 內角色顯隱用的 `display:revert`（3 處）維持不動——那是刻意設計，不在此列
+
+### 新增（A. 表格手機卡片化）
+- `components.css` 新增 `.data-table-cards`：手機（<640）td 轉 `display:flex` 卡片列，`::before` 顯示 `data-label` 中文欄名；640+ 還原 `display:table`/`table-row-group`/`table-row`/`table-cell`（**未採用原草案的 `revert`**——同樣的 revert 陷阱，且草案的還原值本身也沒考慮到 5 張目標表格都同時掛 `.data-table-compact`，若直接還原成 `.data-table td` 的 `--sp-3` 會讓緊湊表格意外變寬鬆，另補 `.data-table-compact.data-table-cards td` 更高特異度規則還原緊湊 padding）
+- 5 支 render 函式共 31 個 `<td>` 補 `data-label`／`cell-primary`／`cell-actions`（只加屬性，不動 `.map()` 結構與綁定區塊）：`app.js` `renderRecordsTable`（8td）、`updateTeacherTable`（4td）；`v2-app.js` `renderTeachersAdminTab`（5td）、`renderLogsTab`（6td）、`renderRecordsTab`（8td）。對應 `<table>` 加 `data-table-cards`
+- `renderLogsTab` 的 JSON `<code>` 欄補 line-clamp（3 行截斷＋`overflow-wrap:anywhere`）
+- `#settlement-table`（不轉卡片，維持橫捲）補手機層首欄 sticky；一併補「有變動」列高亮色蓋到 sticky 欄的修正
+
+### 新增（B. 課表手機單日檢視）
+- `renderTeacherScheduleWithHighlight`（申請頁）／`renderEditableScheduleGrid`（課表編輯器）樣板補 `is-day-active` class（標題列/課程格/空堂格）、容器 toggle／恆掛 `.schedule-grid-single`；`features.css` 新增對應規則：手機僅顯示節次欄＋當日欄，640+ 還原 5 欄週檢視
+- 修一個實作中發現的隱藏漏洞：課表左上角「節次」標籤格只有 `.schedule-header` class（不是 `.schedule-period`），會被單日檢視的隱藏規則誤蓋掉；補 `.schedule-corner` class 並列入豁免清單
+- 課表編輯器新增手機日切換器（`#editor-day-switcher`，5 顆按鈕），綁定寫在 `renderEditableScheduleGrid()` 內（每次 render 重建，不累積 listener）；新增 `this.editorActiveDay` 欄位（初始為今日星期，週末 fallback 週一）
+- 新增 `.hidden-desktop` 通用工具 class（640+ 隱藏）；**用 `!important`**——`base.css` 載入順序在 `features.css` 之前，若無 `!important`，同特異度時後載入的 `.day-switcher{display:flex}` 會贏過先載入的隱藏規則（與現有 `.hidden` 用 `!important` 同一個理由，非新發明）
+- 裸 `.schedule-grid`（無 highlight 情境，目前程式碼路徑理論上不會觸發）補 `overflow-x:auto` 防禦，640+ 還原 `hidden`
+
+### 新增（C. Modal 手機全螢幕）
+- `components.css` modal 段落改寫為 mobile-first：<640 佔滿視口（`100dvh`）、`.modal-actions` sticky bottom；640+ 還原為現行桌機值（500px/90%/80vh/`--r-md`，零視覺變動，未採用草案中不同的 340/520/85vh/`--r-lg`）。`#course-edit-modal` 桌機 420px 特例保留
+
+### 新增（D. 申請頁 sticky action bar + selection-tray）
+- 步驟四按鈕列（`#selected-course-info .action-buttons`，描述性選擇器避免誤中批次面板同名 class）手機 sticky bottom，640+ 還原 static
+- 新增 `.selection-tray`／`.selection-tray-header` 共用視覺（surface/border/radius/標題列 flex），套用於「已選課程」與「多重調課批次清單」；批次清單新增標題列（含即時筆數 `#batch-swap-count`），「清除全部」鈕（`#batch-clear-btn`，id 不變）從底部移到標題列右上，與「已選課程」tray 對齊
+
+### 變更
+- CSS 版本號 `?v=2.3.1` → `?v=2.4.0`
+
+### 驗證
+- `npm run check`（27/27）、`node test/v2-smoke-test.js`、`node test/ui-rwd-check.mjs`（7/7 無橫向溢出）、`npm test`（41/41）全數通過
+- 另寫一次性 Playwright 腳本（未進 repo）涵蓋驗收清單 2(a-f)/3(a-e)/4 共 33 項斷言，全數通過，含最易斷處「編輯器切換日後點格仍能開 `#course-edit-modal`」與「桌機下 5 張表回 `display:table`／課表回 6 欄且全部可見／modal 回置中卡片」
+- V2 動態表（`?v2=1` 不登入看不到）以 fetch 原始碼靜態檢查 3 支 render 函式樣板字串皆含 `data-label` 與 `data-table-cards`
+
+### 已知取捨
+- `.v2-teacher-row input[type="email"]{max-width:220px}` 未移除：這是總計畫（`docs/PLAN.md` §4）列的項目，但本輪 Stage 4 任務說明只要求該表「姓名 cell-primary、操作 cell-actions」，且此上限不會造成手機溢出（純粹讓輸入框變窄），故留待之後視需要再處理
+- selection-tray 的「清除鈕位置文案對齊」以移動既有 `#batch-clear-btn` 到新標題列實作（id 不變，無需改綁定），而非新增重複按鈕；批次清單與已選課程 tray 的底色未強制統一（各自既有底色因載入順序仍會覆蓋 `.selection-tray` 的預設 surface 底，避免抹掉既有重點色）
+
 ## [2026-07-29]（feature/permission-system）UI 重規劃 Stage 3 驗收缺陷修正
 
 派獨立 agent 驗收 Stage 3（CSS 全面重寫＋元件收斂）後回報的 8 項缺陷，全數修復，獨立 commit。
