@@ -84,7 +84,7 @@
     background-color: var(--c-primary-600) !important;
     color: var(--color-text-invert) !important;
     border: 2px solid var(--c-primary-700) !important;
-    box-shadow: 0 0 0 2px rgba(14, 165, 233, 0.3);
+    box-shadow: var(--sh-focus);
     position: relative;
 }
 .schedule-course.multi-selected::before {
@@ -366,9 +366,10 @@
     font-size: var(--fs-sm);
     font-weight: bold;
     flex-shrink: 0;
+    align-self: flex-start;
 }
-@media (max-width: 639px) {
-    .batch-swap-number { align-self: flex-start; }
+@media (min-width: 640px) {
+    .batch-swap-number { align-self: center; }
 }
 .batch-swap-detail { flex: 1; font-size: var(--fs-lg); line-height: var(--lh-base); min-width: 0; }
 .batch-swap-slot-a,
@@ -477,14 +478,17 @@
 .sync-account-info p { margin: 0; color: var(--c-success-800); }
 
 .conflict-description { margin-bottom: var(--sp-4); color: var(--color-text); }
-.conflict-options { display: flex; flex-direction: column; gap: var(--sp-3); margin-bottom: var(--sp-4); }
+.conflict-options { display: flex; flex-direction: column; gap: var(--sp-2); margin-bottom: var(--sp-4); }
 .conflict-option-header { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-2); }
 .conflict-option-details { font-size: var(--fs-sm); color: var(--color-text-muted); padding-left: var(--sp-6); }
 .conflict-option-details p { margin: var(--sp-1) 0; }
+/* mobile-first override：components.css 的 .conflict-option{padding:var(--sp-4)} 是全寬度預設，
+   這裡先收斂為手機值，≥640px 的媒體查詢再蓋回桌機值（同檔內 features.css 後載入故可覆寫）。 */
+.conflict-option { padding: var(--sp-3); }
 .conflict-warning { padding: var(--sp-3); background-color: var(--c-warning-100); border-radius: var(--r-sm); font-size: var(--fs-lg); color: var(--c-warning-800); margin-bottom: var(--sp-4); }
-@media (max-width: 639px) {
-    .conflict-options { gap: var(--sp-2); }
-    .conflict-option { padding: var(--sp-3); }
+@media (min-width: 640px) {
+    .conflict-options { gap: var(--sp-3); }
+    .conflict-option { padding: var(--sp-4); }
 }
 .merge-data-summary { background-color: var(--color-surface-2); border-radius: var(--r-md); padding: var(--sp-4); margin: var(--sp-4) 0; }
 .merge-summary-item { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-2) 0; }
@@ -657,6 +661,12 @@ body.v2-locked #v2-auth-gate {
     display: flex; align-items: center; justify-content: center;
     background: linear-gradient(135deg, var(--c-primary-800) 0%, var(--c-primary-700) 100%);
 }
+
+/* 登入 modal（openAuthModal() 建立的 #v2-auth-modal-backdrop）：補 --z-authmodal，蓋過
+   上面的 --z-authgate 遮罩。Stage 3 驗收缺陷：這顆 modal 換 .modal 後只吃到
+   components.css 的 --z-modal(1000)，被 --z-authgate(1100) 蓋住，Email 登入輸入框
+   完全無法點擊。id 選擇器 specificity 已高於 .modal，不需 !important。 */
+#v2-auth-modal-backdrop { z-index: var(--z-authmodal); }
 .v2-auth-gate-card {
     background: var(--color-surface); border-radius: var(--r-lg); padding: var(--sp-10) var(--sp-8);
     width: 92%; max-width: 420px; text-align: center; box-shadow: var(--sh-3);

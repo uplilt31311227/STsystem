@@ -11,7 +11,7 @@
     align-items: center;
     justify-content: center;
     gap: var(--sp-2);
-    min-height: var(--ctl-h);
+    min-height: var(--ctl-h-touch);
     padding: var(--sp-2) var(--sp-4);
     border: none;
     border-radius: var(--r-sm);
@@ -22,8 +22,8 @@
     transition: all var(--dur) var(--ease);
 }
 
-@media (max-width: 639px) {
-    .btn { min-height: var(--ctl-h-touch); }
+@media (min-width: 640px) {
+    .btn { min-height: var(--ctl-h); }
 }
 
 .btn:focus-visible {
@@ -53,9 +53,13 @@
 .btn-block { display: flex; width: 100%; }
 
 .btn-sm {
-    min-height: var(--ctl-h-sm);
+    min-height: var(--ctl-h-touch);
     padding: var(--sp-1) var(--sp-3);
     font-size: var(--fs-xs);
+}
+
+@media (min-width: 640px) {
+    .btn-sm { min-height: var(--ctl-h-sm); }
 }
 
 /* Google 品牌按鈕：header 的 .btn-google-signin（Tier A 保留名）與登入遮罩的 .btn-google
@@ -78,9 +82,12 @@
 
 .google-icon { flex-shrink: 0; }
 
-@media (max-width: 639px) {
-    .btn-google-signin span { display: none; }
-    .btn-google-signin { padding: var(--sp-2); }
+.btn-google-signin span { display: none; }
+.btn-google-signin { padding: var(--sp-2); }
+
+@media (min-width: 640px) {
+    .btn-google-signin span { display: revert; }
+    .btn-google-signin { padding: revert; }
 }
 
 .upload-link {
@@ -88,6 +95,22 @@
     cursor: pointer;
     text-decoration: underline;
 }
+
+/* 行內文字連結（原句中 .btn-link，Stage 3 誤併入 .btn.btn-ghost 撐成 64×37 方塊、
+   撐高段落——此變體不掛 .btn，維持行內文字流），用於段落句中的操作入口
+   （如「備份與還原請至『設定』分頁」）。 */
+.btn-inline {
+    display: inline;
+    min-height: 0;
+    padding: 0;
+    border: 0;
+    background: none;
+    font-size: inherit;
+    text-decoration: underline;
+    color: var(--color-accent);
+    cursor: pointer;
+}
+.btn-inline:hover { color: var(--color-accent-hover); }
 
 /* ===================================
    卡片（8+3 套 → 1 套：.card 基底 + 變體）

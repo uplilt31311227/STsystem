@@ -982,6 +982,9 @@ function promptAdditionalConsentTeachers(record, allTeachers) {
         if (!candidates.length) { resolve([]); return; }
 
         const backdrop = document.createElement('div');
+        // 專屬 id（Stage 3 驗收修正）：供 e2e 腳本精準指認，避免通用 .modal 選擇器
+        // 誤中 #modal-root 內 5 個常駐（但預設 hidden）的靜態 modal。
+        backdrop.id = 'v2-extra-consent-modal';
         backdrop.className = 'modal';
         backdrop.innerHTML = `
             <div class="modal-content" style="max-width:420px;">
@@ -1452,41 +1455,57 @@ async function autoSyncTeachersToV2(legacyTeachers) {
     }
 }
 
+/**
+ * Stage 3 驗收修正：原自建 fixed toast（硬編 #fffbeb/#d97706/#92400e/#78350f + inline
+ * position:fixed/z-index）收斂為共用 #toast-container + .toast 結構 class，色彩改
+ * token（跟 components.css 的 .toast.toast-warning 走同一套視覺與淡入/淡出動畫），
+ * 僅保留這顆 toast 特有的「前往教師管理」動作鈕（共用 showToast()/notify() 都不支援
+ * 附加動作鈕，故仍走自建 DOM，但完全併入共用容器與樣式）。
+ */
 function showGoToTeacherAdminToast(count) {
     const existing = document.getElementById('v2-import-followup-toast');
     if (existing) existing.remove();
 
+    let container = document.getElementById('toast-container');
+    if (!container) {
+        container = document.createElement('div');
+        container.id = 'toast-container';
+        document.body.appendChild(container);
+    }
+
     const toast = document.createElement('div');
     toast.id = 'v2-import-followup-toast';
-    toast.style.cssText = `
-        position: fixed; bottom: 24px; right: 24px; z-index: var(--z-toast);
-        background: #fffbeb; border: 1px solid #d97706; border-radius: 8px;
-        padding: 12px 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-        max-width: 320px; font-size: 0.9rem;
-    `;
+    toast.className = 'toast toast-warning';
     toast.innerHTML = `
-        <div style="display:flex; align-items:center; gap:10px;">
-            <span style="font-size:1.4rem;">📧</span>
-            <div style="flex:1;">
-                <div style="font-weight:600; color:#92400e;">${count} 位新教師待指派 email</div>
-                <div style="color:#78350f; font-size:0.82rem; margin-top:2px;">未指派 email 的教師無法登入系統</div>
+        <span class="toast-icon">📧</span>
+        <div class="toast-body">
+            <div><strong>${count}</strong> 位新教師待指派 email</div>
+            <div class="v2-pending-meta">未指派 email 的教師無法登入系統</div>
+            <div class="action-buttons">
+                <button id="v2-goto-teacher-admin" class="btn btn-primary btn-sm">前往教師管理</button>
+                <button id="v2-dismiss-followup-toast" class="btn btn-secondary btn-sm">稍後</button>
             </div>
         </div>
-        <div style="display:flex; gap:8px; margin-top:10px;">
-            <button id="v2-goto-teacher-admin" class="btn btn-primary btn-sm" style="flex:1;">前往教師管理</button>
-            <button id="v2-dismiss-followup-toast" class="btn btn-secondary btn-sm">稍後</button>
-        </div>
+        <button class="toast-close">&times;</button>
     `;
-    document.body.appendChild(toast);
+    container.appendChild(toast);
+    requestAnimationFrame(() => toast.classList.add('show'));
+
+    const dismiss = () => {
+        toast.classList.remove('show');
+        toast.classList.add('hide');
+        toast.addEventListener('transitionend', () => toast.remove(), { once: true });
+    };
 
     document.getElementById('v2-goto-teacher-admin').addEventListener('click', () => {
         const tabBtn = document.querySelector('.tab-btn[data-tab="teachers"]');
         if (tabBtn) tabBtn.click();
-        toast.remove();
+        dismiss();
     });
-    document.getElementById('v2-dismiss-followup-toast').addEventListener('click', () => toast.remove());
+    document.getElementById('v2-dismiss-followup-toast').addEventListener('click', dismiss);
+    toast.querySelector('.toast-close').addEventListener('click', dismiss);
 
-    setTimeout(() => toast.remove(), 30000);
+    setTimeout(dismiss, 30000);
 }
 
 /**
