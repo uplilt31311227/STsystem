@@ -930,13 +930,11 @@ class SubstituteTeacherApp {
             if (btn) {
                 if (isConfigured) {
                     btn.classList.remove('disabled');
-                    btn.style.opacity = '1';
-                    btn.style.cursor = 'pointer';
                 } else {
                     btn.classList.add('disabled');
-                    btn.style.opacity = '0.5';
-                    btn.style.cursor = 'not-allowed';
                 }
+                // F10 修復：改用 class 切換而非 inline style，避免蓋掉新 CSS（見 hotfix 區塊 .tab-btn.is-locked）
+                btn.classList.toggle('is-locked', !isConfigured);
             }
         });
     }
@@ -1655,6 +1653,7 @@ class SubstituteTeacherApp {
             ? `✓ ${esc(originalCourse.className)} 的 ${esc(originalCourse.originalTeacher)} 自行調動課程時段，科目互換`
             : `✓ ${esc(originalCourse.className)} 的 ${esc(originalCourse.originalTeacher)} 與 ${esc(swapCourse.teacher)} 互換課程時段，雙方總時數不變`;
         swapPreviewContent.innerHTML = `
+            <div class="table-wrap">
             <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
                 <tr style="background: #e0f2fe;">
                     <th style="padding: 8px; border: 1px solid #bae6fd; text-align: center;">時段</th>
@@ -1678,6 +1677,7 @@ class SubstituteTeacherApp {
                     <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center; color: #b45309; font-weight: bold;">${esc(originalCourse.originalTeacher)}（${esc(originalCourse.subject)}）</td>
                 </tr>
             </table>
+            </div>
             <p style="margin: 10px 0 0 0; color: #0369a1; font-size: 13px;">
                 ${swapSummary}
             </p>

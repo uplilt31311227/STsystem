@@ -86,7 +86,7 @@ function injectV2Styles() {
     .v2-log-table tbody tr:hover { background: #f9fafb; }
 
     .v2-teacher-row td { vertical-align: middle; }
-    .v2-teacher-row input[type="email"] { width: 220px; }
+    .v2-teacher-row input[type="email"] { width: 100%; max-width: 220px; }
     .v2-row-needs-email { background: #fffbeb; }
     .v2-row-needs-email td:first-child::before {
         content: '⚠ '; color: #d97706; font-weight: bold;
@@ -111,11 +111,13 @@ function injectV2Styles() {
     .v2-email-login-trigger:hover { color: #1d4ed8; }
 
     /* 登入遮罩：V2 模式未授權時鎖定整個 app，阻擋所有互動（含月結算下載）。
-       z-index 9990 低於登入 modal(10000)/toast(9999)，故登入 modal 仍可疊上操作。 */
+       z-index 改用 token：--z-authgate(1100) < --z-authmodal(1200) < --z-toast(1300)，
+       故登入 modal 仍可疊在遮罩之上，且 toast 一律蓋在登入 modal 之上
+       （Stage 1 修復 toast 被登入 modal 蓋住的問題）。 */
     #v2-auth-gate { display: none; }
     body.v2-locked { overflow: hidden; }
     body.v2-locked #v2-auth-gate {
-        position: fixed; inset: 0; z-index: 9990;
+        position: fixed; inset: 0; z-index: var(--z-authgate);
         display: flex; align-items: center; justify-content: center;
         background: linear-gradient(135deg, #1e3a8a 0%, #1e40af 100%);
     }
@@ -142,7 +144,7 @@ function injectV2Styles() {
     .v2-modal-backdrop {
         position: fixed; inset: 0; background: rgba(0,0,0,0.45);
         display: flex; align-items: center; justify-content: center;
-        z-index: 10000;
+        z-index: var(--z-authmodal);
     }
     .v2-modal {
         background: #fff; border-radius: 10px; padding: 1.5rem;
@@ -549,6 +551,7 @@ async function renderTeachersAdminTab() {
                 <button class="btn btn-primary btn-sm" id="v2-add-teacher">新增教師</button>
             </div>
         </div>
+        <div class="table-wrap">
         <table class="data-table data-table-compact">
             <thead><tr><th>姓名</th><th>Email（登入帳號）</th><th>角色</th><th>領域</th><th>操作</th></tr></thead>
             <tbody>
@@ -577,6 +580,7 @@ async function renderTeachersAdminTab() {
             }).join('')}
             </tbody>
         </table>
+        </div>
     `;
 
     host.querySelectorAll('.v2-save-teacher').forEach(btn =>
@@ -844,6 +848,7 @@ async function renderLogsTab() {
             <h3>操作日誌 <small style="color:#6b7280;font-weight:normal;">（${visible.length} 筆）</small></h3>
             <button class="btn btn-secondary btn-sm" id="v2-refresh-logs">重新整理</button>
         </div>
+        <div class="table-wrap">
         <table class="v2-log-table">
             <thead><tr><th>時間</th><th>操作者</th><th>角色</th><th>動作</th><th>對象</th><th>詳情</th></tr></thead>
             <tbody>
@@ -858,6 +863,7 @@ async function renderLogsTab() {
                 </tr>`).join('')}
             </tbody>
         </table>
+        </div>
     `;
     document.getElementById('v2-refresh-logs')?.addEventListener('click', renderLogsTab);
 }
@@ -898,6 +904,7 @@ async function renderRecordsTab() {
                 </label>
             </div>
         </div>
+        <div class="table-wrap">
         <table class="data-table data-table-compact">
             <thead><tr>
                 <th>日期</th><th>節次</th><th>班級</th><th>原教師</th><th>代/調對象</th><th>類型</th><th>發起</th>
@@ -920,6 +927,7 @@ async function renderRecordsTab() {
                 </tr>`).join('')}
             </tbody>
         </table>
+        </div>
     `;
 
     document.getElementById('v2-records-legacy-filter')?.addEventListener('change', (e) => {
