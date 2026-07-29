@@ -35,7 +35,7 @@ body {
     box-shadow: var(--shadow);
     position: sticky;
     top: 0;
-    z-index: 100;
+    z-index: var(--z-sticky);
 }
 
 .header h1 {
@@ -1140,7 +1140,7 @@ body {
     display: flex;
     align-items: center;
     justify-content: center;
-    z-index: 1000;
+    z-index: var(--z-modal);
 }
 
 .modal.hidden {
@@ -1417,7 +1417,7 @@ body {
     justify-content: center;
     font-size: 18px;
     color: #64748b;
-    z-index: 100;
+    z-index: var(--z-veil);
 }
 
 /* ===================================
@@ -2693,7 +2693,7 @@ body {
     position: fixed;
     top: 1rem;
     right: 1rem;
-    z-index: 9999;
+    z-index: var(--z-toast);
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
@@ -2775,4 +2775,56 @@ body {
 .toast.toast-info {
     border-left-color: var(--primary-color);
     background: #eff6ff;
+}
+
+/* ===================================
+   ===== Stage 1 hotfix =====
+   手機硬傷急救：表格橫捲、課表格防裁切、flex 收縮/換行、頁籤鎖定 class 化。
+   暫不重寫既有規則，僅新增規則；不得新增裸元素全域選擇器（F6 PDF 保護）。
+   =================================== */
+
+/* 表格橫向捲動（手機防溢出）：包住 #teacher-table/#records-table/#settlement-table/
+   科目領域表、v2 教師管理表/操作日誌表/全校紀錄表、調課預覽 inline 表 */
+.table-wrap {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+/* 課表格子防裁切：格子可縮後文字自行換行裁切，.schedule-grid 的 overflow:hidden 不動 */
+.schedule-cell {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+/* flex 子項預設不縮（min-width:auto），手機寬度不足時會撐破容器，這裡放行收縮 */
+.form-group {
+    min-width: 0;
+}
+
+.recommendation-info {
+    min-width: 0;
+}
+
+@media (max-width: 767px) {
+    .form-group input,
+    .form-group select {
+        min-width: 0;
+    }
+}
+
+/* flex-wrap：按鈕/操作列在手機寬度不足時允許換行，避免橫向溢出 */
+.recommendation-item,
+.action-buttons,
+.modal-actions,
+.teacher-header-actions,
+.editor-schedule-actions,
+.backup-restore-row {
+    flex-wrap: wrap;
+}
+
+/* F10：頁籤鎖定狀態改用 class 切換（app.js updateTabLockStatus），取代原本的
+   inline style.opacity/cursor 寫入，避免蓋掉新 CSS */
+.tab-btn.is-locked {
+    opacity: 0.5;
+    cursor: not-allowed;
 }

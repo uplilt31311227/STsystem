@@ -37,7 +37,7 @@ function injectStyles() {
     const style = document.createElement('style');
     style.id = 'v2-uifeedback-styles';
     style.textContent = `
-    #${FALLBACK_STACK_ID} { position: fixed; bottom: 24px; right: 24px; z-index: 9999;
+    #${FALLBACK_STACK_ID} { position: fixed; bottom: 24px; right: 24px; z-index: var(--z-toast);
         display: flex; flex-direction: column-reverse; gap: 8px; max-width: 320px; }
     .v2-uifeedback-toast { background: #1f2937; color: #fff; border-radius: 8px; padding: 10px 14px;
         font-size: 0.88rem; line-height: 1.5; box-shadow: 0 4px 12px rgba(0,0,0,0.2);
@@ -48,7 +48,8 @@ function injectStyles() {
     .v2-uifeedback-toast .v2-uifeedback-close { background: none; border: none; color: inherit;
         cursor: pointer; font-size: 1rem; line-height: 1; opacity: 0.75; padding: 0 0 0 6px; }
     .v2-uifeedback-toast .v2-uifeedback-close:hover { opacity: 1; }
-    #${SYNC_BADGE_ID} { position: fixed; top: 10px; right: 10px; z-index: 9998;
+    /* Stage 1 硬傷急救：徽章移入 header 內排版顯示（原 fixed 右上角與 toast/header 三重疊） */
+    #${SYNC_BADGE_ID} { position: static; display: inline-block; margin-left: 8px; vertical-align: middle;
         background: #92400e; color: #fff; font-size: 0.8rem; font-weight: 600;
         padding: 4px 10px; border-radius: 12px; box-shadow: 0 2px 6px rgba(0,0,0,0.2); }
     `;
@@ -122,7 +123,9 @@ export function setSyncStatus(ok, reason) {
         const badge = existing || document.createElement('div');
         if (!existing) {
             badge.id = SYNC_BADGE_ID;
-            document.body.appendChild(badge);
+            // Stage 1：徽章移入 header 內（原 fixed 右上角），找不到掛點時 fallback 回 body
+            const mount = document.querySelector('.header-top') || document.body;
+            mount.appendChild(badge);
         }
         badge.textContent = '⚠ 即時同步中斷';
         if (reason) badge.title = `代碼：${reason}`;
