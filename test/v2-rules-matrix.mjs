@@ -2,9 +2,11 @@
 /**
  * V2 Firestore 規則 allow/deny 矩陣測試
  *
- * 目的：firestore.rules（v2.2，三層角色）從未有自動化測試，每次改規則都靠人肉推理。
- * 本檔直接打 Firestore REST API（純 node 內建 fetch，無外部依賴），驗證 26 個
- * 正向／攻擊案例是否符合預期的 ALLOW/DENY。
+ * 目的：firestore.rules（v2.3，三層角色 + Phase 6 敏感欄位私有化）從未有自動化測試，
+ * 每次改規則都靠人肉推理。本檔直接打 Firestore REST API（純 node 內建 fetch，無外部
+ * 依賴），驗證 43 個正向／攻擊案例是否符合預期的 ALLOW/DENY，其中 P13-P19／X15-X24
+ * 專門覆蓋 substituteRecords/{id}/private/detail 與 pendingRequests/{id}/private/detail
+ * 這兩處敏感欄位（leaveType/leaveTypeName/reason）子文件的權限邊界。
  *
  * 用法：node test/v2-rules-matrix.mjs
  *
@@ -20,10 +22,16 @@
  * 絕不寫入或刪除 tch_* 開頭的正式教師檔、既有 substituteRecords/operationLogs、
  * schools/inhu/config/main。攻擊案例的目標若是「既有文件」，一律只指向測試帳號
  * 自己的文件（自己的 teachers doc、自己的 userMapping），不對正式教師檔做寫入嘗試。
+ * 唯一例外：REAL_RECORD_WITH_PRIVATE_DETAIL（正式紀錄 rec_1783657255158_nv698xk）
+ * 僅供「執行完成後完整性檢查」讀取比對用，全程只 GET、絕不 PATCH/DELETE。
  *
  * 案例設計依據：
  *   - src/js/modules/v2/pendingRequestService.js（三種審核狀態機的實際寫入欄位）
- *   - firestore.rules 第 100-351 行（schools/{schoolId} 下所有 match block）
+ *   - src/js/modules/v2/schemaConstants.js（private/detail 固定 docId 為 'detail'，
+ *     substituteDetailDoc()/pendingDetailDoc() 兩個路徑產生器）
+ *   - firestore.rules 第 100-360 行（schools/{schoolId} 下所有 match block，含
+ *     第 103-115 行 private/detail 共用 helper、第 222-235 行 substituteRecords
+ *     私有明細、第 345-352 行 pendingRequests 私有明細）
  * 逐案 rulesRef 標注對應 firestore.rules 行號區間，供未來改規則時回溯。
  *
  * 執行完成後，把「成功建立」的文件路徑寫到 test/.last-test-docs.json（已加入
@@ -48,6 +56,10 @@ const SCHOOL_ID   = 'inhu';
 const FIRESTORE_BASE = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents`;
 // 既有正式 director——唯讀參照用，攻擊案例②③會「引用」此 ID 但絕不寫入此文件本身。
 const REAL_DIRECTOR_TEACHER_ID = 'tch_1780040513944_kl4wgr9';
+// 既有正式 substituteRecords——唯讀參照用，僅供跑完後的完整性檢查比對
+// private/detail.leaveType 是否仍為「長期病假」，絕不寫入/更新/刪除此文件或其子文件。
+const REAL_RECORD_WITH_PRIVATE_DETAIL = 'rec_1783657255158_nv698xk';
+const REAL_RECORD_EXPECTED_LEAVE_TYPE = '長期病假';
 
 const FALLBACK_CREDS_PATH = 'C:\\Users\\uplil\\AppData\\Local\\Temp\\claude\\C--Users-uplil-sideprojet-STsystem\\af9a3c19-dd93-45b3-92cd-e97c9633ce40\\scratchpad\\test-tokens.json';
 const LAST_DOCS_PATH = path.join(__dirname, '.last-test-docs.json');
@@ -264,7 +276,9 @@ function printCaseResult(c, result) {
 }
 
 // ---------------------------------------------------------------------------
-// 26 案例定義（正向 P01-P12、攻擊 X01-X14）
+// 43 案例定義（正向 P01-P19、攻擊 X01-X24）
+// P13-P19／X15-X24（Phase 6）覆蓋 substituteRecords 與 pendingRequests 底下
+// private/detail 子文件（leaveType/leaveTypeName/reason 敏感欄位）的權限邊界。
 // ---------------------------------------------------------------------------
 function buildCases({ A, B, C }) {
     const col = {
@@ -292,6 +306,16 @@ function buildCases({ A, B, C }) {
         reqAttack10:    zz('req_attack10'),
         reqAttack11:    zz('req_attack11'),
         recAttack12:    zz('rec_attack12'),
+        // ---- Phase 6：private/detail 專用（P13-P19／X15-X24）----
+        recApprove2:    zz('rec_approve2'),   // P13 setup 父文件（丙代建乙的自我調課紀錄）
+        reqPriv19:      zz('req_priv19'),     // P19 setup 父請求
+        recAttack16:    zz('rec_attack16'),   // X16 假別=公假
+        recAttack17:    zz('rec_attack17'),   // X17 假別=長期病假
+        recAttack18:    zz('rec_attack18'),   // X18 假別=喪假
+        recAttack19:    zz('rec_attack19'),   // X19 假別=事假（對照 P19）
+        recAttack20:    zz('rec_attack20'),   // X20 ACL 不含自己
+        recAttack23:    zz('rec_attack23'),   // X23 白名單外欄位
+        recAttack24:    zz('rec_attack24'),   // X24 allowedTeacherIds 型別錯誤
     };
     const cases = [];
 
@@ -489,6 +513,100 @@ function buildCases({ A, B, C }) {
         path: `${col.mappings}/${A.uid}`, expect: 'ALLOW',
         rulesRef: 'rules:328 userMappings read（本人）',
         steps: [{ kind: 'get', label: '讀自己 userMapping', docPath: `${col.mappings}/${A.uid}`, expect: 'ALLOW', idToken: A.idToken }],
+    });
+
+    // ===================== 正向 Phase 6 補充：private/detail（P13-P19） =====================
+
+    cases.push({
+        id: 'P13', type: 'positive', actor: 'C(組長丙)', method: 'CREATE+CREATE',
+        desc: '正向⑬組長丙 建立紀錄的私有明細（任意假別，例如長期病假；父文件為丙代建的乙自我調課紀錄）',
+        path: `${col.records}/${docId.recApprove2}/private/detail`, expect: 'ALLOW',
+        rulesRef: 'rules:224-232 私有明細 create（isApprover 分支，不受假別限制）',
+        steps: [
+            {
+                kind: 'create', label: '(setup 丙代建乙的自我調課父文件)', collectionPath: col.records, docId: docId.recApprove2, expect: 'ALLOW', idToken: C.idToken,
+                data: {
+                    type: '調課', isSelfSwap: true,
+                    originalTeacherId: B.teacherId, swapTeacherId: B.teacherId, substituteTeacherId: B.teacherId,
+                    date: '2026-08-13', period: '第一節', className: '7年2班',
+                    status: 'approved', approvedAt: nowIso(), approvedBy: C.teacherId, approvedByName: C.label,
+                    createdAt: nowIso(),
+                },
+            },
+            {
+                kind: 'create', label: '建立私有明細（長期病假，ACL 僅含乙）', collectionPath: `${col.records}/${docId.recApprove2}/private`, docId: 'detail', expect: 'ALLOW', idToken: C.idToken,
+                data: { leaveType: '長期病假', leaveTypeName: '長期病假', reason: 'zz_test 長期病假事由（乙）', allowedTeacherIds: [B.teacherId] },
+            },
+        ],
+    });
+
+    cases.push({
+        id: 'P14', type: 'positive', actor: 'C(組長丙)', method: 'GET',
+        desc: '正向⑭組長丙 讀取任一私有明細（P13 建立的乙自我調課明細）',
+        path: `${col.records}/${docId.recApprove2}/private/detail`, expect: 'ALLOW',
+        rulesRef: 'rules:223 私有明細 read（isApprover 分支）',
+        steps: [{ kind: 'get', label: '丙讀取乙的私有明細', docPath: `${col.records}/${docId.recApprove2}/private/detail`, expect: 'ALLOW', idToken: C.idToken }],
+    });
+
+    cases.push({
+        id: 'P15', type: 'positive', actor: 'C(組長丙)', method: 'PATCH',
+        desc: '正向⑮組長丙 更新既有私有明細（補充 reason 說明文字）',
+        path: `${col.records}/${docId.recApprove2}/private/detail`, expect: 'ALLOW',
+        rulesRef: 'rules:233 私有明細 update（僅 approver）',
+        steps: [{
+            kind: 'patch', label: '丙補充 reason', docPath: `${col.records}/${docId.recApprove2}/private/detail`, expect: 'ALLOW', idToken: C.idToken,
+            data: { reason: 'zz_test 長期病假事由（乙，已補充說明）' },
+        }],
+    });
+
+    cases.push({
+        id: 'P16', type: 'positive', actor: 'A(教師甲)', method: 'CREATE',
+        desc: '正向⑯教師甲 建立自己自我調課紀錄（recSelfSwap1）的私有明細（leaveType=調課，ACL 只含自己）',
+        path: `${col.records}/${docId.recSelfSwap1}/private/detail`, expect: 'ALLOW',
+        rulesRef: 'rules:224-231 私有明細 create（教師分支：ACL 含自己 + leaveType in [調課,swap]）',
+        steps: [{
+            kind: 'create', label: '甲建立自己的私有明細', collectionPath: `${col.records}/${docId.recSelfSwap1}/private`, docId: 'detail', expect: 'ALLOW', idToken: A.idToken,
+            data: { leaveType: '調課', leaveTypeName: '調課', reason: '', allowedTeacherIds: [A.teacherId] },
+        }],
+    });
+
+    cases.push({
+        id: 'P17', type: 'positive', actor: 'A(教師甲)', method: 'GET',
+        desc: '正向⑰教師甲 讀取 ACL 含自己的私有明細（P16 剛建立的自我調課明細）',
+        path: `${col.records}/${docId.recSelfSwap1}/private/detail`, expect: 'ALLOW',
+        rulesRef: 'rules:223/107-110 私有明細 read（當事人分支：myTeacherId in allowedTeacherIds）',
+        steps: [{ kind: 'get', label: '甲讀取自己的私有明細', docPath: `${col.records}/${docId.recSelfSwap1}/private/detail`, expect: 'ALLOW', idToken: A.idToken }],
+    });
+
+    cases.push({
+        id: 'P18', type: 'positive', actor: 'A(教師甲)', method: 'GET',
+        desc: '正向⑱教師甲 讀取該紀錄的父文件（排課資訊全校仍可讀，確認未過度收緊）',
+        path: `${col.records}/${docId.recSelfSwap1}`, expect: 'ALLOW',
+        rulesRef: 'rules:185 substituteRecords read（任何登入者）',
+        steps: [{ kind: 'get', label: '甲讀取 recSelfSwap1 父文件', docPath: `${col.records}/${docId.recSelfSwap1}`, expect: 'ALLOW', idToken: A.idToken }],
+    });
+
+    cases.push({
+        id: 'P19', type: 'positive', actor: 'A(教師甲)', method: 'CREATE+CREATE',
+        desc: '正向⑲教師甲 建立自己發起的待審請求私有明細（pendingRequests 底下，真實假別事假——此路徑不受調課限制）',
+        path: `${col.pending}/${docId.reqPriv19}/private/detail`, expect: 'ALLOW',
+        rulesRef: 'rules:348-349 pendingRequests 私有明細 create（無 leaveType 限制，控制點在審核）',
+        steps: [
+            {
+                kind: 'create', label: '(setup 甲建立新的代課請求)', collectionPath: col.pending, docId: docId.reqPriv19, expect: 'ALLOW', idToken: A.idToken,
+                data: {
+                    requestType: 'substitute', status: 'pending_approval',
+                    initiatedBy: A.teacherId, initiatedByName: A.label,
+                    pendingConsentTeacherIds: [], swapConsents: {}, createdAt: nowIso(),
+                    type: '代課', date: '2026-08-14', period: '第二節', className: '7年3班',
+                    originalTeacherId: A.teacherId, substituteTeacherId: B.teacherId,
+                },
+            },
+            {
+                kind: 'create', label: '建立私有明細（事假，非調課類但此路徑不受限）', collectionPath: `${col.pending}/${docId.reqPriv19}/private`, docId: 'detail', expect: 'ALLOW', idToken: A.idToken,
+                data: { leaveType: '事假', leaveTypeName: '事假', reason: 'zz_test 事假事由', allowedTeacherIds: [A.teacherId] },
+            },
+        ],
     });
 
     // ===================== 攻擊 14 案（皆應 DENY） =====================
@@ -729,7 +847,187 @@ function buildCases({ A, B, C }) {
         steps: [{ kind: 'get', label: '讀 B 的 userMapping', docPath: `${col.mappings}/${B.uid}`, expect: 'DENY', idToken: A.idToken }],
     });
 
+    // ===================== 攻擊 Phase 6 補充：private/detail（X15-X24） =====================
+
+    cases.push({
+        id: 'X15', type: 'attack', actor: 'A(教師甲)', method: 'GET', severity: 'critical',
+        desc: '攻擊⑮教師甲 讀取 ACL 不含自己的私有明細（P13 乙的自我調課明細，核心隱私邊界）',
+        path: `${col.records}/${docId.recApprove2}/private/detail`, expect: 'DENY',
+        rulesRef: 'rules:223/107-110 hasPrivateDetailAccess（非 approver 且不在 allowedTeacherIds）',
+        steps: [{ kind: 'get', label: '甲嘗試讀取乙的私有明細', docPath: `${col.records}/${docId.recApprove2}/private/detail`, expect: 'DENY', idToken: A.idToken }],
+    });
+
+    cases.push({
+        id: 'X16', type: 'attack', actor: 'A(教師甲)', method: 'CREATE', severity: 'critical',
+        desc: '攻擊⑯教師甲 建立紀錄私有明細但假別為「公假」（規避月結算扣減）',
+        path: `${col.records}/${docId.recAttack16}/private/detail`, expect: 'DENY',
+        rulesRef: 'rules:230 私有明細 create 教師分支 leaveType in [調課,swap] 限制',
+        steps: [{
+            kind: 'create', label: 'create 假別=公假', collectionPath: `${col.records}/${docId.recAttack16}/private`, docId: 'detail', expect: 'DENY', idToken: A.idToken,
+            data: { leaveType: '公假', leaveTypeName: '公假', reason: 'zz_test 攻擊：假造公假', allowedTeacherIds: [A.teacherId] },
+        }],
+    });
+
+    cases.push({
+        id: 'X17', type: 'attack', actor: 'A(教師甲)', method: 'CREATE', severity: 'critical',
+        desc: '攻擊⑰教師甲 建立紀錄私有明細但假別為「長期病假」',
+        path: `${col.records}/${docId.recAttack17}/private/detail`, expect: 'DENY',
+        rulesRef: 'rules:230 私有明細 create 教師分支 leaveType in [調課,swap] 限制',
+        steps: [{
+            kind: 'create', label: 'create 假別=長期病假', collectionPath: `${col.records}/${docId.recAttack17}/private`, docId: 'detail', expect: 'DENY', idToken: A.idToken,
+            data: { leaveType: '長期病假', leaveTypeName: '長期病假', reason: 'zz_test 攻擊：假造長期病假', allowedTeacherIds: [A.teacherId] },
+        }],
+    });
+
+    cases.push({
+        id: 'X18', type: 'attack', actor: 'A(教師甲)', method: 'CREATE', severity: 'critical',
+        desc: '攻擊⑱教師甲 建立紀錄私有明細但假別為「喪假」',
+        path: `${col.records}/${docId.recAttack18}/private/detail`, expect: 'DENY',
+        rulesRef: 'rules:230 私有明細 create 教師分支 leaveType in [調課,swap] 限制',
+        steps: [{
+            kind: 'create', label: 'create 假別=喪假', collectionPath: `${col.records}/${docId.recAttack18}/private`, docId: 'detail', expect: 'DENY', idToken: A.idToken,
+            data: { leaveType: '喪假', leaveTypeName: '喪假', reason: 'zz_test 攻擊：假造喪假', allowedTeacherIds: [A.teacherId] },
+        }],
+    });
+
+    cases.push({
+        id: 'X19', type: 'attack', actor: 'A(教師甲)', method: 'CREATE', severity: 'critical',
+        desc: '攻擊⑲教師甲 建立紀錄私有明細但假別為「事假」（對照 P19：同假別在 pendingRequests 路徑合法，在 substituteRecords 路徑應違規）',
+        path: `${col.records}/${docId.recAttack19}/private/detail`, expect: 'DENY',
+        rulesRef: 'rules:230 私有明細 create 教師分支 leaveType in [調課,swap] 限制',
+        steps: [{
+            kind: 'create', label: 'create 假別=事假', collectionPath: `${col.records}/${docId.recAttack19}/private`, docId: 'detail', expect: 'DENY', idToken: A.idToken,
+            data: { leaveType: '事假', leaveTypeName: '事假', reason: 'zz_test 攻擊：substituteRecords 路徑假造事假', allowedTeacherIds: [A.teacherId] },
+        }],
+    });
+
+    cases.push({
+        id: 'X20', type: 'attack', actor: 'A(教師甲)', method: 'CREATE', severity: 'critical',
+        desc: '攻擊⑳教師甲 建立私有明細但 allowedTeacherIds 不含自己（冒他人之名建立，假別合法僅 ACL 違規）',
+        path: `${col.records}/${docId.recAttack20}/private/detail`, expect: 'DENY',
+        rulesRef: 'rules:228-229 私有明細 create 教師分支 myTeacherId in allowedTeacherIds 限制',
+        steps: [{
+            kind: 'create', label: 'create ACL=[乙]（不含自己）', collectionPath: `${col.records}/${docId.recAttack20}/private`, docId: 'detail', expect: 'DENY', idToken: A.idToken,
+            data: { leaveType: '調課', leaveTypeName: '調課', reason: 'zz_test 攻擊：冒名建立', allowedTeacherIds: [B.teacherId] },
+        }],
+    });
+
+    cases.push({
+        id: 'X21', type: 'attack', actor: 'A(教師甲)', method: 'PATCH', severity: 'high',
+        desc: '攻擊㉑教師甲 update 既有私有明細（即使是自己剛建立的 P16 明細，update 僅限 approver）',
+        path: `${col.records}/${docId.recSelfSwap1}/private/detail`, expect: 'DENY',
+        rulesRef: 'rules:233 私有明細 update（僅 isApprover，不看 ACL 或建立者）',
+        steps: [{
+            kind: 'patch', label: '甲嘗試改寫自己建立的私有明細', docPath: `${col.records}/${docId.recSelfSwap1}/private/detail`, expect: 'DENY', idToken: A.idToken,
+            data: { leaveType: '長期病假', leaveTypeName: '長期病假' },
+        }],
+    });
+
+    cases.push({
+        id: 'X22', type: 'attack', actor: 'A(教師甲)', method: 'DELETE', severity: 'high',
+        desc: '攻擊㉒教師甲 delete 私有明細（delete 僅限 director）',
+        path: `${col.records}/${docId.recSelfSwap1}/private/detail`, expect: 'DENY',
+        rulesRef: 'rules:234 私有明細 delete（僅 isDirector）',
+        steps: [{ kind: 'delete', label: '甲嘗試刪除私有明細', docPath: `${col.records}/${docId.recSelfSwap1}/private/detail`, expect: 'DENY', idToken: A.idToken }],
+    });
+
+    cases.push({
+        id: 'X23', type: 'attack', actor: 'A(教師甲)', method: 'CREATE', severity: 'medium',
+        desc: '攻擊㉓教師甲 建立私有明細時夾帶白名單外欄位（note），應被 hasOnly 擋下',
+        path: `${col.records}/${docId.recAttack23}/private/detail`, expect: 'DENY',
+        rulesRef: 'rules:113 isValidPrivateDetailWrite() hasOnly 欄位白名單',
+        steps: [{
+            kind: 'create', label: 'create 夾帶 note 欄位', collectionPath: `${col.records}/${docId.recAttack23}/private`, docId: 'detail', expect: 'DENY', idToken: A.idToken,
+            data: { leaveType: '調課', leaveTypeName: '調課', reason: '', allowedTeacherIds: [A.teacherId], note: 'zz_test 白名單外欄位' },
+        }],
+    });
+
+    cases.push({
+        id: 'X24', type: 'attack', actor: 'A(教師甲)', method: 'CREATE', severity: 'medium',
+        desc: '攻擊㉔教師甲 建立私有明細但 allowedTeacherIds 不是陣列（型別檢查）',
+        path: `${col.records}/${docId.recAttack24}/private/detail`, expect: 'DENY',
+        rulesRef: 'rules:114 isValidPrivateDetailWrite() data.allowedTeacherIds is list 型別檢查',
+        steps: [{
+            kind: 'create', label: 'create allowedTeacherIds=字串', collectionPath: `${col.records}/${docId.recAttack24}/private`, docId: 'detail', expect: 'DENY', idToken: A.idToken,
+            data: { leaveType: '調課', leaveTypeName: '調課', reason: '', allowedTeacherIds: A.teacherId },
+        }],
+    });
+
     return cases;
+}
+
+// ---------------------------------------------------------------------------
+// UTF-8 中文往返驗證（獨立於 43 案矩陣之外）：
+// 用 approver 直接建立 leaveType='調課' 的私有明細，立刻讀回並比對解碼後的字串是否
+// 「精確等於」'調課'（附上逐字元 code point，避免看起來像但實為亂碼/相近字的假陽性）。
+// 動機：Node 內建 fetch 對字串 body 預設以 UTF-8 編碼送出，但先前用 PowerShell 手測
+// 時曾因非 UTF-8 編碼送出中文，導致 leaveType in ['調課','swap'] 誤判 DENY——此檢查
+// 確保本檔案後續所有依賴中文字面比對的案例（P16/P19/X16-X20 等）結果站得住腳。
+// 用 approver 身分建立是刻意選擇：isApprover 分支不檢查 leaveType 值，ALLOW/DENY
+// 本身不能證明編碼正確，必須額外做「讀回後精確比對」才算數。
+// ---------------------------------------------------------------------------
+async function runUtf8RoundTripCheck(C) {
+    const recId = zz('rec_utf8check');
+    const parentPath = `schools/${SCHOOL_ID}/substituteRecords/${recId}`;
+    const detailPath = `${parentPath}/private/detail`;
+    const EXPECTED = '調課';
+
+    const createParent = await createDoc(`schools/${SCHOOL_ID}/substituteRecords`, recId, {
+        type: '調課', isSelfSwap: true,
+        originalTeacherId: C.teacherId, swapTeacherId: C.teacherId, substituteTeacherId: C.teacherId,
+        date: '2026-08-15', period: '第一節', className: 'zz_test_utf8',
+        status: 'approved', approvedAt: nowIso(), approvedBy: C.teacherId, approvedByName: C.label,
+        createdAt: nowIso(),
+    }, C.idToken);
+    if (classify(createParent) !== 'ALLOW') {
+        return { pass: false, detail: `建立驗證用父文件失敗（HTTP ${createParent.httpStatus}），無法進行 UTF-8 往返驗證。body=${JSON.stringify(createParent.json).slice(0, 300)}` };
+    }
+    createdDocs.push(`schools/${SCHOOL_ID}/substituteRecords/${recId}`);
+
+    const createDetail = await createDoc(`${parentPath}/private`, 'detail', {
+        leaveType: EXPECTED, leaveTypeName: EXPECTED, reason: 'zz_test utf8 round-trip 中文編碼驗證',
+        allowedTeacherIds: [C.teacherId],
+    }, C.idToken);
+    if (classify(createDetail) !== 'ALLOW') {
+        return { pass: false, detail: `建立驗證用私有明細失敗（HTTP ${createDetail.httpStatus}），無法進行 UTF-8 往返驗證。body=${JSON.stringify(createDetail.json).slice(0, 300)}` };
+    }
+    createdDocs.push(`${parentPath}/private/detail`);
+
+    const got = await getDoc(detailPath, C.idToken);
+    if (classify(got) !== 'ALLOW') {
+        return { pass: false, detail: `讀回驗證用私有明細失敗（HTTP ${got.httpStatus}）。` };
+    }
+    const obj = docToObj(got.json);
+    const roundTripOk = obj.leaveType === EXPECTED;
+    const gotCodePoints = typeof obj.leaveType === 'string' ? [...obj.leaveType].map((c) => 'U+' + c.codePointAt(0).toString(16).toUpperCase()).join(' ') : '(非字串)';
+    const expectedCodePoints = [...EXPECTED].map((c) => 'U+' + c.codePointAt(0).toString(16).toUpperCase()).join(' ');
+    return {
+        pass: roundTripOk,
+        detail: roundTripOk
+            ? `讀回 leaveType = ${JSON.stringify(obj.leaveType)}（${gotCodePoints}），與寫入值 '${EXPECTED}'（${expectedCodePoints}）精確相等。`
+            : `⚠⚠ 讀回 leaveType = ${JSON.stringify(obj.leaveType)}（型別 ${typeof obj.leaveType}，${gotCodePoints}），與預期 '${EXPECTED}'（${expectedCodePoints}）不符！UTF-8 編碼可能有誤，後續案例中的中文字面比對結果不可信，須人工複查。`,
+    };
+}
+
+// ---------------------------------------------------------------------------
+// 正式紀錄完整性檢查（驗收條件⑤）：本檔案唯一會「讀取」的正式資料是
+// REAL_RECORD_WITH_PRIVATE_DETAIL，全程只 GET，這裡確認跑完整套 43 案後它的
+// private/detail.leaveType 仍是「長期病假」——證明本檔案沒有意外寫壞正式資料。
+// ---------------------------------------------------------------------------
+async function verifyProdRecordUntouched(C) {
+    const path = `schools/${SCHOOL_ID}/substituteRecords/${REAL_RECORD_WITH_PRIVATE_DETAIL}/private/detail`;
+    const got = await getDoc(path, C.idToken);
+    if (classify(got) !== 'ALLOW') {
+        return { pass: false, detail: `讀取正式紀錄 private/detail 失敗（HTTP ${got.httpStatus}），無法驗證是否遭更動。` };
+    }
+    const obj = docToObj(got.json);
+    const ok = obj.leaveType === REAL_RECORD_EXPECTED_LEAVE_TYPE;
+    return {
+        pass: ok,
+        detail: ok
+            ? `${REAL_RECORD_WITH_PRIVATE_DETAIL} 的 private/detail.leaveType 仍為 '${REAL_RECORD_EXPECTED_LEAVE_TYPE}'，未遭更動。`
+            : `⚠⚠ ${REAL_RECORD_WITH_PRIVATE_DETAIL} 的 private/detail.leaveType 現為 ${JSON.stringify(obj.leaveType)}，預期 '${REAL_RECORD_EXPECTED_LEAVE_TYPE}'——正式紀錄可能已被本次測試意外更動，須立即人工複查！`,
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -813,7 +1111,27 @@ async function main() {
         console.error(`驗後讀取失敗：${String(e && e.message || e)}`);
     }
 
-    process.exit(failCount === 0 ? 0 : 1);
+    console.log('\n--- UTF-8 中文往返驗證（approver 建立 leaveType=調課 後讀回比對，見驗收條件③）---');
+    let utf8Pass = false;
+    try {
+        const r = await runUtf8RoundTripCheck(C);
+        utf8Pass = r.pass;
+        console.log(`${r.pass ? '✓' : '✗✗'} ${r.detail}`);
+    } catch (e) {
+        console.error(`✗✗ UTF-8 往返驗證發生例外：${String(e && e.message || e)}`);
+    }
+
+    console.log(`\n--- 正式紀錄完整性檢查（${REAL_RECORD_WITH_PRIVATE_DETAIL} 不得被本次測試更動，見驗收條件⑤）---`);
+    let prodIntegrityPass = false;
+    try {
+        const r = await verifyProdRecordUntouched(C);
+        prodIntegrityPass = r.pass;
+        console.log(`${r.pass ? '✓' : '✗✗'} ${r.detail}`);
+    } catch (e) {
+        console.error(`✗✗ 正式紀錄完整性檢查發生例外：${String(e && e.message || e)}`);
+    }
+
+    process.exit((failCount === 0 && utf8Pass && prodIntegrityPass) ? 0 : 1);
 }
 
 main().catch((err) => {
