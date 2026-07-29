@@ -608,10 +608,9 @@
                         <div class="toolbar-controls">
                             <div class="form-group form-group-inline">
                                 <label for="settle-year">學年度</label>
-                                <select id="settle-year">
-                                    <option value="114">114</option>
-                                    <option value="113">113</option>
-                                </select>
+                                <!-- 選項由 app.js populateSettlementYearOptions() 依當前日期動態產生，
+                                     不可寫死——跨學年度後寫死的選項會讓月結算選不到當期資料。 -->
+                                <select id="settle-year"></select>
                             </div>
                             <div class="form-group form-group-inline">
                                 <label for="settle-month">月份</label>
