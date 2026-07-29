@@ -1587,7 +1587,7 @@ function showGoToTeacherAdminToast(count) {
     const toast = document.createElement('div');
     toast.id = 'v2-import-followup-toast';
     toast.style.cssText = `
-        position: fixed; bottom: 24px; right: 24px; z-index: 9999;
+        position: fixed; bottom: 24px; right: 24px; z-index: var(--z-toast);
         background: #fffbeb; border: 1px solid #d97706; border-radius: 8px;
         padding: 12px 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);
         max-width: 320px; font-size: 0.9rem;
