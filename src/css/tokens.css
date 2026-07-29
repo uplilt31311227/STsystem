@@ -1,6 +1,7 @@
 /* ===================================
    Design Tokens — 全站樣式基座
-   載入順序：本檔須在 style.css 之前載入。
+   載入順序：tokens.css → base.css → components.css → features.css（本檔第一個載入，
+   style.css 已於 Stage 3 拆分為此四檔並刪除）。
    =================================== */
 :root{
   /* 品牌藍 */

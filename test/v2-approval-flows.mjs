@@ -262,7 +262,7 @@ async function submitAndMaybeSkipConsentModal(page, extraConsentName = null) {
     await page.click('#confirm-substitute-btn');
     let modalAppeared = false;
     try {
-        await page.waitForSelector('.modal', { timeout: 4000 });
+        await page.waitForSelector('#v2-extra-consent-modal', { timeout: 4000 });
         modalAppeared = true;
     } catch (_) { /* 未出現 —— 見 P0 finding：buildSwapRecord 的 isMultiSwap 恆為 true */ }
     if (modalAppeared) {
@@ -413,7 +413,8 @@ async function submitAndMaybeSkipConsentModal(page, extraConsentName = null) {
     // ===================== 步驟 2-2：調課雙簽 =====================
     log('\n--- 流程2：調課雙簽（教師甲對教師乙 -> 乙同意 -> 組長丙核准） ---');
     await pickTeacherAndDate(teacherA, ACCOUNTS.teacherA.name, DATES.flow2A);
-    // 實際 radio input 是 display:none 的自訂樣式（見 src/css/style.css .change-type-option input），
+    // 實際 radio input 是 display:none 的自訂樣式（見 src/css/features.css .change-type-option input，
+    // Stage 3 CSS 拆檔後 style.css 已刪除，此規則現位於 features.css），
     // 真人是點擊旁邊可見的卡片觸發 label 轉發；直接點卡片而非隱藏的 input。
     await teacherA.click('input[name="change-type-radio"][value="swap"] + .change-type-card');
     await clickCourseCell(teacherA, '週二', '第一節');
@@ -465,7 +466,8 @@ async function submitAndMaybeSkipConsentModal(page, extraConsentName = null) {
     // ===================== 步驟 2-3a：多重調課 —— 先走真實 UI，確認是否可觸發 =====================
     log('\n--- 流程3a：多重調課全員同意（真實 UI 嘗試，驗證是否可觸發） ---');
     await pickTeacherAndDate(teacherA, ACCOUNTS.teacherA.name, DATES.flow3A);
-    // 實際 radio input 是 display:none 的自訂樣式（見 src/css/style.css .change-type-option input），
+    // 實際 radio input 是 display:none 的自訂樣式（見 src/css/features.css .change-type-option input，
+    // Stage 3 CSS 拆檔後 style.css 已刪除，此規則現位於 features.css），
     // 真人是點擊旁邊可見的卡片觸發 label 轉發；直接點卡片而非隱藏的 input。
     await teacherA.click('input[name="change-type-radio"][value="swap"] + .change-type-card');
     await clickCourseCell(teacherA, '週四', '第一節');
@@ -580,7 +582,8 @@ async function submitAndMaybeSkipConsentModal(page, extraConsentName = null) {
     // ===================== 步驟 2-4：中途拒絕 =====================
     log('\n--- 流程4：中途拒絕（教師甲發起調課 -> 教師乙拒絕） ---');
     await pickTeacherAndDate(teacherA, ACCOUNTS.teacherA.name, DATES.flow4A);
-    // 實際 radio input 是 display:none 的自訂樣式（見 src/css/style.css .change-type-option input），
+    // 實際 radio input 是 display:none 的自訂樣式（見 src/css/features.css .change-type-option input，
+    // Stage 3 CSS 拆檔後 style.css 已刪除，此規則現位於 features.css），
     // 真人是點擊旁邊可見的卡片觸發 label 轉發；直接點卡片而非隱藏的 input。
     await teacherA.click('input[name="change-type-radio"][value="swap"] + .change-type-card');
     await clickCourseCell(teacherA, '週一', '第二節');

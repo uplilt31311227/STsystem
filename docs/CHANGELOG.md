@@ -9,6 +9,35 @@ tags:
 
 ---
 
+## [2026-07-29]（feature/permission-system）UI 重規劃 Stage 3 驗收缺陷修正
+
+派獨立 agent 驗收 Stage 3（CSS 全面重寫＋元件收斂）後回報的 8 項缺陷，全數修復，獨立 commit。
+
+### 修復（阻斷）
+- **V2 Email 登入 modal 被登入遮罩蓋住**：`openAuthModal()` 的 `#v2-auth-modal-backdrop` 換 `.modal` class 後只吃到 `components.css` 的 `--z-modal`(1000)，被 `#v2-auth-gate` 的 `--z-authgate`(1100) 蓋住，Email 登入輸入框完全無法點擊。`features.css` 補 `#v2-auth-modal-backdrop{z-index:var(--z-authmodal)}`（id selector specificity 已高於 `.modal`，免 `!important`）
+
+### 修復（中）
+- **斷點紀律違規 5 條**：`base.css`（`.user-name`）、`components.css`（`.btn`／`.btn-google-signin`）、`features.css`（`.batch-swap-number`／`.conflict-options`／`.conflict-option`）的 `@media (max-width:639px)` 全數翻轉為 mobile-first（預設為手機值，`@media (min-width:640px)` 覆寫回桌機值）；`.user-name`／`.btn-google-signin span`／`.btn-google-signin` padding 三處改用 `display:revert`／`padding:revert` 精確還原「未寫任何規則」時的桌機原貌（經 638px/642px 雙寬度 computed style 比對，兩側視覺與翻轉前一致）
+- **`.btn-sm` 手機觸控高度被蓋掉**：`.btn-sm{min-height:30px}` 蓋掉手機 44px 觸控規則（375 實測曾為 30px）。隨斷點翻轉一併修：手機層 `.btn`／`.btn-sm` 皆 `min-height:var(--ctl-h-touch)`（44px），`@media (min-width:640px)` 才各自降回 `--ctl-h`(36px)／`--ctl-h-sm`(30px)
+- **行內連結變方塊鈕**：`index.html` 兩處句中操作入口（課表管理「備份與還原請至設定」、同步衝突「建議先匯出備份」）Stage 3 誤併入 `.btn.btn-ghost`，變成 64×37 方塊撐高段落。新增 `.btn-inline`（`display:inline`、無 padding/min-height、底線文字）取代，兩處 class 改用單一 `.btn-inline`（不再掛 `.btn`）
+
+### 修復（低）
+- **第三套 toast 收斂**：`v2-app.js` `showGoToTeacherAdminToast()` 自建 fixed toast（硬編 `#fffbeb`/`#d97706`/`#92400e`/`#78350f` + inline `position:fixed`/`z-index`）改掛進共用 `#toast-container`，套 `.toast.toast-warning` 結構 class 與淡入/淡出動畫，僅保留其特有的「前往教師管理」動作鈕（`showToast()`/`notify()` 現有簽章皆不支援附加動作鈕，故仍走自建 DOM，但視覺與生命週期完全併入共用 toast 系統）
+- **測試斷言指認性**：`promptAdditionalConsentTeachers()` 的多重調課同意 modal 補專屬 id `#v2-extra-consent-modal`；`test/v2-approval-flows.mjs`／`test/v2-verify-fixes.mjs` 對應的 `.modal` 斷言（會誤中 `#modal-root` 內 5 個常駐但預設 hidden 的靜態 modal）改指向此 id
+- **註解過時**：`tokens.css` 與 `test/v2-approval-flows.mjs`（3 處）仍提已刪除的 `style.css`，改為四檔（tokens/base/components/features）載入順序的描述
+- **殘留色**：`features.css` `.schedule-course.multi-selected` 的 `box-shadow:0 0 0 2px rgba(14,165,233,.3)` 改 `var(--sh-focus)`
+
+### 變更
+- CSS 版本號 `?v=2.3.0` → `?v=2.3.1`（F9：防 GitHub Pages 快取舊 CSS 配新 HTML）
+
+### 驗證
+- `npm run check`（27/27）、`node test/v2-smoke-test.js`、`node test/ui-rwd-check.mjs`（7/7 無橫向溢出）、`npm test`（41/41）全數通過；`node --check` 過 `test/v2-approval-flows.mjs`／`test/v2-verify-fixes.mjs`
+- Playwright 實測：`?v2=1` 點「使用 Email 登入」後 `#v2-modal-email` 可聚焦、`elementFromPoint` 命中輸入框本身、`type()` 成功寫入文字（z-index 實測 gate=1100 < modal=1200）；375px 下 `#search-records-btn`（`.btn.btn-primary.btn-sm`）`boundingClientRect.height`＝44；`#schedule-goto-settings-btn`／`#export-before-sync-btn` 兩處行內連結高度分別為 17px／21px
+- `grep -nE '@media' src/css/*.css`：全部 23 條僅 `min-width:640px`／`min-width:1024px` 兩種，無 `max-width` 殘留
+
+### 已知取捨
+- `showGoToTeacherAdminToast()` 未採 (a) 方案（改走 `window.app.showToast`/`notify` 傳入自訂內容節點），因兩者現有簽章都只接受純文字訊息，硬加動作鈕支援會擴大 `app.js showToast()` 的改動面；改採 (b) 方案（保留自建 DOM，但完全併入共用容器/class/動畫）
+
 ## [2026-07-29]（feature/permission-system）UI 重規劃 Stage 3：CSS 全面重寫 + 元件收斂 + V2 樣式併入
 
 依 `docs/PLAN.md` Stage 3，將 2891 行 `style.css` 拆分為 tokens/base/components/features 四檔並全面 token 化，收斂按鈕/卡片/Modal/表格/Toast 五套重複系統為單一實作，斷點統一為 mobile-first 640/1024。獨立 commit、獨立驗證。

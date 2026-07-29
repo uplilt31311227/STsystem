@@ -191,6 +191,7 @@ body {
 }
 
 .user-name {
+    display: none;
     font-size: var(--fs-md);
     font-weight: var(--fw-medium);
     color: var(--color-text);
@@ -200,8 +201,8 @@ body {
     white-space: nowrap;
 }
 
-@media (max-width: 639px) {
-    .user-name { display: none; }
+@media (min-width: 640px) {
+    .user-name { display: revert; }
 }
 
 /* ===== 導覽頁籤（Stage 2 起：手機可捲 tab bar，取代舊 flex-wrap 版；
