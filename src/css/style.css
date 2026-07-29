@@ -389,7 +389,6 @@ body {
     border: 1px solid var(--border-color);
     border-radius: 6px;
     font-size: 0.9rem;
-    min-width: 180px;
     transition: border-color 0.2s ease;
 }
 
@@ -1017,7 +1016,7 @@ body {
     display: flex;
     justify-content: center;
     align-items: center;
-    z-index: 1000;
+    z-index: var(--z-modal);
 }
 
 .modal {
@@ -2803,13 +2802,6 @@ body {
 
 .recommendation-info {
     min-width: 0;
-}
-
-@media (max-width: 767px) {
-    .form-group input,
-    .form-group select {
-        min-width: 0;
-    }
 }
 
 /* flex-wrap：按鈕/操作列在手機寬度不足時允許換行，避免橫向溢出 */

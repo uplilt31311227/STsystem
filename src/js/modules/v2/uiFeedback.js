@@ -48,9 +48,10 @@ function injectStyles() {
     .v2-uifeedback-toast .v2-uifeedback-close { background: none; border: none; color: inherit;
         cursor: pointer; font-size: 1rem; line-height: 1; opacity: 0.75; padding: 0 0 0 6px; }
     .v2-uifeedback-toast .v2-uifeedback-close:hover { opacity: 1; }
-    /* Stage 1 硬傷急救：徽章移入 header 內排版顯示（原 fixed 右上角與 toast/header 三重疊） */
-    #${SYNC_BADGE_ID} { position: static; display: inline-block; margin-left: 8px; vertical-align: middle;
-        background: #92400e; color: #fff; font-size: 0.8rem; font-weight: 600;
+    /* Stage 1 硬傷急救：徽章移入 header 使用者資訊區排版顯示（原 fixed 右上角與 toast/header 三重疊）。
+       .user-auth-section 本身是 flex 容器，徽章跟著當一般 flex item 排版即可，
+       不需要（也不該再宣告）display/vertical-align——那是舊 fixed 版位的殘留，對 flex item 無效。 */
+    #${SYNC_BADGE_ID} { background: #92400e; color: #fff; font-size: 0.8rem; font-weight: 600;
         padding: 4px 10px; border-radius: 12px; box-shadow: 0 2px 6px rgba(0,0,0,0.2); }
     `;
     document.head.appendChild(style);
@@ -123,8 +124,10 @@ export function setSyncStatus(ok, reason) {
         const badge = existing || document.createElement('div');
         if (!existing) {
             badge.id = SYNC_BADGE_ID;
-            // Stage 1：徽章移入 header 內（原 fixed 右上角），找不到掛點時 fallback 回 body
-            const mount = document.querySelector('.header-top') || document.body;
+            // Stage 1：徽章移入 header 使用者資訊區（原 fixed 右上角）。掛在 .header-top 會插入
+            // justify-content:space-between 的第 3 個 flex item，把 .user-auth-section 從右緣擠向
+            // 中央（桌機實測位移 465px）；改掛進 .user-auth-section 內部，找不到掛點時 fallback 回 body。
+            const mount = document.querySelector('.user-auth-section') || document.body;
             mount.appendChild(badge);
         }
         badge.textContent = '⚠ 即時同步中斷';
