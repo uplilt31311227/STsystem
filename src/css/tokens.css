@@ -11,9 +11,11 @@
   --c-n-300:#cbd5e1; --c-n-400:#94a3b8; --c-n-500:#64748b; --c-n-600:#475569;
   --c-n-700:#334155; --c-n-800:#1e293b; --c-n-900:#0f172a;
   /* 語意狀態（面/框/字） */
-  --c-success-50:#f0fdf4; --c-success-200:#bbf7d0; --c-success-600:#16a34a; --c-success-800:#166534;
-  --c-warning-50:#fffbeb; --c-warning-200:#fde68a; --c-warning-600:#d97706; --c-warning-800:#92400e;
-  --c-danger-50:#fef2f2;  --c-danger-200:#fecaca;  --c-danger-600:#dc2626;  --c-danger-800:#991b1b;
+  /* Stage 3：補 100 階（-50 過淺、-200 過重，徽章/警示條實務上常需要中間這階；
+     原本散落 style.css/v2-app.js 的 #dcfce7 #fef3c7 #fee2e2 等重複淺色全收斂到此）。 */
+  --c-success-50:#f0fdf4; --c-success-100:#dcfce7; --c-success-200:#bbf7d0; --c-success-600:#16a34a; --c-success-800:#166534;
+  --c-warning-50:#fffbeb; --c-warning-100:#fef3c7; --c-warning-200:#fde68a; --c-warning-600:#d97706; --c-warning-800:#92400e;
+  --c-danger-50:#fef2f2;  --c-danger-100:#fee2e2;  --c-danger-200:#fecaca;  --c-danger-600:#dc2626;  --c-danger-800:#991b1b;
   --c-info-50:#eff6ff;    --c-info-200:#bae6fd;    --c-info-600:#0369a1;
 
   /* 語意別名 */
@@ -33,6 +35,8 @@
   --sp-1:.25rem; --sp-2:.5rem; --sp-3:.75rem; --sp-4:1rem;
   --sp-5:1.25rem; --sp-6:1.5rem; --sp-8:2rem; --sp-10:2.5rem; --sp-12:3rem;
   --page-pad:var(--sp-4); --content-max:1400px;
+  /* Stage 3：卡片統一採原 .compact-card 的緊湊值（.card/.compact-card 兩套收斂為一）。 */
+  --pad-card:var(--sp-4) var(--sp-5);
 
   /* 圓角 / 陰影 / 邊框 / 控制項高度 / 動效 */
   --r-xs:4px; --r-sm:6px; --r-md:8px; --r-lg:12px; --r-pill:999px;

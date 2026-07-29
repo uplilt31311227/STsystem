@@ -1677,31 +1677,35 @@ class SubstituteTeacherApp {
             : `✓ ${esc(originalCourse.className)} 的 ${esc(originalCourse.originalTeacher)} 與 ${esc(swapCourse.teacher)} 互換課程時段，雙方總時數不變`;
         swapPreviewContent.innerHTML = `
             <div class="table-wrap">
-            <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
-                <tr style="background: #e0f2fe;">
-                    <th style="padding: 8px; border: 1px solid #bae6fd; text-align: center;">時段</th>
-                    <th style="padding: 8px; border: 1px solid #bae6fd; text-align: center;">日期</th>
-                    <th style="padding: 8px; border: 1px solid #bae6fd; text-align: center;">調課前</th>
-                    <th style="padding: 8px; border: 1px solid #bae6fd; text-align: center;">→</th>
-                    <th style="padding: 8px; border: 1px solid #bae6fd; text-align: center;">調課後</th>
+            <table class="data-table swap-preview-table">
+                <thead>
+                <tr>
+                    <th>時段</th>
+                    <th>日期</th>
+                    <th>調課前</th>
+                    <th>→</th>
+                    <th>調課後</th>
                 </tr>
-                <tr style="background: #dbeafe;">
-                    <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center; font-weight: bold;">A</td>
-                    <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center;">${esc(formattedDateA)}<br>${esc(originalCourse.weekday)} ${esc(originalCourse.period)}</td>
-                    <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center;">${esc(originalCourse.originalTeacher)}（${esc(originalCourse.subject)}）</td>
-                    <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center;">→</td>
-                    <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center; color: #0369a1; font-weight: bold;">${esc(swapCourse.teacher)}（${esc(swapCourse.subject)}）</td>
+                </thead>
+                <tbody>
+                <tr class="swap-row-a">
+                    <td>A</td>
+                    <td>${esc(formattedDateA)}<br>${esc(originalCourse.weekday)} ${esc(originalCourse.period)}</td>
+                    <td>${esc(originalCourse.originalTeacher)}（${esc(originalCourse.subject)}）</td>
+                    <td>→</td>
+                    <td class="swap-target-cell">${esc(swapCourse.teacher)}（${esc(swapCourse.subject)}）</td>
                 </tr>
-                <tr style="background: #fef3c7;">
-                    <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center; font-weight: bold;">B</td>
-                    <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center;">${esc(formattedDateB)}<br>${esc(swapCourse.weekday)} ${esc(swapCourse.period)}</td>
-                    <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center;">${esc(swapCourse.teacher)}（${esc(swapCourse.subject)}）</td>
-                    <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center;">→</td>
-                    <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center; color: #b45309; font-weight: bold;">${esc(originalCourse.originalTeacher)}（${esc(originalCourse.subject)}）</td>
+                <tr class="swap-row-b">
+                    <td>B</td>
+                    <td>${esc(formattedDateB)}<br>${esc(swapCourse.weekday)} ${esc(swapCourse.period)}</td>
+                    <td>${esc(swapCourse.teacher)}（${esc(swapCourse.subject)}）</td>
+                    <td>→</td>
+                    <td class="swap-target-cell">${esc(originalCourse.originalTeacher)}（${esc(originalCourse.subject)}）</td>
                 </tr>
+                </tbody>
             </table>
             </div>
-            <p style="margin: 10px 0 0 0; color: #0369a1; font-size: 13px;">
+            <p class="swap-preview-summary">
                 ${swapSummary}
             </p>
         `;
@@ -3452,7 +3456,7 @@ class SubstituteTeacherApp {
                     <td>${record.isSelfSwap ? '自行調課' : esc(record.substituteTeacher)}</td>
                     <td>${esc(leaveTypeName)}</td>
                     <td>
-                        <button class="btn btn-sm btn-more detail-btn" data-id="${esc(record.id)}">更多</button>
+                        <button class="btn btn-sm btn-secondary detail-btn" data-id="${esc(record.id)}">更多</button>
                         <button class="btn btn-sm btn-primary reprint-btn" data-id="${esc(record.id)}">重印</button>
                         <button class="btn btn-sm btn-danger delete-record-btn" data-id="${esc(record.id)}">刪除</button>
                     </td>
@@ -3840,7 +3844,7 @@ class SubstituteTeacherApp {
                 <td>${esc(subject)}</td>
                 <td><input type="text" class="subject-domain-input" data-subject="${esc(subject)}"
                      value="${esc(domains)}" placeholder="（無）"></td>
-                <td><button class="btn btn-danger btn-xs subject-domain-del-btn" data-subject="${esc(subject)}">刪</button></td>
+                <td><button class="btn btn-danger btn-sm subject-domain-del-btn" data-subject="${esc(subject)}">刪</button></td>
             </tr>`;
         }).join('');
 

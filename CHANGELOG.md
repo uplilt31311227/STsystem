@@ -1,5 +1,39 @@
 # 版本紀錄 (Changelog)
 
+## [2026-07-29]（feature/permission-system）UI 重規劃 Stage 3：CSS 全面重寫 + 元件收斂 + V2 樣式併入
+
+依 `docs/PLAN.md` Stage 3，將 2891 行 `style.css` 拆分為 tokens/base/components/features 四檔並全面 token 化，收斂按鈕/卡片/Modal/表格/Toast 五套重複系統為單一實作，斷點統一為 mobile-first 640/1024。獨立 commit、獨立驗證。
+
+### 變更（檔案拆分）
+- `style.css` 刪除（`git rm`），改為 `tokens.css`（73 行）/`base.css`（330 行）/`components.css`（507 行）/`features.css`（686 行）四檔，`index.html` 依序載入，全部 `?v=2.3.0`
+- `v2-app.js` `injectV2Styles()` 內容由約 176 行縮減為約 20 行，只留角色顯隱規則與 R1 隱私邊界規則（保留 `#v2-styles` 元素，F5 斷言不受影響）；其餘視覺規則搬進 `components.css`/`features.css` 並 token 化
+- `uiFeedback.js` 移除自建 CSS 注入（`injectStyles`/`stylesInjected`），fallback toast 改用共用 `#toast-container` 與 `.toast`/`.toast-{type}` class；同步中斷徽章樣式移入 `features.css` 靜態規則
+
+### 變更（元件收斂，Tier B 改名，grep 全 repo 逐處同步）
+- 按鈕：`.btn-more`→`btn-secondary`、`.btn-xs`→`btn-sm`、`.btn-default`→`btn-secondary`、`.btn-link`→`btn btn-ghost`、`.btn-signout`→`btn btn-ghost btn-sm`、`.v2-email-login-trigger`→`btn btn-ghost btn-sm`、v2 登入遮罩兩顆按鈕新增 `btn btn-google`／`btn btn-ghost btn-sm`；`.btn-success`（確認 0 引用）直接刪除
+- 卡片：`.compact-card` 刪除定義並從 HTML/JS 移除 class 字串，併入 `.card` 統一緊湊 padding（新 token `--pad-card`）；`.notice-card` 留 alias 對應新 `.card-notice`（Stage 6 才刪別名）；`.v2-legacy-card` 直接改名 `.card-warning`；`.v2-pending-item`→`.list-item`(`-incoming`/`-outgoing`)
+- Modal：刪除 box 版舊 `.modal` 定義與死碼 `.modal-overlay`；`v2-app.js` 三處動態 modal（CSV 匯入預覽／多重調課同意／Email 登入）全面改用 `.modal`/`.modal-content`/`.modal-actions`，並補 `.modal-body`（+ email/password 欄位補 `.form-group`）取得統一 padding 與表單樣式；`.v2-modal-links`→`.modal-links`、`.v2-modal-msg`→`.form-msg`
+- 表格：刪除 `#teacher-table` nth-child 固定寬；`.multi-course-table`／`.v2-log-table` 補上 `.data-table.data-table-compact` 共用外觀（各自保留原 class 供特有樣式掛靠：前者 sticky 表頭、後者 code 欄字級）；`app.js` 調課預覽表改用 `.data-table`，移除全部 inline `style=`
+- Toast：位置改為桌機右下、手機底部滿寬（含 `safe-area-inset-bottom`），修復與 header/登入 modal 疊放問題
+
+### 修復（隨手清掉的死碼，遷移原則「死規則不帶過去」）
+- `.import-layout`、`.firebase-status`(`-item`)、`.firebase-config-form`、`.error-message`、`.step-indicator`(`-dot`/`-line`)、`.v2-login-denied`、`.status-badge`、`.notice-icon`／非 compact 版 `.upload-icon`：全 repo 確認零引用，未搬入新檔
+- `.schedule-grid` 手機字級覆寫（原 768px 斷點）因所有文字子元素皆各自有明確 `font-size` 而從未實際生效，改為直接在 `.schedule-cell` 上做 mobile-first 覆寫（行為修正為有效）
+
+### 新增（tokens.css 微調）
+- 補 3 個語意色階：`--c-success-100`/`--c-warning-100`/`--c-danger-100`（原散落多處的 `#dcfce7`/`#fef3c7`/`#fee2e2` 收斂於此）
+- 新增 `--pad-card`（`.card` 統一緊湊 padding 別名）
+
+### 驗證
+- `npm run check`（27/27）、`node test/v2-smoke-test.js`、`node test/ui-rwd-check.mjs`（7/7 無橫向溢出）、`npm test`（41/41）全數通過
+- Playwright 1440×900／375×667 各走訪 7 個畫面（含紀錄詳細 modal）+ V2 未登入遮罩，console 零 error
+- PDF regression（F6）：代課通知單四聯正常產出，表格線/中文字/欄位對齊無破版
+- hex 統計：`src/css/*.css` 由 183 降至 43（全部集中在 `tokens.css` 定義處），`base`/`components`/`features.css` 為 0
+
+### 已知取捨
+- `test/v2-approval-flows.mjs`、`test/v2-verify-fixes.mjs` 的 `.v2-modal-backdrop` 選擇器同步改為 `.modal`（非 `npm test` 涵蓋範圍，但屬 grep 全 repo 零殘留要求內的同步改動，未變更任何測試斷言邏輯）
+- 部分色相收斂為主色藍（原 multi-course/批次面板區塊的青色系與靛色系），視為「重寫非搬運」授權下的色票收斂，非逐色還原；視覺風格不變（藍白教務風）
+
 ## [2026-07-29]（feature/permission-system）UI 重規劃 Stage 2 驗收缺陷修正
 
 派獨立 agent 驗收 Stage 2（資訊架構重組）後回報的 10 項缺陷，全數修復，獨立 commit。
