@@ -1,0 +1,69 @@
+/* ===================================
+   Design Tokens — 全站樣式基座
+   載入順序：本檔須在 style.css 之前載入。
+   =================================== */
+:root{
+  /* 品牌藍 */
+  --c-primary-50:#eff6ff; --c-primary-100:#dbeafe; --c-primary-500:#3b82f6;
+  --c-primary-600:#2563eb; --c-primary-700:#1d4ed8; --c-primary-800:#1e40af;
+  /* 中性 slate（v2 的 gray 系 #6b7280/#e5e7eb 等日後全部映射到此） */
+  --c-n-0:#ffffff; --c-n-50:#f8fafc; --c-n-100:#f1f5f9; --c-n-200:#e2e8f0;
+  --c-n-300:#cbd5e1; --c-n-400:#94a3b8; --c-n-500:#64748b; --c-n-600:#475569;
+  --c-n-700:#334155; --c-n-800:#1e293b; --c-n-900:#0f172a;
+  /* 語意狀態（面/框/字） */
+  --c-success-50:#f0fdf4; --c-success-200:#bbf7d0; --c-success-600:#16a34a; --c-success-800:#166534;
+  --c-warning-50:#fffbeb; --c-warning-200:#fde68a; --c-warning-600:#d97706; --c-warning-800:#92400e;
+  --c-danger-50:#fef2f2;  --c-danger-200:#fecaca;  --c-danger-600:#dc2626;  --c-danger-800:#991b1b;
+  --c-info-50:#eff6ff;    --c-info-200:#bae6fd;    --c-info-600:#0369a1;
+
+  /* 語意別名 */
+  --color-bg:var(--c-n-100); --color-surface:var(--c-n-0); --color-surface-2:var(--c-n-50);
+  --color-border:var(--c-n-200); --color-border-strong:var(--c-n-300);
+  --color-text:var(--c-n-800); --color-text-muted:var(--c-n-500); --color-text-invert:var(--c-n-0);
+  --color-accent:var(--c-primary-600); --color-accent-hover:var(--c-primary-700);
+
+  /* 字級（html 16px 基準） */
+  --fs-2xs:.6875rem; --fs-xs:.75rem; --fs-sm:.8125rem; --fs-md:.875rem;
+  --fs-lg:1rem; --fs-xl:1.125rem; --fs-2xl:1.375rem;
+  --lh-tight:1.35; --lh-base:1.6;
+  --fw-normal:400; --fw-medium:500; --fw-semibold:600; --fw-bold:700;
+  --font-sans:"Microsoft JhengHei","Noto Sans TC",system-ui,sans-serif;
+
+  /* 間距（4px 基準） */
+  --sp-1:.25rem; --sp-2:.5rem; --sp-3:.75rem; --sp-4:1rem;
+  --sp-5:1.25rem; --sp-6:1.5rem; --sp-8:2rem; --sp-10:2.5rem; --sp-12:3rem;
+  --page-pad:var(--sp-4); --content-max:1400px;
+
+  /* 圓角 / 陰影 / 邊框 / 控制項高度 / 動效 */
+  --r-xs:4px; --r-sm:6px; --r-md:8px; --r-lg:12px; --r-pill:999px;
+  --sh-1:0 1px 3px rgba(15,23,42,.10);
+  --sh-2:0 4px 12px rgba(15,23,42,.12);
+  --sh-3:0 20px 50px rgba(15,23,42,.30);
+  --sh-focus:0 0 0 3px rgba(37,99,235,.25);
+  --bd:1px solid var(--color-border);
+  --ctl-h:36px; --ctl-h-touch:44px; --ctl-h-sm:30px;
+  --dur-fast:.15s; --dur:.2s; --ease:cubic-bezier(.4,0,.2,1);
+
+  /* z-index 層 */
+  --z-sticky:100; --z-veil:200; --z-dropdown:300;
+  --z-modal:1000; --z-authgate:1100; --z-authmodal:1200; --z-toast:1300;
+
+  /* ==== 相容別名：舊變數全部指向新 token（Stage 0 零視覺變動的關鍵） ====
+     核對結果（對照 style.css 舊版 :root，2026-07-29）：primary/primary-hover/
+     secondary/background/card-background/text/text-muted/border 8 個舊值與新
+     token 完全等值，可直接別名。success/warning/danger 3 色與 shadow/shadow-lg
+     2 個陰影新舊值有可辨差異（舊為 500 階實色與純黑陰影，新 token 為 600 階、
+     slate 色陰影且 shadow-lg 模糊半徑加倍），故以下 5 項改為沿用舊字面值，
+     確保 Stage 0 零視覺變動；新 600 階色票本身仍保留供後續階段使用。 */
+  --primary-color:var(--c-primary-600); --primary-hover:var(--c-primary-700);
+  --secondary-color:var(--c-n-500); --success-color:#22c55e;
+  --warning-color:#f59e0b; --danger-color:#ef4444;
+  --background-color:var(--color-bg); --card-background:var(--color-surface);
+  --text-color:var(--color-text); --text-muted:var(--color-text-muted);
+  --border-color:var(--color-border);
+  --shadow:0 1px 3px rgba(0, 0, 0, 0.1); --shadow-lg:0 4px 6px rgba(0, 0, 0, 0.1);
+}
+/* 斷點宣告（CSS 變數不能用在 media query，統一在此備查）：
+   640px = 手機→平板（卡片轉表格、單日轉週課表）
+   1024px = 平板橫向/桌機（雙欄版面）
+   全案禁止出現其他斷點數值 */
