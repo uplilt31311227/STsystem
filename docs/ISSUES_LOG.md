@@ -12,6 +12,24 @@ tags:
 
 第一次對 preview 站與 production Firestore 做真實三角色端到端實測（此前所有「待實機驗收」項目從未執行）。以下為實測發現。
 
+### 全校請假紀錄的個資外洩（假別可被任一登入教師讀取）
+
+- **日期**: 2026-07-29
+- **狀態**: 🟢 已解決（commits `8e241f2` 資料層 + `e23f79d` UI 層，線上 ruleset `bd1a6f7a-d662-48cf-8d6d-d2f87c055aab`）
+- **描述**: `firestore.rules` 對 `substituteRecords`（第 166 行）與 `pendingRequests`（第 198 行）的讀取規則是 `if isSignedIn()`，任一登入教師用瀏覽器開發者工具即可讀到全校同仁的調代課紀錄，其中 `leaveType` 含長期病假／喪假／事假／病假，屬敏感個資。前端的 `roleService.filterRecordsForCurrent` 只擋 UI、擋不住 API。
+- **原因**: Firestore 安全規則無法做欄位級隱藏，敏感欄位與排課資訊放在同一份文件，就只能一起開放或一起關閉；而衝堂檢查與代課推薦需要全校的排課資訊，因此當初選擇整份開放。
+- **解決方案**（使用者裁定範圍：只搬假別與事由，排課資訊維持全校可讀）:
+  - 新增 `{substituteRecords|pendingRequests}/{id}/private/detail` 子文件，只放 `leaveType` / `leaveTypeName` / `reason`，外加 `allowedTeacherIds` 自帶 ACL
+  - 讀取規則 `isApprover || myTeacherId in allowedTeacherIds`。**私有文件自帶 ACL** 的用意是讓規則不必 `get()` 父文件即可判斷，成本低，也避開「先寫父文件還是先寫子文件」的循環相依
+  - 寫入順序刻意為「先 private 再父文件」：private 失敗即中止，不留下「紀錄存在但假別遺失」的狀態——假別遺失會讓月結算把不扣減的假別誤算為扣減
+  - `approveRequest` 在交易外先讀出請求的私有明細並寫好新紀錄的私有文件（recordId 交易前已知），交易本身維持原狀，避免超出 Firestore 對交易的規則 document access 配額
+  - UI 層以 `hydrateRecordsWithDetail` 依身份批次補讀（approver 全部、教師僅與己相關），併回 `_v2RecordsCache` 供月結算使用；產 PDF 前亦補讀。加世代守門避免補讀的 await 造成舊身份資料回填
+  - 向後相容：讀取端一律 `detail?.leaveType ?? record.leaveType`，舊紀錄不會壞掉
+- **額外收緊（審查自己的改動時發現）**: 私有文件的 create 規則若只要求「把自己列在 ACL 內」，教師可對尚無私有文件的紀錄補建一份，把假別注入為公假／長期病假／喪假來規避月結算的授課時數扣減——與 Phase 3 封掉的「自寫代課紀錄灌代課費」同類。已加上「非 approver 建立紀錄私有文件時假別必須是調課類」的限制，對應教師唯一能直接寫入 `substituteRecords` 的自我調課情境。代課請求不受此限，因為該路徑的控制點是組長審核。
+- **驗證**: 教師讀非當事人的假別 DENY、讀排課資訊 ALLOW、組長讀假別 ALLOW；假別注入攻擊（公假／長期病假／喪假／事假）4/4 被擋，自我調課合法路徑（調課／swap）2/2 通過；既有那筆含「長期病假」的正式紀錄已遷移，父文件不再帶敏感欄位（原始值已備份）。
+- **踩坑紀錄**: 用 PowerShell 5.1 測試時，字串型 request body 的中文未以 UTF-8 送出，導致 `leaveType in ['調課','swap']` 對合法路徑誤判為 DENY，一度誤以為規則寫錯。改以 `[Text.Encoding]::UTF8.GetBytes()` 送出位元組後結果正確。**測試含中文的規則條件時必須先確認編碼**，否則會得到假的失敗訊號。
+- **相關檔案**: `firestore.rules`、`src/js/modules/v2/schoolDataService.js`、`src/js/modules/v2/pendingRequestService.js`、`src/js/modules/v2/schemaConstants.js`、`src/js/v2-app.js`
+
 ### 收尾 opus 對抗式審查發現（2026-07-29）
 
 - **日期**: 2026-07-29
