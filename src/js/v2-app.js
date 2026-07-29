@@ -1008,6 +1008,8 @@ function resetV2ViewState() {
     });
     _v2RecordsCache = [];
     _v2PendingCache = [];
+    _v2RecordDetailCache.clear();
+    _v2RecordsCacheGen++;   // 讓前一身份任何仍在飛行中的 hydrateRecordsWithDetail 事後失效，不得回填
     forceActivateTab('import');
 }
 
@@ -1240,6 +1242,57 @@ let _swallowPdfSummaryToast = false;
 // 同步 cache：由 onSnapshot 更新，供 checkExistingRecord 同步查詢。
 let _v2RecordsCache = [];
 let _v2PendingCache = [];
+
+// Phase 6：private/detail（leaveType/leaveTypeName/reason）快取，recordId → detail
+// （讀不到或不存在記為 {}，避免對同一批無權讀的紀錄重複發請求）。身份切換時必須清空
+// （見 resetV2ViewState 與登出分支），否則前一身份讀到的敏感欄位會外洩給下一個登入者。
+let _v2RecordDetailCache = new Map();
+
+// subscribeSubstituteRecords 的 onSnapshot 回呼補讀 detail 後才寫入 _v2RecordsCache（見下方），
+// 這段 await 期間若又收到更新的快照，較慢的舊一輪補讀不應該在較新一輪之後才完成並覆蓋回去
+// （原本的同步賦值不存在這個競態窗口，是這裡新增 await 才引入的，故在此自行補上世代守門）。
+let _v2RecordsCacheGen = 0;
+
+/**
+ * 依身份篩出「需要且讀得到」private/detail 的紀錄：approver 全部；一般教師僅與自己
+ * 相關者（判斷邏輯與 roleSvc.filterRecordsForCurrent 一致）。若對全校紀錄一律發請求，
+ * 一般教師會對絕大多數紀錄觸發 permission-denied（吵雜且浪費 Firestore 配額）。
+ */
+function pickRecordsNeedingDetail(records) {
+    return roleSvc.isApprover() ? records : roleSvc.filterRecordsForCurrent(records);
+}
+
+/**
+ * 把 private/detail（leaveType/leaveTypeName/reason）併回紀錄陣列，private 優先、
+ * 父文件 fallback（相容尚未遷移的舊資料——既有紀錄的三個欄位仍留在父文件上）。
+ * 月結算（settlementCalculator）與 PDF 皆仰賴這裡補齊的 leaveType 判斷是否扣減鐘點費。
+ *
+ * 效能取捨：
+ *   - 只對 pickRecordsNeedingDetail() 篩出的紀錄發請求，不對全校紀錄一律發請求。
+ *   - 已抓過的 recordId 存在 _v2RecordDetailCache，onSnapshot 重繪時只補抓新增的 id，
+ *     不會每次都重新打全部紀錄的 detail（紀錄多時尤其重要）。
+ */
+async function hydrateRecordsWithDetail(records) {
+    if (!Array.isArray(records) || records.length === 0) return records || [];
+    const candidates = pickRecordsNeedingDetail(records);
+    const idsToFetch = [...new Set(
+        candidates.map(r => r.recordId).filter(id => id && !_v2RecordDetailCache.has(id))
+    )];
+    if (idsToFetch.length) {
+        const fetched = await dataSvc.getRecordDetailsBulk(idsToFetch);
+        idsToFetch.forEach(id => _v2RecordDetailCache.set(id, fetched.get(id) || {}));
+    }
+    return records.map(r => {
+        const detail = r.recordId ? _v2RecordDetailCache.get(r.recordId) : null;
+        if (!detail) return r;
+        return {
+            ...r,
+            leaveType:     detail.leaveType     ?? r.leaveType,
+            leaveTypeName: detail.leaveTypeName ?? r.leaveTypeName,
+            reason:        detail.reason        ?? r.reason,
+        };
+    });
+}
 
 function conflictMatches(item, date, period, className, originalTeacher) {
     return item
@@ -1611,10 +1664,22 @@ async function generatePdfForRecord(record) {
         console.warn('[V2] pdfGenerator 不可用，略過 PDF 產生');
         return;
     }
+    // Phase 6：leaveType/leaveTypeName/reason 已搬到 private/detail 子文件，這裡拿到的
+    // record（approveRequest 回傳值或 listSubstituteRecords 讀回的父文件）都已不含這三欄。
+    // 產生 PDF 前補讀一次，private 優先、record 本身 fallback（相容尚未遷移的舊紀錄——
+    // 產線現存那筆 2026-07-24 舊紀錄的 leaveType 仍在父文件上，getRecordDetail 讀不到
+    // private 文件時會回 null，此時就地使用 record.leaveType）。
+    const detail = record?.recordId ? await dataSvc.getRecordDetail(record.recordId) : null;
+    const enriched = detail ? {
+        ...record,
+        leaveType:     detail.leaveType     ?? record.leaveType,
+        leaveTypeName: detail.leaveTypeName ?? record.leaveTypeName,
+        reason:        detail.reason        ?? record.reason,
+    } : record;
     const scheduleData = app.dataManager?.getScheduleData?.() || [];
     const teachers     = app.dataManager?.getTeachers?.() || [];
     try {
-        await app.pdfGenerator.generateSubstituteForm(record, scheduleData, teachers);
+        await app.pdfGenerator.generateSubstituteForm(enriched, scheduleData, teachers);
     } catch (e) {
         console.error('[V2] PDF 產生失敗：', e);
         app.showToast?.('PDF 產生失敗：' + e.message, 'error', 4000);
@@ -1770,6 +1835,8 @@ async function bootstrap() {
             document.body.classList.remove('v2-admin', 'v2-director', 'v2-section-chief', 'v2-teacher', 'v2-approver');
             _v2RecordsCache = [];
             _v2PendingCache = [];
+            _v2RecordDetailCache.clear();
+            _v2RecordsCacheGen++;   // 同上：作廢登出前任何仍在飛行中的補讀
             // 登出即鎖定整個 app：遮罩 + .app-container inert 阻擋所有互動（含鍵盤跳至月結算下載）。
             // 不再 clearAll()——那只清記憶體不清 localStorage，反而會讓再登入資料看似遺失並有覆蓋風險。
             lockV2App();
@@ -1835,8 +1902,14 @@ async function bootstrap() {
                 renderPendingTab();
                 setSyncStatus(true);
             }, onSyncError));
-            unsubs.push(await dataSvc.subscribeSubstituteRecords((items) => {
-                _v2RecordsCache = Array.isArray(items) ? items : [];
+            unsubs.push(await dataSvc.subscribeSubstituteRecords(async (items) => {
+                // Phase 6：父文件已不含 leaveType/reason，即時同步進來的紀錄要先補 detail
+                // 才能餵給月結算（見 hydrateRecordsWithDetail 檔頭註解）。gen 守門避免較舊的
+                // 一輪補讀在較新一輪之後才完成、把新資料覆蓋回舊的。
+                const gen = ++_v2RecordsCacheGen;
+                const hydrated = await hydrateRecordsWithDetail(Array.isArray(items) ? items : []);
+                if (gen !== _v2RecordsCacheGen) return;
+                _v2RecordsCache = hydrated;
                 renderRecordsTab();
                 setSyncStatus(true);
             }, onSyncError));
@@ -1853,8 +1926,15 @@ async function bootstrap() {
                 }, {}, onSyncError));
             }
 
-            // 首次塞 cache（onSnapshot 首次觸發前）— 讓即刻的衝堂檢查可用
-            _v2RecordsCache = await dataSvc.listSubstituteRecords();
+            // 首次塞 cache（onSnapshot 首次觸發前）— 讓即刻的衝堂檢查可用；同樣需要補 detail，
+            // 否則身份確認後、onSnapshot 首次回呼前這段期間讀到的月結算會漏掉 leaveType。
+            // 沿用同一支 gen 計數器：若 onSnapshot 已搶先在這段 await 期間完成過一輪，這裡就不再
+            // 用（可能較舊的）結果覆蓋回去。
+            {
+                const initGen = ++_v2RecordsCacheGen;
+                const initialRecords = await hydrateRecordsWithDetail(await dataSvc.listSubstituteRecords());
+                if (initGen === _v2RecordsCacheGen) _v2RecordsCache = initialRecords;
+            }
             _v2PendingCache = (await dataSvc.listPendingRequests()).map(requestSvc.normalizeLegacyRequest);
         } catch (e) {
             console.error('[v2] resolveIdentity 失敗:', e);
