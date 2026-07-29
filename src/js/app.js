@@ -108,6 +108,9 @@ class SubstituteTeacherApp {
         // 綁定課表編輯器事件
         this.bindScheduleEditorEvents();
 
+        // 綁定課表管理頁籤 sub-view 切換（課表匯入／課表編輯）
+        this.bindScheduleSubviewSwitch();
+
         // 綁定 Firebase 認證相關事件
         this.bindFirebaseAuthEvents();
 
@@ -116,6 +119,9 @@ class SubstituteTeacherApp {
 
         // 從 localStorage 載入已儲存的資料
         this.loadSavedData();
+
+        // 依載入後的資料狀態，決定課表管理頁籤預設顯示 import 或 editor sub-view
+        this.activateScheduleSubview('editor');
 
         // 初始化 Firebase（如果已設定）
         this.initFirebase();
@@ -653,10 +659,14 @@ class SubstituteTeacherApp {
                     this.loadCurrentMonthRecords();
                 }
 
-                // 切換到課表編輯頁籤時，更新教師選單
-                if (targetTab === 'schedule-editor') {
-                    this.populateEditorTeacherDropdown();
+                // 切換到課表管理頁籤時，依資料狀態決定顯示 import 或 editor sub-view
+                // （activateScheduleSubview 內部：無課表資料一律強制顯示 import，見該函式註解）
+                if (targetTab === 'schedule') {
+                    this.activateScheduleSubview('editor');
                 }
+
+                // 手機可捲 tab bar：確保剛切換的分頁按鈕捲動到可視範圍內
+                btn.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
             });
         });
     }
@@ -922,7 +932,8 @@ class SubstituteTeacherApp {
         const hasSchedule = this.dataManager.getScheduleData().length > 0;
         const isConfigured = schoolName && hasSchedule;
 
-        // 取得所有頁籤按鈕（除了課表匯入和設定）
+        // 鎖定清單：僅這三個依賴「已設校名+已匯入課表」的分頁需要鎖定；
+        // 課表管理（資料入口，見 canSwitchToTab）與教師管理（無資料時仍可手動新增教師）故意不列入
         const lockedTabs = ['substitute', 'records', 'settlement'];
 
         lockedTabs.forEach(tabId => {
@@ -945,8 +956,9 @@ class SubstituteTeacherApp {
      * @returns {boolean} 是否允許切換
      */
     canSwitchToTab(tabId) {
-        // 課表匯入、課表編輯和設定頁籤始終可用
-        if (tabId === 'import' || tabId === 'settings' || tabId === 'schedule-editor') {
+        // 課表管理（含匯入/編輯兩個 sub-view）、教師管理、設定頁籤始終可用：
+        // 課表管理是資料入口，教師管理無資料時仍可先手動新增教師，兩者都不該被「先匯入課表」擋住
+        if (tabId === 'schedule' || tabId === 'teachers' || tabId === 'settings') {
             return true;
         }
 
@@ -3725,7 +3737,8 @@ class SubstituteTeacherApp {
      * 綁定資料管理事件
      */
     bindDataManagementEvents() {
-        // 匯入上下文元素對應表
+        // 匯入上下文元素對應表（Stage 2 起備份還原去重，只留設定頁一組；
+        // 原「課表匯入頁籤」那組 context 與其 6 個 DOM 綁定已隨備份還原卡移除一併刪除）
         this._importContexts = {
             settings: {
                 file: 'import-data-file',
@@ -3733,12 +3746,6 @@ class SubstituteTeacherApp {
                 preview: 'import-preview',
                 stats: 'import-stats',
             },
-            tab: {
-                file: 'tab-import-file',
-                filename: 'tab-import-filename',
-                preview: 'tab-import-preview',
-                stats: 'tab-import-stats',
-            }
         };
         this._activeImportCtx = 'settings';
 
@@ -3771,29 +3778,9 @@ class SubstituteTeacherApp {
             this.cancelImport();
         });
 
-        // === 課表匯入頁籤的備份還原 ===
-        document.getElementById('tab-export-btn')?.addEventListener('click', () => {
-            this.exportLocalData();
-        });
-
-        document.getElementById('tab-import-btn')?.addEventListener('click', () => {
-            this._activeImportCtx = 'tab';
-            document.getElementById('tab-import-file').click();
-        });
-
-        document.getElementById('tab-import-file')?.addEventListener('change', (e) => {
-            this._activeImportCtx = 'tab';
-            this.handleImportFile(e.target.files[0]);
-        });
-
-        document.getElementById('tab-confirm-import-btn')?.addEventListener('click', () => {
-            this._activeImportCtx = 'tab';
-            this.confirmImport();
-        });
-
-        document.getElementById('tab-cancel-import-btn')?.addEventListener('click', () => {
-            this._activeImportCtx = 'tab';
-            this.cancelImport();
+        // === 課表管理頁籤的備份還原提示連結（Stage 2 起去重，實際功能只留設定頁一份） ===
+        document.getElementById('schedule-goto-settings-btn')?.addEventListener('click', () => {
+            document.querySelector('.tab-btn[data-tab="settings"]')?.click();
         });
 
         // === 九年級已畢業開關 ===
@@ -4176,11 +4163,6 @@ class SubstituteTeacherApp {
             this.editorSaveSchedule();
         });
 
-        // 刪除教師按鈕
-        document.getElementById('editor-delete-teacher-btn')?.addEventListener('click', () => {
-            this.editorDeleteTeacher();
-        });
-
         // 課程編輯對話框事件
         document.getElementById('close-course-modal-btn')?.addEventListener('click', () => {
             this.closeCourseEditModal();
@@ -4207,6 +4189,37 @@ class SubstituteTeacherApp {
         document.getElementById('course-edit-modal')?.addEventListener('click', (e) => {
             if (e.target.id === 'course-edit-modal') this.closeCourseEditModal();
         });
+    }
+
+    /**
+     * 綁定課表管理頁籤內的 sub-view 切換鈕（Stage 2：課表匯入／課表編輯合併為
+     * 同一分頁下的兩個 sub-view，segmented control 切換）
+     */
+    bindScheduleSubviewSwitch() {
+        document.querySelectorAll('.subview-switch-btn').forEach(btn => {
+            btn.addEventListener('click', () => this.activateScheduleSubview(btn.dataset.subview));
+        });
+    }
+
+    /**
+     * 切換課表管理頁籤的 sub-view（'import' | 'editor'）。
+     * 尚未匯入課表時強制顯示 import（那是資料入口，必須永遠可進，切到空的 editor 沒有意義），
+     * 不論呼叫端要求哪個 view 都會被覆蓋——所以每個進入點（分頁點擊、segmented 按鈕點擊、
+     * 開機時依已存資料決定預設）都可以直接呼叫，不必各自重複判斷 hasSchedule。
+     */
+    activateScheduleSubview(name) {
+        const hasSchedule = this.dataManager.getScheduleData().length > 0;
+        if (!hasSchedule) name = 'import';
+
+        document.querySelectorAll('.subview-switch-btn').forEach(btn => {
+            const isActive = btn.dataset.subview === name;
+            btn.classList.toggle('btn-primary', isActive);
+            btn.classList.toggle('btn-secondary', !isActive);
+        });
+        document.getElementById('schedule-import-view')?.classList.toggle('hidden', name !== 'import');
+        document.getElementById('schedule-editor-view')?.classList.toggle('hidden', name !== 'editor');
+
+        if (name === 'editor') this.populateEditorTeacherDropdown();
     }
 
     /**

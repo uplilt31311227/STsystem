@@ -46,6 +46,12 @@ function injectV2Styles() {
     body.v2-active .v2-teacher-only { display: revert; }
     body.v2-active.v2-approver .v2-teacher-only { display: none; }
 
+    /* Stage 2：教師管理分頁內 V1 教師屬性表（#teacher-editor-card）與 V2 教師帳號管理
+       （.v2-director-only 容器）互斥顯示。分頁本身是 v2-approver-only（section_chief + director
+       皆可進），此規則另外把 V1 版本從 director 眼中移除，避免同時看到兩份教師清單。
+       section_chief（approver 但非 director）看不到 .v2-director-only 容器，故只會看到這份 V1 表。 */
+    body.v2-active.v2-director #teacher-editor-card { display: none; }
+
     .v2-badge { display: inline-block; padding: 2px 6px; border-radius: 10px;
                 font-size: 0.72rem; margin-left: 4px; background: #e53e3e; color: #fff; }
     .v2-role-tag { display: inline-block; padding: 2px 8px; border-radius: 10px;
@@ -74,9 +80,11 @@ function injectV2Styles() {
     /* Phase 3：待辦清單頁籤上的紅點數量徽章（待我同意 + 待我審核 加總） */
     .v2-tab-badge { position: relative; top: -1px; }
 
-    /* V2 模式下隱藏原本地「調代課紀錄」表格與查詢，避免與 V2 全校紀錄混淆 */
-    body.v2-active #records-tab > #records-no-data,
-    body.v2-active #records-tab > #records-content { display: none !important; }
+    /* V2 模式下隱藏原本地「調代課紀錄」表格與查詢，避免與 V2 全校紀錄混淆。
+       R1 修復（Stage 2）：改用純 id 選擇器，不依賴 #records-tab 的子代組合子——
+       records-tab 內部 DOM 結構調整時，這條隱私邊界規則不會意外失效。 */
+    body.v2-active #records-no-data,
+    body.v2-active #records-content { display: none !important; }
 
     .v2-log-table { width: 100%; font-size: 0.85rem; border-collapse: collapse; }
     .v2-log-table th, .v2-log-table td { padding: 4px 8px; border-bottom: 1px solid #e5e7eb; text-align: left; }
@@ -960,10 +968,10 @@ function bindV2TabSwitches() {
     document.querySelectorAll('.tab-btn').forEach(btn => {
         btn.addEventListener('click', async () => {
             const tab = btn.dataset.tab;
-            if (tab === 'v2-pending')  await renderPendingTab();
-            if (tab === 'v2-teachers') await renderTeachersAdminTab();
-            if (tab === 'v2-logs')     await renderLogsTab();
-            if (tab === 'records')     await renderRecordsTab();
+            if (tab === 'v2-pending') await renderPendingTab();
+            if (tab === 'teachers')   await renderTeachersAdminTab();
+            if (tab === 'v2-logs')    await renderLogsTab();
+            if (tab === 'records')    await renderRecordsTab();
         }, { passive: true });
     });
 }
@@ -1005,8 +1013,10 @@ const V2_IDENTITY_CONTENT_HOSTS = ['v2-teachers-admin', 'v2-logs', 'v2-pending-l
  * （見 onAuthStateChange 的 identityChanged 守門），故不會誤刪同帳號 re-emit 的未存輸入。
  *   1. 清空所有含個資的渲染容器（教師名單 / 操作日誌 / 待辦 / 全校紀錄），杜絕前一身份殘留
  *   2. 清空衝堂檢查快取，避免殘留他人紀錄
- *   3. 彈回中性預設頁籤「課表匯入」（等同重新整理後的初始頁），避免新身份落在
- *      對其 display:none 的 .active 面板而看見空白、或殘留看見上一身份內容
+ *   3. 彈回中性預設頁籤「調代課申請」（Stage 2 起 IA 重組：原「課表匯入」併入
+ *      v2-approver-only 的「課表管理」分頁，非 approver 身份會被 CSS 隱藏，不能再當
+ *      通用預設頁；「調代課申請」對所有角色恆可見，等同重新整理後的初始頁），避免新
+ *      身份落在對其 display:none 的 .active 面板而看見空白、或殘留看見上一身份內容
  * 必須在套用新 body 角色 class 與重新渲染「之前」呼叫。
  */
 function resetV2ViewState() {
@@ -1018,7 +1028,7 @@ function resetV2ViewState() {
     _v2PendingCache = [];
     _v2RecordDetailCache.clear();
     _v2RecordsCacheGen++;   // 讓前一身份任何仍在飛行中的 hydrateRecordsWithDetail 事後失效，不得回填
-    forceActivateTab('import');
+    forceActivateTab('substitute');
 }
 
 /* ===== 調課送出攔截（P5/P7 重點）===== */
@@ -1608,7 +1618,7 @@ function showGoToTeacherAdminToast(count) {
     document.body.appendChild(toast);
 
     document.getElementById('v2-goto-teacher-admin').addEventListener('click', () => {
-        const tabBtn = document.querySelector('.tab-btn[data-tab="v2-teachers"]');
+        const tabBtn = document.querySelector('.tab-btn[data-tab="teachers"]');
         if (tabBtn) tabBtn.click();
         toast.remove();
     });

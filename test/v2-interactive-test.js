@@ -58,7 +58,7 @@ async function snap(page, name) {
 
     // ===== 驗證教師管理頁籤 =====
     console.log('\n切到「教師管理」頁籤');
-    await page.click('.tab-btn[data-tab="v2-teachers"]');
+    await page.click('.tab-btn[data-tab="teachers"]');
     await page.waitForTimeout(2000);
     await snap(page, '04-teachers-tab');
 

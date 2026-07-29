@@ -1,5 +1,53 @@
 # 版本紀錄 (Changelog)
 
+## [2026-07-29]（feature/permission-system）UI 重規劃 Stage 2：資訊架構重組 9→8 分頁
+
+依 `docs/PLAN.md` 六階段 UI 重規劃計畫，完成 Stage 2（資訊架構重組），獨立 commit、獨立驗證。
+
+### 變更（分頁重組）
+- **9 分頁 → 8 分頁**：教師 CRUD 集中至新「教師管理」分頁；「課表匯入」與「課表編輯」合併為
+  「課表管理」分頁下的兩個 sub-view（頂部 segmented control 切換，`#schedule-import-view`/
+  `#schedule-editor-view`）；新 nav 順序：調代課申請／待辦／調課紀錄（高頻，中間分隔線
+  `.nav-tabs__divider`）／課表管理／教師管理／月結算／操作日誌／設定（管理）
+- **教師管理分頁**：`#teacher-editor-card`（V1 教師屬性表，含 `#teacher-table`）與 V2 教師帳號
+  管理容器（`#v2-teachers-admin`，`v2-only v2-director-only`）同分頁互斥顯示——V1 與 V2
+  approver 非 director 看前者，V2 director 看後者；分頁本身 `v2-approver-only`
+  （section_chief + director 皆可進，較舊版僅 director 可見的「教師管理」範圍更廣）
+- **課表編輯器刪除教師按鈕移除**：`#editor-delete-teacher-btn` 與其綁定移除，教師刪除統一由
+  教師管理頁「刪除」鈕（`.delete-teacher-btn`，逐列已存在）處理——已知取捨：該鈕原本連帶清除
+  該教師的課表資料，教師管理頁的列刪除目前只移除教師本身，不會清課表資料，兩者非完全等價
+  行為（記錄於 Stage 2 收尾筆記，非本階段業務邏輯修改範圍）
+
+### 修復（R1 致命風險：V2 個資外洩防線加固）
+- `v2-app.js` 隱藏 V1 全校紀錄表的 CSS 規則，原用 `#records-tab > #records-content` 子代組合子，
+  records-tab 內部 DOM 調整時會意外失效；改為純 `#records-content`/`#records-no-data` id 選擇器，
+  不依賴任何 DOM 層級
+
+### 修復（modal 搬家：F2 既有潛在 bug）
+- 5 個 modal（`#course-edit-modal`／`#record-detail-modal`／`#weekly-summary-modal`／
+  `#sync-conflict-modal`／`#merge-confirm-modal`）原本內嵌於各 `.tab-content` 內，非該分頁
+  時因祖先 `display:none` 打不開；全部搬到 `<body>` 尾端新增的 `#modal-root`，全靠
+  `getElementById` 存取，搬家未斷任何綁定
+
+### 修復（既有缺陷，驗收時發現）
+- `.v2-only{display:none}` 過去只存在於 v2-app.js 動態注入的樣式，純 V1 網址（無 `?v2=1`）下
+  v2-app.js 提早 return 永不注入，導致「待辦」「操作日誌」兩顆 V2 專屬分頁按鈕在 V1 單機模式
+  下一直可見（可點但內容空白）；改為 style.css 一律載入的靜態規則，V2 注入的同名規則
+  cascade 順序仍正確覆蓋，行為不變
+
+### 變更（其他）
+- 備份還原去重：課表管理頁移除「資料備份還原卡」，改為一行提示連結導向設定頁；
+  `app.js` `_importContexts` 對應的 `tab` context 與其 5 個 DOM 綁定一併移除，只留 settings 組
+- 設定頁分權：「學年度管理」「科目領域對應表」「資料管理」三卡加 `v2-approver-only`；
+  「危險操作區」（清除所有資料）加 `v2-director-only`
+- 手機可捲頁籤列：`.nav-tabs` 改 `overflow-x:auto` + `scroll-snap`，≥1024px 恢復 `flex-wrap`；
+  切換分頁時新作用中按鈕自動 `scrollIntoView`
+- `canSwitchToTab`/`updateTabLockStatus` 分頁清單同步新結構：課表管理與教師管理維持不鎖
+  （資料入口／無資料仍可用），substitute/records/settlement 三個維持原鎖定邏輯不變
+- `test/v2-smoke-test.js`：`.tab-btn.v2-only` 數量斷言 3→2（教師管理不再是純 v2-only 頁籤）；
+  `test/ui-rwd-check.mjs`：走訪清單新增「教師管理」分頁測量，等待訊號改用同 sub-view 內的
+  `#schedule-status`；`test/v2-interactive-test.js`：`data-tab="v2-teachers"` → `"teachers"`
+
 ## [2026-07-29]（feature/permission-system）UI 重規劃 Stage 0-1：design token 基座與手機硬傷急救
 
 依 `docs/PLAN.md` 六階段 UI 重規劃計畫，完成 Stage 0（token 基座）與 Stage 1（硬傷急救），
