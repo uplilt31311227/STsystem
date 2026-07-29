@@ -44,10 +44,11 @@ Stage 2（9→8 分頁重組）驗收過程中發現的既有缺陷與判斷取�
 ### Stage 6 死碼待刪清單（累積記錄，非本階段處理）
 
 - **狀態**: 🟡 待 Stage 6（清理階段）統一處理
-- **描述**: 以下 CSS class 因 Stage 2 的 DOM 搬移／移除已無任何元素引用，定義本身留著不影響顯示（純死碼），集中記錄避免 Stage 6 漏刪：
+- **描述**: 以下 CSS class／JS 方法因搬移／改用其他呼叫路徑已無任何引用，定義本身留著不影響顯示或執行（純死碼），集中記錄避免 Stage 6 漏刪：
   - `.import-layout` / `.import-left` / `.import-right`（`src/css/style.css:136` 一帶）——課表匯入 sub-view 教師屬性卡搬走後，原本的兩欄 grid wrapper 已無存在必要，新結構改用單欄卡片堆疊
   - `.backup-restore-card` / `.backup-restore-row`（`src/css/style.css:531`、`535`、`2808` 一帶，`2808` 是 Stage 1 hotfix 的 flex-wrap 清單其中一項）——課表管理頁的「資料備份還原卡」已移除，改為一行提示連結，這兩個 class 不再被任何元素使用
-- **相關檔案**: `src/css/style.css`
+  - `onTeacherSelected(teacherName)`（`src/js/app.js:1724` 一帶）——Stage 4 驗收缺陷修正時發現：全域搜尋無任何呼叫點，函式本體（含內部呼叫的 `renderTeacherSchedule()`／對 `#original-schedule` 的顯隱切換）皆為死碼，推測是舊版「教師/日期分開觸發」流程遺留；現行流程已改用 `onTeacherOrDateChanged()` → `showScheduleForDate()` 統一處理教師與日期兩欄共同觸發的情境。本次僅記錄不刪（Stage 6 才清死碼）
+- **相關檔案**: `src/css/style.css`、`src/js/app.js`
 
 ## 商用上線實戰化實測（2026-07-29）
 

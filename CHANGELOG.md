@@ -1,5 +1,35 @@
 # 版本紀錄 (Changelog)
 
+## [2026-07-29]（feature/permission-system）UI 重規劃 Stage 4 驗收缺陷修正
+
+派獨立 agent 驗收 Stage 4（commit `8d0acb8`，手機專屬模式）後回報的 5 項缺陷，全數修復，獨立 commit、獨立驗證（含 playwright 量測，前後對照見下方驗證段落）。
+
+### 修復（中）
+- **桌機表格操作欄 padding 退化**：`components.css` 640+ 層 `.data-table-cards td.cell-actions{padding-top:var(--sp-3)}` 與 `.data-table-compact.data-table-cards td{padding:.35rem var(--sp-2)}` 特異度同為 (0,2,1)，因載入順序在後蓋掉緊湊版的 0.35rem，5 張卡片化表格在桌機每列高度多出來、操作欄按鈕比同列 input 低。補一條 3-class 選擇器 `.data-table-compact.data-table-cards td.cell-actions{padding-top:.35rem}` 還原，特異度較高不受載入順序影響
+- **手機 toast 蓋住 sticky action bar 送出鈕**：`#toast-container` 手機層改由 `top` 定位（`calc(var(--sp-4) + env(safe-area-inset-top))`），不再 `bottom` 釘底，避開申請頁步驟四 sticky action bar；640+ 桌機層明確補 `top:auto` 並保留原本右下角定位（避免同時吃到手機層 `top` 與桌機 `bottom` 兩個值，把 `position:fixed` 容器撐開拉伸）
+
+### 修復（中低）
+- **九年級開關路徑弄掉單日檢視**：`refreshGrade9DependentUI()` 原呼叫 `renderTeacherSchedule()`（`highlightWeekday=null`），會把申請頁課表的 `.schedule-grid-single` toggle 掉、當日高亮全失（手機下可見格數 16→48）。改呼叫 `showScheduleForDate(teacherName, subDate)` 保留 highlight 上下文；`sub-date` 尚未填寫時維持原本呼叫（`showScheduleForDate()` 對空日期不會拋錯，但會清空 `#selected-weekday` 且無條件顯示步驟三，等於在背景同步事件裡強行推進使用者流程，故加 guard 避免）
+
+### 修復（低）
+- **月結算表 sticky 首欄無效**：`.data-table{width:100%}` 讓表格壓到跟 `.table-wrap` 一樣窄（手機下永遠不會超出容器、表頭文字被迫斷成三行），sticky 首欄沒有橫捲可倚靠、視覺上完全無效。`features.css` 手機層補 `#settlement-table{min-width:640px}` 強制撐開表格，640+ 桌機寬度本來就超過 640px 不需另外還原
+- **selection-tray 巢狀層級不一致**：批次調課清單的 `.selection-tray-header` 原本是 `#batch-swap-list` 的兄弟節點（浮在容器外，父層只是普通 `.card`），與「已選課程」tray（header 在 `.selection-tray` 容器內）不一致。`index.html` 新增外層 `.batch-swap-container.selection-tray` 包住標題列與 `#batch-swap-list`，巢狀層級與「已選課程」（`#selected-courses-list` 包住 header 與 `#selected-courses-chips`）一致；`#batch-swap-list` id、內部結構（`renderSwapBatch()` 的 innerHTML 綁定與內容）完全不動，原本掛在它身上的 `.selection-tray` 樣式與 `margin` 改由新外層 `.batch-swap-container` 承接（避免 `#batch-swap-list` 同時吃外層 padding 與自己的 margin，造成雙倍留白）
+
+### 變更
+- CSS 版本號 `?v=2.4.0` → `?v=2.4.1`
+
+### 驗證
+- `npm run check`（27/27）、`node test/v2-smoke-test.js`、`node test/ui-rwd-check.mjs`（7/7 無橫向溢出）、`npm test`（41/41）全數通過
+- 另寫一次性 Playwright 腳本（未進 repo，跑完即刪）逐項量測 11 個斷言，並用 `git stash` 對照修復前（Stage 4 原始 commit）跑同一批量測，前後數字對照：
+  - 桌機 1440：教師表列高 43.2px（緊湊水準）；刪除鈕與同列 input 垂直置中差 **0.00px**（修復前 3.20px）
+  - 手機 375：toast 改置頂後 `top:16~bottom:132`，與 sticky action bar（`top:464~bottom:533`）明確不相交；修復前兩者僅相距 ~2px（`535` vs `533`），屬脆弱的擦邊不重疊，非穩固修復
+  - 手機 375：呼叫 `window.app.refreshGrade9DependentUI()` 後 `.schedule-grid-single` 維持 `true`、可見格數維持 16/48 不變（修復前會變成 `false` 與 48/48，即單日檢視整個回退成整週）
+  - 手機 375：`#settlement-table` 的 `.table-wrap` 橫向捲動 `scrollWidth 640 > clientWidth 303`、橫捲到底後首欄仍貼左（sticky 生效）、表頭列高回到 32.5px（修復前 `scrollWidth===clientWidth===303` 完全無法橫捲、表頭列高 74.1px 即「一字斷三行」）
+  - selection-tray 結構比對＋截圖：批次調課 tray 的 `#batch-swap-list` 父層 class 修復前為 `"card"`（`batchParentHasTray:false`），修復後為 `"batch-swap-container selection-tray"`（`batchParentHasTray:true`），與「已選課程」tray 巢狀層級一致；`#batch-swap-list` 的 id 與 `renderSwapBatch()` 綁定目標全程不變
+
+### 已知取捨
+- `onTeacherSelected()`（`app.js:1724`）確認為死碼（全域無呼叫點），本次未刪，記入 `docs/ISSUES_LOG.md` 的「Stage 6 死碼待刪清單」，留待 Stage 6 統一處理
+
 ## [2026-07-29]（feature/permission-system）UI 重規劃 Stage 4：手機專屬模式
 
 依 `docs/PLAN.md` Stage 4，補齊手機場景的三個重點：表格卡片化、課表單日檢視、modal 全螢幕；並順手修掉上輪驗收遺留的 2 個小缺陷。獨立 commit、獨立驗證。

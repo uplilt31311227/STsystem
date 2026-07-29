@@ -3975,10 +3975,20 @@ class SubstituteTeacherApp {
         }
 
         // 調代課申請：原課表灰底
+        // 驗收缺陷修正：改呼叫 showScheduleForDate() 保留 highlightWeekday 上下文，
+        // 否則 renderTeacherSchedule() 會以 highlightWeekday=null 呼叫
+        // renderTeacherScheduleWithHighlight()，把 .schedule-grid-single 單日檢視
+        // toggle 掉，手機下當日高亮全失、16 格變回 48 格。
+        // 若尚未選日期則維持原本呼叫：showScheduleForDate() 在空日期下會把
+        // #selected-weekday 清空、且無條件顯示 #step-select-course，等於在背景同步
+        // 事件裡強行把使用者推進到步驟三，不安全，因此這種情況不改用它。
         const originalSchedule = document.getElementById('original-schedule');
         if (originalSchedule && !originalSchedule.classList.contains('hidden')) {
             const teacherName = document.getElementById('sub-teacher')?.value;
-            if (teacherName) {
+            const subDate = document.getElementById('sub-date')?.value;
+            if (teacherName && subDate) {
+                this.showScheduleForDate(teacherName, subDate);
+            } else if (teacherName) {
                 const weekSchedule = this.dataManager.getTeacherWeekSchedule(teacherName);
                 this.renderTeacherSchedule(weekSchedule, teacherName);
             }
