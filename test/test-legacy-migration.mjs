@@ -77,27 +77,81 @@ function legacyRecord(overrides = {}) {
     };
 }
 
-/* ================= 1. 偵測：兩來源皆有，取 lastModified 較新者（Firestore 較新） ================= */
+/* ================= 1. 偵測：兩來源皆有 → 不做自動決勝，兩者都列出 =================
+ * 2026-07-29 對抗式審查後改版：舊版以 lastModified 決定「取較新者」，但 localStorage
+ * 的 payload（dataManager.exportToStorage）根本沒有 lastModified 欄位 → localStorage
+ * 恆判為最舊、Firestore 永遠勝出，主任長期離線使用本機時會靜默遷到舊快照。
+ * 現在改為回傳所有來源，由遷移一併處理取聯集（重疊由冪等鍵去重）。
+ */
 {
     useMocks({
         firestoreLegacy:    { substituteRecords: [legacyRecord(), legacyRecord({ date: '2026-05-05' })], lastModified: '2026-06-01T00:00:00.000Z' },
         localStorageLegacy: { substituteRecords: [legacyRecord()], lastModified: '2026-05-01T00:00:00.000Z' },
     });
     const info = await legacyMigration.detectLegacyData();
-    eq(info.source, 'firestore', '偵測-雙來源：Firestore 較新時取 firestore');
-    eq(info.count, 2, '偵測-雙來源：筆數取自較新來源');
-    eq(info.lastModified, '2026-06-01T00:00:00.000Z', '偵測-雙來源：lastModified 取較新者');
+    eq(info.source, 'both', '偵測-雙來源：兩者皆有紀錄時不自動決勝，source 為 both');
+    eq(info.count, 3, '偵測-雙來源：count 為兩來源筆數合計（實際匯入會去重）');
+    eq(info.sources.length, 2, '偵測-雙來源：sources 列出兩個來源');
+    eq(info.sources[0].source, 'firestore', '偵測-雙來源：sources[0] 為 firestore');
+    eq(info.sources[0].count, 2, '偵測-雙來源：firestore 筆數正確');
+    eq(info.sources[1].source, 'localStorage', '偵測-雙來源：sources[1] 為 localStorage');
+    eq(info.sources[1].count, 1, '偵測-雙來源：localStorage 筆數正確');
+    eq(info.lastModified, '2026-06-01T00:00:00.000Z', '偵測-雙來源：lastModified 取兩者中較新者');
 }
 
-/* ================= 2. 偵測：兩來源皆有，localStorage 較新 ================= */
+/* ================= 2. 偵測：localStorage 沒有 lastModified 欄位也不會被忽略 =================
+ * 這正是舊版的致命情境——localStorage 實際上永遠沒有 lastModified。
+ */
 {
     useMocks({
         firestoreLegacy:    { substituteRecords: [legacyRecord()], lastModified: '2026-04-01T00:00:00.000Z' },
-        localStorageLegacy: { substituteRecords: [legacyRecord(), legacyRecord(), legacyRecord()], lastModified: '2026-06-15T00:00:00.000Z' },
+        localStorageLegacy: { substituteRecords: [legacyRecord(), legacyRecord(), legacyRecord()] }, // 無 lastModified，與實際情況一致
     });
     const info = await legacyMigration.detectLegacyData();
-    eq(info.source, 'localStorage', '偵測-雙來源：localStorage 較新時取 localStorage');
-    eq(info.count, 3, '偵測-雙來源：筆數取自較新來源（localStorage）');
+    eq(info.source, 'both', '偵測-無時間戳：localStorage 缺 lastModified 仍被納入');
+    eq(info.count, 4, '偵測-無時間戳：兩來源筆數合計');
+    eq(info.sources.find(s => s.source === 'localStorage').count, 3, '偵測-無時間戳：localStorage 的 3 筆沒有被丟掉');
+}
+
+/* ================= 2b. 偵測：筆數為 0 的來源不算「有舊資料」 =================
+ * V2 自己會持續重寫 localStorage 的 substituteSystemData，物件存在不代表有舊紀錄。
+ * 舊版只看物件存在 → 任何開過 V2 的瀏覽器都永遠掛著「偵測到舊資料｜0 筆」假警報。
+ */
+{
+    useMocks({
+        firestoreLegacy:    null,
+        localStorageLegacy: { substituteRecords: [], teachers: [{ name: '甲師' }], schoolName: 'X 國中' },
+    });
+    const info = await legacyMigration.detectLegacyData();
+    eq(info.source, null, '偵測-空陣列：substituteRecords 為空不算有舊資料');
+    eq(info.count, 0, '偵測-空陣列：count 為 0');
+    eq(info.sources.length, 0, '偵測-空陣列：sources 為空陣列');
+}
+
+/* ================= 2c. 偵測：兩來源皆為 0 筆 → 無舊資料 ================= */
+{
+    useMocks({
+        firestoreLegacy:    { substituteRecords: [], lastModified: '2026-06-01T00:00:00.000Z' },
+        localStorageLegacy: { substituteRecords: [] },
+    });
+    const info = await legacyMigration.detectLegacyData();
+    eq(info.source, null, '偵測-雙空：兩來源都 0 筆時回報無舊資料');
+    eq(info.sources.length, 0, '偵測-雙空：sources 為空');
+}
+
+/* ================= 2d. 遷移：兩來源都會被遷移（取聯集），重疊只匯入一次 ================= */
+{
+    const shared = legacyRecord({ date: '2026-03-03' });
+    useMocks({
+        firestoreLegacy:    { substituteRecords: [shared, legacyRecord({ date: '2026-03-04' })], lastModified: '2026-06-01T00:00:00.000Z' },
+        localStorageLegacy: { substituteRecords: [shared, legacyRecord({ date: '2026-03-05' })] },
+        isDirector: true,
+    });
+    const stats = await legacyMigration.migrateLegacyRecords();
+    eq(stats.total, 4, '遷移-聯集：total 為兩來源筆數合計');
+    eq(stats.created, 3, '遷移-聯集：重疊的那筆只匯入一次，共成立 3 筆');
+    eq(stats.skipped, 1, '遷移-聯集：重疊的那筆被略過');
+    eq(stats.migratedSources.length, 2, '遷移-聯集：migratedSources 記錄兩個來源');
 }
 
 /* ================= 3. 偵測：僅單一來源存在 ================= */

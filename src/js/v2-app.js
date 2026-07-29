@@ -519,7 +519,13 @@ async function renderTeachersAdminTab() {
     const _gen = _v2IdentityGen;
     host.innerHTML = '<p>載入中…</p>';
     const teachers = await teacherMgr.listAllTeachers();
-    const legacyInfo = await legacyMigration.detectLegacyData();
+    // 偵測舊資料失敗不可拖垮整頁：這支會對 users/{uid} 發 getDoc，離線 / token 過期 /
+    // unavailable 都會 reject，若讓它往外拋，renderTeachersAdminTab 整支中止，
+    // 畫面會永久停在上面那句「載入中…」（且是 unhandled rejection）。降級為「沒有舊資料」。
+    const legacyInfo = await legacyMigration.detectLegacyData().catch(err => {
+        console.warn('[v2] 偵測 V1 舊資料失敗（不影響教師管理頁）：', err?.message || err);
+        return { source: null, count: 0, lastModified: null, sources: [] };
+    });
     const roleLabel = (role) => {
         const r = (role === 'admin') ? 'director' : role;
         return { director: '主任', section_chief: '組長', teacher: '教師' }[r] || '教師';
@@ -665,17 +671,37 @@ async function renderTeachersAdminTab() {
 
 /**
  * Phase 5：教師管理頁的「V1 資料遷移」卡片內容，偵測到舊資料時才由 renderTeachersAdminTab 插入。
- * info 為 legacyMigration.detectLegacyData() 的回傳值 { source, count, lastModified }。
+ * info 為 legacyMigration.detectLegacyData() 的回傳值，其中 sources 為所有「確實含紀錄」
+ * 的來源明細——兩個來源都有資料時會一併遷移取聯集（重疊部分由冪等鍵去重），
+ * 不做「挑一個較新的」自動決勝，故此處逐一列出讓主任看得到每個來源各有幾筆。
  */
+const LEGACY_SOURCE_LABELS = {
+    firestore:    'Firestore 雲端備份（users/{uid}）',
+    localStorage: '瀏覽器本機 localStorage',
+};
+
 function renderLegacyMigrationCard(info) {
-    const sourceLabel = info.source === 'firestore' ? 'Firestore 雲端備份' : '瀏覽器本機 localStorage';
-    const lastModifiedLabel = info.lastModified ? fmtDate(info.lastModified) : '未知';
+    const sources = Array.isArray(info.sources) && info.sources.length
+        ? info.sources
+        : [{ source: info.source, count: info.count, lastModified: info.lastModified }];
+
+    const rows = sources.map(s => {
+        const label = LEGACY_SOURCE_LABELS[s.source] || s.source || '未知來源';
+        const when  = s.lastModified ? fmtDate(s.lastModified) : '未知';
+        return `<li>${escapeHtml(label)}：<strong>${s.count}</strong> 筆｜最後修改：${escapeHtml(when)}</li>`;
+    }).join('');
+
+    const unionNote = sources.length > 1
+        ? '<br>兩個來源都會一併遷移（取聯集），重複的紀錄只會匯入一次。'
+        : '';
+
     return `
         <div class="v2-legacy-card" id="v2-legacy-card">
             <h4>⚠ 偵測到 V1 舊系統資料尚未遷移</h4>
+            <ul class="v2-legacy-sources">${rows}</ul>
             <p>
-                來源：${escapeHtml(sourceLabel)}｜筆數：${info.count} 筆｜最後修改：${escapeHtml(lastModifiedLabel)}<br>
-                按下按鈕會先強制下載完整備份 JSON 才開始遷移；遷移採冪等設計，重複執行不會產生重複紀錄，姓名對不到帳號的舊紀錄仍會匯入並提示。
+                按下按鈕會先強制下載完整備份 JSON（含上列所有來源的原始資料）才開始遷移；
+                遷移採冪等設計，重複執行不會產生重複紀錄，姓名對不到帳號的舊紀錄仍會匯入並提示。${unionNote}
             </p>
             <button class="btn btn-primary btn-sm" id="v2-legacy-migrate-btn">下載備份並開始遷移</button>
         </div>`;
@@ -727,7 +753,10 @@ function bindLegacyMigrationCard() {
 function downloadLegacyBackupJson(backup) {
     const uidPart  = backup.uid || 'unknown';
     const datePart = new Date().toISOString().split('T')[0];
-    const blob = new Blob([JSON.stringify(backup.raw, null, 2)], { type: 'application/json' });
+    // backup 是 { exportedAt, uid, sources: [{ source, count, lastModified, raw }] }——
+    // 整包寫出（含所有來源的原始資料），不可只取其中一份，否則遷移後想還原時
+    // 才會發現另一來源的資料沒被保存。
+    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement('a');
     a.href     = url;
