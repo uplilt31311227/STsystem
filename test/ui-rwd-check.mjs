@@ -1,9 +1,10 @@
 /**
- * UI 手機響應式檢查（Stage 1 硬傷急救驗收用）
+ * UI 手機響應式檢查（Stage 1 硬傷急救驗收用；Stage 2 IA 重組後更新走訪清單）
  *
  * 用途：在 375×667（手機）viewport 下，走訪 V1 穩定版（無 ?v2=1）主要分頁，
  * 斷言 document.documentElement.scrollWidth <= window.innerWidth（無橫向溢出）。
- * 涵蓋：課表匯入（含教師表格）、調代課申請（含課表格）、調代課紀錄、月結算、設定。
+ * 涵蓋：課表管理／課表匯入 sub-view、教師管理（Stage 2 起獨立分頁，含教師屬性表格）、
+ * 調代課申請（含課表格）、調代課紀錄、月結算、設定。
  *
  * 重要（驗收缺陷修正紀錄）：原始版本在全新 localStorage 下走訪，調代課紀錄/月結算
  * 表格從未渲染出真正會撐寬版面的內容，導致「修復前/修復後」跑起來都是 6/6 通過的
@@ -90,14 +91,16 @@ async function switchTab(page, tabId) {
     await page.goto(BASE_URL, { waitUntil: 'networkidle' });
     await page.waitForTimeout(500);
 
-    console.log('\n[課表匯入] 初始狀態（未載入資料）');
-    record('課表匯入（初始）', await measure(page));
+    console.log('\n[課表管理／課表匯入] 初始狀態（未載入資料，Stage 2 起課表匯入為課表管理分頁預設 sub-view）');
+    record('課表管理／課表匯入（初始）', await measure(page));
 
     // 上傳測試課表，解鎖各分頁內容
     console.log('\n上傳 test-data.csv...');
     await page.setInputFiles('#schedule-file', CSV_PATH);
-    await page.waitForSelector('#teacher-editor:not(.hidden)', { timeout: 5000 }).catch(() => {
-        console.log('  ⚠ 教師編輯表格未在時限內出現，繼續嘗試');
+    // 教師屬性表格 Stage 2 起搬到獨立的「教師管理」分頁，上傳當下仍停留在課表管理分頁，
+    // 改等同一 sub-view 內、上傳後才會出現的 #schedule-status 狀態盒作為「已解析」訊號。
+    await page.waitForSelector('#schedule-status:not(.hidden)', { timeout: 5000 }).catch(() => {
+        console.log('  ⚠ 課表狀態盒未在時限內出現，繼續嘗試');
     });
     await page.waitForTimeout(500);
 
@@ -106,8 +109,12 @@ async function switchTab(page, tabId) {
     await page.click('#save-school-name-btn');
     await page.waitForTimeout(500);
 
-    console.log('\n[課表匯入] 已載入資料（含教師屬性表格）');
-    record('課表匯入（含教師表格）', await measure(page));
+    console.log('\n[課表管理／課表匯入] 已載入資料');
+    record('課表管理／課表匯入（已載入資料）', await measure(page));
+
+    console.log('\n[教師管理] 含教師屬性表格（Stage 2 起獨立分頁，原為課表匯入頁右欄）');
+    await switchTab(page, 'teachers');
+    record('教師管理（含教師屬性表格）', await measure(page));
 
     console.log('\n[調代課申請] 含原任課教師週課表');
     await switchTab(page, 'substitute');

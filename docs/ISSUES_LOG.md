@@ -1,12 +1,45 @@
 ---
 created: 2026-04-10
-updated: 2026-07-09
+updated: 2026-07-29
 tags:
   - issues
   - troubleshooting
 ---
 
 # 問題追蹤：國中調代課自動化系統
+
+## UI 重規劃 Stage 2 資訊架構重組收尾發現（2026-07-29）
+
+Stage 2（9→8 分頁重組）驗收過程中發現的既有缺陷與判斷取捨，記錄供後續階段/追蹤。
+
+### `.v2-only` 在純 V1 網址下從未真正隱藏（既有缺陷，已修）
+
+- **日期**: 2026-07-29
+- **狀態**: 🟢 已解決（本次 Stage 2 commit 一併修復）
+- **描述**: 驗收「角色可見性矩陣」時發現，純 V1 網址（無 `?v2=1`、非 preview 網域）下，`.tab-btn.v2-only`（待辦、操作日誌）兩顆分頁按鈕實際上仍是可見的（`getComputedStyle().display !== 'none'`），與預期「V1 單機可見 6 顆」不符（實測是 8 顆全可見）。用 `git stash` 對照 Stage 2 改動前的 HEAD 版本重現，確認這不是本次重組造成的迴歸，是既有的潛伏缺陷。
+- **原因**: `.v2-only { display: none; }` 這條「預設隱藏」規則只存在於 `v2-app.js` 的 `injectV2Styles()` 動態注入的 `<style id="v2-styles">` 內；`injectV2Styles()` 只在 `bootstrap()` 內呼叫，而 `bootstrap()` 開頭就 `if (!isV2Enabled()) return;`——純 V1 網址下這支函式完全不會執行，樣式從未被注入，`.v2-only` 元素因此沒有任何規則可隱藏它們，一直停留在瀏覽器預設顯示狀態。點擊後內容是空的（因為渲染邏輯同樣掛在 v2-app.js 內），不算資料外洩，但違反「V1 單機僅可見 6 個分頁」的介面設計預期。
+- **解決方案**: 把 `.v2-only { display: none; }` 搬一份到一律載入的 `src/css/style.css`（Stage 2 hotfix 區）作為靜態預設值。v2-app.js 有實際注入時，其內部同名規則與 `body.v2-active .v2-only{display:revert}` 的 cascade／specificity 關係不受影響（revert 規則 selector 較長、specificity 較高，不論「none」規則來自靜態或注入哪一份都會被正確覆蓋）。
+- **相關檔案**: `src/css/style.css`（新增靜態規則）、`src/js/v2-app.js`（`injectV2Styles()`，未改動，維持原有注入邏輯）
+
+### 教師刪除鈕搬家後與新位置的行為落差（已知取捨，未修）
+
+- **日期**: 2026-07-29
+- **狀態**: 🟡 已知取捨，記錄待後續評估（非本階段業務邏輯修改範圍）
+- **描述**: Stage 2 把課表編輯器內的「刪除此教師」按鈕（`#editor-delete-teacher-btn`）移除，理由是教師管理頁的教師屬性表逐列已有「刪除」鈕（`.delete-teacher-btn`）。但兩者實際行為不完全等價：`editorDeleteTeacher()`（原按鈕的 handler，函式本體保留未刪，只是拔除按鈕與綁定）除了移除教師本身，還會過濾掉該教師在 `scheduleData` 裡的所有課程並 `refreshClasses()`；教師管理頁列刪除的 handler 只呼叫 `dataManager.removeTeacher(index)`，**不會**連帶清除該教師的課表資料，會留下指向已刪除教師的孤兒課程紀錄。這個落差在改動前就已經存在（兩顆鈕本來就分別在不同分頁、各自獨立實作），Stage 2 只是讓「教師刪除」的唯一入口變成功能較少的那一個。
+- **影響評估**: 不是本次重組引入的新 bug（兩份實作各自的行為在改動前後未變），但確實讓使用者能存取到的功能出現退化：搬家前使用者仍可選擇走課表編輯頁「完整刪除（含課表）」；搬家後只剩「僅刪教師本身」這條路徑。
+- **後續建議**: 兩者擇一——(a) 讓教師管理頁的列刪除比照 `editorDeleteTeacher()` 一併清除課表資料（行為修正，需評估是否為使用者預期行為），或 (b) 維持現狀但在刪除確認訊息註明「僅移除教師資料，不會清除其課表」。因涉及調整既有刪除行為的語意，超出 Stage 2「僅搬移 DOM、不改資料流」的範圍，留待下一階段或使用者裁定後處理。
+- **相關檔案**: `src/js/app.js`（`updateTeacherTable()` 的 `.delete-teacher-btn` handler、`editorDeleteTeacher()`）
+
+### 三支 live-Firestore 手動驗證腳本引用舊分頁名稱（未修，需下次執行前更新）
+
+- **日期**: 2026-07-29
+- **狀態**: 🟡 已知，留待下次實際執行這些腳本前處理
+- **描述**: Stage 2 分頁重組後，grep 發現以下腳本仍引用已改名/移除的分頁識別字，但**這些腳本都是打真實 Firestore／需真人登入的手動驗證腳本**（非 `npm test`／`npm run check` 涵蓋範圍，本次收尾未執行也未修改）：
+  - `test/v2-approval-flows.mjs`：`clickTab(chief, 'import')`（304 行，機械式改名為 `'schedule'` 即可）；`clickTab(teacherA, 'import')` 與 `#tab-import-btn` 可見性檢查（665/668/683 行）——這段原本驗證「一般教師在課表匯入頁看得到但點了無效」的權限邊界，Stage 2 後「課表管理」分頁本身變成 `v2-approver-only`，一般教師連分頁按鈕都看不到（更嚴格的保護），這段測試邏輯需要重新設計，不是單純改名
+  - `test/v2-verify-fixes.mjs`：`clickTab(chief, 'import')`（257 行），同上，機械式改名即可
+  - `test/v2-interactive-test.js` 的 `data-tab="v2-teachers"` 已在本次一併改為 `"teachers"`（唯一風險低、可離線判斷正確性的一處，其餘兩支因需真實帳號與 production Firestore 無法在此驗收，故未動）
+- **後續建議**: 下次要跑 `v2-approval-flows.mjs`／`v2-verify-fixes.mjs` 前，先做上述改名並重新設計「一般教師課表管理頁可見性」那段斷言（應改為斷言分頁按鈕本身不可見，而非「可見但點擊無效」）。
+- **相關檔案**: `test/v2-approval-flows.mjs`、`test/v2-verify-fixes.mjs`
 
 ## 商用上線實戰化實測（2026-07-29）
 

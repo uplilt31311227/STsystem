@@ -269,19 +269,14 @@ body {
     padding: 0.35rem 0.5rem;
 }
 
-.import-right #teacher-editor {
-    max-height: calc(100vh - 220px);
-    overflow-y: auto;
-}
-
-/* 響應式：窄螢幕單欄 */
+/* Stage 2：#teacher-editor 已隨教師屬性卡搬到獨立的教師管理分頁，不再有 .import-right
+   祖先，故上述兩條 .import-right #teacher-editor 規則移除；改採下方（原本就存在、未加任何
+   祖先條件的）#teacher-editor{max-height:400px} 規則作為統一高度上限。
+   .import-layout 規則本身留給 Stage 6 死碼清理（.import-layout/.import-left/.import-right
+   三個 class 在新結構下已無任何元素使用，但保留定義不影響任何顯示）。 */
 @media (max-width: 860px) {
     .import-layout {
         grid-template-columns: 1fr;
-    }
-
-    .import-right #teacher-editor {
-        max-height: 400px;
     }
 }
 
@@ -2819,4 +2814,70 @@ body {
 .tab-btn.is-locked {
     opacity: 0.5;
     cursor: not-allowed;
+}
+
+/* ===================================
+   ===== Stage 2 hotfix =====
+   資訊架構重組：9→8 分頁、手機可捲 tab bar、課表管理 sub-view 切換。
+   本節規則寫在既有 768px 響應式規則之後，等 specificity 下以後到者為準覆蓋舊規則
+   （.nav-tabs / .tab-btn 皆單一 class 選擇器，與舊規則 specificity 相同）。
+   =================================== */
+
+/* 修復既有缺陷（驗收時發現，非本階段新增）：.v2-only 的「預設隱藏」規則過去只存在於
+   v2-app.js injectV2Styles() 動態注入的 <style id="v2-styles">，只有 isV2Enabled() 成立
+   （?v2=1 或 preview 網域）時才會注入。純 V1 網址（無 ?v2=1）下 v2-app.js 的 bootstrap()
+   提早 return，永遠不會注入樣式，導致「待辦」「操作日誌」兩顆 v2-only 分頁按鈕在
+   V1 單機模式下也一直可見（可點但內容是空的）。此規則搬到一律載入的 style.css 作為
+   靜態預設值：v2-app.js 有注入時，其內部同名規則出現在 <head> 較後面，
+   body.v2-active .v2-only{display:revert} 的 selector specificity 較高，
+   不論靜態或注入的 none 規則何者生效都會被正確覆蓋，行為不變。 */
+.v2-only {
+    display: none;
+}
+
+.nav-tabs {
+    display: flex;
+    gap: var(--sp-2);
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    scroll-snap-type: x proximity;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+}
+
+.nav-tabs::-webkit-scrollbar {
+    display: none;
+}
+
+.tab-btn {
+    flex: 0 0 auto;
+    scroll-snap-align: center;
+    white-space: nowrap;
+}
+
+.nav-tabs__divider {
+    flex: 0 0 1px;
+    align-self: stretch;
+    background: var(--color-border);
+    margin-inline: var(--sp-1);
+}
+
+@media (min-width: 1024px) {
+    .nav-tabs {
+        overflow: visible;
+        flex-wrap: wrap;
+    }
+}
+
+/* 課表管理分頁：課表匯入／課表編輯 sub-view 切換的 segmented control 容器
+   （按鈕本身沿用既有 .btn/.btn-primary/.btn-secondary/.btn-sm，選中狀態由 app.js
+   切換 btn-primary/btn-secondary，不新增額外的選中樣式類別） */
+.subview-switch {
+    display: flex;
+    gap: var(--sp-2);
+    margin-bottom: var(--sp-4);
+}
+
+.schedule-backup-hint {
+    margin-top: var(--sp-3);
 }

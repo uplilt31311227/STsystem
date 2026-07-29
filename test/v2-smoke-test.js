@@ -27,9 +27,11 @@ const { chromium } = require('playwright');
 
     console.log('✓ body.v2-active 已設定');
 
+    // Stage 2 IA 重組：教師管理併入 v2-approver-only 的共用「教師管理」分頁
+    // （V1/V2 approver 共用），不再是純 v2-only 頁籤，故 v2-only 剩 v2-pending、v2-logs 2 顆。
     const v2Tabs = await page.$$('.tab-btn.v2-only');
-    console.log(`✓ V2 頁籤數量: ${v2Tabs.length}（預期 3）`);
-    if (v2Tabs.length !== 3) throw new Error('V2 頁籤數量不符');
+    console.log(`✓ V2 專屬（v2-only）頁籤數量: ${v2Tabs.length}（預期 2）`);
+    if (v2Tabs.length !== 2) throw new Error('V2 專屬頁籤數量不符');
 
     const stylesheet = await page.$('#v2-styles');
     if (!stylesheet) throw new Error('V2 樣式未注入');
