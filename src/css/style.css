@@ -2,22 +2,8 @@
    國中調代課自動化系統 - 樣式表
    =================================== */
 
-/* CSS 變數定義 */
-:root {
-    --primary-color: #2563eb;
-    --primary-hover: #1d4ed8;
-    --secondary-color: #64748b;
-    --success-color: #22c55e;
-    --warning-color: #f59e0b;
-    --danger-color: #ef4444;
-    --background-color: #f1f5f9;
-    --card-background: #ffffff;
-    --text-color: #1e293b;
-    --text-muted: #64748b;
-    --border-color: #e2e8f0;
-    --shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-    --shadow-lg: 0 4px 6px rgba(0, 0, 0, 0.1);
-}
+/* CSS 變數定義：已移至 src/css/tokens.css（tokens.css 需在本檔之前載入，
+   由它全權提供，此處不可再重複宣告同名 :root，否則會覆蓋 token 別名） */
 
 /* 基礎樣式重設 */
 * {
