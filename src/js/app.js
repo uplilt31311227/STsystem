@@ -120,8 +120,15 @@ class SubstituteTeacherApp {
         // 從 localStorage 載入已儲存的資料
         this.loadSavedData();
 
-        // 依載入後的資料狀態，決定課表管理頁籤預設顯示 import 或 editor sub-view
-        this.activateScheduleSubview('editor');
+        // 補視覺：loadSavedData() 只在「有課表資料」分支內呼叫過 updateTabLockStatus()，
+        // 全新（無資料）載入時鎖定分頁從未套用 is-locked 灰化樣式（點擊攔截本來就有效，
+        // 這裡補上對應的視覺狀態，避免看起來像可點但其實會被擋下）
+        this.updateTabLockStatus();
+
+        // 課表管理頁籤開機一律預設 import view：即使已有課表資料，直接落在空白的課表編輯器
+        // （要先選教師才有內容）不如 import view 的課表狀態盒資訊量高；使用者需要編輯課表時
+        // 自行點「課表編輯」segmented 按鈕切換
+        this.activateScheduleSubview('import');
 
         // 初始化 Firebase（如果已設定）
         this.initFirebase();
@@ -659,10 +666,10 @@ class SubstituteTeacherApp {
                     this.loadCurrentMonthRecords();
                 }
 
-                // 切換到課表管理頁籤時，依資料狀態決定顯示 import 或 editor sub-view
-                // （activateScheduleSubview 內部：無課表資料一律強制顯示 import，見該函式註解）
+                // 進課表管理頁籤一律預設 import sub-view（見 activateScheduleSubview 註解與
+                // init() 開機呼叫的說明）；使用者需要編輯課表時自行點「課表編輯」切換
                 if (targetTab === 'schedule') {
-                    this.activateScheduleSubview('editor');
+                    this.activateScheduleSubview('import');
                 }
 
                 // 手機可捲 tab bar：確保剛切換的分頁按鈕捲動到可視範圍內
@@ -971,7 +978,7 @@ class SubstituteTeacherApp {
         }
 
         if (!schoolName) {
-            this.showToast('請先在「課表匯入」頁籤設定學校名稱', 'warning');
+            this.showToast('請先在「課表管理」頁籤設定學校名稱', 'warning');
             return false;
         }
 
@@ -1156,6 +1163,10 @@ class SubstituteTeacherApp {
         });
         this.updateTeacherTable();
         this.saveDataToStorage();
+        // 尚未匯入課表時 #teacher-editor 仍帶著初始 hidden（要匯入課表才會由
+        // updateScheduleStatus() 移除），導致這裡新增的列不會顯示；手動新增教師
+        // 屬於「尚未匯入課表也能用」的合理入口，故在此保底移除 hidden。
+        document.getElementById('teacher-editor')?.classList.remove('hidden');
     }
 
     /**
@@ -4203,13 +4214,15 @@ class SubstituteTeacherApp {
 
     /**
      * 切換課表管理頁籤的 sub-view（'import' | 'editor'）。
-     * 尚未匯入課表時強制顯示 import（那是資料入口，必須永遠可進，切到空的 editor 沒有意義），
-     * 不論呼叫端要求哪個 view 都會被覆蓋——所以每個進入點（分頁點擊、segmented 按鈕點擊、
-     * 開機時依已存資料決定預設）都可以直接呼叫，不必各自重複判斷 hasSchedule。
+     * 尚未匯入課表時，即使呼叫端要求 'editor' 也會被覆蓋為 import（那是資料入口，必須永遠
+     * 可進，切到空的 editor 沒有意義；此時提示使用者先匯入課表）。
      */
     activateScheduleSubview(name) {
         const hasSchedule = this.dataManager.getScheduleData().length > 0;
-        if (!hasSchedule) name = 'import';
+        if (!hasSchedule && name === 'editor') {
+            this.showToast('請先匯入課表', 'warning');
+            name = 'import';
+        }
 
         document.querySelectorAll('.subview-switch-btn').forEach(btn => {
             const isActive = btn.dataset.subview === name;

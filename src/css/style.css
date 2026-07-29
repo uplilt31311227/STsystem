@@ -2835,6 +2835,14 @@ body {
     display: none;
 }
 
+/* R1 縱深防禦（驗收缺陷修正）：v2-app.js injectV2Styles() 內已有同樣兩條規則（隱藏 V1 全校
+   紀錄表，防止 V2 模式下個資外洩），此處複製一份到一律載入的靜態 CSS 作為第二層保險——
+   萬一 JS 注入樣式因故未執行（例如注入前拋錯），這條隱私邊界規則仍然生效。前綴
+   body.v2-active 僅在該 class 存在時才 match，對純 V1（body 永遠不會有此 class）零影響。
+   注入版本保留不動，兩份規則內容應保持一致。 */
+body.v2-active #records-no-data,
+body.v2-active #records-content { display: none !important; }
+
 .nav-tabs {
     display: flex;
     gap: var(--sp-2);

@@ -1,5 +1,42 @@
 # 版本紀錄 (Changelog)
 
+## [2026-07-29]（feature/permission-system）UI 重規劃 Stage 2 驗收缺陷修正
+
+派獨立 agent 驗收 Stage 2（資訊架構重組）後回報的 10 項缺陷，全數修復，獨立 commit。
+
+### 修復（高：權限功能回歸）
+- **director 失去教師屬性編輯權**：Stage 2 原本讓教師管理頁的 V1 教師屬性表對 director 隱藏
+  （只留 V2 帳號表），但 V2 帳號表的「領域」欄是唯讀顯示、沒有導師班欄，且 domains 是推薦
+  引擎比對代課人選的依據——等於 director 完全無法編輯任教領域/導師班級。移除
+  `body.v2-active.v2-director #teacher-editor-card{display:none}` 規則，director 現在同時
+  看到教師屬性卡與 V2 帳號卡（職責不同、可共存）
+
+### 修復（中）
+- 分頁名 toast 文案：`app.js`「請先在『課表匯入』頁籤設定學校名稱」、`v2-app.js`「請先於
+  『課表匯入』載入課表」均改為「課表管理」，跟上 Stage 2 的分頁改名
+- 教師管理無資料時新增教師靜默失效：`#teacher-editor` 的初始 `hidden` 只在匯入課表後由
+  `updateScheduleStatus()` 移除，尚未匯入課表就手動新增教師時新列不會顯示；
+  `addNewTeacherRow()` 補一行移除 `hidden` 保底
+- CSS 版本號 `tokens.css`／`style.css` `?v=2.0.0` → `?v=2.2.0`（F9：每階段遞增防 GitHub Pages
+  快取舊 CSS 配新 HTML）
+
+### 修復（低，含安全縱深與體驗細節）
+- R1 規則加一層靜態 CSS 防線：`body.v2-active #records-no-data`／`#records-content
+  {display:none!important}` 複製一份到 style.css（v2-app.js 注入版保留，兩者內容一致），
+  萬一 JS 注入樣式因故未執行仍有靜態規則兜底；前綴 `body.v2-active` 對 V1 零影響
+- 無課表點「課表編輯」加提示：`activateScheduleSubview` 因無資料把 'editor' 降級為 'import'
+  時，補一個 `showToast('請先匯入課表', 'warning')`，避免使用者以為點擊沒反應
+- **推翻 Stage 2 原預設**：課表管理分頁改為一律預設顯示 import view（即使已有課表資料）——
+  原設計「有資料預設 editor」會讓回訪者落在空白編輯器（需先選教師才有內容），import view
+  的課表狀態盒資訊量更高；使用者需要編輯課表時自行點「課表編輯」切換
+- 全新載入時鎖定分頁補視覺：`init()` 的 `loadSavedData()` 後無條件呼叫一次
+  `updateTabLockStatus()`，讓 substitute/records/settlement 三顆鎖定按鈕從第一次繪製起就有
+  `is-locked` 灰化樣式（點擊攔截原本就有效，這裡只補視覺一致性）
+- `teachers-tab` 補初始 `hidden` class，與其餘 7 個 tab-content 的寫法一致（Stage 2 疏漏，
+  功能上原本就靠 `.tab-content{display:none}` 基礎規則隱藏，不影響顯示，純一致性修正）
+- `docs/ISSUES_LOG.md` 新增 Stage 6 死碼待刪清單，把 `.backup-restore-card`／
+  `.backup-restore-row` 與既有的 `.import-layout` 系列並列記錄
+
 ## [2026-07-29]（feature/permission-system）UI 重規劃 Stage 2：資訊架構重組 9→8 分頁
 
 依 `docs/PLAN.md` 六階段 UI 重規劃計畫，完成 Stage 2（資訊架構重組），獨立 commit、獨立驗證。
@@ -9,10 +46,12 @@
   「課表管理」分頁下的兩個 sub-view（頂部 segmented control 切換，`#schedule-import-view`/
   `#schedule-editor-view`）；新 nav 順序：調代課申請／待辦／調課紀錄（高頻，中間分隔線
   `.nav-tabs__divider`）／課表管理／教師管理／月結算／操作日誌／設定（管理）
-- **教師管理分頁**：`#teacher-editor-card`（V1 教師屬性表，含 `#teacher-table`）與 V2 教師帳號
-  管理容器（`#v2-teachers-admin`，`v2-only v2-director-only`）同分頁互斥顯示——V1 與 V2
-  approver 非 director 看前者，V2 director 看後者；分頁本身 `v2-approver-only`
-  （section_chief + director 皆可進，較舊版僅 director 可見的「教師管理」範圍更廣）
+- **教師管理分頁**：`#teacher-editor-card`（V1 教師屬性表，可編輯任教領域/導師班級，全員可見）
+  與 V2 教師帳號管理容器（`#v2-teachers-admin`，`v2-only v2-director-only`，管理 email/角色）
+  同分頁並列顯示，職責不同、可共存；分頁本身 `v2-approver-only`（section_chief + director
+  皆可進，較舊版僅 director 可見的「教師管理」範圍更廣）（*2026-07-29 驗收缺陷修正：原版本
+  director 看不到教師屬性表會導致無法編輯領域/導師班，已改為兩卡並列，見下方 Stage 2
+  驗收缺陷修正紀錄*）
 - **課表編輯器刪除教師按鈕移除**：`#editor-delete-teacher-btn` 與其綁定移除，教師刪除統一由
   教師管理頁「刪除」鈕（`.delete-teacher-btn`，逐列已存在）處理——已知取捨：該鈕原本連帶清除
   該教師的課表資料，教師管理頁的列刪除目前只移除教師本身，不會清課表資料，兩者非完全等價
