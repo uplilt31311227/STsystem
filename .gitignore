@@ -85,6 +85,9 @@ schedule_*_backup.csv
 docs/backup/*.json
 docs/backup/*.csv
 
+# Firestore 完整備份（scripts/firestore-backup.js 產物，含真實學校資料，不進 git）
+backups/
+
 # V2 規則矩陣測試（test/v2-rules-matrix.mjs）產生的文件清單，供事後清理，不進 git
 test/.last-test-docs.json
 
