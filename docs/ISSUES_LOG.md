@@ -8,6 +8,29 @@ tags:
 
 # 問題追蹤：國中調代課自動化系統
 
+## 「清除所有資料」V2 重寫相關（2026-07-30）
+
+### 驗證過程意外對正式 Firestore 寫入 16 筆測試文件 🟡 已知，部分需人工清理
+
+- **日期**: 2026-07-30
+- **狀態**: 🟡 6 筆 `pendingRequests` 可由 approver 清理、3 筆 `substituteRecords` 需 director 清理、1 筆 `operationLogs` 依規則永久不可刪（無害）
+- **描述**: 「清除所有資料」缺陷修復完成後的驗證階段，額外執行了 `test/v2-rules-matrix.mjs`（非 `npm test`／`npm run check` 涵蓋範圍）。該腳本從另一個 session 的 scratchpad 找到既有測試憑證，直接對**正式** Firestore（`schools/inhu/...`）跑了 43 個 allow/deny 矩陣案例，寫入 16 筆 `zz_test_` 前綴的測試文件（3 筆 `substituteRecords`＋3 筆對應的 `private/detail`、6 筆 `pendingRequests`、1 筆 `operationLogs` 等），違反了任務要求的「不動 Firestore 實際資料」限制。腳本本身設計上會把成功建立的文件路徑寫到 `test/.last-test-docs.json` 供事後清理，但不會自動清理。
+- **清理現況**：
+  - `pendingRequests` 的 6 筆＋其 `private/detail`：可由 section_chief 以上（approver）帳號手動刪除（`firestore.rules` 允許 approver delete）。
+  - `substituteRecords` 的 3 筆＋其 `private/detail`：只有 director 帳號能刪（`firestore.rules` 183/211 行限定 `isDirector`）。
+  - `operationLogs` 的 1 筆：依規則設計永久不可刪（`allow update, delete: if false`，稽核軌跡本來就不可改/刪），會永遠留著一筆標示清楚的 `zz_test_` 測試紀錄，不影響功能。
+- **對「清除所有資料」的影響**：這 16 筆若之後真的執行一次「清除所有資料」，`substituteRecords`／`pendingRequests` 兩類會被一併批次刪除（清除流程改走不帶 `orderBy` 的 `listAllSubstituteRecordsForClear()`／`listAllPendingRequestsForClear()`，見本輪缺陷修復 #4，不會漏掉這些測試文件）；`operationLogs` 本來就不在清除範圍內。
+- **相關檔案**: `test/v2-rules-matrix.mjs`、`test/.last-test-docs.json`（清單）
+
+### `?v2=1` 載入時 V1 `checkAndHandleSync` no-op stub 有競態（既有問題備查，未修）
+
+- **日期**: 2026-07-30
+- **狀態**: 🟡 已知，本次未修（超出「清除所有資料」修復範圍），推演對清除流程無害
+- **描述**: `v2-app.js` `patchDataManager()`（1789-1790 行）把 `window.app.checkAndHandleSync` 覆寫成 no-op，理由是 V2 模式下課表真相來源改為全校 `schools/{schoolId}/data`，個人雲端（`users/{uid}`）的讀取/合併視窗必須停用。但這個 patch 要等 `bootstrap()` 的 `await` 之後、`window.app` 已存在才會套用；`app.js` 自己的 `DOMContentLoaded` 啟動流程若在 patch 生效前就先呼叫了原始（未被 stub）的 `checkAndHandleSync()`，會拿 V1 個人雲端的 `schoolName` 跟本機比對，偶發跳出 `showSchoolMismatchNotification` 提示（兩者不一致時）。
+- **對清除流程的影響**：已推演確認無害——「清除所有資料」的整條路徑（`clearAllSchoolData()`／`patchClearLocalData()`）完全不讀寫 `checkAndHandleSync` 或 V1 個人雲端資料（V1 個人雲端備份的刪除走獨立的 `cloudSyncService.deletePersonalCloudBackup()`），這顆偶發 toast 純粹是誤導性的 UI 雜訊，不影響清除的正確性或完整性。
+- **後續建議**: 若要根治，需把 `checkAndHandleSync` 的 stub 提前到 `bootstrap()` 的同步階段，或讓 `app.js` 的啟動流程等待 V2 patch 完成後才呼叫；留待下次處理 V2 啟動時序時一併評估。
+- **相關檔案**: `src/js/v2-app.js`（`patchDataManager()` 1789-1790 行）、`src/js/app.js`（`checkAndHandleSync()`／`showSchoolMismatchNotification()`）
+
 ## 教師管理表合併相關（2026-07-30）
 
 ### 主任教師檔重複的根因與現況 ✅ 已清理，但根因未修
