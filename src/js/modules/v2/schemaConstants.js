@@ -103,6 +103,7 @@ export const LOG_ACTIONS = Object.freeze({
     SCHEDULE_IMPORT:    'schedule_import',
     ROSTER_IMPORT:      'roster_import',
     DATA_MIGRATE:       'data_migrate',
+    CLEAR_ALL_DATA:     'clear_all_data',
 });
 
 export const LOG_TARGET_TYPES = Object.freeze({
@@ -111,4 +112,5 @@ export const LOG_TARGET_TYPES = Object.freeze({
     TEACHER:           'teacher',
     SCHEDULE:          'schedule',
     AUTH:              'auth',
+    SYSTEM:            'system',
 });

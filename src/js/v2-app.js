@@ -19,6 +19,7 @@ import * as logger              from './modules/v2/operationLogger.js';
 import * as legacyMigration     from './modules/v2/legacyMigrationService.js';
 import { LOG_ACTIONS, LOG_TARGET_TYPES, ROLES, REQUEST_STATUS, REQUEST_TYPES } from './modules/v2/schemaConstants.js';
 import * as authMod from './modules/authService.js';
+import * as cloudSyncSvc from './modules/cloudSyncService.js';
 import { notify, notifyError, setSyncStatus } from './modules/v2/uiFeedback.js';
 
 /* ===== 樣式注入 ===== */
@@ -1751,9 +1752,15 @@ async function syncScheduleToV2(opts = {}) {
                 classes:          dm.classes || [],
                 schoolName:       dm.schoolName || '',
                 subjectDomainMap: dm.settings?.subjectDomainMap || {},
+                // meta 形狀統一為 { lastAction, byName, byTeacherId, at }，與 clearAllSchoolData()
+                // 的寫入對齊（驗收缺陷 #8）：兩者都用 setDoc 整份覆寫同一份 schedule doc，過去
+                // 一邊寫 uploadedBy*、一邊寫 clearedBy*，欄位名稱不同會互相抹除、也無法從單一
+                // 欄位判斷「這份課表最後一次是被上傳還是被清除」。
                 meta: {
-                    uploadedByName:      me?.name || '',
-                    uploadedByTeacherId: me?.teacherId || null,
+                    lastAction:  'uploaded',
+                    byName:      me?.name || '',
+                    byTeacherId: me?.teacherId || null,
+                    at:          new Date().toISOString(),
                 },
             });
             await logger.log(LOG_ACTIONS.SCHEDULE_IMPORT, LOG_TARGET_TYPES.SCHEDULE, null, {
@@ -1929,6 +1936,177 @@ function patchDataManager() {
     // silent：這些是逐格即時儲存的觸發點，不跳課表同步 toast，見 syncScheduleToV2 註解。
     ['updateTeacher', 'addTeacher', 'removeTeacher']
         .forEach(n => wrapScheduleMutator(n, { requireSchedule: true, silent: true }));
+}
+
+/**
+ * 「清除所有資料」的雲端清除本體。清除範圍＝全校營運資料（課表、已成立調代課紀錄、待審
+ * 請求，含各自的 private/detail 子文件）＋目前登入使用者自己的 V1 個人雲端備份。
+ * 刻意保留：teachers/{id} 帳號檔、userMappings、config、operationLogs——這些是帳號與權限
+ * 設定，清掉會讓全校被鎖在系統外面；操作日誌則留作稽核軌跡。
+ * 課表歸零走 dataSvc.saveSchedule()（既有合法寫入路徑，setDoc 整份覆寫），不呼叫
+ * dataManager.setScheduleData：後者會被 patchDataManager 的 wrapScheduleMutator 攔截，
+ * 以 queueMicrotask 非同步觸發 syncScheduleToV2()，時序上可能把「本機尚未清空」的舊快照
+ * 又寫回全校 schedule doc，與這裡的清除互相競態。
+ * 任何一步失敗都直接讓例外往外拋，中止後續步驟——呼叫端 patchClearLocalData 會在失敗時
+ * 強制 reload 讓本機與雲端當下實際狀態重新對齊（見該處註解），這裡不需要、也不應該自行
+ * catch 吞掉錯誤。
+ */
+async function clearAllSchoolData() {
+    // 1) 全校課表歸零。schoolName 沿用雲端現值（歸零不等於學校改名／需要重新設定）。
+    //    getSchedule() 讀取失敗（網路瞬斷、權限問題等）刻意不 catch：此時尚未寫入任何東西，
+    //    直接中止最安全；若吞成 null 會把讀取失敗誤判為「雲端本來就沒有課表」，用空字串
+    //    覆蓋掉雲端現有 schoolName，讓一般教師端卡在「請先設定學校名稱」（驗收缺陷 #3）。
+    const cloudSchedule = await dataSvc.getSchedule();
+    const me = roleSvc.getCurrentIdentity();
+    await dataSvc.saveSchedule({
+        scheduleData:     [],
+        teachers:         [],
+        classes:          [],
+        subjectDomainMap: {},
+        schoolName:       cloudSchedule?.schoolName || '',
+        // meta 形狀統一為 { lastAction, byName, byTeacherId, at }，見 syncScheduleToV2() 同處註解
+        // （驗收缺陷 #8）。
+        meta: {
+            lastAction:  'cleared',
+            byName:      me?.name || '',
+            byTeacherId: me?.teacherId || null,
+            at:          new Date().toISOString(),
+        },
+    });
+
+    // 2) 刪除全部已成立調代課紀錄：先用不帶 orderBy 的清除專用列表函式讀出全部（驗收缺陷
+    //    #4：orderBy('createdAt') 會排除缺該欄位的舊文件，清除必須刪光每一筆），再用
+    //    writeBatch 分塊循序刪除各自的 private/detail 子文件與母文件（驗收缺陷 #7：
+    //    取代原本無上限的 Promise.all 併發寫入）。
+    const records = await dataSvc.listAllSubstituteRecordsForClear();
+    await dataSvc.deleteSubstituteRecordsBatch(records.map(r => r.recordId));
+
+    // 3) 刪除全部待審請求，同上。
+    const pendings = await dataSvc.listAllPendingRequestsForClear();
+    await dataSvc.deletePendingRequestsBatch(pendings.map(p => p.reqId));
+
+    // 4) 刪除自己（目前登入 uid）的 V1 個人雲端備份（users/{uid}/data/substituteSystem）。
+    //    使用者原始抱怨「無法正確清除帳號內資料」指的正是這份文件——它獨立於 V2 全校資料，
+    //    換一台裝置或換網址回到舊版頁面就會整包復活（驗收缺陷 #5）。firestore.rules 對
+    //    users/{uid} 的規則放行本人 delete，故直接刪除而非退而求其次改覆寫成空物件。
+    //    只刪「自己」的：rules 本來就無法刪到其他使用者的 uid（uid 不符會被拒），不需要在
+    //    這裡額外過濾；一併在第一層 confirm modal 文案註明「其他使用者的個人備份不受影響」。
+    await cloudSyncSvc.deletePersonalCloudBackup();
+}
+
+// 「清除所有資料」重入保護：進行中若再次觸發（連點按鈕、或按鈕在確認對話框開著時仍可被
+// console 呼叫），直接忽略。理由見 patchClearLocalData 內用法——這是唯一一份雲端全校資料，
+// 兩個併發執行緒同時刪除／批次寫入沒有任何好處，只會放大競態風險（驗收缺陷 #7）。
+let _v2ClearAllDataInFlight = false;
+
+/**
+ * 接手 app.js 的 clearLocalData()：V2 全校共享模式下，原本只清 2 個 localStorage key
+ * 就 reload 完全無效——Firebase 登入 session 還在，reload 後 subscribeSchedule 等訂閱
+ * 會立刻把 Firestore 全校資料灌回本機。改為：先清全校雲端資料（見 clearAllSchoolData），
+ * 確認清除完成才清本機 + reload；reload 後訂閱抓到的是已清空的 schedule doc，資料不會回流。
+ * 對齊本檔既有覆寫慣例（例如 bootstrap 內對 window.app.canSwitchToTab 的接手）。
+ */
+function patchClearLocalData() {
+    if (!window.app || typeof window.app.clearLocalData !== 'function') return;
+    if (window.app.__v2_clearLocalDataPatched) return;
+    window.app.__v2_clearLocalDataPatched = true;
+
+    window.app.clearLocalData = async function () {
+        // 權限防禦：UI 上此按鈕僅 director 看得到（.v2-director-only），但仍在執行前重新
+        // 檢查，避免透過 console 直接呼叫繞過 UI 限制。用 isDirector() 而非 isApprover()：
+        // firestore.rules 對 substituteRecords（含 private/detail）的 delete 僅放行 director，
+        // 若這裡放行 section_chief，會在雲端清除跑到一半時才被規則擋下，留下「課表已清空、
+        // 紀錄卻只清了一部分」的更糟糕的殘破狀態——寧可在送出前就整批擋下。
+        if (!roleSvc.isSignedIn() || !roleSvc.isDirector()) {
+            this.showToast?.('僅教務主任可執行「清除所有資料」', 'error');
+            return;
+        }
+
+        // 重入保護（驗收缺陷 #7）：進行中再點一次直接忽略，不重複觸發整套雲端清除流程。
+        if (_v2ClearAllDataInFlight) return;
+
+        const firstOk = await this.confirmDialog({
+            title: '清除所有資料',
+            message:
+                '將清除全校雲端資料：課表、調代課紀錄、待審請求。\n\n' +
+                '教師帳號與權限設定會保留，不受影響。\n\n' +
+                '你個人的 V1 雲端備份也會一併刪除；其他使用者的個人備份不受影響。\n\n' +
+                '此操作影響全校所有使用者，且無法復原！\n\n' +
+                '建議先使用「匯出完整備份」進行備份。',
+            confirmText: '繼續',
+            danger: true,
+        });
+        if (!firstOk) return;
+
+        const secondOk = await this.confirmDialog({
+            title: '再次確認',
+            message: '再次確認：清除全校課表、調代課紀錄與待審請求？此操作無法復原。',
+            confirmText: '清除所有資料',
+            danger: true,
+        });
+        if (!secondOk) return;
+
+        // 兩個 confirm 都是 await，期間使用者仍可能連點按鈕或另開 console 呼叫，
+        // 故重入旗標的設置點放在「確定要執行」之後、真正動手之前，且要在 try 前設。
+        // 解除時機見下方 catch／成功路徑各自的說明（刻意不用 finally）。
+        if (_v2ClearAllDataInFlight) return;
+        _v2ClearAllDataInFlight = true;
+
+        // 捕捉 dismiss handle：清除完成（無論成功或失敗）要立刻讓這顆「清除中」toast 讓位給
+        // 結果 toast，不能放著讓它疊滿 60 秒（驗收缺陷 #6，showToast 是 append 疊加、非取代）。
+        const dismissClearingToast = this.showToast?.('清除中，請稍候…', 'warning', 60000);
+        try {
+            await clearAllSchoolData();
+        } catch (err) {
+            console.error('[V2] 清除所有資料失敗:', err);
+            dismissClearingToast?.();
+            // 失敗（含部分成功）路徑選擇「強制 reload」而非手動清 dataManager 欄位（驗收缺陷
+            // #1，二擇一：這裡選 reload）。理由：
+            //   - 雲端可能已清到一半（例如課表已歸零，但紀錄／待審請求還沒刪完），此時本機
+            //     dataManager 仍持有舊快照；若不處理，approver 之後任何課表／教師屬性異動都會
+            //     經 queueScheduleSync → syncScheduleToV2 把本機這份舊快照整份 setDoc 回雲端，
+            //     等於把已清除的課表悄悄還原。
+            //   - reload 後 subscribeSchedule / subscribeSubstituteRecords / subscribePendingRequests
+            //     等訂閱會重新讀「雲端當下實際狀態」灌回本機，本機與雲端自然一致，不需要在這裡
+            //     逐一列舉、手動清空 dataManager 的每個欄位（漏清、清得不夠乾淨的風險更低）。
+            //   - 全站已於 UI 重規劃 Stage 5 統一操作邏輯為 confirm modal、不使用原生對話框
+            //     （原生 dialog 會卡死瀏覽器自動化），故用 this.confirmDialog() 取代 alert()：
+            //     它是 await 的 Promise，一樣會擋住後續程式碼直到使用者關閉，確保錯誤內容與
+            //     後續動作建議在畫面重新整理前一定看得到；不論按確認或取消/點背景關閉，
+            //     結果都不影響——都要 reload 讓本機與雲端當下實際狀態重新對齊，故不判斷回傳值。
+            await this.confirmDialog({
+                title: '清除未完全成功',
+                message:
+                    `頁面即將重新整理以同步目前雲端實際狀態：\n${err?.message || err}\n\n` +
+                    '請確認畫面狀態後，可再次執行「清除所有資料」以完成剩餘部分。',
+                confirmText: '重新載入',
+                danger: true,
+            });
+            // 失敗路徑才解除重入旗標（第二輪驗收缺陷）：這裡沒有立即 reload 之外的下一步，
+            // 解除旗標讓使用者可以馬上重跑一次清除收尾剩餘部分，是正確且必要的。
+            _v2ClearAllDataInFlight = false;
+            location.reload();
+            return;
+        }
+        // 成功路徑刻意不解除旗標（不用 finally，兩條路徑各自處理）：反正 800ms 後就會
+        // location.reload()，頁面整個重新載入、模組層級變數自然歸零，不解除旗標也不會有
+        // 「永久卡死」的風險；維持 true 反而堵住了這 800ms 窗口內的重複點擊/console 呼叫，
+        // 避免使用者在畫面顯示「已清除、即將重新載入」的同時又觸發第二輪清除流程。
+
+        // 稽核日誌寫入獨立於清除結果之外（驗收缺陷 #2）：logger.log() 內部本身已 try/catch
+        // 自行吞錯、絕不 throw（見 operationLogger.js），這裡移出上面的 try 純粹是移除「日誌
+        // 與清除結果綁在同一個 try」這個容易誤導未來維護者的結構，並非因為它真的會拋錯；
+        // 仍加 .catch(() => {}) 做防禦性保底，日誌失敗在任何情況下都不得影響清除結果判定。
+        logger.log(LOG_ACTIONS.CLEAR_ALL_DATA, LOG_TARGET_TYPES.SYSTEM, null, {}).catch(() => {});
+
+        localStorage.removeItem('substituteSystemData');
+        localStorage.removeItem('gasUrl');
+        dismissClearingToast?.();
+        this.showToast?.('所有資料已清除，頁面將重新載入', 'success');
+        // 延遲 reload：讓成功訊息至少有機會被看到，而不是 toast 淡入動畫還沒播完頁面就重整
+        // （驗收缺陷 #6）。
+        setTimeout(() => location.reload(), 800);
+    };
 }
 
 let _autoSyncInFlight = false;
@@ -2216,6 +2394,7 @@ async function bootstrap() {
     // 必須在註冊 onAuthStateChange 前套用 dataManager patch（含停用 V1 個人雲端 + 課表攔截），
     // 確保任何 auth 回呼觸發的資料流都已走 V2 規則。
     patchDataManager();
+    patchClearLocalData();
 
     let unsubs = [];
     const clearSubs = () => { unsubs.forEach(u => { try { u(); } catch (_) {} }); unsubs = []; };
