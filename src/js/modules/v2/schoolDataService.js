@@ -168,6 +168,20 @@ export async function listSubstituteRecords() {
     return snap.docs.map(d => ({ recordId: d.id, ...d.data() }));
 }
 
+/**
+ * 清除流程專用：不帶 orderBy 讀取「全部」已成立紀錄。
+ * orderBy('createdAt') 會把缺該欄位的舊文件排除在查詢結果外（Firestore 對排序欄位的既有
+ * 行為），一般列表使用場景可接受，但「清除所有資料」必須刪光每一筆、不能漏掉排序鍵缺欄位
+ * 的舊資料，故另開此函式；不動既有 listSubstituteRecords()，其他呼叫端仍需要依 createdAt
+ * 排序的列表。
+ */
+export async function listAllSubstituteRecordsForClear() {
+    const fs   = await getV2Firestore();
+    const col  = fs.collection(fs.db, SCHEMA_PATHS.substituteCol());
+    const snap = await fs.getDocs(col);
+    return snap.docs.map(d => ({ recordId: d.id, ...d.data() }));
+}
+
 export async function getSubstituteRecord(recordId) {
     const fs   = await getV2Firestore();
     const ref  = fs.doc(fs.db, SCHEMA_PATHS.substituteDoc(recordId));
@@ -223,6 +237,49 @@ export async function deleteSubstituteRecord(recordId) {
 }
 
 /**
+ * 刪除紀錄的私有明細子文件（假別／事由）。批次清除（如「清除所有資料」）需在刪除父文件
+ * 前先呼叫，避免留下無父文件可依附的孤兒 private/detail。文件不存在時 deleteDoc 為 no-op，
+ * 呼叫端不必先判斷該筆紀錄是否真的有敏感欄位。
+ */
+export async function deleteSubstituteRecordDetail(recordId) {
+    const fs  = await getV2Firestore();
+    const ref = fs.doc(fs.db, SCHEMA_PATHS.substituteDetailDoc(recordId));
+    await fs.deleteDoc(ref);
+}
+
+/**
+ * 把待刪除的 doc 參照分塊、依序用 writeBatch 提交。
+ * Firestore 單一 batch 上限 500 筆寫入，這裡用 400 留安全邊界；分塊之間循序 await（不並行
+ * 送出下一塊），避免「清除所有資料」對上百筆文件同時發動大量併發寫入請求。
+ * 對不存在的文件呼叫 batch.delete() 是 no-op（與既有的單筆 deleteDoc 行為一致），呼叫端不必
+ * 先判斷文件是否存在。
+ */
+async function batchDeleteRefs(fs, refs) {
+    const CHUNK_SIZE = 400;
+    for (let i = 0; i < refs.length; i += CHUNK_SIZE) {
+        const batch = fs.writeBatch(fs.db);
+        refs.slice(i, i + CHUNK_SIZE).forEach(ref => batch.delete(ref));
+        await batch.commit();
+    }
+}
+
+/**
+ * 批次刪除多筆已成立紀錄（含各自的 private/detail 子文件），供「清除所有資料」使用。
+ * 取代原本「每筆各自 Promise.all 兩次 deleteDoc」的寫法（驗收缺陷 #7：無批次上限、
+ * 百筆併發）；改用 writeBatch 分塊循序提交，見 batchDeleteRefs()。
+ */
+export async function deleteSubstituteRecordsBatch(recordIds) {
+    if (!Array.isArray(recordIds) || recordIds.length === 0) return;
+    const fs   = await getV2Firestore();
+    const refs = [];
+    for (const id of recordIds) {
+        refs.push(fs.doc(fs.db, SCHEMA_PATHS.substituteDetailDoc(id)));
+        refs.push(fs.doc(fs.db, SCHEMA_PATHS.substituteDoc(id)));
+    }
+    await batchDeleteRefs(fs, refs);
+}
+
+/**
  * 讀取紀錄的私有明細（leaveType/leaveTypeName/reason）。權限不足（非當事人、非 approver）
  * 或文件不存在時一律回傳 null，不拋錯——教師讀不到別人的明細屬預期行為，呼叫端應以
  * `detail?.leaveType ?? record.leaveType` 相容舊資料（既有紀錄的三個欄位仍留在父文件上）。
@@ -262,6 +319,14 @@ export async function listPendingRequests() {
     return snap.docs.map(d => ({ reqId: d.id, ...d.data() }));
 }
 
+/** 清除流程專用：不帶 orderBy 讀取「全部」待審請求。理由同 listAllSubstituteRecordsForClear()。 */
+export async function listAllPendingRequestsForClear() {
+    const fs   = await getV2Firestore();
+    const col  = fs.collection(fs.db, SCHEMA_PATHS.pendingCol());
+    const snap = await fs.getDocs(col);
+    return snap.docs.map(d => ({ reqId: d.id, ...d.data() }));
+}
+
 export async function getPendingRequest(reqId) {
     const fs   = await getV2Firestore();
     const ref  = fs.doc(fs.db, SCHEMA_PATHS.pendingDoc(reqId));
@@ -291,6 +356,28 @@ export async function deletePendingRequest(reqId) {
     const fs  = await getV2Firestore();
     const ref = fs.doc(fs.db, SCHEMA_PATHS.pendingDoc(reqId));
     await fs.deleteDoc(ref);
+}
+
+/** 刪除請求的私有明細子文件。行為與 deleteSubstituteRecordDetail 相同，見該處註解。 */
+export async function deletePendingRequestDetail(reqId) {
+    const fs  = await getV2Firestore();
+    const ref = fs.doc(fs.db, SCHEMA_PATHS.pendingDetailDoc(reqId));
+    await fs.deleteDoc(ref);
+}
+
+/**
+ * 批次刪除多筆待審請求（含各自的 private/detail 子文件），供「清除所有資料」使用。
+ * 行為與 deleteSubstituteRecordsBatch 相同，見該處註解。
+ */
+export async function deletePendingRequestsBatch(reqIds) {
+    if (!Array.isArray(reqIds) || reqIds.length === 0) return;
+    const fs   = await getV2Firestore();
+    const refs = [];
+    for (const id of reqIds) {
+        refs.push(fs.doc(fs.db, SCHEMA_PATHS.pendingDetailDoc(id)));
+        refs.push(fs.doc(fs.db, SCHEMA_PATHS.pendingDoc(id)));
+    }
+    await batchDeleteRefs(fs, refs);
 }
 
 /** 讀取請求的私有明細（leaveType/leaveTypeName/reason）。行為同 getRecordDetail：權限不足

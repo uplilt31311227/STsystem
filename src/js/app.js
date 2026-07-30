@@ -5010,6 +5010,9 @@ class SubstituteTeacherApp {
      * @param {string} message - 通知訊息
      * @param {string} type - 類型：success, error, warning, info
      * @param {number} duration - 顯示時間（毫秒），預設 3000
+     * @returns {Function} dismiss - 手動提前關閉這顆 toast 的函式（例如「處理中」toast 要在
+     *   處理完成後立刻讓位給下一顆結果 toast，不必等原本的 duration 跑完）。#toast-container
+     *   是 append 疊加、非取代，呼叫端若不主動 dismiss，多顆 toast 會同時疊在畫面上。
      */
     showToast(message, type = 'info', duration = 3000) {
         const container = document.getElementById('toast-container');
@@ -5042,6 +5045,8 @@ class SubstituteTeacherApp {
         if (duration > 0) {
             setTimeout(dismiss, duration);
         }
+
+        return dismiss;
     }
 
     /**

@@ -55,7 +55,7 @@ async function loadFirebaseSDK() {
             { initializeApp, deleteApp },
             { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged,
               signInWithEmailAndPassword, createUserWithEmailAndPassword, sendPasswordResetEmail },
-            { getFirestore, collection, doc, setDoc, getDoc, getDocs, onSnapshot, enableIndexedDbPersistence }
+            { getFirestore, collection, doc, setDoc, getDoc, getDocs, deleteDoc, onSnapshot, enableIndexedDbPersistence }
         ] = await Promise.all([
             import('https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js'),
             import('https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js'),
@@ -80,6 +80,7 @@ async function loadFirebaseSDK() {
             setDoc,
             getDoc,
             getDocs,
+            deleteDoc,
             onSnapshot,
             enableIndexedDbPersistence
         };
