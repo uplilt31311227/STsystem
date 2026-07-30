@@ -267,9 +267,37 @@ export async function setRole(teacherId, role) {
     return after;
 }
 
+/**
+ * 新增教師。
+ *
+ * 防重（2026-07-30 新增）：建立前先檢查姓名與 email 是否已被佔用，重複則直接拋錯不建立。
+ * 過去這支是「裸建立」——沒有任何唯一性檢查，同一個姓名按兩次就會產生兩筆教師檔，
+ * 而 V1 側（dataManager.teachers）以姓名為鍵、分不出是哪一筆，導致領域／導師班級的
+ * 編輯與刪除都對不上目標（production 的「藍奕麟」就是這樣多出一筆零引用的孤兒檔）。
+ * importRosterCsv 早有同名合併邏輯，這裡補齊另一條入口。
+ */
 export async function createTeacher(payload) {
-    const t = await dataSvc.createTeacher(payload);
-    await logger.log(
+    // 走 __testHooks 取服務（預設即為上方 import 的真實模組），讓防重邏輯能被
+    // test/test-teacher-dedup.mjs 以記憶體替身涵蓋，與 importRosterCsv 同一模式。
+    const svc = __testHooks.dataSvc;
+    const log = __testHooks.logger;
+
+    const name = String(payload?.name ?? '').trim();
+    if (!name) throw new Error('教師姓名不可為空');
+
+    const existing = await svc.listTeachers();
+    if (existing.some(t => t.name === name)) {
+        throw new Error(`教師「${name}」已存在於名單中，請直接編輯該列，不要重複新增`);
+    }
+
+    const email = payload.email ? String(payload.email).toLowerCase().trim() : null;
+    if (email) {
+        const owner = existing.find(t => (t.email || '').toLowerCase() === email);
+        if (owner) throw new Error(`Email「${email}」已被教師「${owner.name}」使用`);
+    }
+
+    const t = await svc.createTeacher({ ...payload, name, email });
+    await log.log(
         LOG_ACTIONS.TEACHER_CREATE,
         LOG_TARGET_TYPES.TEACHER,
         t.teacherId,
@@ -279,10 +307,15 @@ export async function createTeacher(payload) {
 }
 
 export async function deleteTeacher(teacherId) {
-    const before = await dataSvc.getTeacher(teacherId);
+    // 同 createTeacher 走 __testHooks：這支是「新增教師失敗」的回滾路徑，
+    // 需與防重邏輯一起被 test/test-teacher-dedup.mjs 涵蓋。
+    const svc = __testHooks.dataSvc;
+    const log = __testHooks.logger;
+
+    const before = await svc.getTeacher(teacherId);
     if (!before) return;
-    await dataSvc.deleteTeacher(teacherId);
-    await logger.log(
+    await svc.deleteTeacher(teacherId);
+    await log.log(
         LOG_ACTIONS.TEACHER_DELETE,
         LOG_TARGET_TYPES.TEACHER,
         teacherId,
