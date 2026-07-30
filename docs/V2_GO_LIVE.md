@@ -53,6 +53,8 @@ tags:
 
 到「教師管理」頁籤 →「📥 批次匯入 CSV」。
 
+> 2026-07-30 起「教師管理」頁只有一張合併表（姓名／Email／角色／任教領域／導師班級），所有欄位**變更即時自動儲存**，沒有「儲存」按鈕。領域與導師班級教學組長也能改，Email 與角色僅主任可改。手動「新增教師」需先匯入課表，且同名／同 email 會被擋下（避免重複建檔）。
+
 - 欄位格式：`姓名,Email,角色,領域,導師班`
 - 角色可填中文（主任／組長／教師）或英文代碼（director／section_chief／teacher），留空預設為教師
 - 詳細規則與範例見 [V2_ROSTER_CSV.md](./V2_ROSTER_CSV.md)，範例檔 `test/roster-sample.csv`
@@ -61,16 +63,18 @@ tags:
 
 **Email 必須正確**：教師登入後系統以 email 比對教師檔來決定身份，比對不到就會被拒絕登入。
 
-### 4. 清理重複的主任教師檔
+### 4. 清理重複的主任教師檔 ✅ 已於 2026-07-30 完成
 
-`schools/inhu/teachers` 目前有兩筆同名同 email 的主任檔（2026-05-29 bootstrap 競態產生）：
+`schools/inhu/teachers` 原有兩筆同名同 email 的主任檔，已在「教師管理」頁刪除孤兒那筆：
 
-| teacherId | authProvider | 狀態 |
+| teacherId | authProvider | 處理 |
 |---|---|---|
-| `tch_1780040513944_kl4wgr9` | google.com | **使用中**，請保留 |
-| `tch_1780040513944_qf7vp5g` | （空） | 孤兒，零引用，建議刪除 |
+| `tch_1780040513944_kl4wgr9` | google.com | **保留**（實際登入綁定的那筆） |
+| `tch_1780040513944_qf7vp5g` | （空） | 已刪除（零引用孤兒，從未被任何登入綁定） |
 
-目前靠文件 ID 字典序碰巧選到正確那筆，並非保證。可在「教師管理」頁刪除孤兒那筆，或執行 `node scripts/firestore-health-check.js` 確認狀態。
+刪除後已驗證：教師數 32→31、主任身份與該筆的領域資料完好、同名重複警示消失。
+
+**根因不是 bootstrap 競態**：`authGuardV2.ensureDirectorTeacher()` 只依 email 查既有教師檔，而課表匯入的教師檔 email 是 `null`，初始主任首次登入查不到自己那筆就另建一筆——這正對應兩筆 `authProvider` 一為 `google.com`、一為空。此路徑仍存在（修它需放寬 `firestore.rules` 的 `isInitialDirector` 分支並重新部署），若日後又出現重複，教師管理頁會顯示「同名重複帳號檔」警示，依警示保留有登入紀錄的那筆即可。詳見 [ISSUES_LOG.md](./ISSUES_LOG.md) 2026-07-30 條目。
 
 ### 5. （選用）遷移 V1 舊資料
 

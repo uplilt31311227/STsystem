@@ -1,12 +1,40 @@
 ---
 created: 2026-04-10
-updated: 2026-07-29
+updated: 2026-07-30
 tags:
   - issues
   - troubleshooting
 ---
 
 # 問題追蹤：國中調代課自動化系統
+
+## 教師管理表合併相關（2026-07-30）
+
+### 主任教師檔重複的根因與現況 ✅ 已清理，但根因未修
+
+- **日期**: 2026-07-30
+- **狀態**: 🟡 重複資料已清除，產生重複的程式路徑仍在（需改 rules 才能修）
+- **描述**: production `schools/inhu/teachers` 有兩筆「藍奕麟」同名同 email 教師檔（`V2_GO_LIVE.md` 步驟 4 記載）。本次於 preview 站以合併表刪除零引用孤兒 `tch_1780040513944_qf7vp5g`（`authProvider` 為空、從未被任何登入綁定），保留 `tch_1780040513944_kl4wgr9`（`authProvider=google.com`）。刪除後驗證：教師數 32→31、主任身份與該筆的領域資料完好、同名重複警示消失。
+- **根因**: `authGuardV2.ensureDirectorTeacher()`（`authGuardV2.js:34`）只用 `findTeacherByEmail()` 查既有教師檔。課表匯入產生的教師檔 `email` 是 `null`，初始主任首次 Google 登入時查不到自己那筆，於是走 `createTeacher()` 另建一筆——這正好解釋兩筆的 `authProvider` 一為 `google.com`（登入時建立並寫入 provider）、一為空（課表匯入，從未登入綁定）。並非單純的併發競態。
+- **為何未修根因**: 正確做法是 email 查不到時改用姓名（Google `displayName`）查，找到同名且 `email` 為空的教師檔就補綁 email + 升級 director，不新建。但這條 update 會被 `firestore.rules` 擋下：初始主任尚未成為 `isDirector`，只能走 `isInitialDirector` 分支，而該分支要求 `resource.data.email == userEmail()`，目標那筆是 `null` 不符。rules 也拿不到 `displayName` 無法比對姓名。修它必須放寬 rules 並重新部署 ruleset，超出本次範圍。
+- **目前的緩解**: 合併表新增「同名重複帳號檔」警示，列出重複姓名並指引保留有登入紀錄的那筆（操作欄顯示「🔒 Google 登入」或「📧 重設密碼」者）；刪除邏輯加同名保護，同名還有其他筆時只刪帳號檔、不動 V1 課表資料。手動新增這條入口已於 `teacherMgr.createTeacher()` 補上姓名／email 防重。
+- **相關檔案**: `src/js/modules/v2/authGuardV2.js`、`firestore.rules`、`src/js/v2-app.js`、`src/js/modules/v2/teacherAccountManager.js`
+
+### 教師屬性改動未回寫全校課表（既有缺陷，已修）
+
+- **日期**: 2026-07-30
+- **狀態**: 🟢 已解決（commit `d594973`）
+- **描述**: `dataManager` 的 `updateTeacher`／`addTeacher`／`removeTeacher` 從未被 `patchDataManager()` 的 `wrapScheduleMutator` 包裝（原本只包 `setScheduleData`／`addScheduleEntry`／`updateScheduleEntry`／`removeScheduleEntry`／`setSchoolName`）。後果：approver 在教師屬性表改的任教領域與導師班級只寫進自己的 localStorage，全校 `schools/inhu/data/schedule` 的 `teachers` 陣列永遠停留在課表匯入當時的版本，其他教師端拿到舊領域，代課推薦（`recommendationEngine` 依 `teacher.domains` 判斷同領域）因此用錯資料。此缺陷在合併表之前就存在，發現於本次盤點兩張表的資料流時。
+- **解決方案**: 三個方法補上 `wrapScheduleMutator`，帶 `requireSchedule: true`（本機課表為空時不回寫，避免以空課表覆蓋全校，理由同 `setSchoolName`）與新增的 `silent: true`（逐格即時儲存的觸發點不跳「全校課表已更新」toast，否則連續編輯會洗版；欄位本身已有 ✓ 回饋）。
+- **相關檔案**: `src/js/v2-app.js`（`patchDataManager()`、`syncScheduleToV2()`）
+
+### 合併表刪除教師的同名保護（本次自身缺陷，已修）
+
+- **日期**: 2026-07-30
+- **狀態**: 🟢 已解決（commit `14108ad`，缺陷由 commit `d594973` 引入）
+- **描述**: 合併表把教師刪除統一為「完整刪除」（帳號 + 教師屬性 + 該教師在課表中的所有課程），修正了原本兩個入口各刪一半的問題。但 V1 側（`dataManager.teachers`）以**姓名**為鍵、沒有 teacherId 概念，分不出同名的兩筆帳號檔。正式課表上傳後「藍奕麟」會出現在 V1，此時刪掉兩筆中任一筆就會連帶清掉他在課表裡的所有課程，另一筆仍在使用中的帳號的課表資料也一起消失。發現於 production 實地檢視兩筆重複檔時（當下 V1 恰好沒有藍奕麟，僅因線上還是測試課表才沒踩到）。
+- **解決方案**: delete handler 先數同名列數，`sameName > 0` 時只刪這一筆 V2 帳號檔、不呼叫 `deleteLegacyTeacher()`，並在確認對話框明確說明「將只刪除這一筆帳號，課表屬性與課程保留給另一筆」。`deleteLegacyTeacher()` 的 JSDoc 加上呼叫端必須先確認無同名的前置條件。
+- **相關檔案**: `src/js/v2-app.js`
 
 ## UI 重規劃 Stage 2 資訊架構重組收尾發現（2026-07-29）
 

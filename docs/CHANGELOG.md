@@ -9,6 +9,48 @@ tags:
 
 ---
 
+## [2026-07-30]（feature/permission-system）教師管理表合併、全欄位即時自動儲存與新增教師防重
+
+教師管理頁原本並排兩張欄位重疊的表：V1 教師屬性表（姓名／領域／導師班級）與 V2 教師帳號管理表（姓名／Email／角色／領域），姓名與領域重複，且後者要按每列的「儲存」鈕才生效，兩張表的儲存語意不一致。本次併為單一表並統一為即時自動儲存。分兩個 commit：`d594973` 合併與即時儲存、`14108ad` 防重與刪除保護。
+
+### 變更（合併與即時自動儲存，commit d594973）
+- `index.html`：V1 教師屬性卡 `#teacher-editor-card` 加 `.v1-only`，V2 模式下隱藏（純 V1 單機模式行為不變）；V2 卡片權限由 `v2-director-only` 放寬為 `v2-approver-only`
+- `base.css` + `v2-app.js injectV2Styles()`：新增 `body.v2-active .v1-only{display:none}`，比照 `.v2-only` 採「靜態 + 注入」雙份
+- `v2-app.js renderTeachersAdminTab()` 改為 6 欄合併表：姓名／Email（登入帳號）／角色／任教領域／導師班級／操作，移除每列的「儲存」按鈕
+- 新增 `bindAutoSaveField()`：change 即存，成功閃綠框 + ✓（1.4 秒後淡出）、失敗還原「上一次成功儲存的值」並提示。刻意不重繪整表——每格重繪會在連續編輯途中清掉焦點與捲動位置，改為局部更新角色標籤／待指派徽章／列醒目狀態
+- 權限改為欄位級分層：領域／導師班級 approver 皆可編（`canEditSchedule`），Email／角色／新增／刪除／CSV 匯入限 director（`canManageRoster`）。組長看到的是 disabled 欄位且無操作欄
+- 領域／導師班級的權威來源仍是 V1 dataManager（`recommendationEngine` 讀 `teacher.domains`／`teacher.homeroomClass` 做代課推薦），V2 集合同步寫一份副本；教師只在 V2 名單而未進課表時明確提示「設定要等課表匯入後才會套用到代課推薦」
+- 姓名改為唯讀：V1 表原本可改名，但改名不會同步課表內的課程，會讓該教師的課全部變孤兒。更名請重新匯入課表（此為主動縮減的功能，已向使用者說明）
+- 刪除改為完整刪除（帳號 + 教師屬性 + 其課表課程），修正 ISSUES_LOG 2026-07-29 記載的「兩個入口各刪一半、留下孤兒課程」功能退化
+- 新增「只在課表中、尚未加入名單」的教師偵測提示，避免合併後靜默遺漏
+
+### 修復（既有缺陷：教師屬性改動未回寫全校，commit d594973）
+- `dataManager` 的 `updateTeacher`／`addTeacher`／`removeTeacher` 過去未被 `patchDataManager()` 包裝，approver 在教師屬性表改的領域只存在自己的 localStorage，全校教師拿到的 `teachers` 快照永遠是課表匯入當時的版本，代課推薦因此用錯領域。三者補上全校課表回寫，帶 `requireSchedule` 守門（避免空課表覆蓋全校）與新增的 `silent` 選項（逐格即時儲存不跳課表同步 toast，避免洗版）
+
+### 修復（新增教師防重與同名帳號檔刪除保護，commit 14108ad）
+- 根因：`authGuardV2.ensureDirectorTeacher()` 只依 email 查既有教師檔，而課表匯入產生的教師檔 email 是 `null`，初始主任首次登入時查不到自己那筆就另建一筆——這正對應 production「藍奕麟」兩筆的 `authProvider` 一為 `google.com`（登入時建）、一為空（課表匯入）。改用姓名補綁 email 會被 `firestore.rules` 的 `isInitialDirector` 分支擋下（該分支要求 `resource.data.email == userEmail()`，目標那筆是 null），修它需動 rules 並重新部署，未在本次處理
+- `teacherAccountManager.createTeacher()` 補防重：建立前檢查姓名與 email 是否已被佔用，重複直接拋錯不建立（過去是裸建立，同名連按兩次就多一筆）；錯誤訊息指出佔用者姓名
+- 合併表新增教師改為「兩邊都成功才算成功」：前置要求已有課表（課表是教師名單與代課推薦的資料來源，缺課表硬建帳號檔會留下對不起來的半套資料，而那正是重複建檔的溫床）；課表已有同名者導向「從課表匯入教師」；失敗時對稱回滾 V2 帳號檔與 V1 教師屬性
+- 刪除加同名保護：V2 集合尚有其他同名帳號檔時只刪這一筆、不動 V1。V1 側以姓名為鍵、分不出是哪一筆帳號，此時清 V1 會把仍在使用中那筆的課表課程一起刪掉（前一 commit 引入的缺陷，發現於 production 實地檢視）
+- 合併表新增同名重複警示，列出重複姓名並指引保留有登入紀錄的那筆
+
+### 測試
+- 新增 `test/test-teacher-dedup.mjs`（24 項）：以 `__testHooks` 記憶體替身涵蓋防重與回滾路徑，不碰 production Firestore；已接進 `npm test`。`createTeacher`／`deleteTeacher` 改走 `__testHooks` 以便測試
+- 新增 `test/ui-teachers-merge-check.mjs`（10 項）：Playwright 走訪 V1／V2 兩模式，驗重複已消除（`.v1-only` 隱藏、可見教師表 ≤ 1）、V1 即時儲存無回歸、patch 未破壞 `addTeacher`／`updateTeacher`／`removeTeacher` 寫值、375 寬度無橫向溢出、無 console 錯誤
+- 合計 216 項自動化檢查全綠
+
+### production 實地驗收（2026-07-30，preview 站 v0.1.4）
+- 合併表渲染確認：6 欄齊備、31 列、`.v2-save-teacher` 剩 0 個、V1 卡 `display:none`
+- 清理「藍奕麟」重複帳號檔：刪除零引用孤兒 `tch_1780040513944_qf7vp5g`（`authProvider` 為空、從未被登入綁定），保留 `tch_1780040513944_kl4wgr9`（`authProvider=google.com`）。刪除後主任身份與該筆的領域資料完好，重複警示消失，完成 `V2_GO_LIVE.md` 上線前必做步驟 4
+- 防重閘門實測：姓名已在課表 → 導向「從課表匯入教師」；V2 名單已有 → 「已存在於名單中」，兩者皆未新增任何列
+- 即時儲存端到端持久化：改測試帳號領域欄 → 重新載入後值仍在（確認寫入 Firestore 而非 UI 假象）→ 已還原測試值
+
+### 未處理（留待決策）
+- `authGuardV2.ensureDirectorTeacher()` 的 bootstrap 重複建檔根因需改 `firestore.rules` 才能修，目前以 UI 警示讓重複無法被忽略
+- 「無課表時不得新增教師」的前置閘門未在 production 實測——測它需清空本機課表，而 `setScheduleData` 會回寫全校課表 doc，風險過高
+
+---
+
 ## [2026-07-30]（feature/permission-system）UI 重規劃 Stage 5：操作邏輯統一
 
 依 `docs/PLAN.md` Stage 5，統一 5 種回饋機制（alert/confirm/prompt/toast/notify）並拆解批次送出鈕的雙重語意。獨立 commit、獨立驗證。
