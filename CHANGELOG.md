@@ -1,5 +1,39 @@
 # 版本紀錄 (Changelog)
 
+## [2026-07-30]（feature/permission-system）「清除所有資料」V2 重寫：根因修復＋兩輪驗收缺陷收斂
+
+使用者回報「清除所有資料」清不乾淨。根因：舊版只清 2 個 localStorage key 就 reload，Firebase 登入 session 仍在，reload 後 `subscribeSchedule`／`subscribeSubstituteRecords`／`subscribePendingRequests` 等即時訂閱會立刻把全校 Firestore 資料整包灌回本機，等於沒清。本次改寫為 director 限定的全校雲端清除，並經兩輪獨立 agent 驗收，共修 10 項缺陷。獨立驗證、尚未 commit。
+
+### 新增（改為全校雲端清除，`v2-app.js` `clearAllSchoolData()`／`patchClearLocalData()`）
+- 課表 doc 歸零：`scheduleData`／`teachers`／`classes`／`subjectDomainMap` 清空，`schoolName` 沿用雲端現值（歸零不等於學校改名）
+- 批次刪除 `substituteRecords`／`pendingRequests`（各自含 `private/detail` 子文件），改用 `schoolDataService.js` 新增的 `writeBatch` 分塊（≤400 筆/批）循序 `await`，取代原本無上限的 `Promise.all` 併發刪除
+- 刪除自己（目前登入 uid）的 V1 個人雲端備份 `users/{uid}/data/substituteSystem`（`cloudSyncService.js` 新增 `deletePersonalCloudBackup()`）——這正是使用者原始抱怨「帳號內資料清不掉」的那份文件，V2 全校清除原本完全不觸碰它，換裝置/網址回舊版頁面會整包復活
+- 刻意保留：`teachers/{id}` 帳號檔、`userMappings`、`config`、`operationLogs`（帳號與權限設定、稽核軌跡），成功後記一筆 `CLEAR_ALL_DATA` 稽核 log
+- 僅 director 可執行（UI 隱藏 + 執行前重新檢查權限），兩層 `confirmDialog` 二次確認，文案註明「個人 V1 雲端備份也會一併刪除；其他使用者的個人備份不受影響」
+
+### 修復（兩輪 opus 獨立驗收，共 10 項缺陷）
+- **[高] 失敗後舊課表被靜默回灌雲端**：失敗路徑改為強制 `location.reload()`，讓本機透過即時訂閱與雲端當下實際狀態重新對齊，不再手動清 dataManager 欄位；原生 `alert()` 首版曾用於擋住畫面直到使用者看到錯誤內容，第二輪驗收指出全站已於 UI 重規劃 Stage 5 統一操作邏輯為 `confirmDialog`、不用原生對話框，已改回 `this.confirmDialog()`（`v2-app.js`）
+- **[高] 稽核日誌寫入失敗誤報清除失敗**：`logger.log()` 移出 `try` 並加 `.catch(() => {})`，日誌失敗不影響清除結果判定
+- **[中] `getSchedule()` 讀取失敗吞成 `null`，導致 `schoolName` 被空字串覆蓋**：改為讀取失敗直接中止（此時尚未寫入任何東西，安全）
+- **[中] `orderBy('createdAt')` 排除缺該欄位的舊文件，清不乾淨**：`schoolDataService.js` 新增不帶 `orderBy` 的清除專用 `listAllSubstituteRecordsForClear()`／`listAllPendingRequestsForClear()`，既有列表函式不動
+- **[中] V1 個人雲端備份未清**：見上方「新增」
+- **[低] 「清除中」toast 疊在結果訊息上**：`app.js` `showToast()` 改為回傳 `dismiss` 函式，清除完成立即手動關閉；成功訊息延遲 800ms 才 `reload()`，讓使用者看得到
+- **[低] 無重入保護／無批次上限**：新增模組級 `_v2ClearAllDataInFlight` 旗標；刪除改走 `writeBatch` 分塊（見上）。第二輪驗收另外指出成功路徑的 `finally` 會在 800ms 延遲 reload 前就解除旗標、留下可重入視窗，改為僅失敗路徑（`catch`）解除，成功路徑刻意不解除（反正即將整頁 reload，模組變數自然歸零）
+- **[低] `schedule` doc 的 `meta` 形狀不一致**：`clearedBy*` vs `uploadedBy*` 互相覆寫，統一為 `{ lastAction: 'cleared'|'uploaded', byName, byTeacherId, at }`，`syncScheduleToV2()` 同步調整
+- **[中] 快取版本號未 bump**：`index.html` `src/js/app.js?v=1.13.4→1.13.5`、`src/js/v2-app.js?v=0.1.4→0.1.5`（兩檔本次皆有改動，回訪使用者原本會載到舊 JS）
+
+### 新增（`scripts/firestore-backup.js`）
+- Firestore V2 完整備份／還原工具：`backup` 備份 `schools/{schoolId}` 底下課表、`substituteRecords`／`pendingRequests`（含 `private/detail`）與 `teachers`／`userMappings`／`config`／`operationLogs`；存 Firestore REST 的原始 `{name, fields, ...}` 格式（非 unwrap 後的人眼可讀格式），供 `restore` 原樣 `PATCH` 回去無損還原
+- `restore` 預設只印還原計畫、不寫入，需帶 `--yes` 才真的執行；`--dry-run` 可強制只印計畫（測試用）
+
+### 驗證
+- `npm run check`（28/28）、`npm test`（65/65）全數通過
+- 逐一核對「清除所有資料」所有 `return` 路徑的重入旗標狀態，確認未提前解除或漏解除（見上方低優先度缺陷說明）
+
+### 已知取捨
+- 驗證過程中執行 `test/v2-rules-matrix.mjs`（非 `npm test` 範圍）意外對正式 Firestore 寫入 16 筆 `zz_test_` 測試文件，詳見 `docs/ISSUES_LOG.md`
+- 「無課表時不得新增教師」前置閘門已於 2026-07-30 以非破壞性方式實測通過；破壞性 E2E（實際清除全校資料）留待使用者親自執行
+
 ## [2026-07-30]（feature/permission-system）UI 重規劃 Stage 5：操作邏輯統一
 
 依 `docs/PLAN.md` Stage 5，統一 5 種回饋機制（alert/confirm/prompt/toast/notify）並拆解批次送出鈕的雙重語意。獨立 commit、獨立驗證。
