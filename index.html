@@ -19,10 +19,10 @@
     <!-- html2canvas - HTML 轉圖片（用於 PDF 中文支援） -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 
-    <link rel="stylesheet" href="src/css/tokens.css?v=2.5.0">
-    <link rel="stylesheet" href="src/css/base.css?v=2.5.0">
-    <link rel="stylesheet" href="src/css/components.css?v=2.5.0">
-    <link rel="stylesheet" href="src/css/features.css?v=2.5.0">
+    <link rel="stylesheet" href="src/css/tokens.css?v=2.6.0">
+    <link rel="stylesheet" href="src/css/base.css?v=2.6.0">
+    <link rel="stylesheet" href="src/css/components.css?v=2.6.0">
+    <link rel="stylesheet" href="src/css/features.css?v=2.6.0">
 </head>
 <body>
     <div class="app-container">
@@ -158,10 +158,13 @@
                 </div>
             </section>
 
-            <!-- 頁籤：教師管理（Stage 2 起集中：教師屬性表（編輯任教領域/導師班級）全員可見；
-                 V2 帳號管理（email/角色）僅 director 另外可見，兩卡職責不同、director 同時看到兩張） -->
+            <!-- 頁籤：教師管理。兩張表二擇一顯示，不再並存：
+                 純 V1 單機 → 下方 .v1-only 的教師屬性表（姓名／領域／導師班級）
+                 V2 模式    → #v2-teachers-admin 的合併表（再加 Email／角色，欄位依角色分權） -->
             <section id="teachers-tab" class="tab-content hidden v2-approver-only">
-                <div class="card" id="teacher-editor-card">
+                <!-- V1 單機模式的教師屬性表。V2 模式下由下方 #v2-teachers-admin 的合併表
+                     取代（同時管理課表屬性與帳號），故加 v1-only 隱藏，避免兩張表重複。 -->
+                <div class="card v1-only" id="teacher-editor-card">
                     <div class="teacher-header">
                         <h3>教師屬性</h3>
                         <div class="teacher-header-actions">
@@ -188,8 +191,11 @@
                     <div id="save-status" class="hidden" style="margin-top: 0.5rem;"></div>
                 </div>
 
-                <!-- V2 教師帳號管理（僅 director 顯示，避免與上方 V1 教師屬性表重複） -->
-                <div class="card v2-only v2-director-only">
+                <!-- V2 教師管理合併表：課表屬性（領域／導師班級，approver 可編）與帳號
+                     （Email／角色，僅 director 可編）併為一張表，欄位層級再依角色分權。
+                     卡片本身放寬到 v2-approver-only，組長才不會因上方 v1-only 表被隱藏
+                     而失去編輯教師課表屬性的能力。 -->
+                <div class="card v2-only v2-approver-only">
                     <div id="v2-teachers-admin"></div>
                 </div>
             </section>
@@ -939,6 +945,6 @@
     <!-- 載入 JavaScript 模組 -->
     <script type="module" src="src/js/app.js?v=1.13.4"></script>
     <!-- V2 權限系統（?v2=1 或預覽站才啟用；對穩定版無影響） -->
-    <script type="module" src="src/js/v2-app.js?v=0.1.2"></script>
+    <script type="module" src="src/js/v2-app.js?v=0.1.3"></script>
 </body>
 </html>

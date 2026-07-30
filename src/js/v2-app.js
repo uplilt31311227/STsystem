@@ -31,6 +31,11 @@ function injectV2Styles() {
     .v2-only { display: none; }
     body.v2-active .v2-only { display: revert; }
 
+    /* .v1-only：純 V1 單機才顯示（教師管理頁的 V1 教師屬性表）。V2 模式下由
+       #v2-teachers-admin 的合併表取代，隱藏以免同頁出現兩張欄位重疊的教師表。
+       base.css 有靜態版本兜底，兩份內容須保持一致。 */
+    body.v2-active .v1-only { display: none; }
+
     /* v2.0.0 三層角色顯隱：
        .v2-admin-only       — 兼容舊類別，效果等同 .v2-approver-only（director + section_chief 可見）
        .v2-approver-only    — 限 director 或 section_chief 可見（核准 / 紀錄 / 月結算 / 操作日誌）
@@ -383,10 +388,129 @@ function renderTeacherAuthAction(t) {
     return `<button class="btn btn-secondary btn-sm v2-send-reset" title="${tooltip}">${label}</button>`;
 }
 
+/* ===== 教師管理合併表的即時自動儲存輔助 ===== */
+
+/** 取得 V1 dataManager 中該姓名教師的索引；找不到回傳 -1。 */
+function legacyTeacherIndex(name) {
+    const list = window.app?.dataManager?.getTeachers?.() || [];
+    return list.findIndex(t => t.name === name);
+}
+
+/**
+ * 把教師的「課表屬性」（任教領域／導師班級）寫入 V1 dataManager。
+ *
+ * 這兩個欄位的權威來源是 V1 dataManager——recommendationEngine 讀 `teacher.domains` 與
+ * `teacher.homeroomClass` 來做代課推薦（同領域／該班導師加權），而 V2 teachers 集合內的
+ * 同名欄位從未被任何邏輯讀取，只是 CSV 匯入時寫入、供顯示的副本。因此合併表兩邊都寫：
+ * V1 供功能實際使用，V2 副本保持一致，避免主任日後在兩處看到互相矛盾的值。
+ *
+ * dataManager.updateTeacher 已由 patchDataManager() 包裝，寫入後會自動回寫全校課表 doc
+ * （靜默模式，不跳課表同步 toast——欄位本身已有 ✓ 回饋）。
+ *
+ * @returns {boolean} 是否有找到對應的 V1 教師並完成寫入
+ */
+function saveLegacyTeacherAttr(name, field, value) {
+    const dm = window.app?.dataManager;
+    if (!dm) return false;
+    const idx = legacyTeacherIndex(name);
+    if (idx === -1) return false;
+    dm.updateTeacher(idx, field, value);
+    try { window.app?.saveDataToStorage?.(); }
+    catch (e) { console.warn('[V2] 教師屬性本機儲存失敗:', e); }
+    return true;
+}
+
+/**
+ * saveLegacyTeacherAttr 找不到 V1 對應教師時的提示。
+ *
+ * 發生時機：教師只存在於 V2 名單、還沒進入課表（典型情況是主任剛用 CSV 匯入全校名單、
+ * 但當學期課表還沒上傳）。此時領域／導師班級只寫進了 V2 副本，而代課推薦讀的是 V1 側，
+ * 設定要等課表匯入後才真正生效——不講清楚會讓主任誤以為推薦已經會參考這個領域。
+ */
+function warnIfNotInSchedule(savedToLegacy, name) {
+    if (savedToLegacy) return;
+    notify(`「${name}」尚未出現在課表中，此設定要等課表匯入後才會套用到代課推薦`, 'warning', 5000);
+}
+
+/**
+ * 刪除教師時清理 V1 側資料：移除教師屬性、清掉他在課表中的所有課程、重算班級清單。
+ * 等同 app.js editorDeleteTeacher() 的資料處理部分（該函式綁定課表編輯器的當前教師，
+ * 無法直接重用），差別是確認對話框與 V2 帳號刪除由呼叫端負責。
+ * setScheduleData 已由 patchDataManager() 包裝，會回寫全校課表 doc。
+ */
+function deleteLegacyTeacher(name) {
+    const dm = window.app?.dataManager;
+    if (!dm || !name) return;
+    const idx = legacyTeacherIndex(name);
+    // 先刪課程再刪教師：setScheduleData 觸發的全校回寫會連帶帶上最新的 teachers 快照
+    const sched = dm.getScheduleData?.() || [];
+    if (Array.isArray(sched) && sched.some(c => c.teacher === name)) {
+        dm.setScheduleData(sched.filter(c => c.teacher !== name));
+    }
+    if (idx !== -1) dm.removeTeacher(idx);
+    dm.refreshClasses?.();
+    try { window.app?.saveDataToStorage?.(); }
+    catch (e) { console.warn('[V2] 刪除教師後本機儲存失敗:', e); }
+    // 教師清單變動 → 更新各頁下拉與課表狀態（V1 教師屬性表在 V2 下已隱藏，但下拉仍在用）
+    try {
+        window.app?.populateTeacherDropdowns?.();
+        window.app?.populateEditorTeacherDropdown?.();
+        window.app?.updateScheduleStatusFromData?.();
+    } catch (e) { console.warn('[V2] 刪除教師後 UI 刷新失敗:', e); }
+}
+
+/**
+ * 欄位級即時自動儲存包裝：change 事件觸發，成功閃示 ✓、失敗還原原值並提示。
+ *
+ * 刻意「不重繪整張表」——原本的「儲存」按鈕成功後會 await renderTeachersAdminTab()
+ * 重繪，但改成每格 change 即存後，重繪會在使用者連續編輯途中把焦點與捲動位置清掉。
+ * 因此改為局部更新受影響的顯示元素（角色標籤、待指派 email 徽章、列的醒目狀態）。
+ */
+function bindAutoSaveField(el, buildTask, onSuccess) {
+    // 失敗時要還原成「上一次成功儲存的值」而非 render 當時的初始值：使用者連續改兩次、
+    // 第一次成功第二次失敗時，還原到初始值會把已經存進去的第一次變更也一起抹掉，
+    // 畫面與後端就此不一致。故每次成功後更新 lastSaved。
+    let lastSaved = el.value;
+    el.addEventListener('change', async () => {
+        el.classList.remove('v2-field-error');
+        el.classList.add('v2-field-saving');
+        try {
+            await buildTask();
+            const prevSaved = lastSaved;
+            lastSaved = el.value;
+            el.classList.remove('v2-field-saving');
+            el.classList.add('v2-field-saved');
+            setTimeout(() => el.classList.remove('v2-field-saved'), 1400);
+            onSuccess?.(prevSaved);
+        } catch (e) {
+            el.classList.remove('v2-field-saving');
+            el.classList.add('v2-field-error');
+            el.value = lastSaved;
+            notifyError(e, '儲存教師資料');
+        }
+    });
+}
+
+/** 依表格現況重算表頭的「待指派 email」徽章（不重繪整表）。 */
+function refreshMissingEmailBadge(host) {
+    const badge = host.querySelector('#v2-missing-email-badge');
+    if (!badge) return;
+    const n = host.querySelectorAll('tr.v2-row-needs-email').length;
+    badge.textContent = n > 0 ? `⚠ ${n} 位待指派 email` : '';
+    badge.style.display = n > 0 ? '' : 'none';
+}
+
 async function renderTeachersAdminTab() {
     const host = document.getElementById('v2-teachers-admin');
     if (!host) return;
-    if (!roleSvc.canManageRoster()) { host.innerHTML = '<p>僅教務主任可存取此頁籤。教學組長與一般教師無此權限。</p>'; return; }
+    // 教師管理合併表：本頁權限由原本的 director-only 放寬到 approver——組長仍需能編輯
+    // 教師的課表屬性（領域／導師班級，原本在 V1 教師屬性表，該表已於 V2 模式隱藏），
+    // Email／角色兩欄與新增／刪除／匯入等名單操作則在欄位層級鎖給 director。
+    if (!roleSvc.canEditSchedule()) {
+        host.innerHTML = '<p>僅教務主任與教學組長可存取此頁籤。</p>';
+        return;
+    }
+    const canRoster = roleSvc.canManageRoster();
 
     const _gen = _v2IdentityGen;
     host.innerHTML = '<p>載入中…</p>';
@@ -394,58 +518,103 @@ async function renderTeachersAdminTab() {
     // 偵測舊資料失敗不可拖垮整頁：這支會對 users/{uid} 發 getDoc，離線 / token 過期 /
     // unavailable 都會 reject，若讓它往外拋，renderTeachersAdminTab 整支中止，
     // 畫面會永久停在上面那句「載入中…」（且是 unhandled rejection）。降級為「沒有舊資料」。
-    const legacyInfo = await legacyMigration.detectLegacyData().catch(err => {
-        console.warn('[v2] 偵測 V1 舊資料失敗（不影響教師管理頁）：', err?.message || err);
-        return { source: null, count: 0, lastModified: null, sources: [] };
-    });
+    // 只有 director 看得到遷移卡（遷移是主任的作業），組長不必發這個查詢。
+    const legacyInfo = canRoster
+        ? await legacyMigration.detectLegacyData().catch(err => {
+            console.warn('[v2] 偵測 V1 舊資料失敗（不影響教師管理頁）：', err?.message || err);
+            return { source: null, count: 0, lastModified: null, sources: [] };
+        })
+        : { source: null, count: 0, lastModified: null, sources: [] };
     const roleLabel = (role) => {
         const r = (role === 'admin') ? 'director' : role;
         return { director: '主任', section_chief: '組長', teacher: '教師' }[r] || '教師';
     };
     const missingEmailCount = teachers.filter(t => !t.email).length;
 
+    // 課表屬性欄位所需的班級清單（導師班級下拉）與「只存在於課表、尚未進名單」的教師偵測。
+    // 後者用意：合併表的列來源是 V2 teachers 集合，若某位教師只在 V1 課表裡（自動同步失敗、
+    // 或 approver 手動加過），合併後這張表就看不到他——必須顯式提示，不能靜默遺漏。
+    const dm             = window.app?.dataManager;
+    const classList      = dm?.getClasses?.() || [];
+    const v2Names        = new Set(teachers.map(t => t.name));
+    const scheduleOnly   = (dm?.getTeachers?.() || [])
+        .map(t => t?.name)
+        .filter(n => n && !v2Names.has(n));
+
     if (isStaleRender(_gen)) return;   // 期間身份已切換 → 放棄回填教師名單
     host.innerHTML = `
-        ${legacyInfo.source ? renderLegacyMigrationCard(legacyInfo) : ''}
+        ${canRoster && legacyInfo.source ? renderLegacyMigrationCard(legacyInfo) : ''}
         <div class="v2-section-header">
             <h3>
-                教師帳號管理
-                ${missingEmailCount > 0
-                    ? `<span class="v2-badge" title="尚有教師未指派 email，無法登入">⚠ ${missingEmailCount} 位待指派 email</span>`
-                    : ''}
+                教師管理
+                <span class="v2-badge" id="v2-missing-email-badge"
+                      title="尚有教師未指派 email，無法登入"
+                      style="${missingEmailCount > 0 ? '' : 'display:none;'}"
+                >${missingEmailCount > 0 ? `⚠ ${missingEmailCount} 位待指派 email` : ''}</span>
             </h3>
+            ${canRoster ? `
             <div>
                 <button class="btn btn-secondary btn-sm" id="v2-import-legacy-teachers">從課表匯入教師</button>
                 <button class="btn btn-secondary btn-sm" id="v2-import-roster-csv">📥 批次匯入 CSV</button>
                 <input type="file" id="v2-roster-csv-input" accept=".csv" style="display:none;">
                 <button class="btn btn-primary btn-sm" id="v2-add-teacher">新增教師</button>
-            </div>
+            </div>` : ''}
         </div>
+        <p class="hint">變更即時自動儲存。姓名以課表為準，如需更名請重新匯入課表${canRoster ? '' : '。Email 與角色僅教務主任可修改'}。</p>
+        ${scheduleOnly.length ? `
+        <p class="hint v2-hint-warning">
+            ⚠ 有 ${scheduleOnly.length} 位教師出現在課表中但尚未加入名單（${escapeHtml(scheduleOnly.slice(0, 5).join('、'))}${scheduleOnly.length > 5 ? ' 等' : ''}），
+            ${canRoster ? '請按上方「從課表匯入教師」補入，否則他們無法登入。' : '請通知教務主任由「從課表匯入教師」補入。'}
+        </p>` : ''}
         <div class="table-wrap">
         <table class="data-table data-table-compact data-table-cards">
-            <thead><tr><th>姓名</th><th>Email（登入帳號）</th><th>角色</th><th>領域</th><th>操作</th></tr></thead>
+            <thead><tr>
+                <th>姓名</th><th>Email（登入帳號）</th><th>角色</th>
+                <th>任教領域</th><th>導師班級</th>${canRoster ? '<th>操作</th>' : ''}
+            </tr></thead>
             <tbody>
             ${teachers.map(t => {
                 const normRole = (t.role === 'admin') ? 'director' : (t.role || 'teacher');
                 const rowClass = t.email ? 'v2-teacher-row' : 'v2-teacher-row v2-row-needs-email';
+                // 教師的導師班級可能不在目前課表的班級清單內（換學期、課表尚未重新匯入），
+                // 若不補進選項，select 會落回第一項「非導師」而讓使用者以為資料被清掉。
+                const homeroom = t.homeroomClass || '';
+                const options  = homeroom && !classList.includes(homeroom)
+                    ? [homeroom, ...classList]
+                    : classList;
+                const lockAttr = canRoster ? '' : 'disabled title="僅教務主任可修改"';
                 return `
-                <tr class="${rowClass}" data-id="${t.teacherId}">
-                    <td data-label="姓名" class="cell-primary">${t.name}</td>
-                    <td data-label="Email（登入帳號）"><input type="email" class="v2-email-input" value="${t.email || ''}" placeholder="未指派"></td>
+                <tr class="${rowClass}" data-id="${t.teacherId}" data-name="${escapeHtml(t.name)}">
+                    <td data-label="姓名" class="cell-primary">${escapeHtml(t.name)}</td>
+                    <td data-label="Email（登入帳號）">
+                        <input type="email" class="v2-email-input" value="${escapeHtml(t.email || '')}"
+                               placeholder="未指派" ${lockAttr}>
+                    </td>
                     <td data-label="角色">
-                        <select class="v2-role-select">
+                        <select class="v2-role-select" ${lockAttr}>
                             <option value="teacher"       ${normRole === 'teacher' ? 'selected' : ''}>教師</option>
                             <option value="section_chief" ${normRole === 'section_chief' ? 'selected' : ''}>組長</option>
                             <option value="director"      ${normRole === 'director' ? 'selected' : ''}>主任</option>
                         </select>
                         <span class="v2-role-tag ${normRole}" style="margin-left:6px;">${roleLabel(t.role)}</span>
                     </td>
-                    <td data-label="領域">${(t.domains || []).join('、')}</td>
+                    <td data-label="任教領域">
+                        <input type="text" class="v2-domains-input" value="${escapeHtml((t.domains || []).join(', '))}"
+                               placeholder="例如：國文, 英語" title="多個領域請用逗號分隔，例如：國文, 英語">
+                    </td>
+                    <td data-label="導師班級">
+                        <select class="v2-homeroom-select">
+                            <option value="">非導師</option>
+                            ${options.map(c =>
+                                `<option value="${escapeHtml(c)}" ${homeroom === c ? 'selected' : ''}>${escapeHtml(c)}</option>`
+                            ).join('')}
+                        </select>
+                    </td>
+                    ${canRoster ? `
                     <td class="cell-actions">
-                        <button class="btn btn-primary btn-sm v2-save-teacher">儲存</button>
                         ${renderTeacherAuthAction(t)}
                         <button class="btn btn-danger btn-sm v2-delete-teacher">刪除</button>
-                    </td>
+                    </td>` : ''}
                 </tr>`;
             }).join('')}
             </tbody>
@@ -453,28 +622,82 @@ async function renderTeachersAdminTab() {
         </div>
     `;
 
-    host.querySelectorAll('.v2-save-teacher').forEach(btn =>
-        btn.addEventListener('click', async () => {
-            const tr  = btn.closest('tr');
-            const id  = tr.dataset.id;
-            const em  = tr.querySelector('.v2-email-input').value.trim();
-            const rl  = tr.querySelector('.v2-role-select').value;
-            try {
-                await teacherMgr.assignEmail(id, em || null);
-                await teacherMgr.setRole(id, rl);
-                notify('已儲存', 'success');
-                await renderTeachersAdminTab();
-            } catch (e) { notifyError(e, '儲存教師資料'); }
-        }));
+    /* ---- Email：change 即存。成功後同步更新列的「待指派」醒目狀態與表頭徽章 ---- */
+    host.querySelectorAll('.v2-email-input').forEach(input => {
+        const tr = input.closest('tr');
+        bindAutoSaveField(
+            input,
+            () => teacherMgr.assignEmail(tr.dataset.id, input.value.trim() || null),
+            (prev) => {
+                const val = input.value.trim();
+                tr.classList.toggle('v2-row-needs-email', !val);
+                refreshMissingEmailBadge(host);
+                // 有／無 email 決定操作欄是否出現密碼信按鈕，狀態翻轉才需要重繪整表
+                if (!!val !== !!prev.trim()) {
+                    renderTeachersAdminTab().catch(e =>
+                        console.warn('[V2] 教師管理表重繪失敗:', e));
+                }
+            });
+    });
+
+    /* ---- 角色：change 即存，成功後就地更新角色標籤 ---- */
+    host.querySelectorAll('.v2-role-select').forEach(sel => {
+        const tr = sel.closest('tr');
+        bindAutoSaveField(
+            sel,
+            () => teacherMgr.setRole(tr.dataset.id, sel.value),
+            () => {
+                const tag = tr.querySelector('.v2-role-tag');
+                if (tag) {
+                    tag.className = `v2-role-tag ${sel.value}`;
+                    tag.textContent = roleLabel(sel.value);
+                }
+            });
+    });
+
+    /* ---- 任教領域：change 即存。權威為 V1 dataManager，V2 集合寫一份副本 ---- */
+    host.querySelectorAll('.v2-domains-input').forEach(input => {
+        const tr = input.closest('tr');
+        bindAutoSaveField(input, async () => {
+            const list = input.value.split(/[、;,，]/).map(s => s.trim()).filter(Boolean);
+            const inLegacy = saveLegacyTeacherAttr(tr.dataset.name, 'domains', list);
+            await dataSvc.updateTeacher(tr.dataset.id, { domains: list });
+            warnIfNotInSchedule(inLegacy, tr.dataset.name);
+        });
+    });
+
+    /* ---- 導師班級：change 即存，同上兩處寫入 ---- */
+    host.querySelectorAll('.v2-homeroom-select').forEach(sel => {
+        const tr = sel.closest('tr');
+        bindAutoSaveField(sel, async () => {
+            const inLegacy = saveLegacyTeacherAttr(tr.dataset.name, 'homeroomClass', sel.value);
+            await dataSvc.updateTeacher(tr.dataset.id, { homeroomClass: sel.value });
+            warnIfNotInSchedule(inLegacy, tr.dataset.name);
+        });
+    });
 
     host.querySelectorAll('.v2-delete-teacher').forEach(btn =>
         btn.addEventListener('click', async () => {
-            const id = btn.closest('tr').dataset.id;
+            const tr   = btn.closest('tr');
+            const id   = tr.dataset.id;
+            const name = tr.dataset.name;
+            // 合併表是教師刪除的唯一入口，因此採「完整刪除」語意：帳號 + 課表屬性 + 該教師的
+            // 課程。原先 V2 表只刪 Firestore 帳號、V1 表只刪教師屬性，兩者都會留下孤兒資料
+            // （課表裡仍有指向已刪教師的課程），見 docs/ISSUES_LOG.md 2026-07-29 條目。
+            const hours = window.app?.dataManager?.getTeacherWeeklyHours?.(name) || 0;
             const ok = await window.app?.confirmDialog?.({
-                title: '刪除教師', message: '確定刪除此教師？此操作會寫入 log。', confirmText: '刪除', danger: true,
+                title: '刪除教師',
+                message: hours > 0
+                    ? `確定刪除教師「${name}」？將一併移除其帳號、教師屬性與課表中的 ${hours} 節課。此操作會寫入 log。`
+                    : `確定刪除教師「${name}」？將一併移除其帳號與教師屬性。此操作會寫入 log。`,
+                confirmText: '刪除', danger: true,
             });
             if (!ok) return;
-            try { await teacherMgr.deleteTeacher(id); await renderTeachersAdminTab(); }
+            try {
+                await teacherMgr.deleteTeacher(id);
+                deleteLegacyTeacher(name);
+                await renderTeachersAdminTab();
+            }
             catch (e) { notifyError(e, '刪除教師'); }
         }));
 
@@ -512,7 +735,21 @@ async function renderTeachersAdminTab() {
     document.getElementById('v2-add-teacher')?.addEventListener('click', async () => {
         const info = await promptNewTeacherModal();
         if (!info) return;
-        try { await teacherMgr.createTeacher(info); await renderTeachersAdminTab(); }
+        try {
+            await teacherMgr.createTeacher(info);
+            // 同步建立 V1 側教師屬性：合併表的領域／導師班級欄位要能編輯，V1 dataManager
+            // 必須有對應的 name（saveLegacyTeacherAttr 以 name 比對），否則新增的教師在
+            // 這張表上改領域會找不到寫入目標，也不會進入代課推薦的候選名單。
+            const dm2 = window.app?.dataManager;
+            if (dm2 && legacyTeacherIndex(info.name) === -1) {
+                dm2.addTeacher({ name: info.name, domains: [], homeroomClass: '' });
+                try {
+                    window.app?.saveDataToStorage?.();
+                    window.app?.populateTeacherDropdowns?.();
+                } catch (e) { console.warn('[V2] 新增教師後 V1 側刷新失敗:', e); }
+            }
+            await renderTeachersAdminTab();
+        }
         catch (e) { notifyError(e, '新增教師'); }
     });
 
@@ -1409,8 +1646,12 @@ function applyRemoteSchedule(doc) {
  * 由 patched setScheduleData / addScheduleEntry / updateScheduleEntry / removeScheduleEntry
  * 以 microtask 延後呼叫，確保同批 setTeachers/setClasses 已完成。
  * 允許空課表寫入（approver 清空時需傳播）；in-flight 時記 pending，寫完補跑，不丟最後變更。
+ *
+ * @param {{silent?: boolean}} [opts] silent=true 時不跳「全校課表已更新」toast。教師管理頁的
+ *   領域／導師班級欄位是「每格 change 即存」，每次都跳這顆 toast 會在連續編輯時洗版；
+ *   該處欄位本身已有 ✓ 的即時回饋，故靜默。錯誤仍照常提示，不因 silent 而吞掉。
  */
-async function syncScheduleToV2() {
+async function syncScheduleToV2(opts = {}) {
     if (!roleSvc.isApprover()) return;
     const dm = window.app?.dataManager;
     if (!dm) return;
@@ -1438,7 +1679,9 @@ async function syncScheduleToV2() {
                 entries: scheduleData.length,
             });
         } while (_v2ScheduleSyncPending);
-        window.app?.showToast?.('✅ 全校課表已更新，所有教師即時同步', 'success', 3500);
+        if (!opts.silent) {
+            window.app?.showToast?.('✅ 全校課表已更新，所有教師即時同步', 'success', 3500);
+        }
     } catch (err) {
         console.error('[V2] 全校課表同步失敗:', err);
         notifyError(err, '全校課表同步');
@@ -1567,11 +1810,11 @@ function patchDataManager() {
      * 套用遠端課表用 applyRemoteSchedule 直接設欄位、不經這些方法，故不會自我觸發迴圈。
      * microtask 延後：讓同批 setTeachers/setClasses 先跑完，快照才完整。
      */
-    const queueScheduleSync = () => {
+    const queueScheduleSync = (opts = {}) => {
         if (!roleSvc.isApprover()) return;   // 教師無寫入權（rules 亦擋），不回寫
-        queueMicrotask(() => { syncScheduleToV2(); });
+        queueMicrotask(() => { syncScheduleToV2(opts); });
     };
-    const wrapScheduleMutator = (name, { requireSchedule = false } = {}) => {
+    const wrapScheduleMutator = (name, { requireSchedule = false, silent = false } = {}) => {
         if (typeof dm[name] !== 'function') return;
         const orig = dm[name].bind(dm);
         dm[name] = function(...args) {
@@ -1588,7 +1831,7 @@ function patchDataManager() {
                     return r;
                 }
             }
-            queueScheduleSync();
+            queueScheduleSync({ silent });
             return r;
         };
     };
@@ -1597,6 +1840,14 @@ function patchDataManager() {
     // setSchoolName 與上述四者同形（單一參數、同步賦值、無回傳值），可共用包裝，
     // 但必須加 requireSchedule 守門，理由見上方註解。
     wrapScheduleMutator('setSchoolName', { requireSchedule: true });
+    // 教師屬性的異動（教師管理頁改領域／導師班級、新增或刪除教師）同樣要回寫全校 schedule
+    // doc——這三個方法過去沒被包裝，導致 approver 在教師屬性表改的領域只存在自己的
+    // localStorage，全校教師拿到的 teachers 快照永遠是課表匯入當時的版本，代課推薦因此用
+    // 錯領域（既有缺陷，非本次合併引入）。requireSchedule 守門理由同 setSchoolName：
+    // 課表尚未匯入時（app.js addNewTeacherRow 允許此情境）不可用空課表覆蓋全校資料。
+    // silent：這些是逐格即時儲存的觸發點，不跳課表同步 toast，見 syncScheduleToV2 註解。
+    ['updateTeacher', 'addTeacher', 'removeTeacher']
+        .forEach(n => wrapScheduleMutator(n, { requireSchedule: true, silent: true }));
 }
 
 let _autoSyncInFlight = false;
