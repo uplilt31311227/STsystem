@@ -778,8 +778,49 @@
 
 .v2-teacher-row td { vertical-align: middle; }
 .v2-teacher-row input[type="email"] { width: 100%; max-width: 220px; }
+.v2-teacher-row .v2-domains-input { width: 100%; min-width: 120px; }
+.v2-teacher-row .v2-homeroom-select { min-width: 88px; }
 .v2-row-needs-email { background: var(--c-warning-50); }
 .v2-row-needs-email td:first-child::before { content: '⚠ '; color: var(--c-warning-600); font-weight: bold; }
+
+/* 教師管理合併表的欄位級即時自動儲存狀態。取代原本每列一顆「儲存」按鈕後，使用者需要
+   知道剛才那格到底存進去了沒有——三種狀態各給一個明確視覺：寫入中（外框轉為強調色）、
+   已儲存（綠框 + 右側 ✓，1.4 秒後自動移除）、失敗（紅框，值已還原並另有 toast 說明）。
+   ::after 需要定位參考點，故欄位包一層 position:relative 的 wrapper 不可行（欄位直接在
+   td 內），改把 ✓ 畫在 td 上：用 :has() 讓帶 .v2-field-saved 欄位的 td 長出 ✓。 */
+.v2-teacher-row .v2-field-saving {
+    border-color: var(--c-primary-600);
+    background: var(--c-primary-50);
+}
+.v2-teacher-row .v2-field-saved {
+    border-color: var(--c-success-600);
+    background: var(--c-success-50);
+    transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+.v2-teacher-row .v2-field-error {
+    border-color: var(--c-danger-600);
+    background: var(--c-danger-50);
+}
+.v2-teacher-row td:has(> .v2-field-saved)::after {
+    content: ' ✓';
+    color: var(--c-success-800);
+    font-weight: var(--fw-semibold);
+    margin-left: 4px;
+}
+/* 手機卡片模式下 td 是 block、欄位撐滿 100% 寬，::after 的 ✓ 會被推到欄位下方獨佔一行、
+   把卡片高度撐開。該模式只留欄位本身的綠框當回饋。斷點與 components.css
+   .data-table-cards 的 640px 還原點對齊（≥ 640px 已是表格模式，✓ 正常顯示在欄位右側）。 */
+@media (max-width: 639px) {
+    .data-table-cards .v2-teacher-row td:has(> .v2-field-saved)::after { content: none; }
+}
+
+.v2-hint-warning {
+    background: var(--c-warning-50);
+    border-left: 3px solid var(--c-warning-600);
+    color: var(--c-warning-800);
+    padding: var(--sp-2) var(--sp-3);
+    border-radius: var(--r-sm);
+}
 .v2-auth-provider-chip { display: inline-block; padding: 2px var(--sp-2); border-radius: var(--r-pill); font-size: var(--fs-sm); font-weight: var(--fw-medium); vertical-align: middle; margin-left: 4px; }
 .v2-auth-provider-chip.google { background: var(--c-primary-100); color: var(--c-primary-800); }
 

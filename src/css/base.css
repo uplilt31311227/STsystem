@@ -306,6 +306,14 @@ body.v2-active #records-content { display: none !important; }
     display: none;
 }
 
+/* .v1-only：只在純 V1 單機模式顯示的元素（目前為教師管理頁的 V1 教師屬性表）。
+   V2 模式下該表被 #v2-teachers-admin 的合併表取代，若不隱藏，教師管理頁會同時出現
+   兩張欄位重疊的教師表（姓名／領域重複）。與 .v2-only 相同採「靜態 + 注入」雙份，
+   注入版在 v2-app.js injectV2Styles()，兩者內容須保持一致。 */
+body.v2-active .v1-only {
+    display: none;
+}
+
 /* 功能鎖定遮罩（尚未設定學校名稱時蓋住分頁內容） */
 .tab-locked {
     position: relative;
