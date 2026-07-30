@@ -14,6 +14,7 @@ main.py
 
 # Dev helper scripts (non-production)
 start-server.py
+*.local.mjs
 read_excel.ps1
 export_csv.ps1
 analysis.txt

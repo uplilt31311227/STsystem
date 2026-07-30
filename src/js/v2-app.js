@@ -437,6 +437,10 @@ function warnIfNotInSchedule(savedToLegacy, name) {
  * 等同 app.js editorDeleteTeacher() 的資料處理部分（該函式綁定課表編輯器的當前教師，
  * 無法直接重用），差別是確認對話框與 V2 帳號刪除由呼叫端負責。
  * setScheduleData 已由 patchDataManager() 包裝，會回寫全校課表 doc。
+ *
+ * ⚠ 呼叫端必須先確認「V2 集合中已無其他同名教師檔」才可呼叫本函式，見 delete handler。
+ * V1 側是以姓名為鍵（dataManager.teachers 沒有 teacherId 概念），無法區分同名的兩筆帳號檔；
+ * 若同名帳號還有其他筆存在就清 V1，會把仍在使用中的那筆帳號的課表課程一起刪掉。
  */
 function deleteLegacyTeacher(name) {
     const dm = window.app?.dataManager;
@@ -541,6 +545,17 @@ async function renderTeachersAdminTab() {
         .map(t => t?.name)
         .filter(n => n && !v2Names.has(n));
 
+    // 同名重複的帳號檔偵測。手動新增已於 teacherMgr.createTeacher 防重，但
+    // authGuardV2.ensureDirectorTeacher() 仍可能產生一筆：它只依 email 查既有教師檔，
+    // 而課表匯入的教師檔 email 是 null，初始主任首次登入時查不到自己那筆就會另建一筆
+    // （production 的「藍奕麟」即如此，兩筆的 authProvider 一為 google.com、一為空）。
+    // 改用姓名補綁 email 會被 firestore.rules 的 isInitialDirector 分支擋下
+    // （該分支要求 resource.data.email == userEmail()，而目標那筆是 null），修它得動 rules。
+    // 在此之前至少讓重複無法被忽略：明確列出，主任可用刪除鈕清掉多餘那筆。
+    const nameCount = new Map();
+    teachers.forEach(t => nameCount.set(t.name, (nameCount.get(t.name) || 0) + 1));
+    const duplicatedNames = [...nameCount.entries()].filter(([, n]) => n > 1).map(([n]) => n);
+
     if (isStaleRender(_gen)) return;   // 期間身份已切換 → 放棄回填教師名單
     host.innerHTML = `
         ${canRoster && legacyInfo.source ? renderLegacyMigrationCard(legacyInfo) : ''}
@@ -565,6 +580,13 @@ async function renderTeachersAdminTab() {
         <p class="hint v2-hint-warning">
             ⚠ 有 ${scheduleOnly.length} 位教師出現在課表中但尚未加入名單（${escapeHtml(scheduleOnly.slice(0, 5).join('、'))}${scheduleOnly.length > 5 ? ' 等' : ''}），
             ${canRoster ? '請按上方「從課表匯入教師」補入，否則他們無法登入。' : '請通知教務主任由「從課表匯入教師」補入。'}
+        </p>` : ''}
+        ${duplicatedNames.length ? `
+        <p class="hint v2-hint-warning">
+            ⚠ 有 ${duplicatedNames.length} 位教師存在重複的帳號檔（${escapeHtml(duplicatedNames.join('、'))}）。
+            重複檔會讓登入時綁到哪一筆變得不確定，${canRoster
+                ? '請保留有登入紀錄的那筆（操作欄顯示「🔒 Google 登入」或「📧 重設密碼」者），刪除另一筆。'
+                : '請通知教務主任清理。'}
         </p>` : ''}
         <div class="table-wrap">
         <table class="data-table data-table-compact data-table-cards">
@@ -684,18 +706,33 @@ async function renderTeachersAdminTab() {
             // 合併表是教師刪除的唯一入口，因此採「完整刪除」語意：帳號 + 課表屬性 + 該教師的
             // 課程。原先 V2 表只刪 Firestore 帳號、V1 表只刪教師屬性，兩者都會留下孤兒資料
             // （課表裡仍有指向已刪教師的課程），見 docs/ISSUES_LOG.md 2026-07-29 條目。
-            const hours = window.app?.dataManager?.getTeacherWeeklyHours?.(name) || 0;
+            //
+            // 例外：同名帳號檔還有其他筆時只刪這一筆帳號、不動 V1。V1 側以姓名為鍵、
+            // 分不出是哪一筆帳號的資料，此時清 V1 會把仍在使用中的那筆的課程一起刪掉
+            // （production 的「藍奕麟」就有兩筆 bootstrap 競態產生的同名檔）。
+            const sameName  = [...host.querySelectorAll('tbody tr')]
+                .filter(r => r.dataset.name === name && r.dataset.id !== id).length;
+            const cascade   = sameName === 0;
+            const hours     = cascade
+                ? (window.app?.dataManager?.getTeacherWeeklyHours?.(name) || 0)
+                : 0;
             const ok = await window.app?.confirmDialog?.({
                 title: '刪除教師',
-                message: hours > 0
-                    ? `確定刪除教師「${name}」？將一併移除其帳號、教師屬性與課表中的 ${hours} 節課。此操作會寫入 log。`
-                    : `確定刪除教師「${name}」？將一併移除其帳號與教師屬性。此操作會寫入 log。`,
+                message: !cascade
+                    ? `「${name}」還有 ${sameName} 筆同名帳號檔，將只刪除這一筆帳號，課表屬性與課程保留給另一筆。此操作會寫入 log。`
+                    : hours > 0
+                        ? `確定刪除教師「${name}」？將一併移除其帳號、教師屬性與課表中的 ${hours} 節課。此操作會寫入 log。`
+                        : `確定刪除教師「${name}」？將一併移除其帳號與教師屬性。此操作會寫入 log。`,
                 confirmText: '刪除', danger: true,
             });
             if (!ok) return;
             try {
                 await teacherMgr.deleteTeacher(id);
-                deleteLegacyTeacher(name);
+                if (cascade) {
+                    deleteLegacyTeacher(name);
+                } else {
+                    notify(`已刪除「${name}」的重複帳號檔，課表資料保留給另一筆`, 'success');
+                }
                 await renderTeachersAdminTab();
             }
             catch (e) { notifyError(e, '刪除教師'); }
@@ -733,24 +770,68 @@ async function renderTeachersAdminTab() {
         }));
 
     document.getElementById('v2-add-teacher')?.addEventListener('click', async () => {
+        const dm2   = window.app?.dataManager;
+        const sched = dm2?.getScheduleData?.() || [];
+
+        // 前置閘門：沒有課表不得新增教師。
+        // 課表是教師資料的根：V1 側（dataManager.teachers）是代課推薦與各頁下拉的來源，
+        // 而它只會隨課表一起回寫全校（addTeacher 的 requireSchedule 守門）。課表未匯入時
+        // 硬建教師檔，結果是「V2 有帳號、課表沒有這個人」的半套資料——而這種對不起來的
+        // 狀態正是重複建檔的溫床（看不到人就再按一次新增）。依 docs/V2_GO_LIVE.md 的
+        // 上線順序，課表本來就該先於名單。
+        if (!Array.isArray(sched) || sched.length === 0) {
+            notify('請先到「課表管理」匯入課表，再新增教師——課表是教師名單與代課推薦的資料來源', 'warning', 6000);
+            return;
+        }
+
         const info = await promptNewTeacherModal();
         if (!info) return;
+
+        // 課表裡已有同名教師 → 該走「從課表匯入教師」補建帳號檔，不是手動新增
+        // （手動新增會讓 V1 那筆既有的領域／導師班級資料與新帳號檔各自為政）。
+        if (legacyTeacherIndex(info.name) !== -1) {
+            notify(`「${info.name}」已存在於課表中，請按「從課表匯入教師」補建帳號檔`, 'warning', 6000);
+            return;
+        }
+
+        let created = null;
+        let legacyAdded = false;
         try {
-            await teacherMgr.createTeacher(info);
-            // 同步建立 V1 側教師屬性：合併表的領域／導師班級欄位要能編輯，V1 dataManager
-            // 必須有對應的 name（saveLegacyTeacherAttr 以 name 比對），否則新增的教師在
-            // 這張表上改領域會找不到寫入目標，也不會進入代課推薦的候選名單。
-            const dm2 = window.app?.dataManager;
-            if (dm2 && legacyTeacherIndex(info.name) === -1) {
-                dm2.addTeacher({ name: info.name, domains: [], homeroomClass: '' });
-                try {
-                    window.app?.saveDataToStorage?.();
-                    window.app?.populateTeacherDropdowns?.();
-                } catch (e) { console.warn('[V2] 新增教師後 V1 側刷新失敗:', e); }
+            // createTeacher 內含姓名／email 防重，重複時直接拋錯不會建立
+            created = await teacherMgr.createTeacher(info);
+
+            // 同步建立 V1 側教師屬性，兩邊都成功才算成功：合併表的領域／導師班級欄位以
+            // name 比對 V1 dataManager（saveLegacyTeacherAttr），缺這一步新增的教師改領域
+            // 會找不到寫入目標，也不會進入代課推薦的候選名單。
+            dm2.addTeacher({ name: info.name, domains: [], homeroomClass: '' });
+            legacyAdded = legacyTeacherIndex(info.name) !== -1;
+            if (!legacyAdded) throw new Error('課表側教師資料建立失敗');
+
+            window.app?.saveDataToStorage?.();
+            window.app?.populateTeacherDropdowns?.();
+            window.app?.populateEditorTeacherDropdown?.();
+
+            notify(`已新增教師「${info.name}」，請接著指派 Email 與任教領域`, 'success');
+            await renderTeachersAdminTab();
+        } catch (e) {
+            // 回滾要對稱，兩邊都清：任一側殘留都會讓下次使用者看不到完整的人又再按一次
+            // 新增，正是重複建檔的來源。
+            if (legacyAdded) {
+                const idx = legacyTeacherIndex(info.name);
+                if (idx !== -1) dm2.removeTeacher(idx);
+                try { window.app?.saveDataToStorage?.(); } catch { /* 已在錯誤路徑，不再擴散 */ }
             }
+            if (created?.teacherId) {
+                try {
+                    await teacherMgr.deleteTeacher(created.teacherId);
+                    console.warn('[V2] 新增教師失敗，已回滾帳號檔:', created.teacherId);
+                } catch (rollbackErr) {
+                    console.error('[V2] 帳號檔回滾失敗，名單可能留下孤兒:', rollbackErr);
+                }
+            }
+            notifyError(e, '新增教師');
             await renderTeachersAdminTab();
         }
-        catch (e) { notifyError(e, '新增教師'); }
     });
 
     document.getElementById('v2-import-legacy-teachers')?.addEventListener('click', async () => {

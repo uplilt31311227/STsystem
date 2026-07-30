@@ -1,6 +1,6 @@
 {
   "scripts": {
-    "test": "node test/test-grade9.mjs && node test/test-subject-domain.mjs && node test/test-grade9-refresh.mjs",
+    "test": "node test/test-grade9.mjs && node test/test-subject-domain.mjs && node test/test-grade9-refresh.mjs && node test/test-teacher-dedup.mjs",
     "check": "node scripts/check-syntax.js"
   },
   "devDependencies": {
