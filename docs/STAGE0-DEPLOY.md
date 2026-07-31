@@ -251,3 +251,30 @@ range/where/orderBy 皆同欄位或單欄位相等，屬 Firestore 自動建立�
 3. **（不建議依賴，僅供本機/測試環境驗證）讓錯誤觸發自動建立**：這兩條查詢若在索引未建立前執行，Firestore 會回傳 `failed-precondition` 並在錯誤訊息附上一個可直接點擊建立該索引的 Console 連結；但在**正式環境**這代表「先讓真實使用者撞到錯誤，才能取得建索引的連結」——即使有本輪的降級保護把衝擊縮小到「我的申請」單一區塊，這仍然是使用者親身踩雷才觸發修復，不應該是正式上線的部署手段。
 
 索引建立後有短暫的「建置中」狀態（依資料量通常數分鐘內完成），建置完成前對應查詢會持續 `failed-precondition`；建議與 Stage 0 相同的節奏，在低峰時段部署並在 Console 確認索引狀態為「已啟用」後再視為上線完成。
+
+## 附註：Stage 2（學期欄位化）新增的複合索引部署
+
+Stage 2（`RESEARCH-multitenancy-semester.md` §5/§6.1/§8 Stage 2 一列）在 `pendingRequests` 疊加 `semesterId` 條件、並新增一條 `substituteRecords` 的即時視窗索引與一條歷史學期索引，`firestore.indexes.json` 異動如下（**本次同樣未執行部署**）：
+
+| 集合 | 索引欄位 | 用途 | 狀態 |
+|---|---|---|---|
+| `pendingRequests` | `status` ASC + `createdAt` DESC | Stage 1 原索引 | **保留不動**（驗收修復 中 7）——原計畫在 Stage 2 把這條標記移除，但這是給「新 rules 已上線、client 還沒部署」或任何回退到舊 client 的降級路徑用的索引；若移除，一旦 client 版本不同步（例如瀏覽器快取住舊版 `v2-app.js`，或需要緊急回退 client），舊版查詢（不帶 `semesterId`）會直接 `failed-precondition`，比留著這條索引（多付一點點儲存與寫入 CPU，[S01]）風險高得多。改為兩條索引並存 |
+| `pendingRequests` | `semesterId` ASC + `status` ASC + `createdAt` DESC | `subscribePendingRequests`／`listOpenPendingRequests` 疊加 `semesterId==目前學期` 後的新形狀 | **新增** |
+| `pendingRequests` | `initiatedBy` ASC + `createdAt` DESC | `listPendingRequestsByInitiator`（「我的申請」，跨學期歷史） | 不變——Stage 2 刻意不疊加 `semesterId`，理由見 `schoolDataService.js` 該函式註解（用途就是要看橫跨學期的完整申請歷史，且已靠「單一教師」天然有界） |
+| `substituteRecords` | `semesterId` ASC + `createdAt` DESC | `subscribeSubstituteRecords`（即時視窗）／`listSubstituteRecordsPage`（載入更多，共用同一個 cursor 序列） | **新增** |
+| `substituteRecords` | `semesterId` ASC + `date` DESC | `listSubstituteRecordsBySemester`（新：紀錄頁「歷史學期」一次性檢視） | **新增** |
+
+`queryRecordsByExactDate`／`queryPendingRequestsByExactDate`／`queryRecordsByDateRange` 三支既有查詢**維持不動**，未疊加 `semesterId` 條件——理由見 `schoolDataService.js` 各自函式的 Stage 2 註解（單一日期查詢與日期範圍查詢在語意上天然正確、完整，疊加 `semesterId` 條件在 `queryRecordsByDateRange` 的情境甚至會產生錯誤結果，例如橫跨學期邊界的那一週會被錯誤濾掉部分合法紀錄，詳見該函式驗收修復 輕 10 的說明）。`schedules/{semesterId}` 是單文件讀寫（`getDoc`/`setDoc`/`onSnapshot`），非集合查詢，不需要索引。
+
+部署方式與 Stage 1 相同的三選一（見上方「附註：Stage 1」一節），**這次不需要移除任何既有索引，只需新建三條**（驗收修復 輕 9，原稿誤植「四條」且誤含一條「移除」動作——見上表，實際淨變動是新增 3 條、既有 3 條全部保留）：`firestore.indexes.json` 目前的檔案內容已是新增三條之後的最終狀態，Console 手動操作或 `firebase deploy --only firestore:indexes` 皆應以這份檔案為準。
+
+**索引與 rules 部署順序**：Stage 2 的 `firestore.rules` 新增了 `semesterId` 唯讀鎖（見規則檔頭第 6 點），這與索引部署是兩件獨立的事，但都必須先於 client（`v2-app.js` 等）上線——client 一旦部署，會立刻對新索引形狀送出查詢，索引未就緒會重現「附註：Stage 1」一節描述的 `failed-precondition` 降級行為（已有 `safeBootstrapStep` 保護，不會全站鎖死，但對應功能會顯性壞掉）。此外**必須先跑 `scripts/backfill-semester-id.js` 回填既有紀錄的 `semesterId`，才能部署 rules**——回填前部署 rules，`substituteRecords`/`pendingRequests` 的新建立規則不受影響（新寫入本來就一律由程式碼蓋上 `semesterId`），但**紀錄頁／月結算若在回填前就把查詢改成疊加 `semesterId==目前學期`，會查不到任何回填前的舊紀錄**（舊紀錄沒有這個欄位，`where('semesterId','==',...)` 不會比對到），這正是本次驗收報告「相容期行為表」要核實的項目，見報告內文。
+
+**新 rules × 舊 client 的過渡窗口（驗收修復 中 6）**：比照上方 Stage 0 的「相容性矩陣」精神補一格——rules 已部署新版（要求 `'semesterId' in request.resource.data`）、client 還沒跟上時，舊 client 送出的 `substituteRecords`/`pendingRequests` create 一律不帶 `semesterId`，會被規則明確拒絕（`permission-denied`，不是模糊的評估錯誤）。**這段窗口內全校使用者都無法新增調代課紀錄或送出申請**（既有紀錄的讀取、編輯不受影響，因為那兩條規則各自的相容期短路豁免只看 `resource.data` 是否已有 `semesterId`，與 client 版本無關）。因為影響是「全校寫入功能中斷」而非侷限在少數情境，**必須把 rules 部署與 client 部署排在同一次維運操作內連續執行**（比照 Stage 0 的時間窗壓縮做法），並提前公告「換版期間可能有幾分鐘無法送出調代課申請，請稍後再試」。
+
+**「開新學期」的公告要求（驗收修復 中 3）**：學期切換是全校性事件——切換後其他仍開著頁面的使用者（尤其是切換當下正在填寫調代課申請的教師）會直到收到 `subscribeConfig()` 的變更通知（顯示畫面頂端的橫幅提示）才知道自己看到的是已經唯讀的舊學期。director 執行「開新學期」前，除了 UI 上的 confirm modal，**建議額外用既有的校內公告管道（例如 Line 群組、email）提前通知「即將切換學期，請先完成手上的調代課申請，切換後請重新整理頁面」**，不要只依賴頁面內的被動提示。
+
+**正式庫 `schools/inhu` 的 `schedules/` 集合現況（驗收修復 中 5 相關）**：撰寫本文件時，正式庫尚未有任何 `schedules/{semesterId}` 文件（Stage 2 之前的課表全部存在單一文件 `data/schedule`）。這代表：
+1. 部署 client 後、第一次有人打開「紀錄頁」的學期選擇器之前，下拉選單只會看到「當前學期」一個選項（`v2ListSemesterOptions()` 的 `schedules/` 集合查詢會是空的，僅靠 `∪ currentSemester` 補上目前學期本身）。
+2. 課表讀取不受影響（`getSchedule`/`subscribeSchedule` 內建的一次性 fallback 會退回讀舊 `data/schedule`，見該函式註解）。
+3. 建議部署後盡快跑一次 `node scripts/migrate-schedule-to-semester.js --dry-run` 確認計畫、再正式執行，讓目前學期立刻有一份 per-semester 文件；歷史學期的 `schedules/{semesterId}` 文件則會在第一次「開新學期」時自動補建（`switchToNewSemester()` 內建的空殼補建邏輯，見 `v2-app.js`），不需要額外手動處理。

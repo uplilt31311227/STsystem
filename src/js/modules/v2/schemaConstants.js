@@ -17,7 +17,15 @@ export const SCHEMA_PATHS = {
     config:            ()    => `schools/${SCHOOL_ID}/config/main`,
     teachersCol:       ()    => `schools/${SCHOOL_ID}/teachers`,
     teacherDoc:        (id)  => `schools/${SCHOOL_ID}/teachers/${id}`,
+    // 舊：單一文件、整份覆寫，換學期即蓋掉舊課表（RESEARCH-multitenancy-semester.md §5.1）。
+    // Stage 2 起改由 schedules/{semesterId} 取代為主要讀寫路徑；此路徑保留給
+    // getSchedule()/subscribeSchedule() 的一次性讀取 fallback（per-semester 文件尚未建立時，
+    // 例如剛從 Stage 1 升級、還沒建立任何 schedules/{semesterId} 文件的學校），以及
+    // scripts/migrate-schedule-to-semester.js 的遷移來源，不再被任何寫入路徑使用。
     scheduleDoc:       ()    => `schools/${SCHOOL_ID}/data/schedule`,
+    // Stage 2（§5.3）：per-semester 課表文件，取代上面的單一文件。
+    schedulesCol:      ()    => `schools/${SCHOOL_ID}/schedules`,
+    scheduleDocForSemester: (sid) => `schools/${SCHOOL_ID}/schedules/${sid}`,
     substituteCol:     ()    => `schools/${SCHOOL_ID}/substituteRecords`,
     substituteDoc:     (id)  => `schools/${SCHOOL_ID}/substituteRecords/${id}`,
     // Phase 6（2026-07-29）：leaveType/leaveTypeName/reason 私有化，搬到父文件底下的
@@ -127,6 +135,8 @@ export const LOG_ACTIONS = Object.freeze({
     ROSTER_IMPORT:      'roster_import',
     DATA_MIGRATE:       'data_migrate',
     CLEAR_ALL_DATA:     'clear_all_data',
+    // Stage 2（§6.1 SOP）：director 在「學校設定 → 學期管理」開新學期時寫入。
+    SEMESTER_SWITCH:    'semester_switch',
 });
 
 export const LOG_TARGET_TYPES = Object.freeze({

@@ -21,6 +21,8 @@ import { LOG_ACTIONS, LOG_TARGET_TYPES, ROLES, REQUEST_STATUS, REQUEST_TYPES } f
 import * as authMod from './modules/authService.js';
 import * as cloudSyncSvc from './modules/cloudSyncService.js';
 import { notify, notifyError, setSyncStatus, resetSyncStatus } from './modules/v2/uiFeedback.js';
+import * as semesterUtils from './modules/v2/semesterUtils.js';
+import * as semesterState from './modules/v2/semesterState.js';
 
 /* ===== 樣式注入 ===== */
 
@@ -1197,14 +1199,21 @@ async function renderRecordsTab() {
     //   - 有日期篩選：篩選範圍可能落在即時視窗之外（視窗按 createdAt 排序，不是按 date），
     //     改一次性下推查詢 Firestore（v2GetRecordsInRange，見該函式註解）。
     const hasDateFilter = Boolean(_v2RecordsFilterStart || _v2RecordsFilterEnd);
+    // Stage 2（§5.4「歷史學期」列）：學期選擇器選了「非當前學期」時，優先權高於日期篩選——
+    // 歷史學期是規則層已鎖唯讀的封閉範圍，改走一次性 listSubstituteRecordsBySemester()查詢，
+    // 與「當前學期＝即時訂閱」在資料來源上互斥（不會混合兩種來源）。空字串或選回目前學期
+    // 都視同「檢視當前學期」，沿用既有 Stage 1 行為（即時視窗＋載入更多／日期篩選）。
+    const viewingHistorySemester = Boolean(_v2RecordsSemesterFilter) && _v2RecordsSemesterFilter !== semesterState.getCurrentSemesterId();
     let all;
     let recordsTabHasMore = false;
     // 驗收修復（中 #B）：兩個日期輸入框都有值時，使用者可能直接把起訖填反（起始晚於結束）。
     // 這種情況同步就能判斷（不需要打 Firestore 才發現查回 0 筆），先在這裡短路並顯示提示，
     // 不要讓使用者誤以為「查無紀錄」代表真的沒有資料。
-    const dateRangeInvalid = hasDateFilter
+    const dateRangeInvalid = !viewingHistorySemester && hasDateFilter
         && !dataSvc.resolveDateRangeBounds({ startDate: _v2RecordsFilterStart || null, endDate: _v2RecordsFilterEnd || null }).valid;
-    if (dateRangeInvalid) {
+    if (viewingHistorySemester) {
+        all = await v2GetRecordsBySemester(_v2RecordsSemesterFilter);
+    } else if (dateRangeInvalid) {
         all = [];
     } else if (hasDateFilter) {
         all = await v2GetRecordsInRange(_v2RecordsFilterStart, _v2RecordsFilterEnd);
@@ -1226,6 +1235,9 @@ async function renderRecordsTab() {
             ? _v2RecordsTabHasMore
             : _v2RecordsCache.length >= V2_RECORDS_PAGE_SIZE;
     }
+
+    const semesterOptions = await v2ListSemesterOptions();
+    if (isStaleRender(_gen)) return;   // 身份切換世代守門：兩段 await 之間都可能過期
 
     const visible   = roleSvc.filterRecordsForCurrent(all);
     const isApprover = roleSvc.isApprover();
@@ -1268,12 +1280,21 @@ async function renderRecordsTab() {
         <div class="toolbar-row">
             <div class="toolbar-controls">
                 <div class="form-group form-group-inline">
+                    <label for="v2-record-semester">學期</label>
+                    <select id="v2-record-semester">
+                        <option value="">當前學期</option>
+                        ${semesterOptions.filter(s => s !== semesterState.getCurrentSemesterId()).map(s =>
+                            `<option value="${escapeHtml(s)}" ${s === _v2RecordsSemesterFilter ? 'selected' : ''}>${escapeHtml(s)}（歷史）</option>`
+                        ).join('')}
+                    </select>
+                </div>
+                <div class="form-group form-group-inline">
                     <label for="v2-record-start-date">起始</label>
-                    <input type="date" id="v2-record-start-date" value="${_v2RecordsFilterStart}">
+                    <input type="date" id="v2-record-start-date" value="${_v2RecordsFilterStart}" ${viewingHistorySemester ? 'disabled' : ''}>
                 </div>
                 <div class="form-group form-group-inline">
                     <label for="v2-record-end-date">結束</label>
-                    <input type="date" id="v2-record-end-date" value="${_v2RecordsFilterEnd}">
+                    <input type="date" id="v2-record-end-date" value="${_v2RecordsFilterEnd}" ${viewingHistorySemester ? 'disabled' : ''}>
                 </div>
                 <div class="form-group form-group-inline">
                     <label for="v2-record-teacher">教師</label>
@@ -1285,11 +1306,15 @@ async function renderRecordsTab() {
                 <button class="btn btn-secondary btn-sm v2-approver-only" id="v2-print-weekly-summary-btn" title="以週為單位彙整本週所有調代課，產生 1 份 PDF 精簡列印">📄 列印本週彙整</button>
             </div>
         </div>
-        ${dateRangeInvalid ? `
+        ${viewingHistorySemester ? `
+        <p class="muted" style="margin:0.5rem 0;">
+            正在檢視歷史學期「${escapeHtml(_v2RecordsSemesterFilter)}」（唯讀，已鎖定不可再新增/編輯）。已停用起訖日期篩選——歷史學期為一次性查詢整學期資料，非分頁列表。
+        </p>` : ''}
+        ${!viewingHistorySemester && dateRangeInvalid ? `
         <p class="muted" style="margin:0.5rem 0;color:#b45309;">
             起訖日期範圍無效（起始日期晚於結束日期），請重新選擇。
         </p>` : ''}
-        ${!isApprover && !hasDateFilter && !dateRangeInvalid && displayed.length === 0 ? `
+        ${!viewingHistorySemester && !isApprover && !hasDateFilter && !dateRangeInvalid && displayed.length === 0 ? `
         <p class="muted" style="margin:0.5rem 0;">
             這裡預設只顯示全校最近 ${V2_RECORDS_PAGE_SIZE} 筆紀錄中「與您相關」的部分，若您的紀錄較舊、不在這批最新資料內就不會顯示。
             請用上方「起始／結束」日期篩選查詢您的紀錄。
@@ -1318,11 +1343,11 @@ async function renderRecordsTab() {
             </tbody>
         </table>
         </div>
-        ${!hasDateFilter && recordsTabHasMore ? `
+        ${!viewingHistorySemester && !hasDateFilter && recordsTabHasMore ? `
         <div style="text-align:center;margin-top:1rem;">
             <button class="btn btn-secondary btn-sm" id="v2-records-load-more-btn">載入更多（目前已載入 ${all.length} 筆）</button>
         </div>` : ''}
-        ${hasDateFilter && !dateRangeInvalid ? `
+        ${!viewingHistorySemester && hasDateFilter && !dateRangeInvalid ? `
         <p class="muted" style="margin-top:0.75rem;font-size:0.8rem;">已依日期範圍查詢，非分頁列表；如需查看更多歷史請調整起訖日期。</p>` : ''}
     `;
 
@@ -1342,6 +1367,11 @@ async function renderRecordsTab() {
 
     document.getElementById('v2-records-legacy-filter')?.addEventListener('change', (e) => {
         _v2RecordsLegacyFilter = e.target.value;
+        renderRecordsTab();
+    });
+
+    document.getElementById('v2-record-semester')?.addEventListener('change', (e) => {
+        _v2RecordsSemesterFilter = e.target.value;
         renderRecordsTab();
     });
 
@@ -1392,6 +1422,202 @@ async function renderRecordsTab() {
     }
 }
 
+/* ===== Stage 2：學期管理（§6.1 SOP 前半） ===== */
+
+/**
+ * 設定頁「學期管理」卡片，director 專用（容器 `.v2-director-only` 已在 CSS 隱藏非 director
+ * 身份，這裡再用 roleSvc.isDirector() 守一次，理由與既有各處「UI 隱藏 + 執行前再驗一次」
+ * 慣例一致，見 patchClearLocalData 內的同款註解）。顯示目前作用中學期、提供「開新學期」。
+ * 封存/刪除功能是 Stage 5，不在此實作範圍。
+ */
+async function renderSemesterAdminTab() {
+    const host = document.getElementById('v2-semester-admin');
+    if (!host) return;
+    if (!roleSvc.isDirector()) { host.innerHTML = ''; return; }
+
+    const _gen = _v2IdentityGen;
+    const cur = semesterState.getCurrentSemesterId();
+    const suggestion = semesterUtils.nextSemesterId(cur) || '';
+
+    if (isStaleRender(_gen)) return;
+    host.innerHTML = `
+        <div class="data-management-section">
+            <strong>目前作用中的學期</strong>
+            <p class="hint">全校所有新的調代課紀錄、待審申請、課表上傳都歸屬這個學期；其餘學期為唯讀（可在「調代課紀錄」頁籤切換查閱）。</p>
+            <p style="font-size:1.1rem;font-weight:600;margin:0.3rem 0 0.8rem;">${escapeHtml(cur || '（尚未設定，暫以今天日期推算）')}</p>
+        </div>
+        <div class="data-management-section danger-zone">
+            <strong>開新學期</strong>
+            <p class="hint">切換後，「${escapeHtml(cur || '目前學期')}」立即變為唯讀（不可再新增/編輯調代課紀錄與課表，歷史資料仍可查詢），新學期需重新上傳課表才能開始使用。此操作會寫入操作日誌並重新整理頁面。</p>
+            <div style="display:flex;gap:0.5rem;align-items:center;margin-top:0.4rem;flex-wrap:wrap;">
+                <input type="text" id="v2-new-semester-input" placeholder="例如 115-1" value="${escapeHtml(suggestion)}" style="max-width:140px;">
+                <button class="btn btn-danger btn-sm" id="v2-open-new-semester-btn">開新學期</button>
+            </div>
+        </div>
+    `;
+
+    document.getElementById('v2-open-new-semester-btn')?.addEventListener('click', async () => {
+        const input = document.getElementById('v2-new-semester-input');
+        const newId = (input?.value || '').trim();
+        if (!semesterUtils.isValidSemesterId(newId)) {
+            notify('學期格式不正確，請輸入類似「115-1」的格式（民國學年-學期，學期只能是 1 或 2）', 'warning');
+            return;
+        }
+        if (newId === cur) {
+            notify('這就是目前的學期，不需要切換', 'warning');
+            return;
+        }
+
+        // 驗收修復（中 4）：切換前先擋下「在途申請黑洞」——若目前學期還有待同意/待核准的
+        // pendingRequests，切換後這些請求的 semesterId 會停在舊學期，approveRequest() 核准
+        // 時會把新產生的 substituteRecord 蓋成「核准當下」的目前學期（見 pendingRequestService
+        // 的說明），與該請求原本的 semesterId 不一致，容易造成混淆；更根本的是，一旦舊學期
+        // 變唯讀，這些請求若因故需要改走 pendingRequests 的 create（理論上不會，只是
+        // update/delete），也會被規則卡住。與其讓使用者切換後才發現一批申請卡在無法妥善
+        // 收斂的狀態，不如切換前就要求先清空。listOpenPendingRequests() 預設已經是「目前
+        // 學期」範圍（見 schoolDataService.js），直接沿用不需額外指定。
+        let openCount = 0;
+        try {
+            openCount = (await dataSvc.listOpenPendingRequests()).length;
+        } catch (err) {
+            console.warn('[V2] 開新學期：檢查在途申請失敗，為安全起見暫停切換：', err);
+            notify('無法確認目前是否有在途申請，請稍後再試（為安全起見已暫停本次切換）', 'error');
+            return;
+        }
+        if (openCount > 0) {
+            notify(`目前還有 ${openCount} 筆在途申請（待同意/待核准）尚未處理，請先在「待辦」頁籤處理完再開新學期`, 'warning', 6000);
+            return;
+        }
+
+        const ok = await window.app?.confirmDialog?.({
+            title: '開新學期',
+            message:
+                `確定要把作用中學期從「${cur}」切換到「${newId}」嗎？\n\n` +
+                `切換後：\n` +
+                `・「${cur}」立即變為唯讀，不可再新增或編輯調代課紀錄與課表（歷史資料仍可查詢）\n` +
+                `・「${newId}」需要重新上傳課表才能開始使用\n` +
+                `・此操作會寫入操作日誌，且系統會重新整理頁面以套用新學期設定\n\n` +
+                `此操作無法一鍵復原（需再開一次學期才能切回原值），請確認。`,
+            confirmText: '確認開新學期',
+            danger: true,
+        });
+        if (!ok) return;
+
+        const btn = document.getElementById('v2-open-new-semester-btn');
+        if (btn) { btn.disabled = true; btn.textContent = '切換中…'; }
+        try {
+            await switchToNewSemester(cur, newId);
+        } catch (err) {
+            console.error('[V2] 開新學期失敗:', err);
+            notifyError(err, '開新學期');
+            if (btn) { btn.disabled = false; btn.textContent = '開新學期'; }
+        }
+    });
+}
+
+/**
+ * 驗收修復（中 3）：顯示「學期已切換，請重新整理」的橫幅——不會自動消失，只能靠使用者按
+ * 按鈕或自行重新整理來關閉，避免使用者沒注意到而繼續在已經唯讀的舊學期資料上操作。
+ * idempotent（重複呼叫只留一份），比照既有各處「先查 id 是否已存在」的注入慣例
+ * （例如 injectV2Styles）。
+ */
+function showSemesterChangedBanner(newSemesterId) {
+    if (document.getElementById('v2-semester-changed-banner')) return;
+    const banner = document.createElement('div');
+    banner.id = 'v2-semester-changed-banner';
+    banner.setAttribute('role', 'alert');
+    banner.style.cssText =
+        'position:fixed;top:0;left:0;right:0;z-index:99999;background:#b45309;color:#fff;' +
+        'padding:0.6rem 1rem;text-align:center;font-size:0.9rem;box-shadow:0 2px 6px rgba(0,0,0,0.2);';
+    banner.innerHTML =
+        `學期已切換為「${escapeHtml(newSemesterId)}」，請重新整理頁面以套用新學期設定。` +
+        `<button id="v2-semester-changed-reload-btn" style="margin-left:0.8rem;padding:0.2rem 0.8rem;` +
+        `border:none;border-radius:4px;cursor:pointer;background:#fff;color:#b45309;font-weight:600;">立即重新整理</button>`;
+    document.body.prepend(banner);
+    document.getElementById('v2-semester-changed-reload-btn')?.addEventListener('click', () => window.location.reload());
+}
+
+/**
+ * Stage 2（§6.1 SOP）：把作用中學期從 fromId 切到 toId。
+ *   1. 驗收修復（中 5，R1 訂正安全性）：確保 schedules/{fromId} 存在——若 fromId 從未透過
+ *      本函式或課表上傳建立過 per-semester 文件（例如 Stage 2 上線後第一次切換），補一份
+ *      空殼，確保 fromId 之後仍會出現在 v2ListSemesterOptions() 的學期選擇器清單。用
+ *      getSchedule(fromId) 確認「真的沒有任何資料」才建立空殼；讀取失敗時整個切換直接
+ *      中止（fail-closed），不會冒險覆寫可能存在的真實課表資料（見函式內註解，R1 修復）。
+ *      必須在改 config.currentSemester「之前」做——schedules/{semesterId} 的寫入規則鎖
+ *      「只能寫目前學期那一份」，一旦 currentSemester 已經是 toId，就再也無法補寫
+ *      schedules/{fromId} 了（見 firestore.rules 的 schedules/{semesterId} match 區塊）。
+ *   2. 建立 schedules/{toId}（空殼，同上理由，也讓新學期一開始就有一份「存在但空白」的課表
+ *      文件，不必等 approver 第一次上傳才出現在學期清單）。
+ *   3. 更新 config.currentSemester（規則層的學期唯讀鎖即刻對舊學期生效）。
+ *   4. 寫操作日誌（action: 'semester_switch'，比照報告 §6.1 SOP 步驟 [2]）。
+ *   5. reload 頁面——這是本專案既有的「換乾淨狀態」慣例（clearAllSchoolData／
+ *      patchClearLocalData 用同一招），不另外設計一套「原地重新訂閱所有 onSnapshot」機制：
+ *      bootstrap 內建立的即時訂閱（待辦／全校紀錄／課表／學期變更監聽／視需要的操作日誌）
+ *      全部綁定在一次性讀到的 semesterState 值上，reload 後重新走一次 bootstrap 自然會用
+ *      新學期重建，風險遠低於手動追蹤並取消/重建每一條訂閱。
+ *
+ * 呼叫端（renderSemesterAdminTab 的按鈕 handler）已先做過「無在途申請」檢查（驗收修復 中 4，
+ * 見該處），這裡不重複檢查——避免同一份業務規則分散在兩處、日後改動漏改一邊。
+ */
+async function switchToNewSemester(fromId, toId) {
+    const me = roleSvc.getCurrentIdentity();
+    const buildMeta = (action) => ({
+        lastAction:  action,
+        byName:      me?.name || '',
+        byTeacherId: me?.teacherId || null,
+        at:          new Date().toISOString(),
+    });
+
+    // 驗收修復（R1，opus 重驗｜阻斷級資料遺失）：原版用 listKnownSemesterIds().catch(() => [])
+    // 取得已知學期清單，讀取失敗時 catch 吞掉錯誤、回傳空陣列——這會讓
+    // `!knownBeforeSwitch.includes(fromId)` 誤判成立，即使 schedules/{fromId} 其實已經有
+    // 真實課表資料，下面的 saveSchedule() 仍會把它整份覆寫成空殼。覆寫發生在
+    // config.currentSemester 改成 toId「之前」，但覆寫本身已經是破壞性動作——一旦執行，
+    // fromId 的真實課表內容就永久遺失（覆寫後 fromId 不再是目前學期，寫入規則禁止再回寫，
+    // 沒有任何復原路徑）。
+    // 改為：
+    //   1. 直接用 getSchedule(fromId) 確認 fromId 目前是否已有任何課表資料（該函式本身已含
+    //      per-semester 文件 + 舊版 data/schedule 的 fallback 讀取，見其定義），不透過「列出
+    //      整個 schedules/ 集合再判斷某個 id 在不在裡面」這種間接方式。
+    //   2. 讀取失敗時直接 rethrow、整個切換中止（fail-closed，與中 4「無法確認在途申請就
+    //      中止切換」同一原則）——寧可讓 director 重試一次「開新學期」，也不要在不確定
+    //      fromId 現況的狀態下，冒著覆寫/遺失資料的風險繼續動作。
+    //   3. 只有在確認 getSchedule(fromId) 回傳 null（per-semester 文件與 legacy fallback
+    //      皆真的沒有任何資料）時，才建立空殼——這種情況下沒有任何資料可能被覆寫遺失，
+    //      寫入的唯一作用是讓 fromId 出現在 v2ListSemesterOptions() 的學期選擇器清單。
+    //      已知限制：若 fromId 只能透過 legacy fallback 讀到內容（per-semester 文件本身
+    //      不存在，例如尚未跑過 scripts/migrate-schedule-to-semester.js），getSchedule()
+    //      會回傳該 fallback 內容（非 null），本函式因此不會建立 schedules/{fromId}——
+    //      這種邊界情況下 fromId 仍不會出現在學期選擇器清單，需另外手動跑遷移腳本補上；
+    //      這是刻意的取捨（安全優先於清單完整度），不是遺漏。
+    let existingFromSchedule;
+    try {
+        existingFromSchedule = await dataSvc.getSchedule(fromId);
+    } catch (e) {
+        throw new Error(
+            `開新學期已中止：無法確認「${fromId}」目前的課表狀態，為避免覆寫/遺失資料，` +
+            `這次不會繼續切換。請確認網路連線後重試。（原始錯誤：${(e && e.message) || e}）`
+        );
+    }
+    if (!existingFromSchedule) {
+        await dataSvc.saveSchedule(fromId, {
+            scheduleData: [], teachers: [], classes: [], subjectDomainMap: {}, schoolName: '',
+            meta: buildMeta('semester_closed_placeholder'),
+        });
+    }
+
+    await dataSvc.saveSchedule(toId, {
+        scheduleData: [], teachers: [], classes: [], subjectDomainMap: {}, schoolName: '',
+        meta: buildMeta('semester_opened'),
+    });
+    await dataSvc.upsertConfig({ currentSemester: toId });
+    await logger.log(LOG_ACTIONS.SEMESTER_SWITCH, LOG_TARGET_TYPES.SYSTEM, null, { from: fromId, to: toId });
+    semesterState.setCurrentSemesterId(toId);
+    notify(`已切換到「${toId}」，即將重新整理頁面…`, 'success', 2500);
+    setTimeout(() => window.location.reload(), 1200);
+}
+
 /* ===== 頁籤切換偵測 ===== */
 
 function bindV2TabSwitches() {
@@ -1402,6 +1628,7 @@ function bindV2TabSwitches() {
             if (tab === 'teachers')   await renderTeachersAdminTab();
             if (tab === 'v2-logs')    await renderLogsTab();
             if (tab === 'records')    await renderRecordsTab();
+            if (tab === 'settings')   await renderSemesterAdminTab();
         }, { passive: true });
     });
 }
@@ -1444,7 +1671,7 @@ function forceActivateTab(dataTab) {
 
 // 所有「由登入身份動態渲染、含個資」的容器 id。切換身份時必須全部清空。
 // 集中一處列舉：日後新增受限頁籤只需在此補一個 id，避免遺漏造成殘留外洩。
-const V2_IDENTITY_CONTENT_HOSTS = ['v2-teachers-admin', 'v2-logs', 'v2-pending-list', 'v2-records-section'];
+const V2_IDENTITY_CONTENT_HOSTS = ['v2-teachers-admin', 'v2-logs', 'v2-pending-list', 'v2-records-section', 'v2-semester-admin'];
 
 /**
  * 身份切換 / 登出時重置 V2 視圖狀態（資安）。僅在身份「實際改變」時呼叫
@@ -1474,6 +1701,10 @@ function resetV2ViewState() {
     _v2RecordsLiveLastDoc = null;
     _v2DateRangeQueryCache.clear();
     _v2PendingSourceError = null; // 驗收修復（中 #A）：不帶前一身份的錯誤狀態到下一個登入者
+    // Stage 2：歷史學期檢視狀態同屬「含個資的畫面狀態」，身份切換必須一併清空（同上理由）。
+    _v2RecordsSemesterFilter = '';
+    _v2SemesterHistoryCache.clear();
+    _v2KnownSemesterIds = null;
     resetSyncStatus();
     forceActivateTab('substitute');
 }
@@ -1839,6 +2070,18 @@ let _v2RecordsLiveLastDoc = null;
 // 涵蓋範圍，寧可多查一次 Firestore 也不要讓月結算這種金額計算漏資料）。
 const _v2DateRangeQueryCache = new Map();
 
+// Stage 2（§5.4「歷史學期」列，§6.1）：紀錄頁的學期選擇器狀態。''＝當前學期（即時訂閱＋
+// 分頁，既有 Stage 1 行為不變）；非空字串＝使用者選了某個歷史學期，改走一次性查詢
+// （見 v2GetRecordsBySemester）。跨 renderRecordsTab 重繪需持續保留使用者的選擇，故拉到
+// module 層級，比照既有的 _v2RecordsLegacyFilter/_v2RecordsFilterStart 等篩選狀態。
+let _v2RecordsSemesterFilter = '';
+// 歷史學期查詢結果的記憶體快取，key 為 semesterId——歷史學期在規則層已鎖唯讀，同一 session
+// 內查過一次的結果不會再變動，不需要每次切換回同一個歷史學期都重打 Firestore。
+const _v2SemesterHistoryCache = new Map();
+// 學期選擇器下拉選單的選項清單快取（dataSvc.listKnownSemesterIds() 的結果），null 表示
+// 尚未查過。這份清單變動頻率極低（只有「開新學期」會新增一筆），不需要每次重繪都重查。
+let _v2KnownSemesterIds = null;
+
 // Phase 6：private/detail（leaveType/leaveTypeName/reason）快取，recordId → detail
 // （讀不到或不存在記為 {}，避免對同一批無權讀的紀錄重複發請求）。身份切換時必須清空
 // （見 resetV2ViewState 與登出分支），否則前一身份讀到的敏感欄位會外洩給下一個登入者。
@@ -1904,6 +2147,41 @@ async function v2GetRecordsInRange(startDate, endDate) {
     const hydrated = await hydrateRecordsWithDetail(raw);
     _v2DateRangeQueryCache.set(key, hydrated);
     return hydrated;
+}
+
+/**
+ * Stage 2（§5.4「歷史學期」列）：紀錄頁選了某個歷史學期時，一次性查詢該學期全部已成立
+ * 紀錄並快取（_v2SemesterHistoryCache，見宣告處註解）。與 v2GetRecordsInRange 同構，差別
+ * 只在資料來源改用 listSubstituteRecordsBySemester（依 semesterId 查，非日期範圍）。
+ */
+async function v2GetRecordsBySemester(semesterId) {
+    if (!semesterId) return [];
+    if (_v2SemesterHistoryCache.has(semesterId)) return _v2SemesterHistoryCache.get(semesterId);
+    const raw = await dataSvc.listSubstituteRecordsBySemester(semesterId);
+    const hydrated = await hydrateRecordsWithDetail(raw);
+    _v2SemesterHistoryCache.set(semesterId, hydrated);
+    return hydrated;
+}
+
+/**
+ * Stage 2：學期選擇器下拉選單的選項清單，含快取（見 _v2KnownSemesterIds 宣告處註解）。
+ * 一定包含「目前學期」（即使 schedules/{目前學期} 因某些原因尚未建立文件——例如「開新學期」
+ * 那次 batch 寫入失敗一半，仍要讓使用者選得到自己現在所在的學期），其餘依
+ * semesterUtils.compareSemesterId 由新到舊排序。
+ */
+async function v2ListSemesterOptions() {
+    if (_v2KnownSemesterIds) return _v2KnownSemesterIds;
+    let known = [];
+    try {
+        known = await dataSvc.listKnownSemesterIds();
+    } catch (e) {
+        console.warn('[V2] 讀取已知學期清單失敗：', e);
+    }
+    const cur = semesterState.getCurrentSemesterId();
+    const all = new Set(known);
+    if (cur) all.add(cur);
+    _v2KnownSemesterIds = [...all].sort((a, b) => semesterUtils.compareSemesterId(b, a));
+    return _v2KnownSemesterIds;
 }
 
 /**
@@ -1979,7 +2257,8 @@ let _v2ScheduleSyncPending = false;
 let _v2LastAppliedScheduleSig = null;
 
 /**
- * 把全校課表快照（schools/{schoolId}/data/schedule）套用到本機 dataManager 並刷新 UI。
+ * 把全校課表快照（Stage 2 起為 schools/{schoolId}/schedules/{semesterId}，見
+ * dataSvc.subscribeSchedule）套用到本機 dataManager 並刷新 UI。
  * 所有角色登入 / 收到即時推播時呼叫；教師端因此看到與 approver 同一份課表。
  * 直接寫欄位（不走 setter / loadFromCloud），避免觸發 notifyDataChange → 個人雲端回寫。
  */
@@ -2026,7 +2305,7 @@ async function syncScheduleToV2(opts = {}) {
             const scheduleData = dm.getScheduleData?.() || dm.scheduleData || [];
             if (!Array.isArray(scheduleData)) break;
             const me = roleSvc.getCurrentIdentity();
-            await dataSvc.saveSchedule({
+            await dataSvc.saveSchedule(semesterState.getCurrentSemesterId(), {
                 scheduleData,
                 teachers:         dm.getTeachers?.() || dm.teachers || [],
                 classes:          dm.classes || [],
@@ -2274,15 +2553,23 @@ function patchDataManager() {
  * 任何一步失敗都直接讓例外往外拋，中止後續步驟——呼叫端 patchClearLocalData 會在失敗時
  * 強制 reload 讓本機與雲端當下實際狀態重新對齊（見該處註解），這裡不需要、也不應該自行
  * catch 吞掉錯誤。
+ *
+ * Stage 2 取捨：課表歸零只處理「目前學期」那一份 schedules/{currentSemester} 文件——
+ * 舊版本這裡只曾經處理過單一一份 schedule doc（P2 全校課表共享的既有語意本來就只有一份），
+ * 多學期化後延續同一個範圍，不擴大成「刪除全部歷史學期課表」這個新行為（清除工具的破壞
+ * 範圍不該在沒有被明確要求的情況下無預警擴大）。substituteRecords／pendingRequests 仍維持
+ * 既有語意：清空全部學期（不限「目前學期」），與 rules 的刪除權限（director 不受學期唯讀
+ * 鎖限制，見 firestore.rules substituteRecords/pendingRequests 的 delete 規則）一致。
  */
 async function clearAllSchoolData() {
-    // 1) 全校課表歸零。schoolName 沿用雲端現值（歸零不等於學校改名／需要重新設定）。
+    const currentSemesterId = semesterState.getCurrentSemesterId();
+    // 1) 目前學期課表歸零。schoolName 沿用雲端現值（歸零不等於學校改名／需要重新設定）。
     //    getSchedule() 讀取失敗（網路瞬斷、權限問題等）刻意不 catch：此時尚未寫入任何東西，
     //    直接中止最安全；若吞成 null 會把讀取失敗誤判為「雲端本來就沒有課表」，用空字串
     //    覆蓋掉雲端現有 schoolName，讓一般教師端卡在「請先設定學校名稱」（驗收缺陷 #3）。
-    const cloudSchedule = await dataSvc.getSchedule();
+    const cloudSchedule = await dataSvc.getSchedule(currentSemesterId);
     const me = roleSvc.getCurrentIdentity();
-    await dataSvc.saveSchedule({
+    await dataSvc.saveSchedule(currentSemesterId, {
         scheduleData:     [],
         teachers:         [],
         classes:          [],
@@ -2349,10 +2636,20 @@ function patchClearLocalData() {
         // 重入保護（驗收缺陷 #7）：進行中再點一次直接忽略，不重複觸發整套雲端清除流程。
         if (_v2ClearAllDataInFlight) return;
 
+        // 驗收修復（輕 8）：如實描述清除範圍——Stage 2 課表 per-semester 化後，這裡只清「目前
+        // 學期」那一份 schedules/{cur} 文件（見 clearAllSchoolData() 的取捨說明），不是「全部
+        // 課表」；調代課紀錄與待審請求則不分學期、全部清除（沿用既有語意）；舊版單一課表文件
+        // data/schedule 完全不受這個按鈕影響（它已不再被任何寫入路徑使用，只留作讀取
+        // fallback）。文案含糊會讓 director 誤以為歷史學期課表也會被清掉，或誤以為舊版課表
+        // 副本會被連帶清除，兩者都不是事實。
+        const curSid = semesterState.getCurrentSemesterId() || '（尚未確定）';
         const firstOk = await this.confirmDialog({
             title: '清除所有資料',
             message:
-                '將清除全校雲端資料：課表、調代課紀錄、待審請求。\n\n' +
+                `將清除全校雲端資料：\n` +
+                `・課表：僅「目前學期（${curSid}）」的課表會被歸零，其他學期的課表不受影響\n` +
+                `・調代課紀錄與待審請求：所有學期的資料都會被清除（不分學期）\n\n` +
+                `舊版課表副本（data/schedule，Stage 2 之前的單一文件）不受此操作影響。\n\n` +
                 '教師帳號與權限設定會保留，不受影響。\n\n' +
                 '你個人的 V1 雲端備份也會一併刪除；其他使用者的個人備份不受影響。\n\n' +
                 '此操作影響全校所有使用者，且無法復原！\n\n' +
@@ -2364,7 +2661,7 @@ function patchClearLocalData() {
 
         const secondOk = await this.confirmDialog({
             title: '再次確認',
-            message: '再次確認：清除全校課表、調代課紀錄與待審請求？此操作無法復原。',
+            message: `再次確認：清除「${curSid}」的課表、以及所有學期的調代課紀錄與待審請求？此操作無法復原。`,
             confirmText: '清除所有資料',
             danger: true,
         });
@@ -2816,6 +3113,49 @@ async function bootstrap() {
                 nameSpan.innerHTML = `${identity.name} <span class="v2-role-tag ${identity.role}">${roleLabelMap[identity.role] || '教師'}</span>`;
             }
 
+            // Stage 2（RESEARCH-multitenancy-semester.md §5/§8 Stage 2）：學期成為一級概念，
+            // 每次身份解析成功後讀一次 config.currentSemester 並寫入 semesterState 快取，供本
+            // session 內所有寫入/查詢路徑取用（見 semesterState.js 檔頭註解）。必須排在下面
+            // 「初次渲染」與「即時同步」之前——兩者都依賴這個值（前者的 renderRecordsTab 用它
+            // 判斷「目前學期」、後者的 subscribeSubstituteRecords 等函式預設參數讀它）。
+            // fallback 取捨：報告 §8 Stage 2 一列沒有明確指定 config.currentSemester 缺席時的
+            // 行為，本次實作選擇「依今天日期推算台灣學期」（semesterUtils.todaySemesterId()）
+            // ——這是唯一不需要人工介入就能讓系統維持可用的辦法（不推算的話，所有新寫入與
+            // 學期範圍查詢都會因為沒有學期可用而失敗）。代價：推算值可能與 director 心裡認定
+            // 的「目前學期」不同步（例如剛過寒假但還沒手動開新學期）；發生這種情況時 director
+            // 應盡快到「學校設定 → 學期管理」確認/更正目前學期。
+            // 驗收修復（中 7，訂正過度樂觀的降級宣稱）：若這一步整段失敗（極端邊界情況——
+            // 下方 try/catch 只包了 getConfig()，semesterUtils.todaySemesterId() 是純日期運算
+            // 幾乎不可能拋錯，故 semesterState 實務上幾乎必定會被設成某個值；但仍需誠實列出
+            // 「萬一」semesterState 停在初始值 null 時，各條路徑的實際行為，不能籠統宣稱
+            // 「優雅退化」——降級程度依功能而異，不是全面優雅：
+            //   - 讀取/查詢類（subscribeSubstituteRecords／subscribePendingRequests／
+            //     listOpenPendingRequests／listSubstituteRecordsPage）：內部用
+            //     `if (semesterId) constraints.unshift(...)`，semesterId 為 null 時該條件
+            //     直接不加，等同退化成 Stage 1 的無學期篩選查詢——這幾支*確實*優雅可用。
+            //   - 課表（getSchedule／saveSchedule／subscribeSchedule）：**不可用**，semesterId
+            //     缺席時直接拋出明確錯誤（requireScheduleSemesterId()，見 schoolDataService.js）
+            //     ——per-semester 化後 semesterId 是必要定址資訊，沒有安全的預設值可猜。
+            //   - 新增紀錄/申請（createSubstituteRecord／createPendingRequest）：**不可用**，
+            //     client 端會先擋下並拋出明確錯誤，不會送出一筆 semesterId:null 的寫入讓
+            //     Firestore 規則含糊地拒絕。
+            //   以上三類失敗都會被呼叫端的 try/catch 或 safeBootstrapStep 接住並經
+            //   notifyError() 顯示給使用者，不是靜默失敗，但「課表」與「新增紀錄/申請」在
+            //   這個邊界情況下就是真的不可用，不是「暫時失去學期範圍收斂」這種輕描淡寫。
+            await safeBootstrapStep('學期設定', async () => {
+                let cfg = null;
+                try {
+                    cfg = await dataSvc.getConfig();
+                } catch (e) {
+                    console.warn('[V2] 讀取 config 失敗，改用今天日期推算學期：', e);
+                }
+                const resolved = cfg?.currentSemester || semesterUtils.todaySemesterId();
+                semesterState.setCurrentSemesterId(resolved);
+                if (!cfg?.currentSemester) {
+                    console.warn(`[V2] config.currentSemester 未設定，暫以今天日期推算為 ${resolved}`);
+                }
+            });
+
             // 初次渲染
             // 驗收修復（阻斷 #3）：以下每一步都不是「身份解析」本身的一部分——身份已經在上面
             // resolveIdentity() 成功解析了。任何一步失敗都只應該讓該功能自己降級，不能讓整個
@@ -2824,6 +3164,9 @@ async function bootstrap() {
             await safeBootstrapStep('全校紀錄', renderRecordsTab);
             if (roleSvc.canManageRoster()) {
                 await safeBootstrapStep('教師管理', renderTeachersAdminTab);
+            }
+            if (roleSvc.isDirector()) {
+                await safeBootstrapStep('學期管理', renderSemesterAdminTab);
             }
             // Stage 1（讀取成本止血，§5.4）：操作日誌不再於 bootstrap 就讀（原本這裡對每個
             // approver 登入都無條件打一次 fetchLogs，即使這次登入完全不會打開日誌頁）。
@@ -2879,11 +3222,29 @@ async function bootstrap() {
 
             // P2：訂閱全校課表——首次即回傳目前值（教師端載入 approver 上傳的課表），
             // 之後任何 approver 上傳/編輯都即時套用到本機並重繪。
-            const scheduleUnsub = await safeBootstrapStep('課表即時同步', () => dataSvc.subscribeSchedule((sched) => {
+            // Stage 2：訂閱路徑改為 schools/{schoolId}/schedules/{目前學期}（見 subscribeSchedule
+            // 簽章變動），故需帶入 semesterState 目前快取的學期 id。
+            const scheduleUnsub = await safeBootstrapStep('課表即時同步', () => dataSvc.subscribeSchedule(semesterState.getCurrentSemesterId(), (sched) => {
                 if (sched) applyRemoteSchedule(sched);
                 setSyncStatus('schedule', true);
             }, makeSyncErrorHandler('schedule')));
             if (scheduleUnsub) unsubs.push(scheduleUnsub);
+
+            // 驗收修復（中 3）：訂閱 config/main，偵測「別的裝置/分頁已切換學期」——本機所有
+            // 訂閱都綁死在 bootstrap 當時讀到的 semesterId（switchToNewSemester() 選擇 reload
+            // 而非原地重新訂閱，見該函式註解），沒有這條訂閱，其他仍開著頁面的使用者不會知道
+            // 自己在看已經變成唯讀的舊學期資料，寫入操作也會開始被規則拒絕卻不知道原因。
+            // 單文件訂閱，成本可忽略。第一次快照理應等於 bootstrap 剛讀到的值（不會誤跳出
+            // 橫幅）；只有「稍後」收到不同值時才顯示。
+            const configUnsub = await safeBootstrapStep('學期變更監聽', () => dataSvc.subscribeConfig((cfg) => {
+                const newSid = cfg?.currentSemester;
+                const localSid = semesterState.getCurrentSemesterId();
+                if (newSid && localSid && newSid !== localSid) {
+                    showSemesterChangedBanner(newSid);
+                }
+            }, (err) => console.warn('[V2] config 訂閱失敗（跨分頁學期切換提示可能失效，不影響其他功能）：', err)));
+            if (configUnsub) unsubs.push(configUnsub);
+
             // Stage 1（讀取成本止血，§5.4）：操作日誌不再於 bootstrap 常駐訂閱（原本 limit 200
             // 的 onSnapshot，approver 一登入就長期占用一條監聽，即使從未打開日誌頁）。改為進入
             // 「操作日誌」頁籤才讀（renderLogsTab 本來就是一次性 getDocs，見該函式），離開頁籤

@@ -1,5 +1,78 @@
 # 版本紀錄 (Changelog)
 
+## [2026-07-31]（feature/permission-system）多租戶研究 Stage 2：學期欄位化（含 opus 驗收修復，未 commit）
+
+依 `docs/RESEARCH-multitenancy-semester.md` §5/§6.1/§8 Stage 2。動機：課表原本是單一文件整份覆寫（換學期即蓋掉舊課表）、紀錄無學期標記、`config.currentSemester` 是 bootstrap 寫入但 src/ 零讀取的死欄位。本次把學期升級為一級概念：`currentSemester` 活化為全 app 的「目前作用中學期」；課表改 per-semester 文件；`substituteRecords`/`pendingRequests`/`operationLogs` 新寫入一律帶 `semesterId`；規則層加學期唯讀鎖（歷史學期不可再新增/編輯）；紀錄頁新增歷史學期一次性檢視；設定頁新增「學期管理」（director 專用，開新學期）。opus 驗收第一輪不通過（2 阻斷/5 中/5 輕），第二輪重驗兩個阻斷已通過、追加 R1（阻斷級資料遺失）+ R2-R4（輕）+ R5-R6（文件註記），本條目已含兩輪全部修復。**只寫程式碼，未寫 Firestore、未部署、未跑 v2-rules-matrix.mjs、未 commit。**
+
+### 修復（第二輪 opus 重驗：R1 阻斷、R2-R4 輕、R5-R6 文件註記）
+- **[R1，阻斷級資料遺失]** `switchToNewSemester()` 原本用 `listKnownSemesterIds().catch(() => [])` 判斷 `schedules/{fromId}` 是否已存在，讀取失敗時 catch 吞掉錯誤回傳空陣列，會讓判斷誤成立、把可能已有真實課表資料的 `schedules/{fromId}` 整份覆寫成空殼——覆寫後 `fromId` 不再是目前學期，寫入規則禁止回寫，資料永久遺失。改為：用 `getSchedule(fromId)` 直接確認內容（含 per-semester 文件與 legacy fallback）；讀取失敗直接 rethrow 中止整個切換（fail-closed，與中 4 同一原則）；只有確認回傳 `null`（真的沒有任何資料）才建立空殼
+- **[R2，輕]** `substituteRecords/{id}/private/detail` 的 **create** 規則也補上歷史學期鎖（原本只鎖了 update），擋「approver 為已鎖定的歷史紀錄事後補建 leaveType，藉此影響結算」。新增 `parentAllowsNewPrivateDetail()`——與 update 版本的 `parentSubstituteRecordCurrentSemester()` 刻意採不同的「父文件不存在」處理方式：`create` 時父文件本來就還沒寫入（`schoolDataService`/`pendingRequestService` 皆先寫 private/detail 後寫父文件），須放行；`update` 時父文件不存在屬異常狀態，維持拒絕
+- **[R3，輕]** `isDeclaredLegacyWrite()` 原本在 `isDirector()` 定義「之前」就呼叫它（全檔唯一一處前向參考），改為移到 `isDirector()` 定義之後，避免任何規則引擎/工具鏈版本對前向參考支援度落差帶來部署期意外
+- **[R4，輕]** `CHANGELOG.md`／`docs/CHANGELOG.md` 的「新增」段落訂正：`isDeclaredLegacyWrite` 描述補上 `isDirector`/`migratedFrom`/字串型別三條件（原文只寫「豁免」，是修復前的舊描述）；`substituteRecords` update 補上「須仍是目前作用中學期」（原文只提不可變，遺漏阻斷 2 修復的另一半）；`pendingRequests (status, createdAt)` 索引訂正為「保留」（原文寫「移除」，若照做部署會刪掉降級路徑需要的索引）；測試筆數「28 條」訂正為「34 條」（輕 12 又新增 6 條後未同步）
+- **[R5，文件註記]** `parentSubstituteRecordCurrentSemester()` 補一行註解：父文件不存在時 `get(...).data` 求值錯誤、規則引擎視為條件不成立（deny），這是刻意接受的 fail-closed 行為，不需要额外用 `exists()` 放寬（因為對 update 而言父文件不存在代表資料異常）
+- **[R6，文件註記]** `firestore.rules` 檔頭與 `README.md` 明寫信任根設計的既有事實：學期唯讀鎖對 director 不構成實質約束——`isDeclaredLegacyWrite()` 只要求 `isDirector(schoolId)` 成立即可豁免學期鎖，`config.currentSemester` 本身也只有 director 能改（`config/{docId}` 的 write 規則），一個惡意或被入侵的 director 帳號理論上可以宣告任意寫入為 legacy、或直接把 `currentSemester` 改成任意值再寫入——這與系統既有的其他 director-only 破壞性操作（刪除任何紀錄、刪除教師、清除所有資料）同一信任層級，不是這次新增的破口，只是首次被明確寫下來
+
+### 修復（第一輪 opus 驗收：阻斷）
+- **[阻斷1] `isDeclaredLegacyWrite` 可被自我宣告繞過學期鎖**：原本只檢查請求自帶的 `isLegacy==true`，任何通過父層 create 條件的寫入者（approver 或 isSelfSwap 分支的一般教師）都能靠自我宣告偽造任意歷史學期的紀錄。收緊為 `isDirector(schoolId) && isLegacy==true && migratedFrom 存在 && semesterId is string`（`firestore.rules`）；已核實 `legacyMigrationService.js` 的遷移入口本來就是 `roleService.canManageRoster()`（＝`isDirector()`），且寫入的 payload 本來就帶 `migratedFrom` 與（經 `createSubstituteRecord` fallback 保證的）字串 `semesterId`，收緊不影響既有流程
+- **[阻斷2] substituteRecords update 只鎖了 semesterId 欄位、沒鎖住歷史紀錄本身**：原規則只保證 `semesterId` 不可被改，但沒檢查「這筆紀錄現在所屬的學期是否仍是目前作用中學期」——歷史紀錄的日期/教師/節次等其他欄位在修復前仍可被 approver 任意編輯。補上 `isCurrentSemester(schoolId, resource.data.semesterId)` 條件（含回填前 `!('semesterId' in resource.data)` 相容豁免）；`substituteRecords/{id}/private/detail` 的 update 同步補鎖（新增 `parentSubstituteRecordCurrentSemester()` 讀父文件判斷，這條路徑新增的唯一一次額外 `get()`）。同步修正 `README.md`／`firestore.rules` 檔頭原本「宣稱有鎖」但實際只鎖半套的不實描述
+
+### 修復（中，opus 驗收）
+- **[中3] 學期切換未跨 client 傳播**：`switchToNewSemester()` 只更新自己這個分頁的狀態＋reload，其他仍開著頁面的使用者不會知道學期已切換。新增 `schoolDataService.subscribeConfig()` 訂閱 `config/main`（單文件成本可忽略），bootstrap 掛入既有訂閱管理；偵測到 `currentSemester` 變更時顯示不會自動消失的橫幅（`showSemesterChangedBanner()`），要求重新整理。`STAGE0-DEPLOY.md` 補公告要求
+- **[中4] 在途申請黑洞**：學期切換若在有未結案 `pendingRequests`（待同意/待核准）時發生，這些申請的 `semesterId` 會停在舊學期，日後核准會因學期不一致被規則拒絕。切換前先呼叫 `listOpenPendingRequests()` 檢查，非 0 筆就擋下並提示「請先處理完 N 筆在途申請」
+- **[中5] 歷史學期在 UI 不可達**：學期選擇器的資料來源是 `schedules/` 集合，若「即將變成歷史」的舊學期從未有人上傳過課表，就沒有對應文件、選單裡完全選不到。`switchToNewSemester()` 改為先確保 `schedules/{fromId}` 存在（缺就補空殼，且必須在改 `config.currentSemester` 之前做——寫入規則只放行目前學期那一份文件，過了這個窗口就再也補不了）。`STAGE0-DEPLOY.md` 補充正式庫 `schedules/` 目前為空的現況與建議動作
+- **[中6] rules 對未定義欄位的隱含依賴**：`substituteRecords`/`pendingRequests` create 規則原本直接存取 `request.resource.data.semesterId`，新 rules＋舊 client 過渡窗口內舊 client 不帶這個欄位，屬存取未定義 map key。補上 `('semesterId' in request.resource.data) &&` 顯式檢查，讓拒絕行為明確可預期；`STAGE0-DEPLOY.md` 補這段窗口「全校無法新增紀錄/申請」的說明與部署順序要求
+- **[中7] 多項一致性修復**：`firestore.indexes.json` 恢復保留 `pendingRequests (status, createdAt)` 舊索引（給客戶端版本不同步的降級路徑用，不再標記移除）；`getSchedule`/`saveSchedule`/`subscribeSchedule`/`createSubstituteRecord`/`createPendingRequest` 在 `semesterId` 缺席時改為擲出明確訊息的錯誤（`requireScheduleSemesterId()`），不再是含糊的 `缺少 semesterId`；訂正 bootstrap 內「semesterState 未初始化時全面優雅退化」的過度樂觀宣稱——如實區分「查詢類確實會優雅退化」與「課表／新增寫入類其實是硬失敗」
+
+### 修復（輕，opus 驗收）
+- **[輕8]** 「清除所有資料」confirm 文案改為如實描述：課表僅清「目前學期」、紀錄與待審請求清全部學期、舊版 `data/schedule` 不受影響
+- **[輕9]** `STAGE0-DEPLOY.md` 索引部署段落「四條」訂正為「三條」（不再移除舊索引，淨變動是新增 3 條、既有 3 條全部保留）
+- **[輕10]** `queryRecordsByDateRange` 註解原主張「週彙整查一週不可能跨學期邊界」是錯的（1/31→2/1 這種邊界，一週的滾動區間可能同時涵蓋兩個學期）；訂正理由為「日期範圍 range query 本身語意正確完整，疊加 `semesterId` 條件反而會把橫跨邊界那週的合法紀錄濾掉」，結論（不加條件）不變但理由改對
+- **[輕11]** `semesterState.js` 補註：目前是單一模組層級變數，成立前提是「一個分頁只服務一所學校」，Stage 3 `SCHOOL_ID` 動態化後需改為以 schoolId 為 key 的 Map
+- **[輕12]** `dateToSemesterId` 補日期往返驗證（`new Date(y,m-1,d)` 反查），修正 `'2026-02-31'` 這類正則能過但日期不存在的輸入原本會被誤判為合法；`backfill-semester-id.js` 內重複定義的同款函式同步修正；新增 6 條單元測試（含閏年 2/29 正反例）
+
+### 新增（學期推導，`src/js/modules/v2/semesterUtils.js`＋`semesterState.js`）
+- `dateToSemesterId(dateStr)`／`todaySemesterId()`／`parseSemesterId`／`isValidSemesterId`／`compareSemesterId`／`nextSemesterId`：純函式，`semesterId` 格式沿用 bootstrap 既有的 `'114-2'`（民國學年-學期）。台灣學年度切分：8 月～翌年 1 月＝第 1 學期，2～7 月＝第 2 學期
+- `semesterState.js`：session 記憶體快取目前作用中學期，供寫入/查詢路徑取用，不必每個呼叫點各自重讀 `config`
+- `test/test-semester-utils.mjs`：34 條單元測試（含驗收修復 輕12 新增的 6 條日期往返驗證），涵蓋台灣學年度四個邊界（8/1、1/31、2/1、7/31）、民國年換算（與 `settlementCalculator._resolveMonth` 反向交叉驗證）、格式容錯、日期往返驗證（`2026-02-31`／`2026-04-31`／閏年 2/29 正反例）、`parseSemesterId`/`compareSemesterId`/`nextSemesterId`；已加入 `npm test`
+
+### 新增（課表 per-semester 化，`schoolDataService.js`）
+- `SCHEMA_PATHS.scheduleDocForSemester(sid)`／`schedulesCol()` 取代 `data/schedule` 單一文件；`getSchedule(semesterId)`/`saveSchedule(semesterId, data)`/`subscribeSchedule(semesterId, cb, onError)` 全改吃 `semesterId`
+- 相容遷移雙保險：`getSchedule`/`subscribeSchedule` 內建一次性讀取 fallback（per-semester 文件不存在時退回讀舊 `data/schedule`）＋獨立腳本 `scripts/migrate-schedule-to-semester.js`（`--dry-run` 預設）
+- `listKnownSemesterIds()`：讀 `schedules/` 集合當作學期註冊表，供學期選擇器下拉選單使用
+
+### 新增（`semesterId` 欄位化＋查詢下推，`schoolDataService.js`）
+- `createSubstituteRecord`/`createPendingRequest`：`semesterId` 未帶時自動蓋「寫入當下的目前學期」（`semesterState` 快取）；`updateSubstituteRecord` 防禦性剝除 patch 內的 `semesterId`（不可變欄位）
+- `subscribeSubstituteRecords`/`listSubstituteRecordsPage`/`subscribePendingRequests`/`listOpenPendingRequests` 加 `semesterId==目前學期` 條件；新增 `listSubstituteRecordsBySemester(semesterId)`（歷史學期一次性查詢）
+- 刻意不加 `semesterId` 條件的查詢與理由（各自函式已加註解）：`queryRecordsByExactDate`/`queryPendingRequestsByExactDate`（單一日期天然對應唯一學期）、`queryRecordsByDateRange`（呼叫端的日期範圍天然落在單一學期內）、`listPendingRequestsByInitiator`（用途就是要看橫跨學期的個人歷史）
+- `operationLogger.log()` 加 `semesterId`（供 Stage 5 封存分批用）；`legacyMigrationService.js` 改依 `legacy.date` 反推 `semesterId`（歷史正確），不沿用「目前學期」預設值
+
+### 新增（UI，`v2-app.js`＋`index.html`）
+- 紀錄頁新增「學期」選擇器：當前學期沿用 Stage 1 即時訂閱＋分頁；選歷史學期改一次性查詢＋記憶體快取（`v2GetRecordsBySemester`），停用起訖日期篩選並提示「唯讀」
+- 設定頁新增「學期管理」卡片（`v2-director-only`，`renderSemesterAdminTab`）：顯示目前學期、「開新學期」輸入框＋confirm modal（說明後果：舊學期變唯讀、新學期需重新上傳課表）；確認後建立空殼 `schedules/{new}`、更新 `config.currentSemester`、寫入操作日誌（新增 `LOG_ACTIONS.SEMESTER_SWITCH`）、`reload()` 頁面重建所有訂閱（沿用既有「清除所有資料」的 reload 慣例，不另寫原地重新訂閱機制）
+- bootstrap 新增「學期設定」步驟：讀 `config.currentSemester`，缺席時 fallback 為 `semesterUtils.todaySemesterId()`（依今天日期推算，報告未給明確 fallback 規則時的取捨，見程式內註解）
+
+### 新增（規則，`firestore.rules` → v2.4，以下為含全部驗收修復後的最終形狀——見上方阻斷/中/輕各項的修復過程）
+- `isCurrentSemester(schoolId, sid)`：讀 `config/main`（已在 `isApprover`/`isInitialDirector` 判斷鏈中讀過一次，計費成本 0，理由同 §3.6）
+- `isDeclaredLegacyWrite(schoolId, data)`：豁免 `legacyMigrationService` 的歷史資料遷移，須同時滿足 `isDirector(schoolId)` + 請求自帶 `isLegacy==true` + `migratedFrom` 欄位存在 + `semesterId` 為字串（阻斷 1 修復後的最終條件；只看自身欄位與已在權限鏈讀過的 `isDirector`，零額外 `get()`）
+- `parentSubstituteRecordCurrentSemester()`／`parentAllowsNewPrivateDetail()`：`substituteRecords/{id}/private/detail` 的 update／create 各自的歷史學期鎖判斷（阻斷 2、R2 修復；後者對「父文件尚不存在」的處理刻意與前者相反，見 `firestore.rules` 兩函式定義處的說明）
+- 新增 `schedules/{semesterId}` match 區塊：讀取全體成員，寫入限 approver 且僅能寫「目前學期」那一份
+- `substituteRecords` create：`(isDeclaredLegacyWrite 豁免 || ('semesterId' in request.resource.data && isCurrentSemester))`；update：`semesterId` 不可變 **且該紀錄現在所屬的學期須仍是目前作用中學期**（阻斷 2 修復，原版只鎖了前者），含 `'semesterId' in resource.data` 短路豁免（回填腳本執行前的舊文件仍可正常編輯）
+- `substituteRecords/{id}/private/detail` create：加 `parentAllowsNewPrivateDetail()`（R2 修復，擋「approver 為已鎖定的歷史紀錄事後補建 leaveType 影響結算」）
+- `pendingRequests` create：同樣加學期鎖（超出報告 §6.1 明文只提到 `substituteRecords` 的範圍，見下方取捨）
+- `operationLogs` create 欄位白名單加入 `semesterId`
+
+### 新增（索引與腳本）
+- `firestore.indexes.json`：新增 `substituteRecords (semesterId ASC, createdAt DESC)`／`(semesterId ASC, date DESC)`／`pendingRequests (semesterId ASC, status ASC, createdAt DESC)`；**既有的 `pendingRequests (status ASC, createdAt DESC)` 索引保留不動**（中 7 修復訂正——原稿曾規劃移除，實際判斷為降級路徑的安全網而保留，`firestore.indexes.json` 目前內容以保留為準，部署時不要依照任何早於本條目的敘述去移除它）；`docs/STAGE0-DEPLOY.md` 補「附註：Stage 2」記錄部署順序（本次未部署）
+- `scripts/backfill-semester-id.js`：回填 `substituteRecords`/`pendingRequests`（依 `date`）／`operationLogs`（依 `timestamp`）的 `semesterId`，`--dry-run` 預設
+- `scripts/migrate-schedule-to-semester.js`：舊 `data/schedule` → `schedules/{semesterId}`，`--dry-run` 預設
+
+### 取捨與報告規格出入
+- **stats 彙總文件（§5.5/§8 Stage 2 列）未實作**：報告 §8 的 Stage 2 列有提到，但本次 prompt 給的明確 8 條範圍未列入；跨學期統計是獨立的原子 increment + 重算按鈕功能，改動面不小，判斷為超出本次範圍，留待 Stage 5 或另行排期
+- **pendingRequests 的學期唯讀鎖**：報告 §6.1 條文只明講 `substituteRecords`，但本次 prompt 第 5 項明確要求兩個集合都要鎖；已依 prompt 加上（cost 仍為 0，理由與 `substituteRecords` 相同），未違背報告，只是報告文字沒寫到這麼細
+- **`subscribeSubstituteRecords`/`subscribePendingRequests` 排序**：報告 §5.4 示意用 `orderBy('date')`，Stage 1 實際程式碼已用 `orderBy('createdAt')`；本次維持 `createdAt`（與 Stage 1 一致、改動面最小），只在新增的 `listSubstituteRecordsBySemester`（歷史學期瀏覽）改用 `orderBy('date')`——差異與理由見 `schoolDataService.js` 該函式註解
+- **approveRequest 的 `semesterId` 歸屬**：核准把 pendingRequest 轉成 substituteRecord 時，改用「核准當下」而非「申請當下」的目前學期（避免申請在途期間跨學期切換時被學期鎖擋下）；已知限制：極少數「申請在途、期間切換學期」的紀錄會被記到核准當時的學期，而非申請當時
+- **`clearAllSchoolData` 的課表清除範圍**：多學期化後只重置「目前學期」`schedules/{cur}`，不觸及歷史學期課表——沿用該函式原本「只有一份 schedule doc」的既有語意，不在未被要求的情況下擴大成「刪除全部歷史課表」
+
 ## [2026-07-31]（feature/permission-system）多租戶研究 Stage 1：讀取成本止血（含兩輪 opus 驗收修復）
 
 依 `docs/RESEARCH-multitenancy-semester.md` §5.4/§5.6/§8 Stage 1。動機：§7.3 推算現行整集合訂閱模式下，`inhu` 單校已用掉 Spark 每日免費讀取額度約 78%，累積約 700 筆紀錄即撞頂——是現行系統的存續問題。核心改動：把「頁面載入」的讀取量從隨紀錄數線性成長改為有界。第一輪 opus 驗收不通過（3 阻斷/5 中/5 輕），修復後第二輪瀏覽器實測確認阻斷與多數項目已修好，另揪出 A-G 共 7 項（1 中偽陰性、1 中夾界方向錯、5 輕）。本條目已含兩輪全部修復。獨立驗證、尚未 commit。
