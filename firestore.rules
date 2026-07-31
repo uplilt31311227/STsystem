@@ -43,16 +43,37 @@ service cloud.firestore {
     }
 
     // 登入 email 是否在初始主任白名單（欄位名稱沿用 initialAdminEmails 兼容舊 config）
+    // 驗收修復 S5-R：token email 用 .lower() 正規化後再比對。Firestore 規則語言沒有
+    // 「對陣列逐項套用 .lower() 再比對」的內建操作（hasAny 只能比對既有值，無法先轉換
+    // 陣列內容），所以無法讓這一行同時容忍陣列內容大小寫不一致——約束記錄在這裡：
+    // ⚠️ initialAdminEmails 陣列內容本身必須全部是小寫，否則大寫寫入的白名單 email
+    // 會比對不到而永遠無法用該白名單身份登入。scripts/firestore-bootstrap-inhu.js 寫入
+    // 前一律 .toLowerCase()（見該檔 ensureConfig()），docs/STAGE0-DEPLOY.md 的前置確認
+    // 也列了這一項檢查，任何手動編輯 initialAdminEmails 的操作都必須遵守這個約束。
     function isInitialDirector(schoolId) {
       return isSignedIn()
         && configExists(schoolId)
         && configDoc(schoolId).initialAdminEmails is list
-        && configDoc(schoolId).initialAdminEmails.hasAny([userEmail()]);
+        && configDoc(schoolId).initialAdminEmails.hasAny([userEmail().lower()]);
     }
 
     function mappingExists(schoolId) {
       return isSignedIn()
         && exists(/databases/$(database)/documents/schools/$(schoolId)/userMappings/$(request.auth.uid));
+    }
+
+    // ---- Stage 0（2026-07-31）：成員資格隔離 ----
+    // 「該 uid 在該校有一份合法的 userMappings 文件」＝ 該校成員。userMappings 的自建規則
+    // （見下方 match /userMappings/{uid}）已保證 linkedTeacherId 只能指向 email == 本人登入
+    // email 的教師檔，故此檢查不可偽造，是校際隔離讀取規則的唯一依據。
+    function isMember(schoolId) {
+      return mappingExists(schoolId);
+    }
+
+    // 首登尚未綁定 mapping 者的例外：白名單初始主任。isInitialDirector 內部用 get() 讀
+    // config，屬規則內部呼叫、不受 read 規則限制，因此收緊 config 的 read 不會讓白名單失效。
+    function isMemberOrBootstrapDirector(schoolId) {
+      return isMember(schoolId) || isInitialDirector(schoolId);
     }
 
     function myMapping(schoolId) {
@@ -117,30 +138,76 @@ service cloud.firestore {
     // ================ V2: schools/{schoolId} ================
 
     match /schools/{schoolId} {
-      // 學校根佔位文件
-      allow read:  if isSignedIn();
+      // 學校根佔位文件（Stage 0 R1：任何登入者可讀會讓別校 schoolId 被探測，改為成員限定）
+      allow read:  if isMember(schoolId);
       allow write: if isDirector(schoolId);
 
       // ----- 設定（學校名稱、白名單） -----
       match /config/{docId} {
-        // 任何登入者可讀（authGuardV2 啟動時要讀 initialAdminEmails）
-        allow read:  if isSignedIn();
+        // Stage 0 R2：成員或白名單初始主任可讀（後者靠 isInitialDirector 內部 get()
+        // 繞過本 read 規則，白名單主任首登仍讀得到，見 isMemberOrBootstrapDirector 定義）
+        allow read:  if isMemberOrBootstrapDirector(schoolId);
         // 僅 director 可改學校名稱、白名單
         allow write: if isDirector(schoolId);
       }
 
+      // ----- Email 索引（首登配對用，Stage 0 R3 配套，§3.4a） -----
+      // schools/{schoolId}/emailIndex/{emailKey}：emailKey = 登入 email（小寫）。
+      // 文件內容只有 { teacherId }，不含姓名等個資。只開放 get（單文件讀），不開放 list，
+      // 避免被整包撈走 email → teacherId 對照表；get 與 list 在 Firestore 規則中可分開授權。
+      // 驗收修復 S5：get 端用 userEmail().lower() 比對——emailKey 一律小寫儲存
+      // （schemaConstants.emailIndexDoc 正規化），但 Google token 的 email 大小寫
+      // 不保證與儲存值一致，用 .lower() 才不會讓合法擁有者查自己都被拒。
+      // 驗收修復 S9：write 拆成 create/update（欄位白名單 hasOnly(['teacherId'])）
+      // 與 delete（無 request.resource，不能套用 hasOnly 檢查）分開宣告。
+      match /emailIndex/{emailKey} {
+        allow get:    if isSignedIn() && emailKey == userEmail().lower();
+        allow list:   if isApprover(schoolId);
+        allow create, update: if isDirector(schoolId)
+                              && request.resource.data.keys().hasOnly(['teacherId']);
+        allow delete: if isDirector(schoolId);
+      }
+
+      // ----- 首登被拒紀錄（login_denied 改道，Stage 0 R7 配套，§3.4b） -----
+      // schools/{schoolId}/joinAttempts/{uid}：doc id 綁 uid，一人一份、可覆寫，
+      // 天然限制灌爆量。取代原本寫進 operationLogs 的 login_denied（R7 收緊後，
+      // 尚未成為成員的使用者恆無法通過 isMember，寫不進 operationLogs）。
+      // 驗收修復 S3：
+      //   - configExists(schoolId)：schoolId 必須對應一所真實存在的學校，防止任何登入者
+      //     對任意自創的 schoolId 路徑無限量灌寫 joinAttempts 文件（該路徑本來就不需要
+      //     成員資格，若不驗 schoolId 存在，會是一個不受限的免費寫入端點）。
+      //   - 欄位型別與長度驗證，避免超長字串塞爆文件 / 灌垃圾資料。
+      match /joinAttempts/{uid} {
+        allow read:   if isApprover(schoolId);
+        allow create, update: if isSignedIn() && request.auth.uid == uid
+                              && configExists(schoolId)
+                              && request.resource.data.keys().hasOnly(['email', 'attemptedAt', 'reason'])
+                              && request.resource.data.email is string
+                              && request.resource.data.email.size() < 200
+                              && request.resource.data.attemptedAt is string
+                              && request.resource.data.reason is string
+                              && request.resource.data.reason.size() < 100;
+        allow delete: if isDirector(schoolId);
+      }
+
       // ----- 教師 -----
       match /teachers/{teacherId} {
-        // 任何登入者可讀（顯示全校教師、推薦代課需要）
-        allow read: if isSignedIn();
+        // Stage 0 R3：改為成員限定可讀（原「任何登入者」會讓他校教師名單被整批撈走）。
+        // ⚠ 會打斷首登教師的 email 配對（尚無 mapping 時 isMember 為 false），
+        // 配套是 §3.4a 的 emailIndex——authGuardV2.resolveIdentity 改成
+        // 「先用 emailIndex 查到的 teacherId upsert mapping，再讀教師檔本體」，
+        // 順序見 authGuardV2.js 內的說明。
+        allow read: if isMember(schoolId);
 
         // 建立：director；或初始主任第一次登入自建 director 教師檔（bootstrap）
         // Phase 3 資安收緊：isValidRoleValue() 併入驗證，杜絕寫入列舉外的 role 字串
+        // 驗收修復 S5-R：teachers.email 一律小寫儲存（schoolDataService 正規化），
+        // 用 userEmail().lower() 比對才不會讓 token email 大小寫不一致擋下合法 bootstrap。
         allow create: if (
             isDirector(schoolId)
             || (
               isInitialDirector(schoolId)
-              && request.resource.data.email == userEmail()
+              && request.resource.data.email == userEmail().lower()
               && request.resource.data.role in ['director', 'admin']
             )
           )
@@ -150,11 +217,12 @@ service cloud.firestore {
         //       section_chief 可改一般欄位但不能改 role 或 email；
         //       Phase 1.6.c：自己對應的 teacher doc 可改 authProvider（只准動該欄位 + updatedAt）
         // Phase 3 資安收緊：director / 初始主任 途徑一併驗證 isValidRoleValue()
+        // 驗收修復 S5-R：同上，resource.data.email 是既有小寫儲存值，比對 userEmail().lower()
         allow update: if (
             (isDirector(schoolId) && isValidRoleValue(request.resource.data.role))
             || (
               isInitialDirector(schoolId)
-              && resource.data.email == userEmail()
+              && resource.data.email == userEmail().lower()
               && isValidRoleValue(request.resource.data.role)
             )
             || (
@@ -175,14 +243,16 @@ service cloud.firestore {
 
       // ----- 全校課表 -----
       match /data/{docId} {
-        allow read:  if isSignedIn();
+        // Stage 0 R4：改為成員限定可讀（原「任何登入者」會讓他校完整課表被下載）
+        allow read:  if isMember(schoolId);
         allow write: if isApprover(schoolId);
       }
 
       // ----- 已成立調代課紀錄 -----
       match /substituteRecords/{recordId} {
-        // 全員可讀（教師端由 roleService.filterRecordsForCurrent 過濾）
-        allow read: if isSignedIn();
+        // Stage 0 R5：改為成員限定可讀（校內全員可讀維持不變，敏感欄位已私有化到
+        // private/detail；教師端仍由 roleService.filterRecordsForCurrent 過濾）
+        allow read: if isMember(schoolId);
 
         // 建立：僅 approver（adminCreate 代發起 / approveRequest 核准後 runTransaction 建立）；
         // 或教師自己對自己的「自我調課」——沿用既有 writeV2Record 快速路徑，不需組長/主任審核。
@@ -237,7 +307,8 @@ service cloud.firestore {
 
       // ----- 待同意 / 待核准請求 -----
       match /pendingRequests/{reqId} {
-        allow read: if isSignedIn();
+        // Stage 0 R6：改為成員限定可讀（原「任何登入者」會讓他校待審請求被讀取）
+        allow read: if isMember(schoolId);
 
         // 建立：approver（代發，較寬但同樣不可自帶已核准欄位）；或發起人本人。
         // Phase 3 資安收緊（create 端）：發起人本人 create 必須符合狀態機初始狀態——
@@ -354,13 +425,17 @@ service cloud.firestore {
 
       // ----- 操作日誌（稽核軌跡，不可改/刪） -----
       // 讀取：approver（director + section_chief）皆可查 audit trail
-      // 寫入：任何登入者；欄位白名單與型別嚴格驗證
+      // 寫入：校內成員；欄位白名單與型別嚴格驗證
       //   欄位需對齊 operationLogger.log()：action / actor / timestamp(ISO 字串)
-      //   / targetType / targetId / details(map)。login_denied 在綁定前寫入，
-      //   此時 actor 各欄為 null，故不強制 actor.uid == auth.uid。
+      //   / targetType / targetId / details(map)。
+      // Stage 0 R7：改為 isMember(schoolId) 守門（原「任何登入者」允許對任一學校灌入偽造
+      //   稽核軌跡，且 update/delete 恆 false＝永久污染）。login_denied 依定義發生在
+      //   「使用者尚非任何學校成員」，此時 isMember 恆為 false，不可能再寫進這裡——
+      //   已改道寫入 joinAttempts（見上方 match /joinAttempts/{uid} 與 §3.4b），
+      //   故本規則不再需要相容「actor 各欄為 null」的 login_denied 寫入路徑。
       match /operationLogs/{logId} {
         allow read:   if isApprover(schoolId);
-        allow create: if isSignedIn()
+        allow create: if isMember(schoolId)
           && request.resource.data.keys().hasOnly(['action', 'actor', 'timestamp', 'targetType', 'targetId', 'details'])
           && request.resource.data.action is string
           && request.resource.data.action.size() < 100
@@ -374,6 +449,8 @@ service cloud.firestore {
       // ⚠ 安全關鍵：整套 isDirector/isApprover/myTeacherId 都信任這條映射的 linkedTeacherId，
       //   因此「自己寫自己」時必須驗證 linkedTeacherId 指向的教師檔 email == 本人登入 email，
       //   否則任一教師可把自己映射到 director 的 teacherId 而提權為主任。
+      // 驗收修復 S5-R：此為首登關鍵路徑（authGuardV2.resolveIdentity 建立 mapping 靠這條
+      //   規則放行），teachers.email 一律小寫儲存，用 userEmail().lower() 比對。
       match /userMappings/{uid} {
         // 自己讀自己；approver 可讀全部（核准時需要看對方身份）
         allow read: if isSignedIn() && (request.auth.uid == uid || isApprover(schoolId));
@@ -387,7 +464,7 @@ service cloud.firestore {
             && request.auth.uid == uid
             && request.resource.data.linkedTeacherId is string
             && exists(/databases/$(database)/documents/schools/$(schoolId)/teachers/$(request.resource.data.linkedTeacherId))
-            && get(/databases/$(database)/documents/schools/$(schoolId)/teachers/$(request.resource.data.linkedTeacherId)).data.email == userEmail()
+            && get(/databases/$(database)/documents/schools/$(schoolId)/teachers/$(request.resource.data.linkedTeacherId)).data.email == userEmail().lower()
           );
 
         // 刪除：只有 director

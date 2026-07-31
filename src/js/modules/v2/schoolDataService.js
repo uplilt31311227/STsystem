@@ -104,6 +104,16 @@ export async function findTeacherByName(name) {
     return teachers.find(t => t.name === name) || null;
 }
 
+/* ===== Email Index（首登 email → teacherId 配對，Stage 0 §3.4a） =====
+ * schools/{schoolId}/emailIndex/{emailKey}：emailKey = 教師登入 email 小寫。
+ * 文件只有 { teacherId }，不含姓名等個資。規則只開放 get（查自己那一份），不開放 list，
+ * 故一律用「已知 email 查單一文件」的方式讀取，不會有整包查詢的路徑。
+ * 由 createTeacher / updateTeacher(email 異動) / deleteTeacher 同步維護——
+ * 驗收修復 S7：teachers 文件與 emailIndex 文件的寫入改用 writeBatch 原子提交，
+ * 避免「teachers 寫成功、emailIndex 寫失敗」這種半套狀態（索引與名冊不同步，
+ * 會讓該教師首登配對失敗，且不易察覺）。
+ */
+
 export async function createTeacher({ name, email = null, domains = [], homeroomClass = '', role = 'teacher' }) {
     if (!name) throw new Error('教師姓名不可為空');
 
@@ -121,7 +131,14 @@ export async function createTeacher({ name, email = null, domains = [], homeroom
         createdAt: now,
         updatedAt: now,
     };
-    await fs.setDoc(ref, data);
+
+    const batch = fs.writeBatch(fs.db);
+    batch.set(ref, data);
+    if (data.email) {
+        batch.set(fs.doc(fs.db, SCHEMA_PATHS.emailIndexDoc(data.email)), { teacherId });
+    }
+    await batch.commit();
+
     return { teacherId, ...data };
 }
 
@@ -130,17 +147,88 @@ export async function updateTeacher(teacherId, patch) {
     const ref = fs.doc(fs.db, SCHEMA_PATHS.teacherDoc(teacherId));
 
     const clean = { ...patch, updatedAt: new Date().toISOString() };
-    if (Object.prototype.hasOwnProperty.call(clean, 'email') && clean.email) {
-        clean.email = clean.email.toLowerCase().trim();
+    const emailChanging = Object.prototype.hasOwnProperty.call(clean, 'email');
+    let oldEmail = null;
+    if (emailChanging) {
+        clean.email = clean.email ? clean.email.toLowerCase().trim() : null;
+        // email 有異動：需要先讀舊值才能刪掉舊的 emailIndex 條目（新舊 email 可能不同，
+        // 也可能被設為 null 解除綁定）。非 email 異動的呼叫（role/domains/authProvider 等
+        // 高頻寫入）不需要這次額外讀取，維持原本零讀取開銷。
+        const before = await getTeacher(teacherId);
+        oldEmail = before?.email || null;
     }
-    await fs.updateDoc(ref, clean);
+
+    const batch = fs.writeBatch(fs.db);
+    batch.update(ref, clean);
+    if (emailChanging) {
+        // §3.4a：emailIndex 由 createTeacher / updateTeacher(email 異動) / deleteTeacher
+        // 集中維護，所有呼叫端（assignEmail、importRosterCsv 等）不需各自處理。
+        if (oldEmail && oldEmail !== clean.email) {
+            batch.delete(fs.doc(fs.db, SCHEMA_PATHS.emailIndexDoc(oldEmail)));
+        }
+        if (clean.email) {
+            batch.set(fs.doc(fs.db, SCHEMA_PATHS.emailIndexDoc(clean.email)), { teacherId });
+        }
+    }
+    await batch.commit();
+
     return getTeacher(teacherId);
 }
 
 export async function deleteTeacher(teacherId) {
+    const fs       = await getV2Firestore();
+    const ref      = fs.doc(fs.db, SCHEMA_PATHS.teacherDoc(teacherId));
+    const existing = await getTeacher(teacherId);
+
+    const batch = fs.writeBatch(fs.db);
+    batch.delete(ref);
+    if (existing?.email) {
+        batch.delete(fs.doc(fs.db, SCHEMA_PATHS.emailIndexDoc(existing.email)));
+    }
+    await batch.commit();
+}
+
+/** 查自己那一份 email → teacherId 索引。回傳 { teacherId } 或 null（查不到）。 */
+export async function getEmailIndexEntry(email) {
+    if (!email) return null;
+    const fs   = await getV2Firestore();
+    const ref  = fs.doc(fs.db, SCHEMA_PATHS.emailIndexDoc(email));
+    const snap = await fs.getDoc(ref);
+    return snap.exists() ? snap.data() : null;
+}
+
+/* ===== Join Attempts（login_denied 改道，Stage 0 §3.4b） =====
+ * schools/{schoolId}/joinAttempts/{uid}：doc id 綁 uid，一人一份、可覆寫，
+ * 天然限制灌爆量。規則只允許欄位 email/attemptedAt/reason，且驗收修復 S3 後
+ * email/attemptedAt/reason 三欄一律要求 `is string`（見 firestore.rules）——
+ * 呼叫端一律寫入字串（email 缺省時寫空字串而非 null，避免規則的型別檢查擋下寫入）。
+ */
+export async function upsertJoinAttempt(uid, { email, reason } = {}) {
     const fs  = await getV2Firestore();
-    const ref = fs.doc(fs.db, SCHEMA_PATHS.teacherDoc(teacherId));
-    await fs.deleteDoc(ref);
+    const ref = fs.doc(fs.db, SCHEMA_PATHS.joinAttemptDoc(uid));
+    const data = {
+        // 驗收修復 N3：規則要求 email.size() < 200（firestore.rules），這裡先 slice(0,190)
+        // 留一點安全邊界（中英文混雜時 .size() 是 UTF-8 byte 數，不是字元數，190 字元的
+        // email 字串換算成 byte 數必然遠低於 200——email 本身幾乎不會出現多位元組字元，
+        // 這裡的邊界純粹是防止極端輸入把寫入直接擋在規則層，而不是依賴精準的位元組換算）。
+        email: (typeof email === 'string' ? email : '').slice(0, 190),
+        attemptedAt: new Date().toISOString(),
+        reason: typeof reason === 'string' && reason ? reason : 'no_teacher_match',
+    };
+    await fs.setDoc(ref, data);
+    return data;
+}
+
+/**
+ * 一次性讀取全部「登入遭拒」紀錄（供 approver 在操作日誌頁瀏覽，Stage 0 驗收修復 S8）。
+ * 刻意用 getDocs 而非 onSnapshot——這是低頻查閱的稽核輔助資訊，不需要即時監聽，
+ * 避免額外常駐一條訂閱（呼應 §5.4「operationLogs 只在打開頁籤時才讀」的同一精神）。
+ */
+export async function listJoinAttempts() {
+    const fs   = await getV2Firestore();
+    const col  = fs.collection(fs.db, SCHEMA_PATHS.joinAttemptsCol());
+    const snap = await fs.getDocs(col);
+    return snap.docs.map(d => ({ uid: d.id, ...d.data() }));
 }
 
 /* ===== Schedule ===== */

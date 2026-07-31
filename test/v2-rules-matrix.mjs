@@ -282,12 +282,18 @@ function printCaseResult(c, result) {
 // ---------------------------------------------------------------------------
 function buildCases({ A, B, C }) {
     const col = {
-        pending:  `schools/${SCHOOL_ID}/pendingRequests`,
-        records:  `schools/${SCHOOL_ID}/substituteRecords`,
-        teachers: `schools/${SCHOOL_ID}/teachers`,
-        logs:     `schools/${SCHOOL_ID}/operationLogs`,
-        mappings: `schools/${SCHOOL_ID}/userMappings`,
+        pending:      `schools/${SCHOOL_ID}/pendingRequests`,
+        records:      `schools/${SCHOOL_ID}/substituteRecords`,
+        teachers:     `schools/${SCHOOL_ID}/teachers`,
+        logs:         `schools/${SCHOOL_ID}/operationLogs`,
+        mappings:     `schools/${SCHOOL_ID}/userMappings`,
+        // Stage 0（2026-07-31，驗收修復 S10）：emailIndex/joinAttempts 負向案例用
+        emailIndex:   `schools/${SCHOOL_ID}/emailIndex`,
+        joinAttempts: `schools/${SCHOOL_ID}/joinAttempts`,
     };
+    // Stage 0：一個確定不存在（也不會被建立）的 schoolId，用來測「跨校」讀取一定被拒——
+    // 不依賴正式庫是否真的有第二所學校，isMember(otherSchoolId) 對任何測試帳號恆為 false。
+    const OTHER_SCHOOL_ID = 'zz_test_other_school_never_created';
     const docId = {
         reqSub1:        zz('req_sub1'),
         reqSwap1:       zz('req_swap1'),
@@ -495,7 +501,9 @@ function buildCases({ A, B, C }) {
         id: 'P10', type: 'positive', actor: 'A(教師甲)', method: 'GET',
         desc: '正向⑩教師甲 讀 teachers（讀取全校教師，此處讀既有正式 director 教師檔——僅讀取不寫入）',
         path: `${col.teachers}/${REAL_DIRECTOR_TEACHER_ID}`, expect: 'ALLOW',
-        rulesRef: 'rules:116 teachers read（任何登入者）',
+        // Stage 0（2026-07-31）後改為 isMember(schoolId) 守門（原「任何登入者」）；
+        // A/B/C 皆為已綁定 userMappings 的既有成員帳號，isMember 恆成立，預期結果不變。
+        rulesRef: 'firestore.rules teachers read（isMember(schoolId)，Stage 0 收緊）',
         steps: [{ kind: 'get', label: '讀 director 教師檔', docPath: `${col.teachers}/${REAL_DIRECTOR_TEACHER_ID}`, expect: 'ALLOW', idToken: A.idToken }],
     });
 
@@ -503,7 +511,9 @@ function buildCases({ A, B, C }) {
         id: 'P11', type: 'positive', actor: 'A(教師甲)', method: 'GET',
         desc: '正向⑪教師甲 讀 config',
         path: `schools/${SCHOOL_ID}/config/main`, expect: 'ALLOW',
-        rulesRef: 'rules:108 config read（任何登入者）',
+        // Stage 0（2026-07-31）後改為 isMemberOrBootstrapDirector(schoolId) 守門
+        // （原「任何登入者」）；A 為既有成員帳號，isMember 恆成立，預期結果不變。
+        rulesRef: 'firestore.rules config read（isMemberOrBootstrapDirector，Stage 0 收緊）',
         steps: [{ kind: 'get', label: '讀 config/main', docPath: `schools/${SCHOOL_ID}/config/main`, expect: 'ALLOW', idToken: A.idToken }],
     });
 
@@ -950,6 +960,86 @@ function buildCases({ A, B, C }) {
         steps: [{
             kind: 'create', label: 'create allowedTeacherIds=字串', collectionPath: `${col.records}/${docId.recAttack24}/private`, docId: 'detail', expect: 'DENY', idToken: A.idToken,
             data: { leaveType: '調課', leaveTypeName: '調課', reason: '', allowedTeacherIds: A.teacherId },
+        }],
+    });
+
+    // ===================== Stage 0 補充攻擊案例（X25-X28，驗收修復 S10）=====================
+    // 只寫碼、未執行（見 STsystem 驗收流程：正式庫寫入須經人工確認，本檔規範上不自動跑）。
+
+    cases.push({
+        id: 'X25', type: 'attack', actor: 'A(教師甲)', method: 'GET', severity: 'critical',
+        desc: '攻擊㉕教師甲 跨校讀 teachers（schoolId 換成一個確定不存在的學校，isMember 應恆為 false）',
+        path: `schools/${OTHER_SCHOOL_ID}/teachers/${A.teacherId}`, expect: 'DENY',
+        rulesRef: 'firestore.rules teachers read（isMember(schoolId)，Stage 0 R3）——跨校 mappingExists 恆為 false',
+        steps: [{ kind: 'get', label: '甲跨校讀 teachers', docPath: `schools/${OTHER_SCHOOL_ID}/teachers/${A.teacherId}`, expect: 'DENY', idToken: A.idToken }],
+    });
+
+    cases.push({
+        id: 'X26', type: 'attack', actor: 'A(教師甲)', method: 'GET', severity: 'high',
+        // 驗收修復 N2：不要用 B.email 組 emailKey——B(v2t2) 的憑證檔不保證帶 email 欄位，
+        // 之前用 `B.email || 'zz_test_...'` 這種寫法在 B.email 缺失時會恆走 fallback 字面值，
+        // 導致「用乙的 email」這個描述失真（實際測的一直是同一個固定字面值）。改成一開始
+        // 就用固定字面值、描述也如實反映「一個確定不是甲自己的 email」，不宣稱是特定同事的。
+        desc: '攻擊㉖教師甲 get 非本人的 emailIndex（emailKey 用固定字面值，確定不是甲自己的 email）',
+        path: `${col.emailIndex}/zz_test_not_mine@example.com`, expect: 'DENY',
+        rulesRef: 'firestore.rules emailIndex get（emailKey == userEmail().lower()，Stage 0 §3.4a + 驗收修復 S5）',
+        steps: [{
+            kind: 'get', label: '甲讀非自己的 emailIndex 條目（固定字面值）',
+            docPath: `${col.emailIndex}/zz_test_not_mine@example.com`,
+            expect: 'DENY', idToken: A.idToken,
+        }],
+    });
+
+    cases.push({
+        id: 'X27', type: 'attack', actor: 'A(教師甲)', method: 'CREATE', severity: 'medium',
+        desc: '攻擊㉗教師甲 建立 joinAttempts 時夾帶白名單外第 4 個欄位（note）',
+        path: `${col.joinAttempts}/${A.uid}`, expect: 'DENY',
+        rulesRef: 'firestore.rules joinAttempts create（hasOnly([email,attemptedAt,reason])，驗收修復 S3）',
+        steps: [{
+            kind: 'create', label: 'create 夾帶 note 欄位', collectionPath: col.joinAttempts, docId: A.uid, expect: 'DENY', idToken: A.idToken,
+            data: { email: 'zz_test_attacker@example.com', attemptedAt: nowIso(), reason: 'zz_test', note: 'zz_test 白名單外欄位' },
+        }],
+    });
+
+    cases.push({
+        id: 'X28', type: 'attack', actor: 'A(教師甲)', method: 'CREATE', severity: 'medium',
+        desc: '攻擊㉘教師甲 建立 joinAttempts 時 reason 超過 100 字元（長度驗證）',
+        path: `${col.joinAttempts}/${A.uid}`, expect: 'DENY',
+        rulesRef: 'firestore.rules joinAttempts create（reason.size() < 100，驗收修復 S3）',
+        steps: [{
+            kind: 'create', label: 'create reason 超長字串', collectionPath: col.joinAttempts, docId: A.uid, expect: 'DENY', idToken: A.idToken,
+            data: { email: 'zz_test_attacker@example.com', attemptedAt: nowIso(), reason: 'x'.repeat(150) },
+        }],
+    });
+
+    cases.push({
+        id: 'X29', type: 'attack', actor: 'A(教師甲)', method: 'CREATE', severity: 'medium',
+        desc: '攻擊㉙教師甲 對自創（不存在）的 schoolId 寫 joinAttempts，應被 configExists 擋下',
+        path: `schools/${OTHER_SCHOOL_ID}/joinAttempts/${A.uid}`, expect: 'DENY',
+        rulesRef: 'firestore.rules joinAttempts create（configExists(schoolId)，驗收修復 S3）',
+        steps: [{
+            kind: 'create', label: '對不存在的 schoolId 寫 joinAttempts',
+            collectionPath: `schools/${OTHER_SCHOOL_ID}/joinAttempts`, docId: A.uid, expect: 'DENY', idToken: A.idToken,
+            data: { email: 'zz_test_attacker@example.com', attemptedAt: nowIso(), reason: 'zz_test' },
+        }],
+    });
+
+    cases.push({
+        id: 'X30', type: 'attack', actor: 'A(教師甲)', method: 'CREATE', severity: 'high',
+        // 黑箱測試的既有限制（與 X01/X20 等案例同源）：本檔三個測試帳號角色固定為
+        // 教師甲/教師乙/組長丙（無 director），emailIndex 的 create/update 規則是
+        // `isDirector(schoolId) && hasOnly(['teacherId'])` 兩個條件的 AND，用非 director
+        // 帳號測試時，最終 DENY 由 isDirector() 與 hasOnly() 共同保證，黑箱測試無法單獨
+        // 分離出「純粹因為 hasOnly 擋下」的證據——但這就是驗收要的案例本身（emailIndex
+        // 寫入夾帶 teacherId 以外欄位應被擋），只是同時也驗證了 isDirector() 那一半。
+        desc: '攻擊㉚教師甲（非 director）寫 emailIndex 時夾帶 teacherId 以外的欄位（extra），應被 hasOnly 與 isDirector 共同擋下',
+        path: `${col.emailIndex}/zz_test_attacker2@example.com`, expect: 'DENY',
+        rulesRef: 'firestore.rules emailIndex create/update（isDirector(schoolId) && hasOnly([\'teacherId\'])，驗收修復 S9）',
+        steps: [{
+            kind: 'create', label: 'create 夾帶 extra 欄位',
+            collectionPath: col.emailIndex, docId: 'zz_test_attacker2@example.com',
+            expect: 'DENY', idToken: A.idToken,
+            data: { teacherId: A.teacherId, extra: 'zz_test 白名單外欄位' },
         }],
     });
 
