@@ -9,6 +9,7 @@
 
 import { getV2Firestore } from './firebaseV2.js';
 import { SCHEMA_PATHS, REQUEST_STATUS } from './schemaConstants.js';
+import * as semesterState from './semesterState.js';
 
 // Stage 1（讀取成本止血，RESEARCH-multitenancy-semester.md §5.4）：即時訂閱的預設分頁大小。
 // 報告未給明確數字時的預設值（§8 路線圖 Stage 1 一列）。
@@ -86,6 +87,21 @@ export async function upsertConfig(patch) {
     const fs  = await getV2Firestore();
     const ref = fs.doc(fs.db, SCHEMA_PATHS.config());
     await fs.setDoc(ref, { ...patch, updatedAt: new Date().toISOString() }, { merge: true });
+}
+
+/**
+ * 驗收修復（中 3）：訂閱 config/main，供 v2-app.js 偵測「別的裝置/分頁的 director 已切換
+ * 學期」並提示使用者重新整理。本機所有訂閱（待辦／全校紀錄／課表）都綁死在 bootstrap 當時
+ * 讀到的 semesterId，沒有這條訂閱，切換學期後其他仍開著頁面的使用者不會知道自己看到的是
+ * 已經變成唯讀的舊學期資料，寫入操作也會開始被規則拒絕卻不知道原因。
+ * 單文件 onSnapshot（config/main），成本可忽略，比照 subscribeSchedule 的既有模式。
+ */
+export async function subscribeConfig(callback, onError) {
+    const fs  = await getV2Firestore();
+    const ref = fs.doc(fs.db, SCHEMA_PATHS.config());
+    return fs.onSnapshot(ref, (snap) => {
+        callback(snap.exists() ? snap.data() : null);
+    }, onError);
 }
 
 /* ===== Teachers ===== */
@@ -244,19 +260,68 @@ export async function listJoinAttempts() {
     return snap.docs.map(d => ({ uid: d.id, ...d.data() }));
 }
 
-/* ===== Schedule ===== */
+/* ===== Schedule（Stage 2：per-semester 文件，§5.3/§5.6） =====
+ * 舊 data/schedule 是單一文件、整份覆寫，換學期即蓋掉舊課表。改為 schedules/{semesterId}，
+ * 每學期各自一份文件，歷史學期課表不再被下一次上傳覆蓋。
+ *
+ * 相容遷移（§5.6「讀取 fallback 或一次性遷移腳本」，本專案兩者都做，互為安全網）：
+ *   - scripts/migrate-schedule-to-semester.js：一次性把舊 data/schedule 複製到
+ *     schedules/{currentSemester}（--dry-run 預設，只印計畫不寫入）。
+ *   - 本檔 getSchedule()/subscribeSchedule() 額外內建讀取 fallback：per-semester 文件
+ *     不存在時（例如遷移腳本還沒跑），退回讀舊 data/schedule 一次，避免舊課表在使用者眼中
+ *     「突然消失」。fallback 只讀不寫——不會自動把資料搬進新路徑，仍需要遷移腳本或下一次
+ *     approver 上傳課表（saveSchedule 一律寫新路徑）才能讓新文件真正建立。
+ *
+ * ⚠ 驗收修復（中 7）：課表這三支函式（get/save/subscribe）在 semesterId 缺席（未初始化，
+ * 例如 semesterState 讀 config 失敗）時**直接拋出明確錯誤**，不會優雅退化——這與
+ * subscribeSubstituteRecords 等「查詢」函式不同（那些函式的 semesterId 是可選篩選條件，
+ * 缺席時退化成 Stage 1 的無篩選查詢，仍能動作）；課表 per-semester 化後，semesterId 是
+ * 「寫到哪一份文件」的必要定址資訊，缺席時沒有安全的預設值可用，寧可讓呼叫端立刻知道
+ * 「課表功能現在不可用」，也不要用猜的（例如猜錯學期把課表寫到不該寫的文件）。呼叫端
+ * （v2-app.js bootstrap／syncScheduleToV2／clearAllSchoolData／switchToNewSemester）皆已
+ * 包在 try/catch 或 safeBootstrapStep 內，錯誤會經 notifyError() 顯示給使用者，不是靜默失敗。
+ */
 
-export async function getSchedule() {
-    const fs   = await getV2Firestore();
-    const ref  = fs.doc(fs.db, SCHEMA_PATHS.scheduleDoc());
-    const snap = await fs.getDoc(ref);
-    return snap.exists() ? snap.data() : null;
+/** 課表 semesterId 缺席時的錯誤，訊息明確說明現況與後續動作，供呼叫端 notifyError() 顯示。 */
+function requireScheduleSemesterId(fnName, semesterId) {
+    if (semesterId) return;
+    throw new Error(
+        `${fnName}: 目前學期尚未確定（semesterId 未初始化），課表功能暫時無法使用。` +
+        `請重新整理頁面；若持續發生，請確認 schools/{schoolId}/config/main.currentSemester 是否已設定。`
+    );
 }
 
-export async function saveSchedule(scheduleData) {
+export async function getSchedule(semesterId) {
+    requireScheduleSemesterId('getSchedule', semesterId);
+    const fs   = await getV2Firestore();
+    const ref  = fs.doc(fs.db, SCHEMA_PATHS.scheduleDocForSemester(semesterId));
+    const snap = await fs.getDoc(ref);
+    if (snap.exists()) return snap.data();
+
+    // Fallback：per-semester 文件尚未建立，退回讀舊版單一文件（見上方檔頭註解）。
+    const legacyRef  = fs.doc(fs.db, SCHEMA_PATHS.scheduleDoc());
+    const legacySnap = await fs.getDoc(legacyRef);
+    return legacySnap.exists() ? legacySnap.data() : null;
+}
+
+export async function saveSchedule(semesterId, scheduleData) {
+    requireScheduleSemesterId('saveSchedule', semesterId);
     const fs  = await getV2Firestore();
-    const ref = fs.doc(fs.db, SCHEMA_PATHS.scheduleDoc());
+    const ref = fs.doc(fs.db, SCHEMA_PATHS.scheduleDocForSemester(semesterId));
     await fs.setDoc(ref, { ...scheduleData, updatedAt: new Date().toISOString() });
+}
+
+/**
+ * 一次性讀取全部「已知學期」的課表文件 id（供學期選擇器 UI 列出可切換/可瀏覽的學期）。
+ * 「已知學期」定義為 schedules/ 底下有文件的學期——「開新學期」SOP（§6.1）在切換時會建立
+ * 一份（可能是空殼）schedules/{newId} 文件，故這個集合天然是一份學期註冊表，不需要另外維護
+ * 一份 semesters/{id} 標記集合。
+ */
+export async function listKnownSemesterIds() {
+    const fs   = await getV2Firestore();
+    const col  = fs.collection(fs.db, SCHEMA_PATHS.schedulesCol());
+    const snap = await fs.getDocs(col);
+    return snap.docs.map(d => d.id);
 }
 
 /* ===== Substitute Records（已成立） ===== */
@@ -297,10 +362,16 @@ export async function listAllSubstituteRecordsForClear() {
  *   nextCursor 是原生 QueryDocumentSnapshot（或 null），呼叫端應原樣保存、原樣傳回，不要
  *   從中萃取欄位值自行組游標。
  */
-export async function listSubstituteRecordsPage({ pageSize = DEFAULT_PAGE_SIZE, afterCursor = null } = {}) {
+// Stage 2（§5.4「紀錄頁預設視圖」查詢下推）：預設一律只查「當前學期」——與
+// subscribeSubstituteRecords 的即時視窗是同一份資料的分頁延伸（見 v2-app.js
+// loadMoreRecordsTabPage 接續同一個 cursor），兩者的學期範圍必須一致，否則「載入更多」
+// 會在使用者不知情的狀況下把上一學期的紀錄混進同一份列表，違背「歷史學期唯讀、需另外
+// 明確切換檢視」的設計（§6.1）。semesterId 未帶時退回 semesterState 快取的目前學期。
+export async function listSubstituteRecordsPage({ pageSize = DEFAULT_PAGE_SIZE, afterCursor = null, semesterId = semesterState.getCurrentSemesterId() } = {}) {
     const fs   = await getV2Firestore();
     const col  = fs.collection(fs.db, SCHEMA_PATHS.substituteCol());
     const constraints = [fs.orderBy('createdAt', 'desc')];
+    if (semesterId) constraints.unshift(fs.where('semesterId', '==', semesterId));
     if (afterCursor) constraints.push(fs.startAfter(afterCursor));
     constraints.push(fs.limit(pageSize));
     const q      = fs.query(col, ...constraints);
@@ -314,11 +385,33 @@ export async function listSubstituteRecordsPage({ pageSize = DEFAULT_PAGE_SIZE, 
 }
 
 /**
+ * Stage 2（§5.4「歷史學期」列，§6.1 SOP）：一次性讀取「指定學期」的全部已成立紀錄，供
+ * 紀錄頁「歷史學期」檢視使用——與 listSubstituteRecordsPage()（當前學期、分頁）不同，
+ * 歷史學期已鎖定不再有新資料（規則層唯讀鎖，見 §6.1），故一次性 getDocs 即可，不需分頁，
+ * 呼叫端（v2-app.js）自行做記憶體快取（key 帶 semesterId），同一 session 內不重打。
+ * orderBy('date') 而非 createdAt——歷史瀏覽以「上課日期」排序對使用者更直覺，且此函式
+ * 不需要與即時訂閱視窗共用 cursor（不像 listSubstituteRecordsPage 需要對齊 createdAt 排序）。
+ */
+export async function listSubstituteRecordsBySemester(semesterId) {
+    if (!semesterId) return [];
+    const fs   = await getV2Firestore();
+    const col  = fs.collection(fs.db, SCHEMA_PATHS.substituteCol());
+    const q    = fs.query(col, fs.where('semesterId', '==', semesterId), fs.orderBy('date', 'desc'));
+    const snap = await fs.getDocs(q);
+    return snap.docs.map(d => ({ recordId: d.id, ...d.data() }));
+}
+
+/**
  * Stage 1 修復（阻斷 #1）：衝堂檢查（v2CheckExistingRecord）按日期一次性查詢已成立紀錄，
  * 取代原本只看即時訂閱視窗（最近 N 筆）的作法——提前 2 週以上建立的紀錄不在視窗內，
  * 漏檢會造成同節課重複建檔、月結算重複計費，是正確性 bug 不是效能問題。
  * 單欄位相等查詢（date），屬 Firestore 自動建立的單欄位索引，不需複合索引。
  * period/className/originalTeacher 由呼叫端在記憶體中比對（單日筆數天生有界，可忽略成本）。
+ *
+ * Stage 2 查詢下推檢討（§5.4）：刻意不疊加 `where('semesterId','==',cur)`——單一 `date`
+ * 值透過 semesterUtils.dateToSemesterId() 可確定性地映射到唯一一個學期，同一日期不可能
+ * 同時屬於兩個學期，加上 semesterId 條件不會改變結果集，只會多疊一個複合索引（date+semesterId）
+ * 換取零實質效益。維持單欄位查詢，不需額外索引。
  */
 export async function queryRecordsByExactDate(date) {
     if (!date) return [];
@@ -334,6 +427,7 @@ export async function queryRecordsByExactDate(date) {
  * 單欄位查詢（不疊加 status 條件），狀態篩選留給呼叫端在記憶體中做——若在查詢裡疊加
  * `where('status','in',[...])` 會變成兩個不同欄位的條件組合，需要額外複合索引；單日的
  * pendingRequests 筆數天生有界，記憶體篩選成本可忽略，用這個寫法換取「零新增複合索引」。
+ * Stage 2：同 queryRecordsByExactDate，不疊加 semesterId 條件，理由相同（見該處註解）。
  */
 export async function queryPendingRequestsByExactDate(date) {
     if (!date) return [];
@@ -412,6 +506,20 @@ export function resolveDateRangeBounds({ startDate = null, endDate = null } = {}
  * `valid === false`（算出來的範圍起 > 迄，通常是呼叫端兩端都給了但順序顛倒）時短路
  * 回傳空陣列、不發送查詢（呼叫端若要對使用者顯示「範圍無效」提示，應直接呼叫
  * resolveDateRangeBounds() 自行同步判斷，不需要先跑一次注定 0 筆的非同步查詢才知道）。
+ *
+ * Stage 2 查詢下推檢討（§5.4/§5.6）：刻意不疊加 `where('semesterId','==',cur)`。
+ * 驗收修復（輕 10）：原註解主張「月結算查一個月、週彙整查一週，兩者都不可能跨學期邊界」，
+ * 這個理由在週彙整上是錯的——學期邊界落在 1/31→2/1 與 7/31→8/1，「一個月」的查詢範圍
+ * （`getMonthDateRange()` 產出 `YYYY-MM-01` ~ `YYYY-MM-31`，恆落在單一西曆月份內）確實不會
+ * 跨過這兩個邊界；但「一週」是以 7 天為單位的滾動區間，不受曆月邊界約束，例如
+ * 2026-01-26（一）～2026-02-01（日）這一週就會同時涵蓋 1/31 與 2/1，橫跨兩個學期。
+ * 即使如此，**結論依然不變、且理由更充分**：`queryRecordsByDateRange` 用 `date` 欄位做
+ * range query，比對的是「上課日期」本身，與該筆紀錄的 `semesterId` 衍生欄位無關——
+ * 一週橫跨學期邊界時，這一週內兩個學期各自的紀錄本來就都應該出現在週彙整結果裡（範例：
+ * 1/31 是上學期最後一個上課日、2/1 是下學期第一個上課日，同一週的週彙整理應同時列出兩天
+ * 的調代課）。若疊加 `semesterId==目前學期` 條件，會把橫跨邊界那一週裡「屬於舊學期那幾天」
+ * 的合法紀錄整批濾掉——這是會產生錯誤結果的 bug，不只是「不必要的最佳化」。日期範圍
+ * range query 本身在語意上就是正確、完整的，不需要也不應該疊加 semesterId 條件。
  */
 export async function queryRecordsByDateRange({ startDate = null, endDate = null } = {}) {
     const { effectiveStart, effectiveEnd, valid } = resolveDateRangeBounds({ startDate, endDate });
@@ -435,11 +543,24 @@ export async function getSubstituteRecord(recordId) {
     return snap.exists() ? { recordId: snap.id, ...snap.data() } : null;
 }
 
+// Stage 2（§6.1）：substituteRecords 的建立規則會鎖 `semesterId == config.currentSemester`，
+// 故「寫入當下的目前學期」是新紀錄唯一合法的 semesterId 值——不是紀錄本身 date 欄位推算出的
+// 學期（date 可能是預先排定的未來日期，甚至落在下一學期；此時仍應歸屬「這筆業務發生／核准
+// 的當下」所屬學期，不是「課會在哪天上」所屬學期）。呼叫端已明確帶 semesterId 時尊重原值——
+// 目前唯一的例外呼叫端是 legacyMigrationService（歷史資料，semesterId 依 date 反推，且
+// isLegacy=true 於規則層豁免此鎖，見 firestore.rules 與 legacyMigrationService.js）。
 export async function createSubstituteRecord(record) {
     const fs       = await getV2Firestore();
     const recordId = genId('rec');
     const now      = new Date().toISOString();
-    const base     = { ...record, createdAt: record.createdAt || now, approvedAt: record.approvedAt || now };
+    const semesterId = record.semesterId || semesterState.getCurrentSemesterId();
+    // 驗收修復（中 7）：semesterState 尚未初始化（例如 bootstrap 的「學期設定」步驟失敗）時，
+    // 不要送出一筆帶 semesterId:null 的寫入去讓 Firestore 規則模糊地拒絕——那樣使用者只會
+    // 看到不明所以的 permission-denied。改為 client 端先明確擋下並給出可理解的錯誤訊息。
+    if (!semesterId) {
+        throw new Error('createSubstituteRecord: 目前學期尚未確定，無法建立紀錄。請重新整理頁面後再試一次。');
+    }
+    const base     = { ...record, semesterId, createdAt: record.createdAt || now, approvedAt: record.approvedAt || now };
 
     const allowedTeacherIds = deriveAllowedTeacherIds(base);
     const { publicPart, privatePart, hasSensitive } = splitSensitive(base, allowedTeacherIds);
@@ -462,9 +583,15 @@ export async function updateSubstituteRecord(recordId, patch) {
     const ref = fs.doc(fs.db, SCHEMA_PATHS.substituteDoc(recordId));
     const now = new Date().toISOString();
 
+    // Stage 2（§6.1）：semesterId 建立後不可變（規則層鎖 update 的 semesterId 需與現值相同）。
+    // 防禦性清掉 patch 內可能誤帶的 semesterId，避免呼叫端不慎傳入時被規則擋下整筆更新——
+    // 目前沒有任何呼叫端會這麼做，這裡純屬防禦。
+    const cleanPatch = { ...patch };
+    delete cleanPatch.semesterId;
+
     // allowedTeacherIds 傳 null：只有 patch 片段、資訊不足以重算完整當事人清單，
     // 也不該重算——ACL 應維持建立時的當事人清單，merge:true 只更新敏感文字欄位本身。
-    const { publicPart, privatePart, hasSensitive } = splitSensitive(patch, null);
+    const { publicPart, privatePart, hasSensitive } = splitSensitive(cleanPatch, null);
 
     if (hasSensitive) {
         const detailRef = fs.doc(fs.db, SCHEMA_PATHS.substituteDetailDoc(recordId));
@@ -581,15 +708,17 @@ export async function listAllPendingRequestsForClear() {
  * Stage 1（§5.4）：一次性讀取「仍在途」的待審請求（待同意／待核准），行為與
  * subscribePendingRequests 的 where 條件一致，供 bootstrap 初次塞 cache 用
  * （不用 onSnapshot 首次快照前的空窗期）。
+ * Stage 2：加 semesterId==目前學期條件，理由與 subscribePendingRequests 相同（見該處註解）。
  */
-export async function listOpenPendingRequests() {
+export async function listOpenPendingRequests(semesterId = semesterState.getCurrentSemesterId()) {
     const fs   = await getV2Firestore();
     const col  = fs.collection(fs.db, SCHEMA_PATHS.pendingCol());
-    const q    = fs.query(
-        col,
+    const constraints = [
         fs.where('status', 'in', OPEN_REQUEST_STATUSES),
         fs.orderBy('createdAt', 'desc'),
-    );
+    ];
+    if (semesterId) constraints.unshift(fs.where('semesterId', '==', semesterId));
+    const q    = fs.query(col, ...constraints);
     const snap = await fs.getDocs(q);
     return snap.docs.map(d => ({ reqId: d.id, ...d.data() }));
 }
@@ -599,6 +728,9 @@ export async function listOpenPendingRequests() {
  * 「我的申請」區塊使用。這段歷史對全校規模是無界的，但限定到「單一教師」天然有界
  * （一人不會累積出全校等級的請求量），故用一次性按需查詢取代原本對整個 pendingRequests
  * 集合的無界讀取。
+ * Stage 2：刻意不加 semesterId 條件——這裡的用途本來就是「看自己橫跨學期的完整申請
+ * 歷史」（docstring 明寫「含已核准／已拒絕的歷史」），加上學期限制會違背這支函式存在的
+ * 目的，且已經靠「單一教師」天然有界，不需要再疊加條件換取讀取量下降。
  */
 export async function listPendingRequestsByInitiator(teacherId) {
     if (!teacherId) return [];
@@ -623,10 +755,17 @@ export async function getPendingRequest(reqId) {
 // reqId 可選：pendingRequestService.createRequest 需要在寫入父文件「之前」先把 id 定下來，
 // 才能先寫同一 id 底下的 private/detail（見該檔案 createRequest 的先寫 private 再寫父文件）。
 // 未帶 reqId 時維持原行為，內部自行產生。
+// Stage 2（§6.1）：semesterId 一律取「寫入當下的目前學期」，理由與 createSubstituteRecord
+// 相同（見該處註解）——pendingRequests 沒有 legacy 遷移這種例外呼叫端，恆是「目前學期」。
 export async function createPendingRequest(req, reqId = genId('req')) {
     const fs   = await getV2Firestore();
     const ref   = fs.doc(fs.db, SCHEMA_PATHS.pendingDoc(reqId));
-    const data  = { ...req, createdAt: req.createdAt || new Date().toISOString() };
+    const semesterId = req.semesterId || semesterState.getCurrentSemesterId();
+    // 驗收修復（中 7）：理由同 createSubstituteRecord 的同款守門。
+    if (!semesterId) {
+        throw new Error('createPendingRequest: 目前學期尚未確定，無法建立申請。請重新整理頁面後再試一次。');
+    }
+    const data  = { ...req, semesterId, createdAt: req.createdAt || new Date().toISOString() };
     await fs.setDoc(ref, data);
     return { reqId, ...data };
 }
@@ -722,14 +861,19 @@ export async function listLogs({ limit: lim = DEFAULT_PAGE_SIZE, since = null } 
 // v2CheckExistingRecord 本來就只認 pending_swap_consent/pending_approval 兩種狀態）——
 // 對這個用途而言，過濾掉的文件本來就從未被邏輯用到，屬零行為風險的收斂。
 // 「我的申請」需要的已核准／已拒絕歷史改由 listPendingRequestsByInitiator() 按需查詢（見上）。
-export async function subscribePendingRequests(callback, onError) {
+// Stage 2（§5.4）：加 semesterId==目前學期條件——「待我同意/待我審核」只該顯示當前學期
+// 的在途申請；歷史學期在規則層已鎖唯讀，理論上不會再有該學期的 pending 文件殘留，但加上
+// 這個條件同時也收斂了訂閱涵蓋範圍，與 substituteRecords 的即時視窗保持同一個「目前學期」
+// 語意。semesterId 未帶時退回 semesterState 快取的目前學期（呼叫端一般不需要自行傳入）。
+export async function subscribePendingRequests(callback, onError, { semesterId = semesterState.getCurrentSemesterId() } = {}) {
     const fs  = await getV2Firestore();
     const col = fs.collection(fs.db, SCHEMA_PATHS.pendingCol());
-    const q   = fs.query(
-        col,
+    const constraints = [
         fs.where('status', 'in', OPEN_REQUEST_STATUSES),
         fs.orderBy('createdAt', 'desc'),
-    );
+    ];
+    if (semesterId) constraints.unshift(fs.where('semesterId', '==', semesterId));
+    const q = fs.query(col, ...constraints);
     return fs.onSnapshot(q, (snap) => {
         callback(snap.docs.map(d => ({ reqId: d.id, ...d.data() })));
     }, onError);
@@ -741,23 +885,45 @@ export async function subscribePendingRequests(callback, onError) {
 // 驗收修復（輕 #10）：callback 第二參數帶上這批快照的最後一筆 QueryDocumentSnapshot
 // （lastDoc），供呼叫端把「載入更多」分頁的起點接在即時視窗尾端時當作原生 cursor 用
 // （見 v2-app.js loadMoreRecordsTabPage），不用值游標。
-export async function subscribeSubstituteRecords(callback, onError, { limit: lim = DEFAULT_PAGE_SIZE } = {}) {
+// Stage 2（§5.4）：加 semesterId==目前學期條件——即時訂閱視窗只該涵蓋當前學期，歷史學期
+// 改走 listSubstituteRecordsBySemester()（一次性查詢，見上）。與 listSubstituteRecordsPage
+// 共用同一個學期範圍，兩者合起來才是「目前學期的完整紀錄列表（即時視窗＋載入更多）」。
+export async function subscribeSubstituteRecords(callback, onError, { limit: lim = DEFAULT_PAGE_SIZE, semesterId = semesterState.getCurrentSemesterId() } = {}) {
     const fs  = await getV2Firestore();
     const col = fs.collection(fs.db, SCHEMA_PATHS.substituteCol());
-    const q   = fs.query(col, fs.orderBy('createdAt', 'desc'), fs.limit(lim));
+    const constraints = [fs.orderBy('createdAt', 'desc'), fs.limit(lim)];
+    if (semesterId) constraints.unshift(fs.where('semesterId', '==', semesterId));
+    const q = fs.query(col, ...constraints);
     return fs.onSnapshot(q, (snap) => {
         const lastDoc = snap.docs.length ? snap.docs[snap.docs.length - 1] : null;
         callback(snap.docs.map(d => ({ recordId: d.id, ...d.data() })), { lastDoc });
     }, onError);
 }
 
-// P2 全校課表共享：訂閱單一 schedule doc（schools/{schoolId}/data/schedule）。
+// P2 全校課表共享：訂閱 per-semester schedule doc（schools/{schoolId}/schedules/{semesterId}，
+// Stage 2 起取代原本的單一文件 data/schedule，見檔頭「Schedule」區塊註解）。
 // 首次註冊即回傳目前值；之後任何 approver 上傳/編輯課表都會即時推播給全校教師。
-export async function subscribeSchedule(callback, onError) {
+// 相容 fallback：per-semester 文件尚未建立（snap 不存在）時，一次性讀舊版 data/schedule
+// 補上（fallbackDone 旗標避免每次快照重複做這次額外讀取；per-semester 文件一旦被建立
+// ——不論是遷移腳本或 approver 首次上傳——後續快照會自然改走正常路徑，不再需要 fallback）。
+export async function subscribeSchedule(semesterId, callback, onError) {
+    requireScheduleSemesterId('subscribeSchedule', semesterId);
     const fs  = await getV2Firestore();
-    const ref = fs.doc(fs.db, SCHEMA_PATHS.scheduleDoc());
-    return fs.onSnapshot(ref, (snap) => {
-        callback(snap.exists() ? snap.data() : null);
+    const ref = fs.doc(fs.db, SCHEMA_PATHS.scheduleDocForSemester(semesterId));
+    let fallbackDone = false;
+    return fs.onSnapshot(ref, async (snap) => {
+        if (snap.exists()) { callback(snap.data()); return; }
+        if (!fallbackDone) {
+            fallbackDone = true;
+            try {
+                const legacyRef  = fs.doc(fs.db, SCHEMA_PATHS.scheduleDoc());
+                const legacySnap = await fs.getDoc(legacyRef);
+                if (legacySnap.exists()) { callback(legacySnap.data()); return; }
+            } catch (e) {
+                console.warn('[V2] 舊版課表 fallback 讀取失敗：', e);
+            }
+        }
+        callback(null);
     }, onError);
 }
 

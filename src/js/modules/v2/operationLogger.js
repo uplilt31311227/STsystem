@@ -14,6 +14,7 @@
 
 import { appendLog, listLogs, upsertJoinAttempt } from './schoolDataService.js';
 import { getCurrentIdentity }  from './roleService.js';
+import * as semesterState      from './semesterState.js';
 
 // 本次工作階段（頁面存活期間）寫入失敗的日誌項目，供 v2-app.js 的操作日誌頁籤橫幅提示使用。
 // 僅存於記憶體，重新整理頁面即清空；不影響 log() 本身「失敗不阻斷主流程」的行為。
@@ -37,6 +38,9 @@ function safeActor() {
     };
 }
 
+// Stage 2（§5.3：operationLogs 加 semesterId「供封存時分批」）：一律取寫入當下的目前學期，
+// 不需要相容豁免——日誌記的是「動作發生的當下」，即使 details 內容涉及歷史學期的資料
+// （例如未來封存功能翻查舊紀錄），這筆日誌本身仍是此刻、此學期發生的稽核事件。
 export async function log(action, targetType, targetId, details = {}) {
     const entry = {
         timestamp: new Date().toISOString(),
@@ -45,6 +49,7 @@ export async function log(action, targetType, targetId, details = {}) {
         targetType,
         targetId:  targetId || null,
         details:   details || {},
+        semesterId: semesterState.getCurrentSemesterId(),
     };
     try {
         return await appendLog(entry);

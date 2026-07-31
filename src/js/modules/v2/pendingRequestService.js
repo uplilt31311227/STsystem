@@ -22,6 +22,7 @@
 import * as dataSvc        from './schoolDataService.js';
 import * as logger         from './operationLogger.js';
 import * as roleSvc        from './roleService.js';
+import * as semesterState  from './semesterState.js';
 import { getV2Firestore }  from './firebaseV2.js';
 import {
     LOG_ACTIONS,
@@ -298,6 +299,15 @@ export async function approveRequest(reqId) {
         record.fromRequestId   = reqId;
         record.createdAt       = record.createdAt || now;
         record.affectedTeacherIds = buildAffectedList(data);
+        // Stage 2（§6.1）：this bypasses dataSvc.createSubstituteRecord()（直接 tx.set），
+        // 故不會經過該函式的「semesterId 未帶時自動蓋目前學期」邏輯——必須在這裡手動蓋。
+        // 刻意用「核准當下」的目前學期，不沿用申請（data）建立當時的 semesterId：若申請
+        // 在途期間跨過學期切換，申請當時的學期可能已不是 currentSemester，沿用舊值會被
+        // substituteRecords 的建立規則（semesterId == config.currentSemester）擋下。
+        // 已知限制：這代表「核准時間」而非「申請時間」決定紀錄歸屬的學期，多數情況下兩者
+        // 相同（申請與核准通常在同一學期內完成），只有「申請在途、期間學期切換」這種邊界
+        // 情境才會有差異，見報告與本次驗收報告的取捨說明。
+        record.semesterId = semesterState.getCurrentSemesterId();
 
         tx.set(recordRef, record);
         tx.update(reqRef, {

@@ -46,6 +46,7 @@ import * as logger         from './operationLogger.js';
 import * as roleSvc        from './roleService.js';
 import { getV2Firestore }  from './firebaseV2.js';
 import { LOG_ACTIONS, LOG_TARGET_TYPES } from './schemaConstants.js';
+import { dateToSemesterId } from './semesterUtils.js';
 
 const LEGACY_LOCALSTORAGE_KEY = 'substituteSystemData';
 
@@ -237,12 +238,30 @@ export async function migrateLegacyRecords({ onProgress } = {}) {
                 // 本遷移三處各自重複一份拆分邏輯。這也不影響上方檔頭的 batch 配額推導：
                 // 每筆現在是兩次「各自獨立」的 setDoc（private + 父文件），仍非任何
                 // transaction/batch 成員，配額互不共用，逐筆呼叫的結論不變。
+                // Stage 2（§6.1 學期唯讀鎖 vs. 歷史遷移的衝突）：substituteRecords 的建立規則
+                // 鎖 `semesterId == config.currentSemester`，但這裡遷移的是舊資料，date 可能
+                // 落在任何過去學期——若沿用 schoolDataService.createSubstituteRecord() 預設的
+                // 「semesterId 未帶時蓋目前學期」邏輯，遷移進來的歷史紀錄會被錯誤標記成當前
+                // 學期。改為在這裡明確依 legacy.date 反推 semesterId（歷史正確），並靠
+                // isLegacy:true（下方已設）讓 firestore.rules 的建立規則豁免學期鎖——
+                // 該豁免只看這筆寫入自帶的 isLegacy 欄位，不需要額外的 get()/exists() 查詢，
+                // 計費成本為 0。⚠ dateToSemesterId 對格式不合法的 date 回傳 null；
+                // schoolDataService.createSubstituteRecord() 對「未帶 semesterId」的判斷是
+                // `record.semesterId || semesterState.getCurrentSemesterId()`——null 屬於
+                // falsy，因此格式不合法的 date 不會讓寫入被規則擋下或拋錯，而是靜默 fallback
+                // 蓋成「目前學期」（isLegacy 豁免本身用不到，因為 isCurrentSemester 這條件
+                // 這時剛好也成立）。已知限制：極少數 date 欄位本身格式異常的舊資料，遷移後會
+                // 被歸類到「目前學期」而非其歷史真實學期，跨學期統計/封存分批時可能被誤分類；
+                // 不影響 date 欄位本身（仍是原始值，日期範圍查詢/月結算不受影響），只影響
+                // semesterId 這個衍生欄位的準確度。這類異常資料應該極罕見（date 是既有 V1
+                // 資料的核心欄位，本來就有其他既有邏輯依賴它是合法格式）。
                 await svc.createSubstituteRecord({
                     ...legacy,
                     originalTeacherId,
                     substituteTeacherId,
                     status: legacy.status || 'approved',
                     isLegacy: true,
+                    semesterId: dateToSemesterId(legacy.date),
                     migratedFrom: { source: entry.source, uid: entry.uid, legacyKey: key, migratedAt },
                 });
                 existingKeys.add(key); // 同批次內若舊資料本身重複，第二筆起視為已存在，避免自我重複匯入

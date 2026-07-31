@@ -1,6 +1,6 @@
 rules_version = '2';
 
-// STsystem V2 權限系統 Firestore 規則（v2.3 — 三層角色 + 敏感欄位私有化）
+// STsystem V2 權限系統 Firestore 規則（v2.4 — 三層角色 + 敏感欄位私有化 + 學期唯讀鎖）
 //
 // 設計原則：
 //   1. 兩條根路徑物理隔離
@@ -18,6 +18,35 @@ rules_version = '2';
 //      父文件不再寫入這三個欄位；private 文件自帶 allowedTeacherIds 清單（建立時由應用層
 //      算好寫入），規則不需 get() 父文件即可判斷可讀性。舊資料的三欄位仍留在父文件上，
 //      相容讀取由應用層處理（rules 對父文件的欄位不做限制，不需特別相容）。
+//   6. Stage 2（2026-07-31，RESEARCH-multitenancy-semester.md §5/§6.1；驗收修復見下）：
+//      學期成為一級概念。課表從單一文件 data/schedule 改為 per-semester 文件
+//      schedules/{semesterId}；substituteRecords/pendingRequests 新寫入一律帶 semesterId，
+//      且鎖定只能寫「目前作用中的學期」（config.currentSemester）。
+//      歷史學期唯讀的實際涵蓋範圍（如實描述，不是「加了鎖」這種籠統說法）：
+//        - substituteRecords 的 create：鎖 semesterId==目前學期，legacyMigrationService 的
+//          一次性歷史遷移經 isDeclaredLegacyWrite() 豁免（限 director + migratedFrom 欄位
+//          存在 + semesterId 為字串，見該函式定義處，阻斷 1 修復）。
+//        - substituteRecords 的 update：鎖「semesterId 不可變」+「該紀錄目前所屬學期須仍是
+//          作用中學期」兩項——後者是阻斷 2 修復新增的，原版只鎖了前者，歷史紀錄的其他欄位
+//          （日期/教師/節次等）在修復前仍可被 approver 任意編輯，不算真正唯讀。
+//        - substituteRecords/{id}/private/detail 的 update：同步鎖（讀父文件判斷，阻斷 2）。
+//        - pendingRequests 的 create：鎖 semesterId==目前學期（超出報告 §6.1 明文只提
+//          substituteRecords 的範圍，本次實作 prompt 明確要求兩者都鎖）；update 未鎖（維持
+//          報告原意——在途申請本來就該在核准/駁回/撤回後結案，不特別加鎖）。
+//        - schedules/{semesterId} 的 write：鎖只能寫目前學期那一份文件。
+//      新 rules＋舊 client 過渡窗口：舊 client 送出不含 semesterId 的寫入會被
+//      `'semesterId' in request.resource.data` 顯式檔下（中 6 修復），此窗口內全校無法新增
+//      紀錄/申請，見 docs/STAGE0-DEPLOY.md「附註：Stage 2」。
+//      舊資料回填前（scripts/backfill-semester-id.js 尚未執行）的相容處理：create 規則不受
+//      影響（新寫入本來就一律由程式碼蓋 semesterId）；update 規則見
+//      `!('semesterId' in resource.data)` 短路豁免（讓回填前的舊文件仍可正常編輯）。
+//      ⚠ 驗收修復（R6，opus 重驗）：如實記錄信任邊界——學期唯讀鎖對 director 不構成實質
+//      約束。isDeclaredLegacyWrite() 只要求 isDirector(schoolId) 成立即豁免整條學期鎖；
+//      config.currentSemester 本身也只有 director 能改（見 config/{docId} 的 write 規則）。
+//      一個惡意或被入侵的 director 帳號，理論上可以把任意寫入宣告成 isLegacy 繞過鎖、或
+//      直接把 currentSemester 改成任意值再寫入。這不是本次新增的破口——與系統既有的其他
+//      director-only 破壞性操作（刪除任何紀錄、刪除教師、清除所有資料）同一信任層級，只是
+//      這裡第一次被明確寫下來，避免日後誤以為「學期鎖」對所有角色（含 director）一視同仁。
 //
 // 部署：透過 gcloud REST API 或 Firebase Console（見 docs/V2_PERMISSION_SYSTEM.md）
 
@@ -93,12 +122,48 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/schools/$(schoolId)/teachers/$(myTeacherId(schoolId))).data;
     }
 
+    // ---- Stage 2（2026-07-31，RESEARCH-multitenancy-semester.md §6.1）：學期唯讀鎖 ----
+    // 「該學期是否為目前作用中的學期」。configDoc() 讀的是 config/main，這份文件在
+    // isDirector()/isApprover() 判斷鏈中已經因 isInitialDirector() 被讀過一次——同一請求內
+    // 對同一份相依文件重複 get() 只計費一次讀（§3.6 引 [C12]），故這條規則的「計費」成本是
+    // 0；「存取呼叫數」則 +1（§3.6 的預算表已核實這條路徑最壞情況約 6~8 次，遠低於 10 次
+    // 硬上限，加 1 次仍安全，不得再加在已逼近上限的 userMappings 自建路徑上）。
+    // ⚠ 只可用於 create/update 規則（讀 configDoc 需要 schoolId 已在權限鏈某處被讀過，
+    // 且只在寫入端有意義——讀取不受學期限制，歷史學期資料仍可被全校成員唯讀查詢）。
+    function isCurrentSemester(schoolId, sid) {
+      return configDoc(schoolId).currentSemester == sid;
+    }
+
     // 教務主任：白名單 OR teacher.role in ['director', 'admin']（admin 為舊資料兼容）
     function isDirector(schoolId) {
       return isSignedIn() && (
         isInitialDirector(schoolId)
         || (myTeacherExists(schoolId) && myTeacherDoc(schoolId).role in ['director', 'admin'])
       );
+    }
+
+    // legacyMigrationService.js 一次性遷移舊 V1 個人資料時，substituteRecords 的 date 可能
+    // 落在任何過去學期（歷史真實日期），若強制學期鎖會讓整批遷移全部失敗。
+    // ⚠ 驗收修復（阻斷 1）：原版只檢查請求自帶的 `isLegacy == true`——這個欄位完全由 client
+    // 自行宣告、規則不驗證來源，任何能通過父層 create 條件的寫入者（isApprover 分支的
+    // 任一 approver、甚至 isSelfSwap 分支的一般教師只要在 payload 塞 isLegacy:true）都能
+    // 靠自我宣告繞過學期鎖、偽造任意歷史學期的紀錄。收緊為三個條件並用：
+    //   1. isDirector(schoolId)——app 層 legacyMigrationService 的唯一觸發入口是
+    //      roleService.canManageRoster()，其定義就是 isDirector()（見該檔），section_chief
+    //      與一般教師本來就不可能觸發遷移，收緊不影響既有合法流程。
+    //   2. migratedFrom 欄位存在——一般業務寫入（adminCreate／自我調課／approveRequest）都
+    //      不會帶這個欄位，只有 legacyMigrationService 會寫（見該檔 migrateLegacyRecords）。
+    //   3. semesterId 是字串——防止豁免路徑寫入型別不合法的值污染歷史查詢/封存分批。
+    // isDirector() 內部的 get() 與其餘欄位讀取皆不觸發額外 get()/exists()（isDirector 在
+    // 同一請求的權限鏈中已被讀過，計費成本為 0，理由同 isCurrentSemester()）。
+    // 驗收修復（R3，opus 重驗）：本函式呼叫 isDirector()，改放在 isDirector 定義「之後」——
+    // Firestore 規則語言的函式理論上允許前向參考（呼叫定義在後面的函式），但保守起見仍
+    // 依宣告順序排列，避免任何規則引擎/工具鏈版本對前向參考的支援度落差帶來部署期意外。
+    function isDeclaredLegacyWrite(schoolId, data) {
+      return isDirector(schoolId)
+        && ('isLegacy' in data) && data.isLegacy == true
+        && ('migratedFrom' in data)
+        && ('semesterId' in data) && data.semesterId is string;
     }
 
     // 具核准權（director + section_chief，舊 admin 兼容）
@@ -133,6 +198,49 @@ service cloud.firestore {
     function isValidPrivateDetailWrite(data) {
       return data.keys().hasOnly(['leaveType', 'leaveTypeName', 'reason', 'allowedTeacherIds'])
         && data.allowedTeacherIds is list;
+    }
+
+    // 驗收修復（阻斷 2，substituteRecords/private/detail update 這一半）：private/detail
+    // 本身沒有自己的 semesterId 欄位（假別/事由只是父文件的敏感欄位分身），必須讀父文件
+    // substituteRecords/{recordId} 才能判斷歷史學期唯讀鎖是否適用——否則父文件已被鎖住
+    // 唯讀，這個子文件卻還能被 approver 任意編輯，等於鎖了一半。這是這條路徑新增的唯一一次
+    // 額外 get()（既有的 hasPrivateDetailAccess() 只讀請求/資源自身欄位，不曾讀父文件）；
+    // update 動作本身頻率低（假別/事由編輯），多一次讀取成本可接受。相容期保護與父文件同款：
+    // 父文件沒有 semesterId 欄位（回填腳本尚未執行）時放行，等同 Stage 2 之前的行為。
+    // ⚠ 驗收修復（R5，opus 重驗）：只給 update 用，不可直接套用在 create——若父文件根本不
+    // 存在（見下方 parentAllowsNewPrivateDetail() 的說明，create 流程本來就會先寫 private/
+    // detail、後寫父文件），`get(...).data` 會對不存在的文件求值錯誤，Firestore 規則對求值
+    // 錯誤的處理是讓整條件視為不成立（fail-closed／deny）。這裡刻意接受這個行為：對
+    // update 而言，「父文件不存在」代表資料本身已經處於異常狀態（正常流程走到能被
+    // update 的地步，父文件必然早就寫入完成），拒絕是合理的保守選擇，不需要額外用
+    // exists() 檢查放寬。
+    function parentSubstituteRecordCurrentSemester(schoolId, recordId) {
+      let parent = get(/databases/$(database)/documents/schools/$(schoolId)/substituteRecords/$(recordId)).data;
+      return !('semesterId' in parent) || isCurrentSemester(schoolId, parent.semesterId);
+    }
+
+    // 驗收修復（R2，opus 重驗）：private/detail 的 create 也要擋「approver 為已鎖定的歷史
+    // 紀錄事後補建 leaveType，藉此影響結算」這條路徑（原版只鎖了 update，沒鎖 create——
+    // 一筆歷史紀錄若當初建立時沒有敏感欄位（hasSensitive===false，未建立 private/detail），
+    // approver 理論上可以事後對它「補建」一份帶 leaveType 的 private/detail，讓月結算把
+    // 原本不會扣減時數的假別／不影響時數的調課，錯誤地變成會扣減，等於繞過歷史學期唯讀
+    // 鎖竄改結算結果）。
+    // 與 update 版本（parentSubstituteRecordCurrentSemester）刻意不同的是「父文件不存在」的
+    // 處理方式：schoolDataService.createSubstituteRecord() 與 pendingRequestService.
+    // approveRequest() 皆先寫 private/detail、後寫父文件（避免留下「父文件存在但私有明細
+    // 遺失」的半套狀態，見兩處各自的檔頭註解）——對「全新紀錄正在建立中」這個正常流程而言，
+    // private/detail 的 create 發生當下，父文件本來就還不存在，若比照 update 版本讓「父文件
+    // 不存在」評估錯誤而拒絕，會讓所有新紀錄（自我調課／approver 核准／legacy 遷移）的建立
+    // 整批失敗。因此這裡改用 exists() 先短路：
+    //   - 父文件不存在 → 視為「這是全新紀錄建立流程，尚未輪到父文件」，放行。
+    //   - 父文件存在但缺 semesterId（回填前舊資料）→ 放行（相容期，同各處 isCurrentSemester）。
+    //   - 父文件存在且 semesterId 不是目前學期 → 拒絕（這正是要擋的「事後補建」情境）。
+    // 這是這條路徑新增的唯一一次額外 exists()/get()（原本的 create 規則只讀請求/資源自身
+    // 欄位），create 動作本身頻率不高，成本可接受。
+    function parentAllowsNewPrivateDetail(schoolId, recordId) {
+      return !exists(/databases/$(database)/documents/schools/$(schoolId)/substituteRecords/$(recordId))
+        || !('semesterId' in get(/databases/$(database)/documents/schools/$(schoolId)/substituteRecords/$(recordId)).data)
+        || isCurrentSemester(schoolId, get(/databases/$(database)/documents/schools/$(schoolId)/substituteRecords/$(recordId)).data.semesterId);
     }
 
     // ================ V2: schools/{schoolId} ================
@@ -241,11 +349,26 @@ service cloud.firestore {
         allow delete: if isDirector(schoolId);
       }
 
-      // ----- 全校課表 -----
+      // ----- 全校課表（舊：單一文件，Stage 2 起僅供讀取 fallback，見下方 schedules） -----
       match /data/{docId} {
         // Stage 0 R4：改為成員限定可讀（原「任何登入者」會讓他校完整課表被下載）
         allow read:  if isMember(schoolId);
+        // Stage 2：schoolDataService.saveSchedule() 已改寫 schedules/{semesterId}，不再有任何
+        // client 路徑寫入這個舊文件；write 規則維持不變（無成本，也不需要收緊——沒有寫入路徑
+        // 可用，收緊與否不影響任何實際行為，維持原樣減少本次變更範圍）。
         allow write: if isApprover(schoolId);
+      }
+
+      // ----- 全校課表（Stage 2：per-semester 文件，取代上面的 data/{docId}） -----
+      // schools/{schoolId}/schedules/{semesterId}：每學期各自一份文件，換學期不再覆蓋舊資料。
+      match /schedules/{semesterId} {
+        // 讀取：校內成員（含歷史學期——歷史課表仍可被全校成員唯讀查詢，供對照舊學期排課）
+        allow read: if isMember(schoolId);
+        // 寫入：approver，且僅能寫「目前學期」那一份文件——歷史學期課表唯讀鎖（§6.1）。
+        // semesterId 取自路徑本身（wildcard），不需讀 request.resource.data，成本同上方
+        // isCurrentSemester() 的説明（相依文件 config/main 在同一請求的 isApprover() 判斷鏈
+        // 中已被讀過一次，計費成本為 0）。
+        allow write: if isApprover(schoolId) && isCurrentSemester(schoolId, semesterId);
       }
 
       // ----- 已成立調代課紀錄 -----
@@ -264,19 +387,57 @@ service cloud.firestore {
         //   （settlementCalculator 以 substituteTeacher===teacherName 且 type!=='調課' 計代課節數）。
         //   合法自我調課實際寫入（app.js buildSwapRecord + v2-app resolveApproverInfo）：
         //   type='調課'、teacherB===teacherA，三個 teacherId 欄位皆解析為本人，不受影響。
-        allow create: if isApprover(schoolId)
-          || (
-            isSignedIn()
-            && myTeacherId(schoolId) != ''
-            && request.resource.data.isSelfSwap == true
-            && request.resource.data.type in ['調課', 'swap']
-            && request.resource.data.originalTeacherId == myTeacherId(schoolId)
-            && request.resource.data.swapTeacherId == myTeacherId(schoolId)
-            && request.resource.data.substituteTeacherId == myTeacherId(schoolId)
+        // Stage 2（§6.1）：學期唯讀鎖——寫入的 semesterId 必須等於目前作用中的學期，
+        // 歷史學期不可再新增紀錄（規則層強制，不是應用層約定）。isDeclaredLegacyWrite()
+        // 豁免 legacyMigrationService 的一次性歷史資料遷移（見該函式定義處的收緊說明，
+        // 阻斷 1 修復）；一般業務寫入（approver 核准／自我調課）恆屬「目前學期」，不會用到
+        // 這個豁免分支。
+        // 驗收修復（中 6）：`'semesterId' in request.resource.data` 顯式存在性檢查——
+        // 新 rules＋舊 client（尚未部署本次 semesterId 相關改動）的過渡窗口內，舊 client
+        // 送出的寫入不帶這個欄位，直接存取 `request.resource.data.semesterId` 屬於存取未
+        // 定義 map key，規則語言的行為是評估錯誤（進而整條件求值失敗、視同拒絕）——顯式檢查
+        // 讓「舊 client 寫入被拒」是明確、可預期的行為，不依賴語言對未定義欄位存取的隱含語意。
+        // 這個窗口期間全校寫入功能（新增紀錄）會中斷，直到 client 部署完成，見
+        // docs/STAGE0-DEPLOY.md「附註：Stage 2」的部署順序與公告要求。
+        allow create: if (
+            isApprover(schoolId)
+            || (
+              isSignedIn()
+              && myTeacherId(schoolId) != ''
+              && request.resource.data.isSelfSwap == true
+              && request.resource.data.type in ['調課', 'swap']
+              && request.resource.data.originalTeacherId == myTeacherId(schoolId)
+              && request.resource.data.swapTeacherId == myTeacherId(schoolId)
+              && request.resource.data.substituteTeacherId == myTeacherId(schoolId)
+            )
+          )
+          && (
+            isDeclaredLegacyWrite(schoolId, request.resource.data)
+            || (
+              ('semesterId' in request.resource.data)
+              && isCurrentSemester(schoolId, request.resource.data.semesterId)
+            )
           );
 
-        // 編輯：approver
-        allow update: if isApprover(schoolId);
+        // 編輯：approver；semesterId 建立後不可變（§6.1，鎖住學期歸屬本身，且變相禁止把
+        // 一筆紀錄「搬到」另一個學期——不論搬去的是目前學期還是其他歷史學期）；且該筆紀錄
+        // 「現在所屬的學期」必須仍是目前作用中的學期，歷史學期的紀錄整份唯讀，不能再改動
+        // 其他任何欄位（阻斷 2 修復——原規則只鎖住了 semesterId 這個欄位本身不可被改，
+        // 沒有鎖住「這份文件本身不可再被編輯」，等於歷史紀錄的日期/教師/節次等欄位仍可被
+        // approver 任意修改，與「歷史學期唯讀」的設計意圖不符）。
+        // 相容期保護：Stage 2 上線前既有的紀錄尚未跑過 semesterId 回填腳本
+        // （scripts/backfill-semester-id.js）時，resource.data 沒有這個欄位——用
+        // `!('semesterId' in resource.data)` 短路豁免，讓回填完成前這些舊文件仍可正常編輯
+        // （行為等同 Stage 2 之前），不會因為這條新規則突然全部無法更動。回填完成、欄位
+        // 存在後，「不可變 + 須為目前學期」兩項鎖定才開始生效。
+        allow update: if isApprover(schoolId)
+          && (
+            !('semesterId' in resource.data)
+            || (
+              request.resource.data.semesterId == resource.data.semesterId
+              && isCurrentSemester(schoolId, resource.data.semesterId)
+            )
+          );
 
         // 刪除：只有 director 能刪除正式紀錄
         allow delete: if isDirector(schoolId);
@@ -291,6 +452,8 @@ service cloud.firestore {
         //   寫入紀錄，審核才是該路徑的控制點，故不受此限。
         match /private/{docId} {
           allow read:   if hasPrivateDetailAccess(schoolId, resource.data);
+          // 驗收修復（R2）：加 parentAllowsNewPrivateDetail() 擋「為歷史紀錄事後補建
+          // private/detail」，見該函式定義處的完整說明。
           allow create: if isValidPrivateDetailWrite(request.resource.data)
                           && (
                             isApprover(schoolId)
@@ -299,8 +462,10 @@ service cloud.firestore {
                               && myTeacherId(schoolId) in request.resource.data.allowedTeacherIds
                               && request.resource.data.leaveType in ['調課', 'swap']
                             )
-                          );
-          allow update: if isApprover(schoolId);
+                          )
+                          && parentAllowsNewPrivateDetail(schoolId, recordId);
+          // 驗收修復（阻斷 2）：加歷史學期唯讀鎖，見 parentSubstituteRecordCurrentSemester()。
+          allow update: if isApprover(schoolId) && parentSubstituteRecordCurrentSemester(schoolId, recordId);
           allow delete: if isDirector(schoolId);
         }
       }
@@ -317,35 +482,48 @@ service cloud.firestore {
         //   （封掉自帶 status='pending_approval' + 空同意名單跳過對方同意的路徑）；
         //   一律禁止 create 就自帶 approvedBy/approvedAt/approvedByName 或預填 swapConsents。
         // 欄位對齊 pendingRequestService.createRequest 實際寫入（swapConsents 固定寫入空 map）。
+        // Stage 2（§6.1，超出報告明文只提到 substituteRecords 的範圍，見設計報告§6.1與本次
+        // 實作 prompt 的取捨說明）：pendingRequests 的建立同樣鎖 semesterId==目前學期。
+        // 相依文件 config/main 已在 isApprover()/isInitialDirector() 判斷鏈中讀過一次
+        // （不論最終命中哪個分支，isApprover(schoolId) 一定會在整個 OR 表達式求值時被呼叫
+        // 到，因為它是第一個要判斷的分支，內部一定會呼叫 isInitialDirector 讀 config），
+        // 計費成本為 0，理由與 isCurrentSemester() 定義處相同。
+        // 驗收修復（中 6）：`'semesterId' in request.resource.data` 顯式存在性檢查，理由與
+        // substituteRecords create 規則同款（新 rules＋舊 client 過渡窗口的明確拒絕，不依賴
+        // 未定義欄位存取的隱含語意）。
         allow create: if (
-            isApprover(schoolId)
-            && request.resource.data.status != 'approved'
-            && !request.resource.data.keys().hasAny(['approvedBy', 'approvedAt', 'approvedByName'])
+            (
+              isApprover(schoolId)
+              && request.resource.data.status != 'approved'
+              && !request.resource.data.keys().hasAny(['approvedBy', 'approvedAt', 'approvedByName'])
+            )
+            || (
+              isSignedIn()
+              && myTeacherId(schoolId) != ''
+              && request.resource.data.initiatedBy == myTeacherId(schoolId)
+              && !request.resource.data.keys().hasAny(['approvedBy', 'approvedAt', 'approvedByName'])
+              && (
+                !('swapConsents' in request.resource.data)
+                || (request.resource.data.swapConsents is map && request.resource.data.swapConsents.size() == 0)
+              )
+              && (
+                (
+                  request.resource.data.requestType == 'substitute'
+                  && request.resource.data.status == 'pending_approval'
+                )
+                || (
+                  request.resource.data.requestType in ['swap', 'multi_swap']
+                  && request.resource.data.status == 'pending_swap_consent'
+                  && request.resource.data.pendingConsentTeacherIds is list
+                  && request.resource.data.pendingConsentTeacherIds.size() > 0
+                  // 同意名單不可含發起人本人（封掉「自列唯一同意人再自我同意」跳過對方同意）
+                  && !request.resource.data.pendingConsentTeacherIds.hasAny([request.resource.data.initiatedBy])
+                )
+              )
+            )
           )
-          || (
-            isSignedIn()
-            && myTeacherId(schoolId) != ''
-            && request.resource.data.initiatedBy == myTeacherId(schoolId)
-            && !request.resource.data.keys().hasAny(['approvedBy', 'approvedAt', 'approvedByName'])
-            && (
-              !('swapConsents' in request.resource.data)
-              || (request.resource.data.swapConsents is map && request.resource.data.swapConsents.size() == 0)
-            )
-            && (
-              (
-                request.resource.data.requestType == 'substitute'
-                && request.resource.data.status == 'pending_approval'
-              )
-              || (
-                request.resource.data.requestType in ['swap', 'multi_swap']
-                && request.resource.data.status == 'pending_swap_consent'
-                && request.resource.data.pendingConsentTeacherIds is list
-                && request.resource.data.pendingConsentTeacherIds.size() > 0
-                // 同意名單不可含發起人本人（封掉「自列唯一同意人再自我同意」跳過對方同意）
-                && !request.resource.data.pendingConsentTeacherIds.hasAny([request.resource.data.initiatedBy])
-              )
-            )
-          );
+          && ('semesterId' in request.resource.data)
+          && isCurrentSemester(schoolId, request.resource.data.semesterId);
 
         // 更新：
         //  - approver：核准 / 駁回，僅能動工作流欄位（不可竄改申請內容：節次/日期/教師等，
@@ -435,8 +613,11 @@ service cloud.firestore {
       //   故本規則不再需要相容「actor 各欄為 null」的 login_denied 寫入路徑。
       match /operationLogs/{logId} {
         allow read:   if isApprover(schoolId);
+        // Stage 2（§5.3）：operationLogs 加 semesterId 欄位（供未來 Stage 5 封存時分批），
+        // 補進欄位白名單；沒有對 semesterId 的值做進一步驗證（可以是 null，例如日誌寫入時
+        // semesterState 尚未初始化的極早期時序），純供分批查詢用，不是安全關鍵欄位。
         allow create: if isMember(schoolId)
-          && request.resource.data.keys().hasOnly(['action', 'actor', 'timestamp', 'targetType', 'targetId', 'details'])
+          && request.resource.data.keys().hasOnly(['action', 'actor', 'timestamp', 'targetType', 'targetId', 'details', 'semesterId'])
           && request.resource.data.action is string
           && request.resource.data.action.size() < 100
           && request.resource.data.timestamp is string

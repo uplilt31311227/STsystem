@@ -651,6 +651,13 @@
                 <!-- 右側：資料管理 -->
                 <div class="settings-right">
 
+                <!-- Stage 2（RESEARCH-multitenancy-semester.md §6.1）：學期管理，director 專用。
+                     內容由 v2-app.js renderSemesterAdminTab() 動態渲染（比照 #v2-teachers-admin）。 -->
+                <div class="card v2-only v2-director-only">
+                    <h3>學期管理</h3>
+                    <div id="v2-semester-admin"></div>
+                </div>
+
                 <div class="card v2-approver-only">
                     <h3>學年度管理</h3>
 
@@ -945,6 +952,6 @@
     <!-- 載入 JavaScript 模組 -->
     <script type="module" src="src/js/app.js?v=1.13.6"></script>
     <!-- V2 權限系統（?v2=1 或預覽站才啟用；對穩定版無影響） -->
-    <script type="module" src="src/js/v2-app.js?v=0.1.6"></script>
+    <script type="module" src="src/js/v2-app.js?v=0.1.7"></script>
 </body>
 </html>
