@@ -17,7 +17,7 @@ import * as teacherMgr          from './modules/v2/teacherAccountManager.js';
 import * as requestSvc          from './modules/v2/pendingRequestService.js';
 import * as logger              from './modules/v2/operationLogger.js';
 import * as legacyMigration     from './modules/v2/legacyMigrationService.js';
-import { LOG_ACTIONS, LOG_TARGET_TYPES, ROLES, REQUEST_STATUS, REQUEST_TYPES } from './modules/v2/schemaConstants.js';
+import { LOG_ACTIONS, LOG_TARGET_TYPES, ROLES, REQUEST_STATUS, REQUEST_TYPES, SCHOOL_ID } from './modules/v2/schemaConstants.js';
 import * as authMod from './modules/authService.js';
 import * as cloudSyncSvc from './modules/cloudSyncService.js';
 import { notify, notifyError, setSyncStatus, resetSyncStatus } from './modules/v2/uiFeedback.js';
@@ -1547,15 +1547,36 @@ function showSemesterChangedBanner(newSemesterId) {
  *      必須在改 config.currentSemester「之前」做——schedules/{semesterId} 的寫入規則鎖
  *      「只能寫目前學期那一份」，一旦 currentSemester 已經是 toId，就再也無法補寫
  *      schedules/{fromId} 了（見 firestore.rules 的 schedules/{semesterId} match 區塊）。
- *   2. 建立 schedules/{toId}（空殼，同上理由，也讓新學期一開始就有一份「存在但空白」的課表
- *      文件，不必等 approver 第一次上傳才出現在學期清單）。
- *   3. 更新 config.currentSemester（規則層的學期唯讀鎖即刻對舊學期生效）。
+ *   2. 更新 config.currentSemester（規則層的學期唯讀鎖即刻對舊學期生效）。
+ *   3. 建立 schedules/{toId}（空殼，讓新學期一開始就有一份「存在但空白」的課表文件，
+ *      不必等 approver 第一次上傳才出現在學期清單）。
  *   4. 寫操作日誌（action: 'semester_switch'，比照報告 §6.1 SOP 步驟 [2]）。
  *   5. reload 頁面——這是本專案既有的「換乾淨狀態」慣例（clearAllSchoolData／
  *      patchClearLocalData 用同一招），不另外設計一套「原地重新訂閱所有 onSnapshot」機制：
  *      bootstrap 內建立的即時訂閱（待辦／全校紀錄／課表／學期變更監聽／視需要的操作日誌）
  *      全部綁定在一次性讀到的 semesterState 值上，reload 後重新走一次 bootstrap 自然會用
  *      新學期重建，風險遠低於手動追蹤並取消/重建每一條訂閱。
+ *
+ * ⚠ 驗收修復（輕13，opus 驗收，Stage 2 遺留問題）：步驟 2、3 的順序對調——原版是
+ * 「先寫兩份 schedules 佔位文件，最後才更新 config.currentSemester」。firestore.rules 的
+ * schedules/{semesterId} 寫入規則要求 isCurrentSemester(schoolId, semesterId)：寫
+ * schedules/{toId} 時，若 config.currentSemester 還沒被改成 toId，這筆寫入必定被規則拒絕
+ * （permission-denied）——原順序在規則部署後，「開新學期」會在正常路徑上必然失敗於「建立
+ * schedules/{toId}」這一步，等於這個功能規則部署後就是壞的。
+ * 正確順序：
+ *   (a) schedules/{fromId} 佔位（若缺）——此時 config 仍是 fromId，符合規則要求，必須排在
+ *       config 更新「之前」（步驟 1，未變動）。
+ *   (b) upsertConfig({ currentSemester: toId })——規則層學期唯讀鎖立即對 fromId 生效
+ *       （步驟 2，提前）。
+ *   (c) schedules/{toId} 佔位——此時 config 已是 toId，符合規則要求（步驟 3，延後）。
+ * 步驟 (c) 若失敗（例如網路瞬斷），config.currentSemester 已經指向 toId——這是刻意接受的
+ * 狀態：「目前學期」的定義本來就是 config.currentSemester 這個單一事實來源，課表文件缺席
+ * 不影響這個定義成立，只影響「toId 這學期目前沒有課表可用」，director 可以稍後在「課表
+ * 管理」重新上傳補上，不需要（也做不到）復原整個切換動作——沒有任何機制可以安全地把
+ * config 改回 fromId，因為那段時間內可能已經有人往 toId 寫入了新的調代課紀錄/申請
+ * （建立規則只鎖 isCurrentSemester，一旦 config 指向 toId，新紀錄立刻就能合法地寫進去）。
+ * 下方 catch 區塊會產出一則明確指出「已切換，但課表建立失敗」的錯誤訊息，不讓使用者誤以為
+ * 整個操作完全沒有發生（見 docs/STAGE5-ARCHIVE.md 驗證清單的對應說明）。
  *
  * 呼叫端（renderSemesterAdminTab 的按鈕 handler）已先做過「無在途申請」檢查（驗收修復 中 4，
  * 見該處），這裡不重複檢查——避免同一份業務規則分散在兩處、日後改動漏改一邊。
@@ -1607,15 +1628,681 @@ async function switchToNewSemester(fromId, toId) {
         });
     }
 
-    await dataSvc.saveSchedule(toId, {
-        scheduleData: [], teachers: [], classes: [], subjectDomainMap: {}, schoolName: '',
-        meta: buildMeta('semester_opened'),
-    });
+    // 驗收修復（輕13）：config 更新提前到 schedules/{toId} 建立之前——見函式頭註解的完整
+    // 理由。本機快取（semesterState）同步更新：config 已在雲端生效，即使下一步失敗，
+    // 也不該讓本機繼續認為目前學期還是 fromId。
     await dataSvc.upsertConfig({ currentSemester: toId });
-    await logger.log(LOG_ACTIONS.SEMESTER_SWITCH, LOG_TARGET_TYPES.SYSTEM, null, { from: fromId, to: toId });
     semesterState.setCurrentSemesterId(toId);
+
+    try {
+        await dataSvc.saveSchedule(toId, {
+            scheduleData: [], teachers: [], classes: [], subjectDomainMap: {}, schoolName: '',
+            meta: buildMeta('semester_opened'),
+        });
+    } catch (e) {
+        // 學期切換本身（config.currentSemester）已經生效，只是新學期的空白課表建立失敗——
+        // 如實描述目前狀態，不要讓錯誤訊息聽起來像「整個操作都沒發生」（見函式頭註解）。
+        //
+        // Stage 5 驗收修復（輕6，opus 二輪驗收）：這條分支不會走到函式尾端的
+        // `setTimeout(() => window.location.reload(), 1200)`（那段只在成功路徑執行），但
+        // `semesterState.setCurrentSemesterId(toId)` 已經在上面（config 更新後）執行過——
+        // 本機記憶體已經認定「目前學期」是 toId，但 bootstrap 當時建立的即時訂閱
+        // （subscribeSubstituteRecords／subscribePendingRequests／subscribeSchedule）仍是
+        // 綁定 fromId 查詢條件的舊訂閱，不會自動跟著換——這正是「semesterState 已切、訂閱
+        // 還綁舊學期」的半套狀態，寫入會因為規則已認 toId 而通過、但畫面讀到的仍是 fromId
+        // 的即時資料，兩者不一致。呼叫 showSemesterChangedBanner()（既有機制，設計目的
+        // 就是「本機學期狀態已改變，需要使用者重新整理才能讓訂閱跟上」，見該函式定義處，
+        // 平常用於偵測「別的分頁切換了學期」）在這裡同樣適用，強制要求使用者重新整理，
+        // 不留給使用者在半套狀態下繼續操作的機會。
+        showSemesterChangedBanner(toId);
+        await logger.log(LOG_ACTIONS.SEMESTER_SWITCH, LOG_TARGET_TYPES.SYSTEM, null, {
+            from: fromId, to: toId, scheduleCreateFailed: true, error: (e && e.message) || String(e),
+        });
+        throw new Error(
+            `已切換到「${toId}」（學期本身已生效），但建立空白課表文件失敗：${(e && e.message) || e}。` +
+            `請依畫面上方橫幅重新整理頁面（本機顯示的即時資料在重新整理前仍綁定舊學期，` +
+            `不會自動更新），並盡快在「課表管理」重新上傳「${toId}」的課表。`
+        );
+    }
+
+    await logger.log(LOG_ACTIONS.SEMESTER_SWITCH, LOG_TARGET_TYPES.SYSTEM, null, { from: fromId, to: toId });
     notify(`已切換到「${toId}」，即將重新整理頁面…`, 'success', 2500);
     setTimeout(() => window.location.reload(), 1200);
+}
+
+/* ===== Stage 5：資料封存（RESEARCH-multitenancy-semester.md §6.2 SOP、§6.5 operationLogs 解法 b） =====
+ *
+ * 三段流程：匯出 → 驗證 → 刪除，每段都是前一段成功的必要條件（gate），任一步驟失敗或資料
+ * 在期間發生變動，一律退回較早的狀態、要求重新做——這是本次實作 prompt 明訂的 fail-closed
+ * 原則：「任何讀取/比對失敗一律中止，不得在不確定狀態下刪除」。
+ *
+ * 範圍界定（§6.2 陷阱一/§6.5）：
+ *   - 匯出讀取：課表 doc + substituteRecords/pendingRequests（皆含 private/detail）+ operationLogs。
+ *   - 刪除範圍：substituteRecords/pendingRequests（各自的 private/detail 先刪、父文件後刪，
+ *     由既有 dataSvc.deleteSubstituteRecordsBatch()/deletePendingRequestsBatch() 負責）+
+ *     schedules/{semesterId} 課表 doc。**operationLogs 不在刪除範圍內**——client 規則對
+ *     operationLogs 的 update/delete 恆為 false（稽核軌跡不可改/刪），期滿清理改由平台管理者
+ *     離線執行 scripts/cleanup-operation-logs.js（見該檔），UI 文案需明確告知這一點。
+ *   - 只能刪「非目前作用中學期」——多處重複檢查（選單提示 + 執行前重新讀 config 核實），
+ *     理由見 executeSemesterArchiveDelete() 內註解。
+ */
+
+// 封存流程的 session 記憶體狀態（module 層級，比照既有各處「換身份/換學期即清空」慣例）。
+// 兩段狀態機：'exported'（已匯出並下載，等待使用者選檔驗證）→ 'verified'（雜湊、筆數與
+// 實際 ID 集合皆核對通過，可以刪除）。semesterId 與目前下拉選單選擇不符時一律視為不成立
+// ——換學期、重新整理頁面、身份切換都會讓這份狀態失去意義，不應該被沿用。
+// Stage 5 驗收修復（阻斷2）：新增 recordIds/reqIds（匯出當下的完整 id 清單，供刪除前做
+// ID 集合逐一比對，不只是比對筆數）與 recordIdsWithDetail/reqIdsWithDetail（其中「已知有
+// private/detail 子文件」的 id 子集合，供刪除時只對真的有 detail 的紀錄送出 detail 刪除
+// 請求，見輕10 / dataSvc.deleteSubstituteRecordsBatchKnownDetail()）。
+let _archiveState = null;
+// { semesterId, phase: 'exported'|'verified', hash, counts, exportedAt,
+//   recordIds: string[], reqIds: string[],
+//   recordIdsWithDetail: string[], reqIdsWithDetail: string[] }
+
+/** SHA-256 雜湊（十六進位字串）。瀏覽器原生 Web Crypto，不引入額外套件（§6.2 陷阱二）。 */
+async function sha256Hex(text) {
+    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+    return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * 一次性讀出「指定學期」封存所需的完整資料（§6.2 步驟 [2]）：課表 doc、substituteRecords
+ * 與 pendingRequests（皆含 private/detail）、operationLogs。回傳
+ * { payload, counts, recordIds, reqIds, recordIdsWithDetail, reqIdsWithDetail }。
+ * 純讀取、不寫入不刪除——只給匯出流程使用；「驗證/刪除前重新核對」改用下方更輕量的
+ * fetchSemesterArchiveSnapshot()（不含 private/detail、不含 operationLogs，見該函式與
+ * 中3 的完整說明），避免同一次封存操作把 §6.2 陷阱三提到的一次性大量讀取重複發生兩三次。
+ *
+ * Stage 5 驗收修復（阻斷1，opus 驗收，fail-open）：本函式任何一步讀取失敗都必須讓整個
+ * 匯出中止，不能吞錯後繼續組出一份實際殘缺的匯出：
+ *   - 課表改用 getScheduleForSemesterStrict()（不含 legacy fallback、不吞任何錯誤，見中4／
+ *     schoolDataService.js 該函式定義），取代原本 `getSchedule(semesterId).catch(() => null)`
+ *     ——原寫法會把「讀取失敗（例如網路瞬斷）」與「這學期真的沒有課表」混為一談，讓一次
+ *     不確定的讀取結果被靜默當成確定的「無課表」寫進匯出 JSON。
+ *   - 私有明細改用 getRecordDetailsBulkStrict()/getRequestDetailsBulkStrict()（零容忍版本，
+ *     不吞 permission-denied——對執行封存的 director 而言，讀自己學校的 private/detail
+ *     理論上不可能合法地遇到 permission-denied，見兩函式的完整說明），取代一般版
+ *     getRecordDetailsBulk()/getRequestDetailsBulk()（那兩支是給一般教師 UI 讀取「不屬於
+ *     自己」的紀錄時容錯用，容錯對象不是這裡的呼叫情境）。
+ */
+async function collectSemesterArchiveData(semesterId, onProgress) {
+    onProgress?.('讀取課表…');
+    const schedule = await dataSvc.getScheduleForSemesterStrict(semesterId);
+
+    onProgress?.('讀取調代課紀錄…');
+    const records = await dataSvc.listSubstituteRecordsBySemesterForArchive(semesterId);
+    onProgress?.(`讀取調代課紀錄私有明細（共 ${records.length} 筆）…`);
+    const recordDetails = await dataSvc.getRecordDetailsBulkStrict(records.map(r => r.recordId));
+
+    onProgress?.('讀取待審請求…');
+    const pendings = await dataSvc.listPendingRequestsBySemesterForArchive(semesterId);
+    onProgress?.(`讀取待審請求私有明細（共 ${pendings.length} 筆）…`);
+    const pendingDetails = await dataSvc.getRequestDetailsBulkStrict(pendings.map(p => p.reqId));
+
+    onProgress?.('讀取操作日誌…');
+    const logs = await dataSvc.listLogsBySemesterForArchive(semesterId);
+
+    // Stage 5 驗收修復（中3）：counts 不含 operationLogs——operationLogs 只在「匯出」這次性
+    // 讀取中被納入（見下方 payload.meta.counts），驗證/刪除前的重新核對不比對它，理由見
+    // fetchSemesterArchiveSnapshot() 的完整說明（歷史學期的 operationLogs 結構上不會再變動）。
+    const counts = {
+        substituteRecords: records.length,
+        pendingRequests:   pendings.length,
+        hasSchedule:       !!schedule,
+    };
+
+    const payload = {
+        meta: {
+            schoolId: SCHOOL_ID,
+            semesterId,
+            counts: {
+                ...counts,
+                operationLogs: logs.length,
+                substituteRecordDetails: recordDetails.size,
+                pendingRequestDetails:   pendingDetails.size,
+            },
+            reportRef: 'docs/RESEARCH-multitenancy-semester.md §6.2',
+        },
+        schedule: schedule || null,
+        substituteRecords: records.map(r => ({ ...r, private: recordDetails.get(r.recordId) || null })),
+        pendingRequests:   pendings.map(p => ({ ...p, private: pendingDetails.get(p.reqId) || null })),
+        operationLogs:     logs,
+    };
+
+    return {
+        payload,
+        // counts 額外帶 operationLogs 供 UI 顯示用（例如匯出完成提示、刪除前確認 modal），
+        // 但這個欄位不會被 diffArchiveCounts() 用來 gate 刪除——理由同上。
+        counts: { ...counts, operationLogs: logs.length },
+        recordIds: records.map(r => r.recordId),
+        reqIds: pendings.map(p => p.reqId),
+        recordIdsWithDetail: [...recordDetails.keys()],
+        reqIdsWithDetail: [...pendingDetails.keys()],
+    };
+}
+
+/**
+ * Stage 5 驗收修復（阻斷2 + 中3，opus 驗收）：一次性讀取「指定學期」的 substituteRecords／
+ * pendingRequests 完整文件陣列＋課表，回傳 `{ records, pendings, schedule, counts }`。
+ * 用於「驗證」與「刪除前最後一次核對」共用同一支函式——**刪除步驟直接重用這次呼叫回傳的
+ * records/pendings 陣列去執行刪除，不再另外重新查詢一次**。
+ *
+ * 原版設計是「recount（只查筆數）→ 比對通過 → 另外再 query 一次拿完整文件做刪除清單」，
+ * 這兩次查詢之間存在一個時間窗：recount 當下核對過的資料，到緊接著的 requery 當下可能又
+ * 已經不同（例如同一秒內另一個 approver 刪除了一筆請求），届時刪除清單其實是「requery
+ * 當下的新狀態」，並沒有真的被上一步驟核對過，等於白核對。改為本函式一次到位：查到的
+ * 文件陣列「就是」稍後會被拿去刪除的那份資料，核對與刪除之間不再插入任何一次新的查詢。
+ *
+ * 刻意不含 operationLogs（中3，讀取量修正）：operationLogs 的 `create` 規則寫入的
+ * `semesterId` 恆取 `semesterState` 當下值（見 operationLogger.js `log()`），一筆日誌一旦
+ * 寫入，沒有任何應用層路徑會再改動它的 `semesterId` 或內容（規則層 `update`/`delete` 恆
+ * `false`）——對「已經不是目前學期」的歷史學期而言，其 operationLogs 筆數在結構上**不可能
+ * 再變動**（沒有任何寫入路徑能對歷史學期的 operationLogs 集合新增/修改文件）。既然筆數不會
+ * 漂移，重新查一次並比對就是一次沒有實質效益、卻要付出全額讀取成本的檢查（大校可能是該
+ * 學期紀錄數的 3 倍量級，見 §6.2 陷阱三）。operationLogs 的完整性只在「匯出」那一次性讀取
+ * 中被保證（見 collectSemesterArchiveData），且 operationLogs 本來就不在刪除範圍內，
+ * 不需要為了刪除去核對它。
+ *
+ * 也不含 private/detail 的批次讀取——「驗證」與「刪除前核對」都只需要確認 substituteRecords／
+ * pendingRequests 這兩個集合的「有哪些文件」沒有變動，不需要重新組出完整內容（含私有明細）。
+ */
+async function fetchSemesterArchiveSnapshot(semesterId) {
+    const [records, pendings, schedule] = await Promise.all([
+        dataSvc.listSubstituteRecordsBySemesterForArchive(semesterId),
+        dataSvc.listPendingRequestsBySemesterForArchive(semesterId),
+        dataSvc.getScheduleForSemesterStrict(semesterId),
+    ]);
+    return {
+        records, pendings, schedule,
+        counts: {
+            substituteRecords: records.length,
+            pendingRequests:   pendings.length,
+            hasSchedule:       !!schedule,
+        },
+    };
+}
+
+/** 比對兩份 counts 物件，回傳不一致的欄位名稱陣列（僅比對 fetchSemesterArchiveSnapshot() 的 3 個欄位，不含 operationLogs，理由見該函式）。 */
+function diffArchiveCounts(a, b) {
+    return ['substituteRecords', 'pendingRequests', 'hasSchedule']
+        .filter(k => JSON.stringify(a?.[k]) !== JSON.stringify(b?.[k]));
+}
+
+/**
+ * Stage 5 驗收修復（阻斷2）：比對兩份 id 陣列所代表的「集合」是否完全相同（不只是長度相同）。
+ * 筆數相同不代表內容相同——例如同一時間窗內「刪掉一筆舊的、新增一筆新的」，筆數不變但集合
+ * 已經不同，只比對 `counts.substituteRecords` 這種長度式檢查會漏掉這種情況。
+ */
+function idSetsEqual(freshIds, exportIds) {
+    if (!Array.isArray(freshIds) || !Array.isArray(exportIds)) return false;
+    if (freshIds.length !== exportIds.length) return false;
+    const exportSet = new Set(exportIds);
+    return freshIds.every(id => exportSet.has(id));
+}
+
+/**
+ * 執行「匯出」：讀取資料、組 JSON、計算雜湊、觸發下載，成功後把狀態記到 _archiveState
+ * （phase='exported'，解鎖下方「驗證」UI）。讀取任一步失敗會直接拋出、不下載、不改動狀態
+ * ——不留下「看起來匯出成功但其實資料不全」的半套狀態。
+ */
+async function runSemesterArchiveExport(semesterId, onProgress) {
+    const { payload, counts, recordIds, reqIds, recordIdsWithDetail, reqIdsWithDetail } =
+        await collectSemesterArchiveData(semesterId, onProgress);
+    const me = roleSvc.getCurrentIdentity();
+    payload.meta.exportedAt = new Date().toISOString();
+    payload.meta.exportedBy = { uid: me?.uid || null, email: me?.email || null, name: me?.name || null, teacherId: me?.teacherId || null };
+
+    onProgress?.('計算 SHA-256 雜湊…');
+    const jsonText = JSON.stringify(payload, null, 2);
+    const hash = await sha256Hex(jsonText);
+
+    onProgress?.('觸發下載…');
+    const blob = new Blob([jsonText], { type: 'application/json' });
+    const url  = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `STsystem_封存_${semesterId}_${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    _archiveState = {
+        semesterId, phase: 'exported', hash, counts, exportedAt: payload.meta.exportedAt,
+        recordIds, reqIds, recordIdsWithDetail, reqIdsWithDetail,
+    };
+    return { hash, counts };
+}
+
+/**
+ * 驗證使用者選取的檔案「就是」剛才匯出的那一份，且雲端當下的資料與匯出當下一致
+ * （§6.2「雜湊驗證」+「筆數確認」，自動比對已下載檔）。任何一步不符都回傳失敗原因、
+ * 不把 phase 推進到 'verified'（fail-closed：維持鎖住刪除區塊）。
+ *
+ * Stage 5 驗收修復（阻斷2）：不只比對筆數，額外比對 ID 集合是否完全相同（見 idSetsEqual()）
+ * ——筆數相同不代表內容相同（同一時間窗內刪一筆、加一筆，筆數不變但集合已不同）。
+ * @returns {Promise<{ok: true}|{ok: false, reason: string}>}
+ */
+async function verifyArchiveExportFile(semesterId, file) {
+    // _archiveState.phase 存在時恆為 'exported' 或 'verified'（不會是其他值）——這裡只需確認
+    // 有一份「屬於這個學期」的匯出狀態可供核對，重新驗證已通過驗證的狀態也應該被允許
+    // （例如使用者不放心，想再核對一次）。
+    if (!_archiveState || _archiveState.semesterId !== semesterId) {
+        return { ok: false, reason: '尚未匯出此學期的資料，或選擇的學期已變更，請先重新匯出。' };
+    }
+    let text;
+    try {
+        text = await file.text();
+    } catch (e) {
+        return { ok: false, reason: `讀取檔案失敗：${e?.message || e}` };
+    }
+
+    const fileHash = await sha256Hex(text);
+    if (fileHash !== _archiveState.hash) {
+        return { ok: false, reason: '雜湊不符——這個檔案不是剛才匯出的那一份，或內容已被修改。請重新匯出並選擇正確的檔案。' };
+    }
+
+    let parsed;
+    try {
+        parsed = JSON.parse(text);
+    } catch (e) {
+        return { ok: false, reason: `檔案不是合法的 JSON：${e?.message || e}` };
+    }
+    if (parsed?.meta?.semesterId !== semesterId) {
+        return { ok: false, reason: `檔案內容的學期（${parsed?.meta?.semesterId}）與目前選擇的學期（${semesterId}）不符。` };
+    }
+
+    let snapshot;
+    try {
+        snapshot = await fetchSemesterArchiveSnapshot(semesterId);
+    } catch (e) {
+        return { ok: false, reason: `重新核對雲端資料失敗：${e?.message || e}` };
+    }
+    const countMismatches = diffArchiveCounts(snapshot.counts, _archiveState.counts);
+    if (countMismatches.length) {
+        return {
+            ok: false,
+            reason: `雲端資料在匯出後已變動（${countMismatches.join('、')}），為避免刪除到未被完整匯出的資料，請重新匯出後再試一次。`,
+        };
+    }
+    const freshRecordIds = snapshot.records.map(r => r.recordId);
+    const freshReqIds    = snapshot.pendings.map(p => p.reqId);
+    if (!idSetsEqual(freshRecordIds, _archiveState.recordIds) || !idSetsEqual(freshReqIds, _archiveState.reqIds)) {
+        return {
+            ok: false,
+            reason: '雲端資料的內容在匯出後已變動（筆數相同但實際項目不同），為避免刪除到未被完整匯出的資料，請重新匯出後再試一次。',
+        };
+    }
+
+    _archiveState = { ..._archiveState, phase: 'verified', verifiedAt: new Date().toISOString() };
+    return { ok: true };
+}
+
+/**
+ * 實際執行刪除。呼叫前 UI 已保證 _archiveState.phase==='verified' 且使用者已在確認欄輸入
+ * 正確的 semesterId（二次確認 modal 前的第一層），這裡仍從頭重新檢查一次每一個 gate
+ * ——prompt 明訂「每一步都要 fail-closed」，不信任呼叫端已經檢查過。
+ *
+ * 刪除順序（§6.2 陷阱一）：substituteRecords／pendingRequests 各自「先刪 private/detail
+ * 子文件、後刪父文件」（僅對確知有 detail 的紀錄送出 detail 刪除請求，見輕10），由
+ * dataSvc.deleteSubstituteRecordsBatchKnownDetail()/deletePendingRequestsBatchKnownDetail()
+ * 負責（writeBatch 依筆分塊，見 schoolDataService.js batchDeleteRefGroups()）；課表 doc
+ * 最後刪除。刪除完成後、寫封存紀錄前，會再複查一次「這個學期是否真的清空了」（輕5，見下方
+ * postDeleteSnapshot 區塊）——三項皆為空才寫 archives/{semesterId} 與操作日誌；任一項有
+ * 殘留則整個中止、不寫紀錄。中途失敗（含這道複查沒通過）時 archives/{semesterId} 不會被
+ * 寫入，使用者看到的錯誤訊息會指出目前狀態；正常的刪除失敗（例如網路中斷）可在重新匯出
+ * 驗證後再次嘗試（此時已刪除的部分重新查詢會是 0 筆，不會重複刪除，也不會因為「已刪的
+ * 東西找不到」而報錯——batch.delete() 對不存在的文件是 no-op，見 schoolDataService.js
+ * 既有註解）；但輕5 的複查沒通過屬於需要人工介入的異常狀況，訊息已明確要求不要自動重試。
+ */
+async function executeSemesterArchiveDelete(semesterId) {
+    // 最後一道防線：目前作用中學期一律不可被此流程刪除。
+    // Stage 5 驗收修復（輕12）：改用 getConfigFromServer()（強制直讀伺服器、略過本機快取）
+    // 取代 getConfig()——這是刪除前的最後一道防線，若還是可能命中本機快取的一般 getDoc()，
+    // 防線本身就可能被同一個「看到過期狀態」的問題繞過，等於沒有真的加強保護。
+    let freshConfig;
+    try {
+        freshConfig = await dataSvc.getConfigFromServer();
+    } catch (e) {
+        throw new Error(`無法確認目前作用中學期，為安全起見中止刪除（原始錯誤：${e?.message || e}）`);
+    }
+    const freshCurrent = freshConfig?.currentSemester;
+    if (!freshCurrent) {
+        throw new Error('無法確認目前作用中學期（config.currentSemester 未設定），為安全起見中止刪除。');
+    }
+    if (semesterId === freshCurrent) {
+        throw new Error(`「${semesterId}」是目前作用中學期，不可封存刪除；如需刪除，請先在「學期管理」開新學期。`);
+    }
+
+    if (!_archiveState || _archiveState.semesterId !== semesterId || _archiveState.phase !== 'verified') {
+        throw new Error('尚未完成「匯出」與「驗證」步驟，無法刪除。');
+    }
+
+    // Stage 5 驗收修復（阻斷2）：這是刪除前「唯一一次」重新核對，其回傳的 records/pendings
+    // 陣列直接拿去執行刪除，不再另外查詢一次——消除「核對」與「實際被刪除的資料」之間的
+    // 競態窗口（見 fetchSemesterArchiveSnapshot() 的完整說明）。除了筆數，也比對 ID 集合
+    // 是否與匯出當下完全相同（不只是數量相同）。
+    const snapshot = await fetchSemesterArchiveSnapshot(semesterId);
+    const countMismatches = diffArchiveCounts(snapshot.counts, _archiveState.counts);
+    const freshRecordIds  = snapshot.records.map(r => r.recordId);
+    const freshReqIds     = snapshot.pendings.map(p => p.reqId);
+    const idsMismatch = !idSetsEqual(freshRecordIds, _archiveState.recordIds)
+                      || !idSetsEqual(freshReqIds, _archiveState.reqIds);
+    if (countMismatches.length || idsMismatch) {
+        _archiveState = { ..._archiveState, phase: 'exported' }; // 退回未驗證狀態，鎖住刪除、要求重新驗證
+        throw new Error(
+            `雲端資料在驗證後又發生變動${countMismatches.length ? `（${countMismatches.join('、')}）` : '（項目內容不同，筆數相同但實際 id 不同）'}，` +
+            `為安全起見已中止，請重新驗證。`
+        );
+    }
+
+    // 輕10：只對「匯出當下已知有 private/detail」的 id 送出 detail 刪除請求，避免對沒有
+    // detail 的紀錄發送必然 no-op 的刪除。此刻 freshRecordIds/freshReqIds 已透過上面的
+    // idSetsEqual() 檢查確認與 _archiveState.recordIds/reqIds 完全相同的集合，用
+    // _archiveState 裡「匯出當下」記錄的 hasDetail 子集合來篩選是安全的。
+    await dataSvc.deleteSubstituteRecordsBatchKnownDetail(freshRecordIds, _archiveState.recordIdsWithDetail);
+    await dataSvc.deletePendingRequestsBatchKnownDetail(freshReqIds, _archiveState.reqIdsWithDetail);
+    await dataSvc.deleteScheduleForSemester(semesterId);
+
+    // Stage 5 驗收修復（輕5，opus 二輪驗收）：寫封存紀錄前，最後確認一次「這個學期真的清空
+    // 了」。archives/{semesterId} 是 create-only、寫入後永久不可改/刪的紀錄（見
+    // writeArchiveRecord() 中6 的說明）——若因為某種未預期原因（例如某個 batch 的 commit
+    // 沒有拋出可觀察錯誤但實際部分失敗、或極端情況下的併發寫入）刪除後仍有殘留，絕不能讓
+    // 這份「已完整封存」的紀錄被寫死；一旦寫入，之後任何人（含系統本身）都不會再意識到
+    // 需要處理殘留資料——`writeArchiveRecord` 的 create-only 特性代表連事後補救都做不到。
+    // 用同一支 fetchSemesterArchiveSnapshot() 複查，三項皆須為「空」才寫紀錄：
+    // substituteRecords===0、pendingRequests===0、hasSchedule===false。任一項不符，
+    // 中止並丟出明確錯誤，要求人工檢視（不自動重試——見下方錯誤訊息）。
+    const postDeleteSnapshot = await fetchSemesterArchiveSnapshot(semesterId);
+    if (postDeleteSnapshot.counts.substituteRecords !== 0
+        || postDeleteSnapshot.counts.pendingRequests !== 0
+        || postDeleteSnapshot.counts.hasSchedule !== false) {
+        throw new Error(
+            `刪除後複查發現「${semesterId}」仍有殘留資料` +
+            `（調代課紀錄 ${postDeleteSnapshot.counts.substituteRecords} 筆、` +
+            `待審請求 ${postDeleteSnapshot.counts.pendingRequests} 筆、` +
+            `課表：${postDeleteSnapshot.counts.hasSchedule ? '仍存在' : '已刪除'}）。` +
+            `為避免寫入誤導性的「已完整封存」紀錄，本次不會寫入 archives/${semesterId}，也不會計為封存成功。` +
+            `請人工檢視雲端資料現況並手動清理殘留部分，確認乾淨後再重新執行「匯出→驗證→刪除」。`
+        );
+    }
+
+    const me = roleSvc.getCurrentIdentity();
+    await dataSvc.writeArchiveRecord(semesterId, {
+        archivedAt: new Date().toISOString(),
+        archivedBy: { uid: me?.uid || null, email: me?.email || null, name: me?.name || null, teacherId: me?.teacherId || null },
+        counts: _archiveState.counts, // 含 operationLogs（資訊性欄位，取自匯出當下，非本次核對依據）
+        jsonHash: _archiveState.hash,
+        note: '操作日誌（operationLogs）不含在此次雲端刪除範圍內，需由系統管理者另行以離線腳本清除' +
+              '（scripts/cleanup-operation-logs.js）；匯出檔已包含此學期完整操作日誌。',
+    });
+    await logger.log(LOG_ACTIONS.SEMESTER_ARCHIVE, LOG_TARGET_TYPES.SYSTEM, null, { semesterId, counts: _archiveState.counts });
+
+    _archiveState = null;
+    _v2KnownSemesterIds = null; // 學期選擇器快取失效（已刪除的學期課表 doc 不復存在，下次重繪重新查）
+}
+
+/**
+ * 設定頁「資料封存」卡片，director 專用（同 renderSemesterAdminTab 的守門慣例）。
+ * 渲染「匯出」區塊（任何學期皆可匯出，含目前學期，供一般備份用）與「刪除」區塊
+ * （僅匯出成功後解鎖，且僅允許非目前學期）。
+ *
+ * Stage 5 驗收修復（輕7+8）：新增「此學期是否已封存過」的檢查（`dataSvc.getArchiveRecord()`）
+ * ——已封存學期會停用匯出/刪除鈕、改顯示封存摘要。這同時解決了兩個問題：
+ *   1. 學期選擇器現在會透過 `v2ListSemesterOptions()`（見該處修復）把 `archives/` 集合的
+ *      學期 id 也併入選單，代表已封存學期不再從所有下拉選單「消失」，但雲端資料已被刪除，
+ *      若沒有這個檢查，使用者選到已封存學期按「匯出」只會得到一份全空的 JSON（誤導），
+ *      按「刪除」則會被 `writeArchiveRecord()` 的 create-only 規則擋下（見中6 的完整說明），
+ *      使用者只會看到一個不明所以的 `permission-denied`。
+ *   2. 提前在 UI 層擋下這條「注定失敗」的路徑，比讓使用者送出請求後才收到規則層拒絕更清楚。
+ */
+async function renderArchiveAdminTab() {
+    const host = document.getElementById('v2-archive-admin');
+    if (!host) return;
+    if (!roleSvc.isDirector()) { host.innerHTML = ''; return; }
+
+    const _gen = _v2IdentityGen;
+    const options = await v2ListSemesterOptions();
+    if (isStaleRender(_gen)) return;
+
+    const cur = semesterState.getCurrentSemesterId();
+    host.innerHTML = `
+        <div class="data-management-section">
+            <strong>匯出學期資料</strong>
+            <p class="hint">選擇學期，匯出該學期完整資料（課表、調代課紀錄、待審請求、操作日誌，皆含私有明細）為單一 JSON 檔案下載。可作一般備份，或作為「封存刪除」的必要前置步驟；匯出本身不會刪除任何雲端資料。</p>
+            <p class="hint" id="v2-archive-status" style="display:none;"></p>
+            <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">
+                <select id="v2-archive-semester-select">
+                    ${options.map(sid => `<option value="${escapeHtml(sid)}">${escapeHtml(sid)}${sid === cur ? '（目前學期）' : ''}</option>`).join('')}
+                </select>
+                <button class="btn btn-secondary btn-sm" id="v2-archive-export-btn">匯出此學期資料</button>
+            </div>
+            <p class="hint" id="v2-archive-progress" style="display:none;"></p>
+        </div>
+        <div class="data-management-section danger-zone" id="v2-archive-delete-section" style="display:none;">
+            <strong>刪除此學期雲端資料（封存執行）</strong>
+            <p class="hint" id="v2-archive-delete-hint"></p>
+            <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">
+                <input type="file" id="v2-archive-verify-file" accept="application/json" style="display:none;">
+                <button class="btn btn-secondary btn-sm" id="v2-archive-verify-btn">選擇剛下載的匯出檔進行驗證</button>
+                <span class="hint" id="v2-archive-verify-status"></span>
+            </div>
+            <div id="v2-archive-delete-controls" style="display:none;margin-top:0.6rem;">
+                <p class="hint" id="v2-archive-confirm-hint"></p>
+                <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">
+                    <input type="text" id="v2-archive-confirm-input" placeholder="輸入學期代碼確認">
+                    <button class="btn btn-danger btn-sm" id="v2-archive-delete-btn" disabled>刪除此學期雲端資料</button>
+                </div>
+            </div>
+        </div>
+    `;
+
+    const selectEl        = document.getElementById('v2-archive-semester-select');
+    const exportBtn        = document.getElementById('v2-archive-export-btn');
+    const progressEl       = document.getElementById('v2-archive-progress');
+    const statusEl         = document.getElementById('v2-archive-status');
+    const deleteSection    = document.getElementById('v2-archive-delete-section');
+    const deleteHint       = document.getElementById('v2-archive-delete-hint');
+    const verifyBtn        = document.getElementById('v2-archive-verify-btn');
+    const verifyFileInput  = document.getElementById('v2-archive-verify-file');
+    const verifyStatus     = document.getElementById('v2-archive-verify-status');
+    const deleteControls   = document.getElementById('v2-archive-delete-controls');
+    const confirmHint       = document.getElementById('v2-archive-confirm-hint');
+    const confirmInput      = document.getElementById('v2-archive-confirm-input');
+    const deleteBtn         = document.getElementById('v2-archive-delete-btn');
+
+    /** 換學期或任何一步失敗，回到「尚未驗證」的畫面（不清 _archiveState 本身，由呼叫端決定）。 */
+    function resetDownstreamUi() {
+        verifyStatus.textContent = '';
+        deleteControls.style.display = 'none';
+        confirmInput.value = '';
+        deleteBtn.disabled = true;
+    }
+
+    // 防止使用者連續切換學期選單時，較慢的舊一輪 getArchiveRecord() 查詢在較新一輪之後才
+    // 回來、用過期結果覆蓋畫面（比照全檔既有 _v2IdentityGen/isStaleRender 的世代守門慣例，
+    // 這裡用局部變數即可，不需要掛到 module 層級——每次 renderArchiveAdminTab() 重繪都是
+    // 全新的閉包）。
+    let _selectionGen = 0;
+
+    /**
+     * 依目前選擇的學期，決定「匯出」「刪除」兩個區塊的可用狀態：
+     *   - 目前作用中學期：只能匯出，不顯示刪除區塊（既有規則，未變動）。
+     *   - 已封存過的學期（輕7+8 新增）：匯出與刪除都停用，顯示封存摘要。
+     *   - 其餘（非目前學期、未封存過）：匯出可用；刪除區塊依 _archiveState 是否已有
+     *     這個學期的匯出結果決定是否顯示（既有邏輯，未變動）。
+     */
+    async function syncArchiveSectionState() {
+        const sid = selectEl.value;
+        const myGen = ++_selectionGen;
+        resetDownstreamUi();
+        statusEl.style.display = 'none';
+        exportBtn.disabled = false;
+
+        if (sid === cur) {
+            deleteSection.style.display = 'none';
+            return;
+        }
+
+        let archived = null;
+        let archiveCheckFailed = false;
+        try {
+            archived = await dataSvc.getArchiveRecord(sid);
+        } catch (e) {
+            console.warn('[V2] 查詢封存紀錄失敗：', e);
+            archiveCheckFailed = true;
+        }
+        if (myGen !== _selectionGen) return; // 選擇已經換過，這輪結果過期，不套用到畫面
+
+        if (archiveCheckFailed) {
+            // 查詢失敗時不假設「沒有封存過」，但也不假設「已經封存過」——維持匯出鈕可用、
+            // 隱藏刪除區塊（刪除本來就需要先過匯出/驗證兩關，這裡不主動解鎖任何東西），
+            // 只顯示提示讓使用者知道這個狀態未經確認，需要的話可以重新整理再試。
+            deleteSection.style.display = 'none';
+            statusEl.style.display = '';
+            statusEl.textContent = '無法確認此學期是否已封存過，請重新整理頁面後再試。';
+            return;
+        }
+
+        if (archived) {
+            exportBtn.disabled = true;
+            deleteSection.style.display = 'none';
+            statusEl.style.display = '';
+            statusEl.textContent =
+                `此學期已於 ${archived.archivedAt || '（時間未知）'} 封存並從雲端刪除` +
+                `（調代課紀錄 ${archived.counts?.substituteRecords ?? '?'} 筆、` +
+                `待審請求 ${archived.counts?.pendingRequests ?? '?'} 筆）。` +
+                `雲端資料已不存在，無法再次匯出或刪除；封存當時的完整資料僅存在於當初下載的 JSON 檔案中。`;
+            return;
+        }
+
+        const hasExport = _archiveState && _archiveState.semesterId === sid;
+        deleteSection.style.display = hasExport ? '' : 'none';
+        if (hasExport) {
+            deleteHint.textContent =
+                `已於 ${_archiveState.exportedAt} 匯出「${sid}」（調代課紀錄 ${_archiveState.counts.substituteRecords} 筆、` +
+                `待審請求 ${_archiveState.counts.pendingRequests} 筆、操作日誌 ${_archiveState.counts.operationLogs} 筆、` +
+                `課表：${_archiveState.counts.hasSchedule ? '有' : '無'}）。請選擇剛下載的檔案進行驗證後才能刪除。` +
+                `操作日誌不會被刪除，需由系統管理者另行離線清除，匯出檔已包含完整日誌。`;
+        }
+    }
+
+    selectEl.addEventListener('change', syncArchiveSectionState);
+
+    exportBtn.addEventListener('click', async () => {
+        const sid = selectEl.value;
+        if (!sid || exportBtn.disabled) return;
+        // 防禦：即使 UI 已鎖住，執行前再核一次「是否已封存過」（比照全檔既有「UI 隱藏 +
+        // 執行前再驗一次」慣例），避免透過 console 直接呼叫繞過 disabled 屬性觸發匯出。
+        try {
+            const archived = await dataSvc.getArchiveRecord(sid);
+            if (archived) {
+                notify('此學期已封存過，雲端資料已不存在，無法再次匯出。', 'warning');
+                await syncArchiveSectionState();
+                return;
+            }
+        } catch (e) {
+            notify('無法確認此學期是否已封存過，為安全起見中止匯出，請稍後再試。', 'error');
+            return;
+        }
+
+        exportBtn.disabled = true;
+        progressEl.style.display = '';
+        progressEl.textContent = '準備匯出…';
+        try {
+            await runSemesterArchiveExport(sid, (msg) => { progressEl.textContent = msg; });
+            progressEl.textContent = `匯出完成，已觸發下載（${_archiveState.counts.substituteRecords + _archiveState.counts.pendingRequests + _archiveState.counts.operationLogs} 筆資料）。`;
+            notify(`已匯出「${sid}」的完整資料`, 'success');
+            // 交給 syncArchiveSectionState() 決定 exportBtn 最終應該是什麼狀態（正常情況下
+            // 維持可用，允許使用者需要時重新匯出）——不在這裡用 finally 無條件解鎖，避免
+            // 蓋掉上面呼叫可能設定的「已封存、應停用」狀態（理論上不會在這個時間點發生，
+            // 但沿用同一套決策入口比自己在兩個地方各判斷一次可靠）。
+            await syncArchiveSectionState();
+        } catch (e) {
+            console.error('[V2] 學期資料匯出失敗:', e);
+            notifyError(e, '匯出學期資料');
+            progressEl.textContent = `匯出失敗：${e?.message || e}`;
+            exportBtn.disabled = false;
+        }
+    });
+
+    verifyBtn.addEventListener('click', () => verifyFileInput.click());
+
+    verifyFileInput.addEventListener('change', async () => {
+        const file = verifyFileInput.files?.[0];
+        verifyFileInput.value = ''; // 允許重選同一個檔案也能再次觸發 change
+        if (!file) return;
+        const sid = selectEl.value;
+        verifyBtn.disabled = true;
+        verifyStatus.textContent = '驗證中…';
+        try {
+            const result = await verifyArchiveExportFile(sid, file);
+            if (!result.ok) {
+                verifyStatus.textContent = `驗證失敗：${result.reason}`;
+                notify(result.reason, 'error', 8000);
+                deleteControls.style.display = 'none';
+                return;
+            }
+            verifyStatus.textContent = '驗證通過。';
+            confirmHint.textContent = `請在下方輸入學期代碼「${sid}」以解鎖刪除按鈕：`;
+            deleteControls.style.display = '';
+            notify('驗證通過，可以繼續刪除', 'success');
+        } catch (e) {
+            console.error('[V2] 匯出檔驗證失敗:', e);
+            verifyStatus.textContent = `驗證失敗：${e?.message || e}`;
+            notifyError(e, '驗證匯出檔');
+        } finally {
+            verifyBtn.disabled = false;
+        }
+    });
+
+    confirmInput.addEventListener('input', () => {
+        const sid = selectEl.value;
+        const verified = _archiveState && _archiveState.semesterId === sid && _archiveState.phase === 'verified';
+        deleteBtn.disabled = !(verified && confirmInput.value.trim() === sid);
+    });
+
+    deleteBtn.addEventListener('click', async () => {
+        const sid = selectEl.value;
+        if (confirmInput.value.trim() !== sid) {
+            notify('輸入的學期代碼與目前選擇的學期不符', 'warning');
+            return;
+        }
+        const ok = await window.app?.confirmDialog?.({
+            title: '刪除學期雲端資料',
+            message:
+                `確定要永久刪除「${sid}」的雲端資料嗎？\n\n` +
+                `將刪除：課表、調代課紀錄（含私有明細）${_archiveState.counts.substituteRecords} 筆、` +
+                `待審請求（含私有明細）${_archiveState.counts.pendingRequests} 筆。\n` +
+                `不會刪除：操作日誌（需由系統管理者另行離線清除）、教師名冊、其他學期的任何資料。\n\n` +
+                `此操作無法復原！請確認你已妥善保存剛才下載的匯出檔案。`,
+            confirmText: '確認刪除',
+            danger: true,
+        });
+        if (!ok) return;
+
+        deleteBtn.disabled = true;
+        const dismiss = window.app?.showToast?.('刪除中，請稍候…', 'warning', 60000);
+        try {
+            await executeSemesterArchiveDelete(sid);
+            dismiss?.();
+            notify(`「${sid}」已封存並從雲端刪除`, 'success', 6000);
+            await renderArchiveAdminTab();
+        } catch (e) {
+            dismiss?.();
+            console.error('[V2] 封存刪除失敗:', e);
+            notifyError(e, '封存刪除');
+            // executeSemesterArchiveDelete() 偵測到刪除前筆數漂移時，會把 _archiveState.phase
+            // 退回 'exported'（鎖住刪除、要求重新驗證）；其餘失敗原因（例如目前學期改變、
+            // config 讀取失敗）不會動到 _archiveState。兩種情況都改用 syncArchiveSectionState()
+            // 依 _archiveState 目前真實狀態重繪，而不是手動猜測該清空哪些欄位——避免遺漏
+            // 「畫面看起來像可以繼續、但其實已經被鎖住」這種畫面與狀態不一致的殘留。
+            await syncArchiveSectionState();
+        }
+    });
+
+    await syncArchiveSectionState();
 }
 
 /* ===== 頁籤切換偵測 ===== */
@@ -1628,7 +2315,10 @@ function bindV2TabSwitches() {
             if (tab === 'teachers')   await renderTeachersAdminTab();
             if (tab === 'v2-logs')    await renderLogsTab();
             if (tab === 'records')    await renderRecordsTab();
-            if (tab === 'settings')   await renderSemesterAdminTab();
+            if (tab === 'settings') {
+                await renderSemesterAdminTab();
+                await renderArchiveAdminTab();
+            }
         }, { passive: true });
     });
 }
@@ -1671,7 +2361,7 @@ function forceActivateTab(dataTab) {
 
 // 所有「由登入身份動態渲染、含個資」的容器 id。切換身份時必須全部清空。
 // 集中一處列舉：日後新增受限頁籤只需在此補一個 id，避免遺漏造成殘留外洩。
-const V2_IDENTITY_CONTENT_HOSTS = ['v2-teachers-admin', 'v2-logs', 'v2-pending-list', 'v2-records-section', 'v2-semester-admin'];
+const V2_IDENTITY_CONTENT_HOSTS = ['v2-teachers-admin', 'v2-logs', 'v2-pending-list', 'v2-records-section', 'v2-semester-admin', 'v2-archive-admin'];
 
 /**
  * 身份切換 / 登出時重置 V2 視圖狀態（資安）。僅在身份「實際改變」時呼叫
@@ -1705,6 +2395,9 @@ function resetV2ViewState() {
     _v2RecordsSemesterFilter = '';
     _v2SemesterHistoryCache.clear();
     _v2KnownSemesterIds = null;
+    // Stage 5：封存流程的匯出/驗證狀態同屬「含個資的畫面狀態」（雜湊/筆數綁定特定一次匯出），
+    // 身份切換一律清空——不同 director 不該沿用前一位的匯出狀態解鎖刪除按鈕。
+    _archiveState = null;
     resetSyncStatus();
     forceActivateTab('substitute');
 }
@@ -2168,6 +2861,13 @@ async function v2GetRecordsBySemester(semesterId) {
  * 一定包含「目前學期」（即使 schedules/{目前學期} 因某些原因尚未建立文件——例如「開新學期」
  * 那次 batch 寫入失敗一半，仍要讓使用者選得到自己現在所在的學期），其餘依
  * semesterUtils.compareSemesterId 由新到舊排序。
+ *
+ * Stage 5 驗收修復（輕7+8）：併入 `dataSvc.listArchivedSemesterIds()`（archives/ 集合的
+ * 學期 id）。封存刪除會把 schedules/{semesterId} 一併刪除，若只看 listKnownSemesterIds()
+ * （schedules/ 集合），已封存學期會在刪除完成的瞬間從所有下拉選單裡「消失」——不只是封存頁
+ * 自己選不到，連 director 想確認「這學期封存紀錄長怎樣」都無路可去。併入後，已封存學期
+ * 仍會出現在選單中，由 renderArchiveAdminTab() 依 `getArchiveRecord()` 判斷並顯示封存摘要、
+ * 停用匯出/刪除鈕（見該函式）。
  */
 async function v2ListSemesterOptions() {
     if (_v2KnownSemesterIds) return _v2KnownSemesterIds;
@@ -2177,8 +2877,14 @@ async function v2ListSemesterOptions() {
     } catch (e) {
         console.warn('[V2] 讀取已知學期清單失敗：', e);
     }
+    let archived = [];
+    try {
+        archived = await dataSvc.listArchivedSemesterIds();
+    } catch (e) {
+        console.warn('[V2] 讀取已封存學期清單失敗：', e);
+    }
     const cur = semesterState.getCurrentSemesterId();
-    const all = new Set(known);
+    const all = new Set([...known, ...archived]);
     if (cur) all.add(cur);
     _v2KnownSemesterIds = [...all].sort((a, b) => semesterUtils.compareSemesterId(b, a));
     return _v2KnownSemesterIds;
@@ -3167,6 +3873,7 @@ async function bootstrap() {
             }
             if (roleSvc.isDirector()) {
                 await safeBootstrapStep('學期管理', renderSemesterAdminTab);
+                await safeBootstrapStep('資料封存', renderArchiveAdminTab);
             }
             // Stage 1（讀取成本止血，§5.4）：操作日誌不再於 bootstrap 就讀（原本這裡對每個
             // approver 登入都無條件打一次 fetchLogs，即使這次登入完全不會打開日誌頁）。

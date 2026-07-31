@@ -9,6 +9,60 @@ tags:
 
 ---
 
+## [2026-07-31]（feature/permission-system）多租戶研究 Stage 5：封存與生命週期工具（未 commit）
+
+依 `docs/RESEARCH-multitenancy-semester.md` §6.2（封存流程＋三個陷阱）／§6.5（operationLogs 衝突解法 b）／§8 Stage 5。動機：完成「保留 3 年 → 期滿匯出封存 → 從雲端刪除」的生命週期閉環。設定頁新增「資料封存」卡片（director 專用，緊鄰「學期管理」）：選學期 → 匯出該學期完整資料（課表、`substituteRecords`/`pendingRequests` 含 private/detail、`operationLogs`）為單一 JSON → 選擇剛下載的檔案做 SHA-256 雜湊 + 雲端當下筆數雙重驗證 → 輸入學期代碼二次確認 → 執行刪除（僅限非目前學期；private/detail 先刪、父文件後刪，沿用既有 `deleteSubstituteRecordsBatch`/`deletePendingRequestsBatch`；課表 doc 一併刪除）→ 寫入不可改/刪的 `archives/{semesterId}` 封存紀錄與操作日誌。全流程每一步失敗或資料在期間漂移都 fail-closed 中止、不推進到可刪除狀態。`operationLogs` 不在 UI 刪除範圍內（client 規則本次未鬆綁「不可改/刪」），改由新增的離線腳本 `scripts/cleanup-operation-logs.js`（`--before=<日期>`，預設 dry-run、需 `--yes` 才實際刪除，永遠先匯出備份）以 gcloud REST 憑證清理，腳本頭註記已核實「gcloud OAuth 憑證不受 client Security Rules 限制」這個前提（引 `firestore-backup.js`/`backfill-semester-id.js` 既有行為為佐證）。opus 驗收第一輪不通過（2 阻斷/4 中/7 輕），第二輪重驗定案通過、追加 6 項非阻斷收尾（1 中/5 輕），本條目已含兩輪全部修復。**只寫程式碼，未寫 Firestore、未部署、未跑 `cleanup-operation-logs.js`、未 commit。**
+
+### 修復（第二輪 opus 驗收：1 中、5 輕，重驗定案通過後的收尾）
+- **[中2]** `docs/STAGE5-ARCHIVE.md` 原文誤稱「規則未部署時匯出完全正常、只有刪除受影響」——訂正：輕7+8 讓匯出前必先呼叫 `getArchiveRecord()`（讀 `archives/` 集合），該集合在舊規則下完全沒有 `match` 區塊、預設 `DENY`，規則未部署時**匯出本身就會被擋下**（`permission-denied`），不是只有刪除功能受影響。部署順序段落已改標「強制」而非「建議」，並新增驗證清單 5j 核對此行為
+- **[輕1（原編號中1，重新分類為文件澄清）]** `schoolDataService.js` 的 `getRecordDetailsBulk()` 註解原本描述了一個從未存在的「`hasSensitive` 硬比對」機制（`hasSensitive` 只是 `splitSensitive()` 寫入當下的暫時判斷，從未落盤、讀取路徑上無法回頭比對）——刪除該段錯誤描述，改寫為如實的完整性保證機制：僅 `exists()===false` 視為「真的沒有 detail」，其餘任何錯誤一律中止
+- **[輕3]** `getRecordDetailsBulkStrict()`/`getRequestDetailsBulkStrict()` 改用 `Promise.allSettled`（共用新輔助函式 `settleStrictDocReads()`）取代 `Promise.all`，彙整後只拋出第一個失敗原因——避免多筆同時 reject 時，未被 `await` 接住的其餘 rejection 被 JS runtime 記成 unhandled rejection 噪音
+- **[輕4]** `batchDeleteRefGroups()` 改為依「累計操作數」（`MAX_OPS_PER_BATCH=500`，Firestore 官方硬上限）分塊，取代原本假設「每筆最多 2 個 ref」的固定筆數分塊（`CHUNK_SIZE_ITEMS=200`）——消除「未來若某筆 ref 數超過 2，200 筆可能就超過 500 上限」的隱患；分塊判斷仍在「加入這一筆之前」進行，同一筆的 ref 保證不被切開
+- **[輕5]** `executeSemesterArchiveDelete()` 在寫入 `archives/{semesterId}` 封存紀錄前，新增一次刪除後複查（重用 `fetchSemesterArchiveSnapshot()`）：`substituteRecords`/`pendingRequests` 筆數與 `hasSchedule` 三項皆須為「空」才寫紀錄；任一項有殘留則中止、不寫紀錄，並提示人工檢視——避免 `archives` 這份 create-only、永久不可改/刪的紀錄，在資料實際上還有殘留時就被誤寫成「已完整封存」
+- **[輕6]** `switchToNewSemester()` 的「`config` 更新成功、`schedules/{toId}` 建立失敗」分支新增呼叫 `showSemesterChangedBanner(toId)`（既有機制，強制提示使用者重新整理）——避免 `semesterState` 已切換到新學期，但 bootstrap 建立的即時訂閱仍綁定舊學期查詢條件的半套狀態被使用者忽略
+
+### 修復（第一輪 opus 驗收：2 阻斷、4 中、7 輕）
+- **[阻斷1，fail-open]** `collectSemesterArchiveData()` 原本用 `getSchedule(semesterId).catch(() => null)` 與一般版 `getRecordDetailsBulk`/`getRequestDetailsBulk`（吞掉 permission-denied）讀取封存資料——對執行封存的 director 而言，讀自己學校的 private/detail 理論上不可能合法遇到 permission-denied，若真的發生代表異常，卻會被靜默當成「沒有」，讓殘缺的匯出通過雜湊驗證後被拿去執行刪除。改為：課表改用不含 legacy fallback、不吞任何錯誤的 `getScheduleForSemesterStrict()`；私有明細改用新增的「零容忍」版本 `getRecordDetailsBulkStrict()`/`getRequestDetailsBulkStrict()`（只有 `snap.exists()===false` 才代表「真的沒有」，其餘任何錯誤一律 rethrow）。一般版 `getRecordDetailsBulk`/`getRequestDetailsBulk`（給一般教師 UI 讀取「不屬於自己」的紀錄容錯用）維持原行為不變，只是內部改自行呼叫 `getDoc()` 並顯式判斷 `isBenignReadError()`（僅 `permission-denied`/`not-found`）
+- **[阻斷2，recount 未真正 gate 刪除清單]** 原設計是「recount（只查筆數）→ 比對通過 → 另外再查一次完整文件當刪除清單」，兩次查詢之間存在時間窗，刪除清單其實是 requery 當下的新狀態，並未真的被核對過。改為新函式 `fetchSemesterArchiveSnapshot()`：一次查回完整文件陣列＋筆數，**刪除步驟直接重用同一次查詢的結果去執行刪除，不再另外 requery**；並新增 `idSetsEqual()` 比對 ID 集合是否完全相同（不只是筆數相同——同一時間窗內刪一筆、加一筆，筆數不變但集合已不同）
+- **[中3，讀取量修正]** `fetchSemesterArchiveSnapshot()` 不含 operationLogs（理由：歷史學期的 operationLogs 在寫入規則下結構上不可能再變動，見該函式註解），配合阻斷2 消除重複 query，大校情境下單次完整流程讀取量從約 46,503 降到約 24,603（降幅約 47%，`docs/STAGE5-ARCHIVE.md`「何時該做一次封存」一節已補上實算表訂正原版粗估）
+- **[中4]** 新增 `getScheduleForSemesterStrict(semesterId)`：不含 `getSchedule()` 的 legacy fallback（避免歷史學期誤讀到不屬於自己的舊版單一課表文件，污染封存內容與 `hasSchedule` 判斷）
+- **[中5]** `pendingRequests/{reqId}/private/detail` 的 `create`/`update` 補歷史學期唯讀鎖（新增 `parentPendingRequestCurrentSemester`/`parentAllowsNewPendingRequestPrivateDetail`，比照 `substituteRecords` 側 Stage 2 已有的同款函式），原本完全沒有學期鎖，approver 理論上可對歷史學期的待審請求私有明細任意補建/竄改
+- **[中6]** `writeArchiveRecord()` 文件訂正：Firestore 規則判斷 create/update 看「文件此刻是否已存在」而非呼叫端用 `setDoc` 還是 `updateDoc`，故重試（該學期已有封存紀錄時）會被 `allow update: if false` 直接擋下失敗，不是原文誤寫的「整份覆寫也沒問題」；配合輕7+8 從 UI 源頭盡量避免走到重試路徑
+- **[輕7+8]** `v2ListSemesterOptions()` 併入 `dataSvc.listArchivedSemesterIds()`（新增），修復封存刪除後該學期從所有下拉選單消失的問題；`renderArchiveAdminTab()` 新增 `getArchiveRecord()` 檢查，已封存學期停用匯出/刪除鈕並顯示封存摘要
+- **[輕9]** `batchDeleteRefs(fs, refs)` 改為 `batchDeleteRefGroups(fs, refGroups)`：以「筆」而非攤平陣列的固定數量分塊——原本「CHUNK_SIZE 為偶數即可保證母子同批」的技巧，前提是每筆恆貢獻 2 個 ref，輕10 引入「只有真的有 detail 才刪 detail ref」後這個前提不再成立，必須改用依筆分塊
+- **[輕10]** 新增 `deleteSubstituteRecordsBatchKnownDetail`/`deletePendingRequestsBatchKnownDetail`：只對「匯出當下已知有 private/detail」的 id 送出 detail 刪除請求，避免對沒有 detail 的紀錄發送必然 no-op 的刪除
+- **[輕11]** `archives/{semesterId}` 規則的 `note` 欄位加 `is string && size() < 500`；訂正規則註解中「封存紀錄是完整匯出並刪除的證明」這類誇大說法，改為如實描述「是什麼、不是什麼」
+- **[輕12]** `executeSemesterArchiveDelete()` 刪除前確認「目前作用中學期」改用新增的 `getConfigFromServer()`（強制直讀伺服器、略過本機快取，`firebaseV2.js` 新增 `getDocFromServer` 匯出）
+- **[輕13，Stage 2 遺留]** `switchToNewSemester()` 寫入順序對調：`upsertConfig({currentSemester: toId})` 改到 `saveSchedule(toId)` 之前——原順序在規則部署後，`schedules/{toId}` 的寫入會因為當下 `config.currentSemester` 還是 `fromId` 而必定被 `isCurrentSemester()` 拒絕。若 `saveSchedule(toId)` 之後仍失敗，`config.currentSemester` 已指向新學期（可接受狀態，課表可稍後補上傳），錯誤訊息已改為明確說明「已切換但課表建立失敗」
+
+### 新增（規則，`firestore.rules` v2.4 → v2.5）
+- `schedules/{semesterId}` 的 `write` 拆成 `create/update`（維持原「僅目前學期」鎖，行為不變）+ `delete`（新增：director 專用，且僅能刪「非目前學期」——供封存流程刪除歷史學期課表使用，目前學期課表不可被此規則刪除）
+- 新增 `archives/{semesterId}`：`read` 限 approver；`create` 限 director + 欄位白名單/型別驗證（`semesterId`/`archivedAt`/`archivedBy`/`counts`/`jsonHash`/`note`，`note` 另加字數上限）；`update`/`delete` 恆 `false`，比照 `operationLogs` 的稽核軌跡不可改/刪設計
+- `pendingRequests/{reqId}/private/detail` 的 `create`/`update` 補歷史學期唯讀鎖（見上方中5修復）
+- `substituteRecords`/`pendingRequests` 既有 `delete` 規則（director-only／approver-or-initiator，皆無學期鎖）、`operationLogs` 的「不可改/刪」規則**皆未變動**，已核實對封存流程的刪除範圍放行
+
+### 新增（`schoolDataService.js`）
+- `deleteScheduleForSemester(semesterId)`：刪除 per-semester 課表文件
+- `getScheduleForSemesterStrict(semesterId)`（中4新增）；`getConfigFromServer()`（輕12新增）
+- `listSubstituteRecordsBySemesterForArchive`／`listPendingRequestsBySemesterForArchive`／`listLogsBySemesterForArchive`：封存專用的一次性查詢，刻意不帶 `orderBy`（只用單欄位 `where`，不需要額外複合索引，與既有「歷史學期檢視」用途的 `listSubstituteRecordsBySemester` 分開維護）
+- `getRequestDetailsBulk`：`pendingRequests` 版本的批次讀取私有明細（比照既有 `getRecordDetailsBulk`）；`getRecordDetailsBulkStrict`/`getRequestDetailsBulkStrict`（阻斷1新增，零容忍版本，只給封存匯出鏈用）
+- `listArchivedSemesterIds()`（輕7+8新增）
+- `deleteSubstituteRecordsBatchKnownDetail`/`deletePendingRequestsBatchKnownDetail`（輕10新增）；`batchDeleteRefs`→`batchDeleteRefGroups`（輕9，改依筆分塊）
+- `writeArchiveRecord`／`getArchiveRecord`：封存紀錄的寫入與讀取
+- `SCHEMA_PATHS.archivesCol`／`archiveDoc`；`LOG_ACTIONS.SEMESTER_ARCHIVE`
+
+### 新增（`v2-app.js`：`renderArchiveAdminTab()` 與封存流程狀態機）
+- 三段狀態機 `null → 'exported' → 'verified'`：匯出（`runSemesterArchiveExport`，含進度顯示、`crypto.subtle` 計算 SHA-256、觸發下載）→ 驗證（`verifyArchiveExportFile`，比對雜湊 + 雲端當下筆數與 ID 集合，任一不符即中止且不解鎖刪除）→ 刪除（`executeSemesterArchiveDelete`，執行前重新讀 `config.currentSemester`（`getConfigFromServer`）確認非目前學期、重新核對筆數與 ID 集合抓漂移，任何一項失敗即 throw、不刪除）
+- `fetchSemesterArchiveSnapshot`／`diffArchiveCounts`／`idSetsEqual`：驗證與刪除前的重新核對，刪除步驟直接重用查詢結果（阻斷2）
+- 設定頁新卡片「資料封存」（`index.html` `#v2-archive-admin`，緊鄰 `#v2-semester-admin`）；已封存學期自動停用匯出/刪除鈕（輕7+8）；`resetV2ViewState()` 新增 `_archiveState` 清空與 `v2-archive-admin` 併入 `V2_IDENTITY_CONTENT_HOSTS`（身份切換不沿用前一位使用者的匯出狀態）
+- 版本號 bump：`index.html` 的 `v2-app.js?v=0.1.8`
+
+### 新增（離線腳本）
+- `scripts/cleanup-operation-logs.js`：`--before=<YYYY-MM-DD> [--school=] [--yes] [--dry-run]`，比照 `firestore-backup.js`/`backfill-semester-id.js` 的 gcloud token + REST 慣例；永遠先匯出備份到 `backups/firestore/operationLogs-cleanup/`，`--yes` 才實際 DELETE；`timestamp` 缺席/格式異常的文件 fail-closed 略過不刪
+
+### 新增（文件）
+- `docs/STAGE5-ARCHIVE.md`：部署順序（規則先於前端）、3 年保留的封存 SOP（含 opus 驗收修正後的實算讀取量）、驗證清單（5a-5i）、已知限制（缺 `semesterId` 的舊日誌、director 信任邊界、雜湊驗證的侷限性、零容忍錯誤處理的適用範圍，皆誠實列出）
+
 ## [2026-07-31]（feature/permission-system）多租戶研究 Stage 2：學期欄位化（含 opus 驗收修復，未 commit）
 
 依 `docs/RESEARCH-multitenancy-semester.md` §5/§6.1/§8 Stage 2。動機：課表原本是單一文件整份覆寫（換學期即蓋掉舊課表）、紀錄無學期標記、`config.currentSemester` 是 bootstrap 寫入但 src/ 零讀取的死欄位。本次把學期升級為一級概念：`currentSemester` 活化為全 app 的「目前作用中學期」；課表改 per-semester 文件；`substituteRecords`/`pendingRequests`/`operationLogs` 新寫入一律帶 `semesterId`；規則層加學期唯讀鎖（歷史學期不可再新增/編輯）；紀錄頁新增歷史學期一次性檢視；設定頁新增「學期管理」（director 專用，開新學期）。opus 驗收第一輪不通過（2 阻斷/5 中/5 輕），第二輪重驗兩個阻斷已通過、追加 R1（阻斷級資料遺失）+ R2-R4（輕）+ R5-R6（文件註記），本條目已含兩輪全部修復。**只寫程式碼，未寫 Firestore、未部署、未跑 v2-rules-matrix.mjs、未 commit。**

@@ -58,6 +58,10 @@ export const SCHEMA_PATHS = {
     // Stage 0（2026-07-31，§3.4b）：login_denied 改道，doc id 綁 uid，一人一份可覆寫。
     joinAttemptDoc:    (uid) => `schools/${SCHOOL_ID}/joinAttempts/${uid}`,
     joinAttemptsCol:   ()    => `schools/${SCHOOL_ID}/joinAttempts`,
+    // Stage 5（2026-07-31，§6.2/§6.5）：封存紀錄，doc id 綁 semesterId（一學期最多封存一次，
+    // 規則層 create-only + update/delete 皆 false，寫入後永久不可變，見 firestore.rules）。
+    archivesCol:       ()    => `schools/${SCHOOL_ID}/archives`,
+    archiveDoc:        (sid) => `schools/${SCHOOL_ID}/archives/${sid}`,
 };
 
 /**
@@ -137,6 +141,8 @@ export const LOG_ACTIONS = Object.freeze({
     CLEAR_ALL_DATA:     'clear_all_data',
     // Stage 2（§6.1 SOP）：director 在「學校設定 → 學期管理」開新學期時寫入。
     SEMESTER_SWITCH:    'semester_switch',
+    // Stage 5（§6.2 SOP）：director 完成「匯出 → 驗證 → 刪除」封存流程後寫入。
+    SEMESTER_ARCHIVE:   'semester_archive',
 });
 
 export const LOG_TARGET_TYPES = Object.freeze({
