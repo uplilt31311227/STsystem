@@ -100,22 +100,33 @@ function docFieldsToObj(doc) {
 
 /* ===== Bootstrap 動作 ===== */
 
+// 驗收修復 S5-R：firestore.rules 的 isInitialDirector() 已改用 userEmail().lower() 比對
+// initialAdminEmails 陣列——Firestore 規則語言無法對陣列逐項套用 .lower() 再比對，
+// 所以「陣列內容本身必須全小寫」是規則正確運作的前提約束。本腳本是目前唯一會寫
+// initialAdminEmails 的地方，一律正規化為小寫，避免手動編輯或未來擴充時混入大寫值。
+function normalizeEmailList(emails) {
+    return Array.from(new Set((emails || []).map(e => (e || '').toLowerCase().trim()).filter(Boolean)));
+}
+
 async function ensureConfig() {
     const existing = await get(`schools/${SCHOOL_ID}/config/main`);
     if (existing) {
-        const data  = docFieldsToObj(existing);
-        const emails = data.initialAdminEmails || [];
-        const needAdd = !emails.includes(DEFAULT_DIRECTOR_EMAIL);
-        if (!needAdd) {
-            console.log(`✓ schools/${SCHOOL_ID}/config/main 已存在且主任白名單就緒`);
+        const data       = docFieldsToObj(existing);
+        const rawEmails  = data.initialAdminEmails || [];
+        const merged     = normalizeEmailList([...rawEmails, DEFAULT_DIRECTOR_EMAIL]);
+        // 比對「正規化後」與「現存原始值」是否已經一致（排序後比較，忽略順序差異）——
+        // 一致就不必寫入；不一致的情況涵蓋兩種：少了 DEFAULT_DIRECTOR_EMAIL，或既有清單
+        // 本身含有大寫/重複/空白等未正規化的值，兩種都要修正回全小寫去重的乾淨清單。
+        const needWrite = JSON.stringify([...rawEmails].sort()) !== JSON.stringify([...merged].sort());
+        if (!needWrite) {
+            console.log(`✓ schools/${SCHOOL_ID}/config/main 已存在且主任白名單就緒（已全小寫）`);
             return data;
         }
-        const merged = Array.from(new Set([...emails, DEFAULT_DIRECTOR_EMAIL]));
         await patchDoc(`schools/${SCHOOL_ID}/config/main`, {
             initialAdminEmails: v.arr(merged),
             updatedAt:          v.time(),
         }, ['initialAdminEmails', 'updatedAt']);
-        console.log(`✓ 已補入主任 ${DEFAULT_DIRECTOR_EMAIL} 到 initialAdminEmails`);
+        console.log(`✓ 已補入主任 ${DEFAULT_DIRECTOR_EMAIL} 到 initialAdminEmails（並正規化為全小寫）`);
         return { ...data, initialAdminEmails: merged };
     }
 
@@ -123,7 +134,7 @@ async function ensureConfig() {
     const fields = {
         schoolName:         v.str(DEFAULT_SCHOOL_NAME),
         currentSemester:    v.str(DEFAULT_SEMESTER),
-        initialAdminEmails: v.arr([DEFAULT_DIRECTOR_EMAIL]),
+        initialAdminEmails: v.arr(normalizeEmailList([DEFAULT_DIRECTOR_EMAIL])),
         createdAt:          v.time(),
         updatedAt:          v.time(),
     };

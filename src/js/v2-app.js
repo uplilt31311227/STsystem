@@ -1040,6 +1040,24 @@ async function renderLogsTab() {
     const visible = roleSvc.filterLogsForCurrent(all);
     const failedCount = logger.getFailedLogCount();
 
+    // Stage 0 驗收修復 S8：joinAttempts（登入遭拒紀錄）目前無任何讀取端，approver
+    // 完全看不到有誰嘗試登入被拒——加一個最小區塊列出來。一次性 getDocs（不用
+    // onSnapshot），這是低頻查閱的稽核輔助資訊，不需要即時監聽；讀取失敗（例如規則
+    // 版本尚未部署、emailIndex 集合為空等）不阻擋操作日誌本身的顯示。
+    // 驗收修復 N1：整段用 isApprover() 包住——非 approver（理論上進不了這個 CSS
+    // .v2-approver-only 頁籤，但這裡不依賴 CSS 當唯一防線）完全不 fetch、不渲染這個
+    // 區塊，避免看到一個永遠空的「0 筆」區塊誤導成「從來沒人被拒絕過」。
+    const canSeeJoinAttempts = roleSvc.isApprover();
+    let joinAttempts = [];
+    if (canSeeJoinAttempts) {
+        try {
+            joinAttempts = await dataSvc.listJoinAttempts();
+            joinAttempts.sort((a, b) => (b.attemptedAt || '').localeCompare(a.attemptedAt || ''));
+        } catch (e) {
+            console.warn('[v2] 讀取 joinAttempts 失敗（不影響操作日誌本身顯示）：', e?.message || e);
+        }
+    }
+
     if (isStaleRender(_gen)) return;   // 期間身份已切換 → 放棄回填操作日誌
     host.innerHTML = `
         ${failedCount > 0 ? `<div class="v2-logs-failed-banner">⚠ 本次工作階段有 ${failedCount} 筆稽核日誌寫入失敗</div>` : ''}
@@ -1063,6 +1081,25 @@ async function renderLogsTab() {
             </tbody>
         </table>
         </div>
+        ${canSeeJoinAttempts ? `
+        <div class="v2-section-header" style="margin-top:1.5rem;">
+            <h3>登入遭拒 <small style="color:#6b7280;font-weight:normal;">（${joinAttempts.length} 筆，Stage 0 §3.4b）</small></h3>
+        </div>
+        <div class="table-wrap">
+        <table class="data-table data-table-compact v2-log-table data-table-cards">
+            <thead><tr><th>時間</th><th>Email</th><th>原因</th></tr></thead>
+            <tbody>
+            ${joinAttempts.length === 0
+                ? '<tr><td colspan="3" style="color:#9ca3af;">目前沒有被拒絕的登入嘗試</td></tr>'
+                : joinAttempts.map(j => `
+                <tr>
+                    <td data-label="時間">${fmtDate(j.attemptedAt)}</td>
+                    <td data-label="Email">${escapeHtml(j.email || '—')}</td>
+                    <td data-label="原因">${escapeHtml(j.reason || '—')}</td>
+                </tr>`).join('')}
+            </tbody>
+        </table>
+        </div>` : ''}
     `;
     document.getElementById('v2-refresh-logs')?.addEventListener('click', renderLogsTab);
 }

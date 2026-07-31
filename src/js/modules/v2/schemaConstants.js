@@ -30,6 +30,26 @@ export const SCHEMA_PATHS = {
     logDoc:            (id)  => `schools/${SCHOOL_ID}/operationLogs/${id}`,
     userMapCol:        ()    => `schools/${SCHOOL_ID}/userMappings`,
     userMapDoc:        (uid) => `schools/${SCHOOL_ID}/userMappings/${uid}`,
+    // Stage 0（2026-07-31，§3.4）：email → teacherId 索引，供首登配對用；
+    // 規則只開放 get 自己一份（emailKey == 登入 email），不開放 list，故 emailKey 一律小寫。
+    // 驗收修復 S11：Firestore 文件 ID 不可含 '/'（會被誤解成路徑分隔）、不可恰好等於
+    // '.' 或 '..'（Firestore 保留值，寫入會直接被拒）。組路徑前先驗證，格式不合法時
+    // 直接 throw——emailIndexDoc 只在已知呼叫端（schoolDataService 的 createTeacher /
+    // updateTeacher / deleteTeacher / getEmailIndexEntry）內部使用，且呼叫端在傳入前
+    // 已用 `if (email)` 這類 truthy 檢查排除了空字串，此處只需再擋「格式明顯不像
+    // 合法文件 ID」的異常值；讓錯誤在這裡就炸出來，比讓 fs.doc() 對一個壞路徑產生更難
+    // 追查的底層錯誤更容易定位，呼叫端本來就是 async function、丟出的例外會直接
+    // 沿用既有的「寫入失敗就整批中止」行為（例如 createTeacher 的 batch.commit()）。
+    emailIndexDoc:     (email) => {
+        const normalized = (email || '').toLowerCase().trim();
+        if (!normalized || normalized.includes('/') || normalized === '.' || normalized === '..') {
+            throw new Error(`emailIndexDoc: 不合法的 email，無法組出 Firestore 文件路徑：${JSON.stringify(email)}`);
+        }
+        return `schools/${SCHOOL_ID}/emailIndex/${normalized}`;
+    },
+    // Stage 0（2026-07-31，§3.4b）：login_denied 改道，doc id 綁 uid，一人一份可覆寫。
+    joinAttemptDoc:    (uid) => `schools/${SCHOOL_ID}/joinAttempts/${uid}`,
+    joinAttemptsCol:   ()    => `schools/${SCHOOL_ID}/joinAttempts`,
 };
 
 /**
@@ -96,7 +116,10 @@ export const LOG_ACTIONS = Object.freeze({
     DELETE:             'delete',
     TEACHER_BIND_EMAIL: 'teacher_bind_email',
     ROLE_CHANGE:        'role_change',
-    LOGIN_DENIED:       'login_denied',
+    // 驗收修復 N4：LOGIN_DENIED 已移除——Stage 0 把「登入被拒」改道寫入
+    // schools/{id}/joinAttempts（見 operationLogger.logJoinAttempt），不再走
+    // LOG_ACTIONS 這條 operationLogs 專用的動作列舉；grep 全專案確認移除前
+    // 已無任何引用（authGuardV2.js 的舊呼叫點已在同一批修復中改用 logJoinAttempt）。
     PERMISSION_DENIED:  'permission_denied',
     TEACHER_CREATE:     'teacher_create',
     TEACHER_DELETE:     'teacher_delete',
