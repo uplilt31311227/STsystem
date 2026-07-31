@@ -83,6 +83,22 @@ export async function getConfig() {
     return snap.exists() ? snap.data() : null;
 }
 
+/**
+ * Stage 5 驗收修復（輕12）：與 getConfig() 唯一差異是用 getDocFromServer() 強制繞過本機快取，
+ * 保證拿到的是「這一刻伺服器上的真實值」。供 executeSemesterArchiveDelete() 在刪除前的最後
+ * 一道「目前作用中學期」確認使用——那個檢查的存在意義就是防「本機看到的狀態是舊的」，若這裡
+ * 還是用可能命中快取的 getDoc()，等於防線本身可能被同一個問題（陳舊快取）繞過。一般讀取
+ * 路徑（bootstrap、學期切換前檢查等）沒有這麼高的即時性要求，維持用 getConfig()，不需要
+ * 每處都改，避免不必要地增加對伺服器的直接依賴（getDocFromServer 在離線時會直接失敗，
+ * 不像 getDoc() 離線時還能退回快取）。
+ */
+export async function getConfigFromServer() {
+    const fs   = await getV2Firestore();
+    const ref  = fs.doc(fs.db, SCHEMA_PATHS.config());
+    const snap = await fs.getDocFromServer(ref);
+    return snap.exists() ? snap.data() : null;
+}
+
 export async function upsertConfig(patch) {
     const fs  = await getV2Firestore();
     const ref = fs.doc(fs.db, SCHEMA_PATHS.config());
@@ -249,6 +265,18 @@ export async function upsertJoinAttempt(uid, { email, reason } = {}) {
 }
 
 /**
+ * Stage 5（封存匯出，§6.2）：刪除 per-semester 課表文件。只能由呼叫端（v2-app.js 封存流程）
+ * 在確認 semesterId 不是目前作用中學期後呼叫——規則層（firestore.rules）本身也擋了
+ * `isCurrentSemester(schoolId, semesterId)` 的刪除，這裡不重複驗證，維持單一職責。
+ */
+export async function deleteScheduleForSemester(semesterId) {
+    if (!semesterId) return;
+    const fs  = await getV2Firestore();
+    const ref = fs.doc(fs.db, SCHEMA_PATHS.scheduleDocForSemester(semesterId));
+    await fs.deleteDoc(ref);
+}
+
+/**
  * 一次性讀取全部「登入遭拒」紀錄（供 approver 在操作日誌頁瀏覽，Stage 0 驗收修復 S8）。
  * 刻意用 getDocs 而非 onSnapshot——這是低頻查閱的稽核輔助資訊，不需要即時監聽，
  * 避免額外常駐一條訂閱（呼應 §5.4「operationLogs 只在打開頁籤時才讀」的同一精神）。
@@ -304,6 +332,26 @@ export async function getSchedule(semesterId) {
     return legacySnap.exists() ? legacySnap.data() : null;
 }
 
+/**
+ * Stage 5 驗收修復（中4）：封存專用，讀 per-semester 課表文件、**不含** getSchedule() 的
+ * legacy fallback。封存需要如實反映「這個學期本身是否真的有一份屬於自己的
+ * schedules/{semesterId} 文件」——若沿用含 fallback 的 getSchedule()，某個歷史學期若剛好
+ * 命中 fallback（退回讀舊版單一文件 data/schedule，該文件實際上可能是完全不同學期、甚至是
+ * Stage 2 上線前「當時的目前學期」留下的內容），會把不屬於這個學期的資料誤植入封存 JSON，
+ * 且 meta.counts.hasSchedule 的判斷也會失真（誤判為 true）。
+ * 不吞任何錯誤（不像 getSchedule() 的呼叫端過去常見 `.catch(() => null)` 的用法）——
+ * 讀取失敗（權限被拒、網路中斷等）代表「不確定這學期到底有沒有課表」，封存匯出鏈的原則是
+ * 「任何不確定＝中止」，交由呼叫端的 try/catch 讓整個匯出/核對步驟失敗，不能被本函式吞掉
+ * 後續誤判成「這學期沒有課表」。
+ */
+export async function getScheduleForSemesterStrict(semesterId) {
+    requireScheduleSemesterId('getScheduleForSemesterStrict', semesterId);
+    const fs   = await getV2Firestore();
+    const ref  = fs.doc(fs.db, SCHEMA_PATHS.scheduleDocForSemester(semesterId));
+    const snap = await fs.getDoc(ref);
+    return snap.exists() ? snap.data() : null;
+}
+
 export async function saveSchedule(semesterId, scheduleData) {
     requireScheduleSemesterId('saveSchedule', semesterId);
     const fs  = await getV2Firestore();
@@ -320,6 +368,25 @@ export async function saveSchedule(semesterId, scheduleData) {
 export async function listKnownSemesterIds() {
     const fs   = await getV2Firestore();
     const col  = fs.collection(fs.db, SCHEMA_PATHS.schedulesCol());
+    const snap = await fs.getDocs(col);
+    return snap.docs.map(d => d.id);
+}
+
+/**
+ * Stage 5 驗收修復（輕7+8）：一次性讀取全部「已封存」學期 id（archives/ 底下有文件的學期）。
+ * 封存刪除流程會把 schedules/{semesterId} 一併刪除（見 deleteScheduleForSemester()），
+ * 若學期選擇器只看 listKnownSemesterIds()（schedules/ 集合），已封存學期會在刪除完成的
+ * 瞬間從所有下拉選單裡「消失」——不只是封存頁自己選不到，連 director 想確認「這學期封存
+ * 紀錄長怎樣」都無路可去（getArchiveRecord() 有 API，但 UI 沒有管道帶使用者選到這個
+ * semesterId）。v2-app.js 的 v2ListSemesterOptions() 改為把這支函式的結果也併入選項清單，
+ * 讓已封存學期繼續出現在選單中，UI 端據此顯示「此學期已於 {日期} 封存」狀態並停用匯出/
+ * 刪除鈕（見 v2-app.js renderArchiveAdminTab()）——雲端資料已被刪除，選單存在的意義只是
+ * 讓「已封存」這個狀態本身可見、可查閱封存紀錄本身（筆數、雜湊、執行者、時間），不是讓
+ * 使用者以為還能重新匯出當時的資料（那份資料只存在於使用者當初下載的 JSON 檔案裡）。
+ */
+export async function listArchivedSemesterIds() {
+    const fs   = await getV2Firestore();
+    const col  = fs.collection(fs.db, SCHEMA_PATHS.archivesCol());
     const snap = await fs.getDocs(col);
     return snap.docs.map(d => d.id);
 }
@@ -399,6 +466,52 @@ export async function listSubstituteRecordsBySemester(semesterId) {
     const q    = fs.query(col, fs.where('semesterId', '==', semesterId), fs.orderBy('date', 'desc'));
     const snap = await fs.getDocs(q);
     return snap.docs.map(d => ({ recordId: d.id, ...d.data() }));
+}
+
+/**
+ * Stage 5（封存匯出，§6.2）：一次性讀取「指定學期」的全部已成立紀錄，供匯出／刪除前
+ * 重新計數使用。刻意不帶 orderBy——封存匯出與筆數核對都只在乎「有哪些文件」，不在乎順序，
+ * 省下一條複合索引相依（listSubstituteRecordsBySemester 的 orderBy('date') 需要
+ * semesterId+date 複合索引；這裡只用 where 單欄位相等，屬 Firestore 自動建立的單欄位索引，
+ * 不需要額外部署任何索引）。與 listSubstituteRecordsBySemester 分開維護：後者是「歷史學期
+ * 檢視」UI 用途，語意上需要穩定排序；這支是封存用途的計數/匯出，語意上不需要。
+ */
+export async function listSubstituteRecordsBySemesterForArchive(semesterId) {
+    if (!semesterId) return [];
+    const fs   = await getV2Firestore();
+    const col  = fs.collection(fs.db, SCHEMA_PATHS.substituteCol());
+    const q    = fs.query(col, fs.where('semesterId', '==', semesterId));
+    const snap = await fs.getDocs(q);
+    return snap.docs.map(d => ({ recordId: d.id, ...d.data() }));
+}
+
+/**
+ * Stage 5（封存匯出，§6.2）：一次性讀取「指定學期」的全部待審請求（不分狀態——封存需要
+ * 完整保存，不只是仍在途的那幾筆）。理由與 listSubstituteRecordsBySemesterForArchive 相同：
+ * 不帶 orderBy，只用單欄位 where，不需要額外複合索引。
+ */
+export async function listPendingRequestsBySemesterForArchive(semesterId) {
+    if (!semesterId) return [];
+    const fs   = await getV2Firestore();
+    const col  = fs.collection(fs.db, SCHEMA_PATHS.pendingCol());
+    const q    = fs.query(col, fs.where('semesterId', '==', semesterId));
+    const snap = await fs.getDocs(q);
+    return snap.docs.map(d => ({ reqId: d.id, ...d.data() }));
+}
+
+/**
+ * Stage 5（封存匯出，§6.2）：一次性讀取「指定學期」的全部操作日誌。同上不帶 orderBy、
+ * 不需要額外複合索引。注意：只有 Stage 2 之後（或已跑過 `scripts/backfill-semester-id.js`
+ * 回填）的日誌才帶 semesterId 欄位，回填前的舊日誌不會被這支查詢比對到——封存 UI 需要
+ * 對此如實提示，見 v2-app.js renderArchiveAdminTab() 的說明文字。
+ */
+export async function listLogsBySemesterForArchive(semesterId) {
+    if (!semesterId) return [];
+    const fs   = await getV2Firestore();
+    const col  = fs.collection(fs.db, SCHEMA_PATHS.logsCol());
+    const q    = fs.query(col, fs.where('semesterId', '==', semesterId));
+    const snap = await fs.getDocs(q);
+    return snap.docs.map(d => ({ logId: d.id, ...d.data() }));
 }
 
 /**
@@ -621,35 +734,92 @@ export async function deleteSubstituteRecordDetail(recordId) {
 }
 
 /**
- * 把待刪除的 doc 參照分塊、依序用 writeBatch 提交。
- * Firestore 單一 batch 上限 500 筆寫入，這裡用 400 留安全邊界；分塊之間循序 await（不並行
- * 送出下一塊），避免「清除所有資料」對上百筆文件同時發動大量併發寫入請求。
- * 對不存在的文件呼叫 batch.delete() 是 no-op（與既有的單筆 deleteDoc 行為一致），呼叫端不必
- * 先判斷文件是否存在。
+ * 把待刪除的 doc 參照依「筆」分塊（每個元素是同一筆紀錄要一起刪除的 ref 陣列，例如
+ * `[detailRef, parentRef]` 或只有 `[parentRef]`），依序用 writeBatch 提交。
+ *
+ * Stage 5 驗收修復（輕9）：改以「筆」為分塊單位，不是攤平成一條 ref 陣列後按固定數量切。
+ * 舊版（`batchDeleteRefs(fs, refs)`）能安全運作的前提是「每筆恆貢獻 2 個 ref、且固定以
+ * [detail, parent] 的順序相鄰 push」——此時只要 CHUNK_SIZE 取偶數，切塊必然落在每一對的
+ * 邊界上，不會把同一筆的 detail 與 parent 切進不同批次。Stage 5 新增 `*KnownDetail` 系列
+ * 函式後（見下方），沒有 private/detail 的紀錄只貢獻 1 個 ref，每筆的 ref 數變成 1 或 2
+ * 不固定，「CHUNK_SIZE 為偶數」這個前提直接失效——攤平陣列裡兩個相鄰 ref 有可能剛好分屬
+ * 不同筆，此時固定數量切塊完全有可能把「某筆的 detail」切進上一批、「同一筆的 parent」
+ * 切進下一批。改成本函式這種「以筆為單位分塊」後，同一筆的所有 ref 保證落在同一個
+ * writeBatch（同一個 batch 內的操作是原子提交，不會有「detail 刪了、parent 沒刪」的半套
+ * 狀態），與筆內貢獻幾個 ref 無關。
+ *
+ * Stage 5 驗收修復（輕4，opus 二輪驗收）：分塊依「累計操作數」而非「累計筆數」——原版用
+ * 固定 `CHUNK_SIZE_ITEMS=200`（筆）粗略假設「每筆最多 2 個 ref，200×2=400 ≤ 500」，這個
+ * 假設只在目前所有呼叫端都是「每筆最多 1 或 2 個 ref」時成立；一旦未來某個呼叫端傳入
+ * 「每筆 ref 數超過 2」的分組（例如某筆牽涉更多子文件），200 筆可能就超過 Firestore
+ * 單一 batch 500 筆寫入的硬上限，直接被拒絕。改為逐筆累加「這個 batch 已經有幾個 op」，
+ * 累加後會超過 `MAX_OPS_PER_BATCH`（500，Firestore 官方硬上限）才切下一個 batch——
+ * 同一筆的所有 ref 仍保證落在同一個 batch（分塊判斷永遠發生在「加入這一筆之前」，不會攔腰
+ * 切開單一筆的 ref 陣列），不受「每筆固定幾個 ref」這個假設影響。
+ * 已知限制（不在本次處理範圍）：若單一筆本身的 ref 數就超過 500（目前所有呼叫端最多 2 個，
+ * 不會發生），該筆會單獨佔滿一整個 batch 並在 `commit()` 時被 Firestore 拒絕——這種情況
+ * 代表資料模型本身已經超出「一筆紀錄」該有的複雜度，不是分塊策略能解決的問題。
+ *
+ * 分塊之間循序 await（不並行送出下一塊），理由同舊版：避免對上百筆文件同時發動大量併發
+ * 寫入請求。對不存在的文件呼叫 batch.delete() 是 no-op，呼叫端不必先判斷文件是否存在。
+ * @param {import('./firebaseV2.js').FirestoreHelpers} fs
+ * @param {Array<Array<object>>} refGroups
  */
-async function batchDeleteRefs(fs, refs) {
-    const CHUNK_SIZE = 400;
-    for (let i = 0; i < refs.length; i += CHUNK_SIZE) {
-        const batch = fs.writeBatch(fs.db);
-        refs.slice(i, i + CHUNK_SIZE).forEach(ref => batch.delete(ref));
-        await batch.commit();
+async function batchDeleteRefGroups(fs, refGroups) {
+    const MAX_OPS_PER_BATCH = 500; // Firestore 單一 batch 寫入操作數硬上限
+    let batch = fs.writeBatch(fs.db);
+    let opsInBatch = 0;
+    for (const group of refGroups) {
+        if (opsInBatch > 0 && opsInBatch + group.length > MAX_OPS_PER_BATCH) {
+            await batch.commit();
+            batch = fs.writeBatch(fs.db);
+            opsInBatch = 0;
+        }
+        group.forEach(ref => batch.delete(ref));
+        opsInBatch += group.length;
     }
+    if (opsInBatch > 0) await batch.commit();
 }
 
 /**
  * 批次刪除多筆已成立紀錄（含各自的 private/detail 子文件），供「清除所有資料」使用。
  * 取代原本「每筆各自 Promise.all 兩次 deleteDoc」的寫法（驗收缺陷 #7：無批次上限、
- * 百筆併發）；改用 writeBatch 分塊循序提交，見 batchDeleteRefs()。
+ * 百筆併發）；改用 writeBatch 分塊循序提交，見 batchDeleteRefGroups()。
+ * 這裡不知道哪些紀錄真的有 private/detail（呼叫端如「清除所有資料」通常沒有這個資訊、
+ * 也不值得為了省幾次 no-op 刪除多做一輪查詢），固定每筆都刪 [detailRef, parentRef]；
+ * 若某筆其實沒有 private/detail，對應的 batch.delete() 是 no-op（見上方註解）。封存流程
+ * 若已經知道哪些紀錄有 detail，改用下方 deleteSubstituteRecordsBatchKnownDetail()。
  */
 export async function deleteSubstituteRecordsBatch(recordIds) {
     if (!Array.isArray(recordIds) || recordIds.length === 0) return;
     const fs   = await getV2Firestore();
-    const refs = [];
-    for (const id of recordIds) {
-        refs.push(fs.doc(fs.db, SCHEMA_PATHS.substituteDetailDoc(id)));
-        refs.push(fs.doc(fs.db, SCHEMA_PATHS.substituteDoc(id)));
-    }
-    await batchDeleteRefs(fs, refs);
+    const groups = recordIds.map(id => [
+        fs.doc(fs.db, SCHEMA_PATHS.substituteDetailDoc(id)),
+        fs.doc(fs.db, SCHEMA_PATHS.substituteDoc(id)),
+    ]);
+    await batchDeleteRefGroups(fs, groups);
+}
+
+/**
+ * Stage 5 驗收修復（輕10）：deleteSubstituteRecordsBatch() 的「已知哪些筆有 detail」版本——
+ * 只有 `idsWithDetail` 內的 id 才會把 detail ref 加入刪除清單，其餘紀錄只刪父文件，避免對
+ * 「本來就沒有 private/detail 的紀錄」發送必然 no-op 的刪除請求（no-op 刪除雖然不會報錯，
+ * 但仍是一次真實的寫入操作、佔用批次額度與計費，見 RESEARCH-multitenancy-semester.md §6.2
+ * 陷阱二引用的 [S24]：no-op 刪除仍計費）。封存流程（executeSemesterArchiveDelete）在匯出
+ * 當下已經知道哪些紀錄真的有 private/detail（getRecordDetailsBulk() 回傳的 Map 的 key 集合），
+ * 把這份資訊原樣帶到刪除步驟即可，不需要重新查一次。
+ * @param {string[]} recordIds 全部要刪除的紀錄 id
+ * @param {Set<string>|string[]} idsWithDetail 其中「已知有 private/detail」的 id 子集合
+ */
+export async function deleteSubstituteRecordsBatchKnownDetail(recordIds, idsWithDetail) {
+    if (!Array.isArray(recordIds) || recordIds.length === 0) return;
+    const withDetail = idsWithDetail instanceof Set ? idsWithDetail : new Set(idsWithDetail || []);
+    const fs   = await getV2Firestore();
+    const groups = recordIds.map(id => {
+        const parentRef = fs.doc(fs.db, SCHEMA_PATHS.substituteDoc(id));
+        return withDetail.has(id) ? [fs.doc(fs.db, SCHEMA_PATHS.substituteDetailDoc(id)), parentRef] : [parentRef];
+    });
+    await batchDeleteRefGroups(fs, groups);
 }
 
 /**
@@ -669,17 +839,108 @@ export async function getRecordDetail(recordId) {
 }
 
 /**
+ * 判斷一次 Firestore 讀取失敗是否屬於「讀不到很正常」的情況——權限不足（不是當事人/approver）
+ * 或文件真的不存在。這兩種是預期行為，不代表資料有問題。其餘錯誤（網路中斷、逾時、未知
+ * 服務錯誤等）代表「不確定這份 detail 到底存不存在／內容是什麼」，不應該被當成「沒有」處理。
+ */
+function isBenignReadError(err) {
+    const code = err && err.code;
+    return code === 'permission-denied' || code === 'not-found';
+}
+
+/**
+ * Stage 5 驗收修復（輕3，opus 二輪驗收）：封存匯出鏈「零容忍」批次讀取的共用實作，供
+ * getRecordDetailsBulkStrict()/getRequestDetailsBulkStrict() 呼叫。
+ *
+ * 用 `Promise.allSettled` 而非 `Promise.all`——`Promise.all` 在多筆同時 reject 時，只有
+ * 第一個 reject 會被外層 `await` 接住並拋出；其餘「之後才 reject」的 promise 沒有任何
+ * `.catch()` 處理它們各自的結果，會被 JS runtime 記成 unhandled rejection（瀏覽器 console
+ * 印出一堆噪音，某些環境下甚至視為未捕捉例外，干擾排查真正的錯誤原因）。改用
+ * `allSettled` 讓所有 promise 都跑到底、每個都有明確的 fulfilled/rejected 結果，彙整後只把
+ * 「第一個」失敗原因丟出去給呼叫端——呼叫端（collectSemesterArchiveData）只在乎「有沒有
+ * 失敗、要不要中止匯出」，不需要每個失敗原因都個別呈現。
+ * @param {object} fs getV2Firestore() 回傳值
+ * @param {string[]} ids
+ * @param {(id: string) => object} refFn 依 id 組出文件參照
+ * @returns {Promise<Map<string, object>>}
+ */
+async function settleStrictDocReads(fs, ids, refFn) {
+    const settled = await Promise.allSettled(ids.map(async (id) => {
+        const snap = await fs.getDoc(refFn(id));
+        return snap.exists() ? { id, data: snap.data() } : null;
+    }));
+    const firstFailure = settled.find(s => s.status === 'rejected');
+    if (firstFailure) throw firstFailure.reason;
+    const result = new Map();
+    for (const s of settled) {
+        if (s.value) result.set(s.value.id, s.value.data);
+    }
+    return result;
+}
+
+/**
  * 批次讀取多筆紀錄的私有明細，回傳 Map<recordId, detail>。
- * 個別讀取失敗（permission-denied 等）已由 getRecordDetail 內部吞掉，不會中斷其餘筆數。
+ *
+ * Stage 5 驗收修復（阻斷1，opus 驗收，fail-open）：原版透過 getRecordDetail() 取值，該函式
+ * 用 `catch (_) { return null; }` 吞掉**所有**錯誤，包含網路中斷、逾時等「讀不到不代表沒有」
+ * 的情況——對一般 UI 顯示（例如紀錄列表順手補顯示假別）這是合理的容錯（讀不到就先不顯示，
+ * 使用者可以重整重試），但對封存匯出鏈是嚴重問題：若某筆讀取因網路瞬斷而失敗，卻被吞成與
+ * 「這筆本來就沒有 private/detail」完全無法區分的結果，匯出會誤判成完整，讓一份殘缺的匯出
+ * 通過雜湊驗證，之後還被拿去當作「已完整封存」的依據去執行刪除——資料就這樣不可逆地遺失
+ * 了一部分。
+ * 改為本函式自行呼叫 getDoc()（不透過會吞錯的 getRecordDetail()），只有 `isBenignReadError()`
+ * 判定為「讀不到很正常」的錯誤才略過該筆；其餘錯誤直接 rethrow，中止整個批次讀取，讓呼叫端
+ * （collectSemesterArchiveData）的 try/catch 接住並讓整個匯出步驟失敗——與封存匯出鏈
+ * 「任何不確定＝中止」的原則一致。singular 版本 getRecordDetail() 本身維持不變（它有其他
+ * 一般 UI 呼叫端，例如 v2-app.js 顯示單筆紀錄明細，那些情境下「讀不到就先不顯示」仍是合理、
+ * 不該改的既有行為）。
+ * ⚠ 完整性保證的實際機制：本函式（及下方 Strict 版本）**不**依賴任何「這筆紀錄本來就該有
+ * detail」的獨立旗標比對——`hasSensitive` 只是 `splitSensitive()` 在寫入當下的暫時判斷，
+ * 從未落盤成一個可回頭查詢的欄位，讀取路徑上不存在這種基準可比對。真正保證完整性的是讀取
+ * 本身的語意：`getDoc()` 對「文件不存在」不是錯誤（`snap.exists()===false` 正常回傳），
+ * 只有這種情況才代表「這筆真的沒有 detail」；其餘任何錯誤都視為不確定並中止整個匯出。
  */
 export async function getRecordDetailsBulk(recordIds) {
     const ids = Array.isArray(recordIds) ? [...new Set(recordIds.filter(Boolean))] : [];
+    const fs = await getV2Firestore();
     const result = new Map();
     await Promise.all(ids.map(async (id) => {
-        const detail = await getRecordDetail(id);
-        if (detail) result.set(id, detail);
+        const ref = fs.doc(fs.db, SCHEMA_PATHS.substituteDetailDoc(id));
+        try {
+            const snap = await fs.getDoc(ref);
+            if (snap.exists()) result.set(id, snap.data());
+        } catch (err) {
+            if (isBenignReadError(err)) return;
+            throw err;
+        }
     }));
     return result;
+}
+
+/**
+ * Stage 5 驗收修復（阻斷1，opus 驗收）：getRecordDetailsBulk() 的「零容忍」版本，只給封存
+ * 匯出鏈（collectSemesterArchiveData）使用。
+ *
+ * 一般版 getRecordDetailsBulk() 把 permission-denied 歸類為「讀不到很正常」而略過——這對
+ * 一般 UI 情境（例如一般教師被 hydrateRecordsWithDetail() 拿去補顯示紀錄列表）是合理容錯：
+ * 一位教師本來就讀不到跟自己無關的紀錄明細，這是預期行為。但封存匯出鏈的呼叫者恆是
+ * director（`isDirector()` 蘊含 `isApprover()`），而 `hasPrivateDetailAccess()` 對 approver
+ * 是無條件放行（規則第一個 OR 分支，不看 allowedTeacherIds）——對 director 而言，讀自己
+ * 學校任何一筆 substituteRecords/{id}/private/detail **結構上不可能合法地得到
+ * permission-denied**。若在封存匯出過程中真的發生，代表出現了應用層假設與實際狀態不一致的
+ * 異常情況，必須讓整個匯出中止，不能被靜默略過、當成「這筆本來就沒有 private/detail」處理
+ * ——否則會讓一份實際殘缺的匯出通過後續的雜湊驗證，之後還被拿去當作「已完整封存」的依據
+ * 執行刪除，資料就這樣不可逆地遺失一部分。
+ *
+ * 因此本函式**不吞任何錯誤**：`getDoc()` 對「文件不存在」本來就不是錯誤（`snap.exists()`
+ * 正常回傳 `false`，不會走進 catch），只有這種情況才代表「這筆真的沒有 private/detail」；
+ * 其餘任何錯誤（含理論上不該發生的 permission-denied、網路中斷等）一律讓 Promise.all
+ * reject，由呼叫端（collectSemesterArchiveData 的 try/catch）接住並中止整個匯出步驟。
+ */
+export async function getRecordDetailsBulkStrict(recordIds) {
+    const ids = Array.isArray(recordIds) ? [...new Set(recordIds.filter(Boolean))] : [];
+    const fs  = await getV2Firestore();
+    return settleStrictDocReads(fs, ids, (id) => fs.doc(fs.db, SCHEMA_PATHS.substituteDetailDoc(id)));
 }
 
 /* ===== Pending Requests（待同意） ===== */
@@ -792,17 +1053,33 @@ export async function deletePendingRequestDetail(reqId) {
 
 /**
  * 批次刪除多筆待審請求（含各自的 private/detail 子文件），供「清除所有資料」使用。
- * 行為與 deleteSubstituteRecordsBatch 相同，見該處註解。
+ * 行為與 deleteSubstituteRecordsBatch 相同，見該處註解（含輕9 的分塊方式修正）。
  */
 export async function deletePendingRequestsBatch(reqIds) {
     if (!Array.isArray(reqIds) || reqIds.length === 0) return;
     const fs   = await getV2Firestore();
-    const refs = [];
-    for (const id of reqIds) {
-        refs.push(fs.doc(fs.db, SCHEMA_PATHS.pendingDetailDoc(id)));
-        refs.push(fs.doc(fs.db, SCHEMA_PATHS.pendingDoc(id)));
-    }
-    await batchDeleteRefs(fs, refs);
+    const groups = reqIds.map(id => [
+        fs.doc(fs.db, SCHEMA_PATHS.pendingDetailDoc(id)),
+        fs.doc(fs.db, SCHEMA_PATHS.pendingDoc(id)),
+    ]);
+    await batchDeleteRefGroups(fs, groups);
+}
+
+/**
+ * Stage 5 驗收修復（輕10）：deletePendingRequestsBatch() 的「已知哪些筆有 detail」版本。
+ * 行為與 deleteSubstituteRecordsBatchKnownDetail() 相同，見該處註解。
+ * @param {string[]} reqIds
+ * @param {Set<string>|string[]} idsWithDetail
+ */
+export async function deletePendingRequestsBatchKnownDetail(reqIds, idsWithDetail) {
+    if (!Array.isArray(reqIds) || reqIds.length === 0) return;
+    const withDetail = idsWithDetail instanceof Set ? idsWithDetail : new Set(idsWithDetail || []);
+    const fs   = await getV2Firestore();
+    const groups = reqIds.map(id => {
+        const parentRef = fs.doc(fs.db, SCHEMA_PATHS.pendingDoc(id));
+        return withDetail.has(id) ? [fs.doc(fs.db, SCHEMA_PATHS.pendingDetailDoc(id)), parentRef] : [parentRef];
+    });
+    await batchDeleteRefGroups(fs, groups);
 }
 
 /** 讀取請求的私有明細（leaveType/leaveTypeName/reason）。行為同 getRecordDetail：權限不足
@@ -816,6 +1093,77 @@ export async function getRequestDetail(reqId) {
     } catch (_) {
         return null;
     }
+}
+
+/**
+ * Stage 5（封存匯出，§6.2）：批次讀取多筆待審請求的私有明細，回傳 Map<reqId, detail>。
+ * Stage 5 驗收修復（阻斷1）：與 getRecordDetailsBulk() 同款 fail-open 修復——不透過會吞掉
+ * 所有錯誤的 getRequestDetail()，自行判斷只有 permission-denied/not-found 略過，其餘錯誤
+ * rethrow，理由與細節見 getRecordDetailsBulk() 的完整說明。
+ */
+export async function getRequestDetailsBulk(reqIds) {
+    const ids = Array.isArray(reqIds) ? [...new Set(reqIds.filter(Boolean))] : [];
+    const fs = await getV2Firestore();
+    const result = new Map();
+    await Promise.all(ids.map(async (id) => {
+        const ref = fs.doc(fs.db, SCHEMA_PATHS.pendingDetailDoc(id));
+        try {
+            const snap = await fs.getDoc(ref);
+            if (snap.exists()) result.set(id, snap.data());
+        } catch (err) {
+            if (isBenignReadError(err)) return;
+            throw err;
+        }
+    }));
+    return result;
+}
+
+/**
+ * Stage 5 驗收修復（阻斷1）：getRequestDetailsBulk() 的「零容忍」版本，只給封存匯出鏈使用。
+ * 行為與 getRecordDetailsBulkStrict() 相同，見該處完整說明。
+ */
+export async function getRequestDetailsBulkStrict(reqIds) {
+    const ids = Array.isArray(reqIds) ? [...new Set(reqIds.filter(Boolean))] : [];
+    const fs  = await getV2Firestore();
+    return settleStrictDocReads(fs, ids, (id) => fs.doc(fs.db, SCHEMA_PATHS.pendingDetailDoc(id)));
+}
+
+/* ===== Archives（封存紀錄，Stage 5，§6.2/§6.5） ===== */
+
+/**
+ * 寫入一筆封存紀錄（報告 §6.2 步驟 [8]）：內容是「執行刪除當下，已通過雜湊比對與筆數/ID
+ * 核對的匯出資料」的摘要（各集合筆數、匯出 JSON 的 SHA-256 雜湊、執行者、時間）——**不是**
+ * 「這批資料事後被獨立稽核過」的證明，只是「刪除操作依循了本流程規定的驗證步驟」的紀錄。
+ * doc id 綁 semesterId。
+ *
+ * Stage 5 驗收修復（中6，opus 驗收）：**一學期只能寫入一次**——`firestore.rules` 的
+ * `archives/{semesterId}` 對 `update`/`delete` 恆為 `false`。這裡用 `setDoc()`（非 merge），
+ * 但 Firestore Security Rules 判斷一次寫入是 `create` 還是 `update` 是看「目標文件此刻是否
+ * 已存在」（`resource == null` 則為 create），**與呼叫端用 `setDoc` 還是 `updateDoc` 無關**
+ * ——若 `archives/{semesterId}` 已存在（例如本函式因故被重複呼叫），這次呼叫在規則引擎裡
+ * 會被判定為 `update`，直接被 `allow update: if false` 擋下、丟出 `permission-denied`。
+ * 原版註解誤寫成「整份覆寫也仍是同一批資料的重新確認，不會有問題」，這是不準確的——
+ * 實際行為是**重試會直接失敗**，呼叫端（executeSemesterArchiveDelete）必須讓這個失敗
+ * 可見（不可吞掉），因為此時代表刪除很可能已經執行過一次；UI 已改為在渲染封存頁時先呼叫
+ * `getArchiveRecord()` 檢查該學期是否已封存過，已封存則直接停用匯出/刪除鈕（見輕7+8），
+ * 從源頭盡量避免真的走到這個重試路徑。
+ * @param {string} semesterId
+ * @param {{archivedAt: string, archivedBy: object, counts: object, jsonHash: string, note?: string}} record
+ */
+export async function writeArchiveRecord(semesterId, record) {
+    if (!semesterId) throw new Error('writeArchiveRecord: 缺少 semesterId');
+    const fs  = await getV2Firestore();
+    const ref = fs.doc(fs.db, SCHEMA_PATHS.archiveDoc(semesterId));
+    await fs.setDoc(ref, { semesterId, ...record });
+}
+
+/** 讀取某學期的封存紀錄（若存在）。供封存頁顯示「此學期是否已封存過」使用。 */
+export async function getArchiveRecord(semesterId) {
+    if (!semesterId) return null;
+    const fs   = await getV2Firestore();
+    const ref  = fs.doc(fs.db, SCHEMA_PATHS.archiveDoc(semesterId));
+    const snap = await fs.getDoc(ref);
+    return snap.exists() ? snap.data() : null;
 }
 
 /* ===== User Mapping（uid → teacherId） ===== */

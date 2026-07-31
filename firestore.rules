@@ -1,6 +1,6 @@
 rules_version = '2';
 
-// STsystem V2 權限系統 Firestore 規則（v2.4 — 三層角色 + 敏感欄位私有化 + 學期唯讀鎖）
+// STsystem V2 權限系統 Firestore 規則（v2.5 — 三層角色 + 敏感欄位私有化 + 學期唯讀鎖 + 封存生命週期）
 //
 // 設計原則：
 //   1. 兩條根路徑物理隔離
@@ -47,6 +47,14 @@ rules_version = '2';
 //      直接把 currentSemester 改成任意值再寫入。這不是本次新增的破口——與系統既有的其他
 //      director-only 破壞性操作（刪除任何紀錄、刪除教師、清除所有資料）同一信任層級，只是
 //      這裡第一次被明確寫下來，避免日後誤以為「學期鎖」對所有角色（含 director）一視同仁。
+//   7. Stage 5（2026-07-31，RESEARCH-multitenancy-semester.md §6.2/§6.5；封存與生命週期工具）：
+//      新增 archives/{semesterId}（封存紀錄，create-only + 不可改/刪，同 operationLogs 精神）；
+//      schedules/{semesterId} 的 write 拆成 create/update（維持原「僅目前學期」鎖）+ delete
+//      （新增，director 專用，且僅能刪「非目前學期」——供封存流程刪除歷史學期課表用）。
+//      substituteRecords/pendingRequests 的既有 delete 規則（director-only／
+//      approver-or-initiator，皆無學期鎖）未變動，封存流程直接沿用；operationLogs 的
+//      「不可改/刪」規則同樣未變動——期滿清理改由平台管理者離線以 gcloud/REST owner 憑證執行
+//      （不受 client Security Rules 限制），見 scripts/cleanup-operation-logs.js 檔頭說明。
 //
 // 部署：透過 gcloud REST API 或 Firebase Console（見 docs/V2_PERMISSION_SYSTEM.md）
 
@@ -243,6 +251,28 @@ service cloud.firestore {
         || isCurrentSemester(schoolId, get(/databases/$(database)/documents/schools/$(schoolId)/substituteRecords/$(recordId)).data.semesterId);
     }
 
+    // ---- Stage 5 驗收修復（中5，opus 驗收）----
+    // pendingRequests/{reqId}/private/detail 原本完全沒有學期鎖（update 規則只驗
+    // isApprover(schoolId)）——與 substituteRecords 側在 Stage 2 就已經補上的歷史學期唯讀鎖
+    // （parentSubstituteRecordCurrentSemester／parentAllowsNewPrivateDetail，見上）不對稱，
+    // approver 理論上仍可對歷史學期的 pendingRequests 私有明細（假別/事由）任意補建/竄改，
+    // 與 substituteRecords 側 R2 修復要擋的問題同一類（歷史紀錄的假別若被事後竄改，會影響
+    // 月結算是否扣減時數）。寫法完全比照 substituteRecords 側兩個函式，唯一差異是讀
+    // pendingRequests/{reqId} 而非 substituteRecords/{recordId}——pendingRequests 的 create
+    // 已鎖 semesterId==目前學期（見下方 match /pendingRequests/{reqId} 的 create 規則），
+    // 故新請求的私有明細建立時父文件的 semesterId 必然是目前學期，這兩個函式主要在擋
+    // 「歷史學期的 pendingRequests 被事後補建/竄改私有明細」。
+    function parentPendingRequestCurrentSemester(schoolId, reqId) {
+      let parent = get(/databases/$(database)/documents/schools/$(schoolId)/pendingRequests/$(reqId)).data;
+      return !('semesterId' in parent) || isCurrentSemester(schoolId, parent.semesterId);
+    }
+
+    function parentAllowsNewPendingRequestPrivateDetail(schoolId, reqId) {
+      return !exists(/databases/$(database)/documents/schools/$(schoolId)/pendingRequests/$(reqId))
+        || !('semesterId' in get(/databases/$(database)/documents/schools/$(schoolId)/pendingRequests/$(reqId)).data)
+        || isCurrentSemester(schoolId, get(/databases/$(database)/documents/schools/$(schoolId)/pendingRequests/$(reqId)).data.semesterId);
+    }
+
     // ================ V2: schools/{schoolId} ================
 
     match /schools/{schoolId} {
@@ -364,11 +394,19 @@ service cloud.firestore {
       match /schedules/{semesterId} {
         // 讀取：校內成員（含歷史學期——歷史課表仍可被全校成員唯讀查詢，供對照舊學期排課）
         allow read: if isMember(schoolId);
-        // 寫入：approver，且僅能寫「目前學期」那一份文件——歷史學期課表唯讀鎖（§6.1）。
+        // 建立/更新：approver，且僅能寫「目前學期」那一份文件——歷史學期課表唯讀鎖（§6.1）。
         // semesterId 取自路徑本身（wildcard），不需讀 request.resource.data，成本同上方
         // isCurrentSemester() 的説明（相依文件 config/main 在同一請求的 isApprover() 判斷鏈
         // 中已被讀過一次，計費成本為 0）。
-        allow write: if isApprover(schoolId) && isCurrentSemester(schoolId, semesterId);
+        allow create, update: if isApprover(schoolId) && isCurrentSemester(schoolId, semesterId);
+        // 刪除：Stage 5（封存執行，RESEARCH-multitenancy-semester.md §6.2）專用——director 可
+        // 刪除「非目前學期」的課表文件，供「匯出 → 驗證 → 刪除」流程使用；目前學期的課表
+        // 不可被此規則刪除（防止封存流程誤刪還在使用中的課表，也避免全校教師端
+        // subscribeSchedule() 因文件消失而觸發舊版 data/schedule 的 fallback 讀取，
+        // 見該函式定義處的相容說明）。原本 write 規則把 create/update/delete 併成一條
+        // （皆鎖 isCurrentSemester），拆開後 create/update 語意不變，delete 是本次新增的
+        // 唯一新增權限，且限縮在「非目前學期」，不擴大既有攻擊面。
+        allow delete: if isDirector(schoolId) && !isCurrentSemester(schoolId, semesterId);
       }
 
       // ----- 已成立調代課紀錄 -----
@@ -592,11 +630,14 @@ service cloud.firestore {
           );
 
         // ----- 私有明細（假別／事由，Phase 6）-----
+        // Stage 5 驗收修復（中5）：create/update 補歷史學期唯讀鎖，比照 substituteRecords 側
+        // 的 parentAllowsNewPrivateDetail()／parentSubstituteRecordCurrentSemester()。
         match /private/{docId} {
           allow read:   if hasPrivateDetailAccess(schoolId, resource.data);
           allow create: if hasPrivateDetailAccess(schoolId, request.resource.data)
-                          && isValidPrivateDetailWrite(request.resource.data);
-          allow update: if isApprover(schoolId);
+                          && isValidPrivateDetailWrite(request.resource.data)
+                          && parentAllowsNewPendingRequestPrivateDetail(schoolId, reqId);
+          allow update: if isApprover(schoolId) && parentPendingRequestCurrentSemester(schoolId, reqId);
           allow delete: if isDirector(schoolId);
         }
       }
@@ -624,6 +665,38 @@ service cloud.firestore {
           && request.resource.data.actor is map
           && (request.resource.data.details is map || request.resource.data.details == null);
         allow update, delete: if false;  // 稽核軌跡不可改／刪
+      }
+
+      // ----- 封存紀錄（Stage 5，RESEARCH-multitenancy-semester.md §6.2/§6.5） -----
+      // schools/{schoolId}/archives/{semesterId}：director 完成「匯出 → 驗證 → 刪除」封存
+      // 流程後寫入的紀錄（執行當下的各集合筆數、匯出 JSON 的 SHA-256 雜湊、執行者、時間）。
+      // doc id 綁 semesterId。如實描述這份紀錄「是什麼」與「不是什麼」（驗收修復 輕11，
+      // 訂正原版誇大的說法）：
+      //   - 是：client 端在刪除前已核對雲端當下筆數/ID 與匯出當下一致（見 v2-app.js
+      //     executeSemesterArchiveDelete 的核對邏輯），刪除本身依循了本流程規定的步驟。
+      //   - 不是：不是「事後獨立稽核」的結果——寫入這筆紀錄的 director 本人就是執行刪除的人，
+      //     信任層級與其他 director-only 破壞性操作（刪除任何紀錄、清除所有資料）相同（見
+      //     檔頭第 6 點的信任根說明）；也不代表「使用者已把下載的 JSON 妥善備份」（純前端
+      //     架構下無法驗證這件事，見 docs/STAGE5-ARCHIVE.md「已知限制」）。
+      // 比照 operationLogs「稽核軌跡不可改／刪」設計：寫入後任何人（含 director）皆不可再
+      // 改動或刪除。
+      match /archives/{semesterId} {
+        // 讀取：approver（director + section_chief）——內容含刪除操作的細節，
+        // 與 operationLogs 同一敏感等級，不對一般教師開放。
+        allow read: if isApprover(schoolId);
+        // 建立：僅 director——封存刪除本身就是 director-only 的破壞性操作（見
+        // substituteRecords/pendingRequests 的 delete 規則），寫入這筆紀錄的權限應與
+        // 實際執行刪除的權限一致。欄位白名單 + 基本型別驗證，避免任意大小/形狀的資料寫入；
+        // note 額外限制字數（驗收修復 輕11），避免這個唯一的自由文字欄位被灌入超長內容。
+        allow create: if isDirector(schoolId)
+          && request.resource.data.keys().hasOnly(['semesterId', 'archivedAt', 'archivedBy', 'counts', 'jsonHash', 'note'])
+          && request.resource.data.semesterId == semesterId
+          && request.resource.data.archivedAt is string
+          && request.resource.data.archivedBy is map
+          && request.resource.data.counts is map
+          && request.resource.data.jsonHash is string
+          && (!('note' in request.resource.data) || (request.resource.data.note is string && request.resource.data.note.size() < 500));
+        allow update, delete: if false;
       }
 
       // ----- Google uid → teacherId 映射 -----
