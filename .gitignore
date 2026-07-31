@@ -5,6 +5,20 @@ build/
 dist/
 wheels/
 *.egg-info
+.python-version
+
+# uv / pyproject workspace
+uv.lock
+pyproject.toml
+main.py
+
+# Dev helper scripts (non-production)
+start-server.py
+*.local.mjs
+read_excel.ps1
+export_csv.ps1
+analysis.txt
+extracted_text.txt
 
 # Virtual environments
 .venv
@@ -12,6 +26,7 @@ wheels/
 # Node.js
 node_modules/
 package-lock.json
+package.json
 
 # IDE
 .vscode/
@@ -25,8 +40,21 @@ Thumbs.db
 test/*.png
 test/e2e-test.js
 test/*.pdf
+test/run_tests.py
 test/e2e-screenshots/
 test-results/
+
+# Raw schedule files (source data, not committed)
+*.xls
+*.xlsx
+schedule_export.csv
+schedule_*.csv
+schedule_export_*.csv
+
+# Working / ETL scratch outputs (not committed)
+compare_*.txt
+etl_log.txt
+verify_log.txt
 
 # Claude Code
 .claude/
@@ -56,4 +84,10 @@ schedule_*_backup.csv
 # 備份目錄個資檔（README 進 git，內含 JSON 不進）
 docs/backup/*.json
 docs/backup/*.csv
+
+# Firestore 完整備份（scripts/firestore-backup.js 產物，含真實學校資料，不進 git）
+backups/
+
+# V2 規則矩陣測試（test/v2-rules-matrix.mjs）產生的文件清單，供事後清理，不進 git
+test/.last-test-docs.json
 

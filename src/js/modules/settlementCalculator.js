@@ -121,6 +121,15 @@ export class SettlementCalculator {
      * @returns {Array} 該月份的紀錄
      */
     filterMonthlyRecords(records, year, month) {
+        const { prefix } = this._resolveMonth(year, month);
+        return records.filter(record => record.date && record.date.startsWith(prefix));
+    }
+
+    /**
+     * 依民國學年度＋月份換算西元年月（抽出自 filterMonthlyRecords，供 getMonthDateRange 共用）。
+     * @returns {{ actualYear: number, monthStr: string, prefix: string }}
+     */
+    _resolveMonth(year, month) {
         // 將學年度轉換為西元年
         // 台灣學年度：114 學年度 = 2025/8 ~ 2026/7
         const westernYear = parseInt(year) + 1911;
@@ -129,11 +138,26 @@ export class SettlementCalculator {
         // 1-7 月屬於學年度 +1 的年份
         // 8-12 月屬於學年度的年份
         const actualYear = month >= 8 ? westernYear : westernYear + 1;
-
         const monthStr = String(month).padStart(2, '0');
-        const prefix = `${actualYear}-${monthStr}`;
 
-        return records.filter(record => record.date && record.date.startsWith(prefix));
+        return { actualYear, monthStr, prefix: `${actualYear}-${monthStr}` };
+    }
+
+    /**
+     * Stage 1（讀取成本止血，RESEARCH-multitenancy-semester.md §5.6）：把「學年度＋月份」換算
+     * 成 Firestore range query 可用的日期字串範圍，供呼叫端在資料來源改為即時訂閱＋按需查詢
+     * （不再是全量本地陣列）時，把日期範圍下推到查詢層，而不是抓全部歷史紀錄回來再用
+     * filterMonthlyRecords() 篩。
+     *
+     * endDate 固定用 `-31`：字典序範圍查詢只需要「夠大」的上界，不需要真的存在的日期
+     * （例如 2 月查到 `-31` 不影響結果，Firestore 是純字串比較，不會驗證日期合法性）；
+     * calculate() 內部仍會呼叫 filterMonthlyRecords() 對查回來的資料做一次精確的 startsWith
+     * 比對，所以就算 range query 抓寬一點也不影響最終計算結果的正確性。
+     * @returns {{ startDate: string, endDate: string }}
+     */
+    getMonthDateRange(year, month) {
+        const { prefix } = this._resolveMonth(year, month);
+        return { startDate: `${prefix}-01`, endDate: `${prefix}-31` };
     }
 
     /**
