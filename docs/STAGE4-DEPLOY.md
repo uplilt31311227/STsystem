@@ -73,6 +73,19 @@ curl -X PATCH \
 
 ## App Check（classic reCAPTCHA v3）啟用步驟
 
+> **2026-08-01 已完成步驟 1-4（token 產生階段），步驟 5-6（enforcement）刻意未做。**
+> - reCAPTCHA v3 站台已建立（標籤 STsystem、綁 STsystem GCP 專案、網域 `uplilt31311227.github.io` + `localhost`）。
+> - `RECAPTCHA_V3_SITE_KEY` 已填入並部署（commit `bc11fda`）。
+> - Firebase Console → App Check → Web app 狀態為「**已註冊**」、認證服務 reCAPTCHA。
+> - 正式站實測：`app-check` SDK 與 `recaptcha` 皆已載入、`window.grecaptcha` 為 object，
+>   並觀察到 `.../exchangeRecaptchaV3Token` 請求成功回應 → **token 交換鏈路確實運作中**。
+> - enforcement **尚未開啟**（依步驟 5-6，先觀察 1-2 週 Metrics 通過率再決定）。
+> - 同期完成：專案已升級 **Blaze**（帳單帳戶 STsystem／TWD）；平台管理者名冊
+>   `platformAdmins` 已建立，設定頁「學校申請審核」卡片實測顯示正常。
+> - ⚠ **待辦**：Blaze 升級時自動建立的預算為 NT$500／門檻 50%·90%·100%，第一道警報
+>   要花到正常月費（約 NT$25）的 10 倍才觸發，保護力不足。建議調整為金額 NT$250
+>   （≈US$8）＋門檻 5%·50%·100%·150%(預測)，對應報告建議的 US$0.4／$4／$8 三道防線。
+
 依 `RESEARCH-blaze-followup.md` §3 的查證結果：選用 **classic reCAPTCHA v3**（非 Enterprise）——v3 免費額度每月 100 萬次呼叫，遠高於 Enterprise 的每月 1 萬次免費額度與本案估算的用量（20 校情境約每月 1.6 萬次），且超額時是 fail-open（給 0.9 分，不粗暴擋下請求）而非直接失敗。
 
 1. **建立 reCAPTCHA v3 站台**：前往 [Google reCAPTCHA 管理主控台](https://www.google.com/recaptcha/admin)，新增站台，類型選 **v3**（不是 v2、不是 Enterprise），網域填 `uplilt31311227.github.io`（正式網域）與 `localhost`（本機開發測試用）。取得**網站金鑰（site key）**。
