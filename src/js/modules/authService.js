@@ -272,6 +272,26 @@ async function registerWithEmail(email, password) {
 }
 
 /**
+ * 寄出 email 驗證信（Stage 4 新增，RESEARCH-multitenancy-semester.md §4.1「強制 email
+ * 驗證」）。Google 登入的 email 天然已驗證（Google 帳號本身已驗證過），只有 Email/密碼
+ * 登入者可能尚未驗證——申請開通新學校（schoolApplications 的 create 規則要求
+ * email_verified==true）與 Stage 4 起的 userDirectory 自寫分支都需要這一步。
+ * 對著已驗證的帳號呼叫本函式，Firebase 仍會正常寄出（不會報錯），呼叫端可自行決定
+ * 是否要先檢查 currentUser.emailVerified 再顯示按鈕（v2-app.js 的申請頁即如此）。
+ */
+async function sendVerificationEmail() {
+    if (!isFirebaseInitialized()) {
+        throw new Error('請先完成 Firebase 設定');
+    }
+    const { sendEmailVerification } = window.firebaseModules;
+    const auth = getAuthInstance();
+    if (!auth?.currentUser) {
+        throw new Error('尚未登入，無法寄送驗證信');
+    }
+    await sendEmailVerification(auth.currentUser);
+}
+
+/**
  * 主任端：為教師建立 Firebase Auth 帳號 + 立刻寄密碼設定信（Phase 1.6.b 新增）
  *
  * 用 secondary Firebase App instance 避免影響主任的當前 session。
@@ -317,6 +337,7 @@ export {
     signInWithEmail,
     registerWithEmail,
     sendPasswordReset,
+    sendVerificationEmail,
     createTeacherAuthAndSendReset,
     signOutUser,
     getCurrentUser,

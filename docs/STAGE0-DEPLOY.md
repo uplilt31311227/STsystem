@@ -331,3 +331,33 @@ Stage 0 的四組合矩陣（見本文件最上方一節）之所以要求「必
 ### 已知殘留風險：`userDirectory` 的 schoolId 存在性探測（opus 驗收 中10 後半）
 
 `userDirectory/{uid}` 的 `create`/`update` 規則要求 `configExists(request.resource.data.schoolId)`——任何已登入使用者可以對自己的 `userDirectory/{我的uid}` 嘗試寫入任意候選字串當 `schoolId`，藉由請求成功/失敗（`permission-denied`）反推「這個 schoolId 是否對應一所真實存在的學校」。這與報告 [`RESEARCH-multitenancy-semester.md`](./RESEARCH-multitenancy-semester.md) §4.5 第 2 點「偵測式的跨校探測（修補後仍殘留）」是同一類別的殘留風險——即使做完所有規則收緊，攻擊者仍可用「請求某校資料 → 看是被拒還是通過」確認某個 schoolId 存在，且每次探測都會觸發規則的 `get()/exists()` 並計費。這不是 Stage 3 新增的破口，只是多了一個探測端點，歸入報告已經誠實列出、目前無解的殘留風險類別，不在本階段（也不在 Stage 4）試圖消除——報告本身也說明這類探測是低價值的資訊洩漏。
+
+## 附註：Stage 4（多租戶開通）四組合部署矩陣
+
+> 對應設計：[`RESEARCH-multitenancy-semester.md`](./RESEARCH-multitenancy-semester.md) §4／§8 路線圖 Stage 4；[`RESEARCH-blaze-followup.md`](./RESEARCH-blaze-followup.md)。完整部署 SOP（App Check、預算警報、緊急煞車）見 [`docs/STAGE4-DEPLOY.md`](./STAGE4-DEPLOY.md)，本節只補「新舊組合交叉」的相容性分析，比照 Stage 3 一節的既有格式。
+>
+> ⚠ opus 驗收 B1 修復後改版：原表只分「現有 inhu 成員」與「全新陌生人」兩類，遺漏了「新校已核准、校內第二位（含之後）教師從未登入過」這一類——這正是 B1 要修的阻斷級問題（原設計會讓這類使用者永遠卡在查無教師配對）。本節改為三類族群交叉分析，並反映 B1 對 `resolveSchoolIdForUid()` fallback 語意的修改（查無條目不再無條件 fallback `inhu`）。
+
+Stage 4 新增三個頂層集合（`schoolApplications`／`platformAdmins`／`schoolDirectory`）與規則修改：`config/{docId}` 新增 platformAdmin create-only 分支（鎖 `docId=='main'`）、`userDirectory` 新增 `isEmailVerified()` 要求＋platformAdmin 代寫分支、`joinAttempts` 新增 `isEmailVerified()`。三類族群：
+
+- **A. 現有 `inhu` 成員**（已有 `userMappings`，且 `userDirectory` 已回填）
+- **B. 新校成員**（`teachers`/`emailIndex` 已由該校 director 建檔，但自己從未登入過、無 `userDirectory` 條目）——B1 修復的目標族群
+- **C. 全新陌生人**（不屬於任何學校，走申請流程）
+
+| 組合 | A. 現有 inhu 成員 | B. 新校成員 | C. 全新陌生人 | 行為分析 |
+|---|---|---|---|---|
+| ① 舊 client × 舊 rules（現況） | 正常 | 不適用（Stage 4 上線前不存在「新校」這個概念） | 走 Stage 3 之前的行為：`resolveIdentity()` 找不到配對即登出，顯示「尚未授權」 | 基準線 |
+| ② **新 client × 舊 rules** | **正常，零影響** | 卡在雙選項畫面：「加入既有學校」呼叫 `upsertUserDirectoryEntry()` 寫 `userDirectory`——這個路徑 Stage 3 就已存在於舊規則中（`userDirectory` 的 match 區塊本身不是 Stage 4 新增的），**但舊規則版本沒有 `isEmailVerified()` 要求**，寫入本身可能成功；然而後續要用到的 `schools/{新校}/emailIndex`／`config` 等，若「新校」本身是 Stage 4 才核准的，這所學校的 `config`（含 `initialAdminEmails`）根本還沒被建立（因為核准動作也需要新 rules 才能執行），所以完整走通「加入→登入成功」在此組合下不成立，但**失敗模式是「配對不到教師，回到雙選項畫面」，不是白屏或例外**。「申請開通新學校」表單一樣會因為 `schoolApplications` 舊規則無 match 區塊而 `permission-denied`，被 `refreshApplyState()` 的 try/catch 接住 | 卡在「申請流程」畫面，但不會壞——`getApplication(uid)` 讀 `schoolApplications/{uid}` 得到 `permission-denied`，`refreshApplyState()` 接住並顯示「無法確認申請狀態」+ 重試鈕 |
+| ③ **舊 client × 新 rules** | **正常，零影響**（前提：已回填，見下方相容紅線） | 不適用（舊 client 沒有「加入既有學校」UI，即使規則已支援，使用者也無路可用；核准流程本身也需要新 client 的審核頁 UI 才能觸發，舊 client 下平台管理者看不到審核頁） | 仍是舊行為（直接登出），Stage 4 UI 尚未上線 | 舊 client 完全不知道三個新集合存在，新規則對它是「多了幾個沒人用的 match 區塊」。⚠ 相容性細節：`userDirectory` 自寫分支新增了 `isEmailVerified()` 要求——這個分支只在 `!userDirectoryExisted`（尚無既有條目）時才會被舊 client 呼叫到，且呼叫本身包在 try/catch 裡、失敗**不阻擋登入**。實際受影響族群縮小到「尚未回填、且用 Email/密碼登入、且 email 未驗證」的 `inhu` 成員——即使命中，這次登入不會寫入 `userDirectory` 捷徑，**登入本身不受影響**（見下方「B1 後的相容紅線」，回填已完成時此情境不會發生） |
+| ④ 新 client × 新 rules（目標穩定態） | 正常 | 完整可用（見 `docs/STAGE4-DEPLOY.md`「全鏈走讀」第 2 類：新校成員） | 完整申請/審核流程可用（見同文件第 1 類） | 見 `docs/STAGE4-DEPLOY.md`「全鏈走讀」一節 |
+
+### B1 後的相容紅線：回填腳本從「建議」變成「硬性前置條件」
+
+與 Stage 3 上線時的評估不同——Stage 3 的 `DEFAULT_SCHOOL_ID` fallback（查無 `userDirectory` 條目一律當成 `inhu`）讓「回填與否」只影響**效率**（多繞一次 fallback），不影響**能不能登入**。B1 把這個 fallback 拿掉後（原因見 `docs/STAGE4-DEPLOY.md`「全鏈走讀」第 2 類），「回填與否」變成直接影響**能不能登入**的硬性依賴：
+
+- 若 `inhu` 現有成員的 `userDirectory` **已回填**（`existed:true`）：`resolveSchoolIdForUid()` 第一分支就命中，完全不會進入「查無條目」的判斷，行為與 Stage 4 之前一致，B1 的修改對這批人是**不可觀察的**。
+- 若**尚未回填**：這批人下次登入會被 `resolveSchoolIdForUid()` 判定為「查無條目」，回傳 `null`，被導向雙選項畫面——這是**新的、不該發生在既有成員身上的行為**，因此 `docs/STAGE4-DEPLOY.md` 已將 `scripts/backfill-user-directory.js` 對 `inhu` 全體成員的執行，從部署步驟的「建議」提升為「第 0 步、不可省略」。
+
+**結論**：組合②③在「B. 新校成員」與「C. 全新陌生人」兩類上與 Stage 3 一致（都是「單邊部署時功能不完整但不崩潰」），但「A. 現有 inhu 成員」這一類的安全網從 Stage 3 的「規則層 fallback」改為「部署前的回填腳本執行」——這是本節與 Stage 3 對應章節最大的方向差異，務必在部署前確認回填已完成，不能只看部署順序而略過這個前置動作。
+
+仍建議照 `docs/STAGE4-DEPLOY.md` 的順序（回填 → rules → 建立 platformAdmin → client）操作。

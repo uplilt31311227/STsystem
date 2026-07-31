@@ -9,6 +9,68 @@ tags:
 
 ---
 
+## [2026-07-31]（feature/permission-system）多租戶研究 Stage 4：多租戶開通（未 commit）
+
+依 `docs/RESEARCH-multitenancy-semester.md` §4（開放註冊的誠實風險評估）／§8 路線圖 Stage 4，與 `docs/RESEARCH-blaze-followup.md` 的補充查證（Blaze 無硬性支出上限、App Check 改選 classic reCAPTCHA v3 免費額度更高、實際部署區域 asia-east1 單價比原估的 nam5 便宜四成）。動機：開放 20+ 校自助申請使用。已定案設計：自助申請 + 平台管理者輕量審核（非全自助建校）。opus 驗收第一輪不通過（3 阻斷/3 高/5 中/6 輕），逐項修復詳見下方「修復」小節，本條目已含全部修復。**只寫程式碼，未寫 Firestore、未部署、未跑 `v2-rules-matrix.mjs`、未跑任何離線腳本、未 commit。**
+
+### 新增
+
+- **`src/js/modules/v2/schoolApplicationService.js`**（新檔）：統一負責三個頂層集合的 CRUD——`schoolApplications/{uid}`（申請開通新學校，doc id 綁申請人 uid）、`platformAdmins/{uid}`（client 唯讀）、`schoolDirectory/{schoolId}`（公開學校名錄）。核心函式 `approveApplication()` 分兩個循序 `writeBatch` 執行（非單一原子批次）：第一批建立 `schools/{id}/config/main` + `schoolDirectory/{id}`，第二批更新申請狀態 + 申請人 `userDirectory`——拆兩批的理由是不依賴「同一 batch 內 exists()/get() 能否看到批次內更早操作效果」這個未文件化的行為；也是本設計依賴的 schoolId 衝突防線（Firestore 對已存在文件送出寫入會判定為 update 而非 create，platformAdmin 的 create-only 權限自然拒絕）。失敗重試設計：第一批失敗無副作用可直接重試；第一批成功、第二批失敗時，重試會用「`schoolDirectory` 既有紀錄的 `schoolName` 是否與本申請相同」這個啟發式判斷是否要跳過第一批，已知限制（極端巧合誤判）寫在函式檔頭
+- **登入遮罩改造**（`v2-app.js`）：`resolveIdentity()` 找不到教師配對時，不再呼叫 `signOutUser()` 直接登出，改由 `enterApplyFlow()` 導向**雙選項**畫面（opus 驗收 B1 修復後），保留 Firebase Auth session 供使用者在遮罩內完成：
+  - email 未驗證 → 「請先驗證 email」畫面 + 寄送/重新寄送驗證信按鈕（`authService.sendVerificationEmail()`，新增）
+  - **「加入既有學校」**（B1 新增，恆常顯示）：輸入學校代碼直接自寫 `userDirectory`（`dataSvc.upsertUserDirectoryEntry()`），成功後重新整理頁面重跑登入鏈——修復「新校第二位起教師從未登入過、永遠卡在查無教師配對」的阻斷級問題
+  - 無申請紀錄或曾被駁回 → 「申請開通新學校」表單（學校名稱 + 學校代碼，代碼欄位失焦時即時查詢 `schoolDirectory` 提示是否已被使用）
+  - 申請審核中 → 狀態卡片（學校名稱/代碼/送出時間）
+  - 已核准（邊界情況）→ 提示重新嘗試登入
+  - 所有分支底部皆有「登出，改用其他帳號」——是這個畫面唯一真正呼叫 `signOutUser()` 的入口
+- **平台管理者審核頁**（`v2-app.js` `renderPlatformAdminReviewTab()`）：設定頁新增卡片（`index.html` 新增 `#v2-platform-admin-card`，預設 `display:none`，非平台管理者完全看不到痕跡），列出待審申請，核准/駁回各附 `confirmDialog()` 二次確認；駁回原因輸入沿用既有 `promptRejectReason()` textarea modal（Stage 5「殺 prompt()」統一成果），未新增 `window.prompt()` 用法。守門邏輯 `_v2IsPlatformAdmin` 獨立於 `roleService` 的校內角色判斷（一個人可能同時是某校 director 也是平台管理者）；opus 驗收 M3/M4 後改為惰性查詢（設定頁首次開啟才查一次並快取，之後每次切到設定頁重繪清單）。新增「疑難排解：已核准的申請」解套區塊（opus 驗收 H2）
+- **App Check**（`firebaseConfig.js`）：新增 classic reCAPTCHA v3（非 Enterprise，依 `RESEARCH-blaze-followup.md` §3 查證，v3 免費額度每月 100 萬次遠高於 Enterprise 的 1 萬次，且超額 fail-open 不粗暴擋請求）的載入與初始化程式碼，站台金鑰為空字串佔位常數（`RECAPTCHA_V3_SITE_KEY`），空值時完全跳過初始化並 `console.info` 提示，**不影響任何現有登入/資料流程**；不啟用 enforcement（Console 端獨立開關，啟用步驟寫進 `docs/STAGE4-DEPLOY.md`）
+- **緊急支出風控腳本**：`scripts/emergency-brake.js`（`--brake --yes` 把線上 `firestore.rules` 換成全 deny 版本並部署、`--restore --yes` 還原、`--status` 實際取回 ruleset 內容比對是否為全 deny；比照 `firestore-deploy-rules.js` 的 ruleset/release API 呼叫方式；opus 驗收 H1/M2）；`scripts/bootstrap-platform-admin.js`（`--uid=`/`--email=` 建立 platformAdmins 記錄，`--email=` 走 Identity Toolkit `accounts:lookup` REST API 查 uid，未實際驗證過此路徑的可靠性，文件已註明 `--uid=` 是更可靠的替代路徑；`--dry-run` 預設；另支援 `--list`/`--remove`，`--remove` 內建最後一位管理者保護，opus 驗收 L6）
+- **`docs/STAGE4-DEPLOY.md`**（新檔）：部署順序（回填 → 規則 → 建立第一位平台管理者 → 前端）、App Check 啟用步驟（建站台/填金鑰/Console 註冊/觀察期/開 enforcement 時機）、支出風控（多門檻預算警報建議金額、緊急煞車操作、為何不採 Cloud Function 自動斷流）、已知限制（含孤兒學校人工清理程序）、三類族群全鏈走讀
+- **`docs/STAGE0-DEPLOY.md`「附註：Stage 4」**：三類族群（現有 inhu 成員／新校成員／全新陌生人）× 四組合部署矩陣分析，並記錄 B1 修復後 `backfill-user-directory.js` 從建議提升為硬性前置條件
+
+### 規則變更（`firestore.rules`，v2.6 → v2.7）
+
+- 新增 helper：`isEmailVerified()`、`isPlatformAdmin()`（讀 `platformAdmins/{uid}` 是否存在）、`isValidNewSchoolConfigWrite()`、`isValidSchoolApplicationReviewFields()`（opus 驗收 L3 新增）
+- `schools/{schoolId}/config/{docId}`：新增 `allow create: if isPlatformAdmin() && docId=='main' && isValidNewSchoolConfigWrite(...)`（opus 驗收 L2 補 `docId=='main'` 鎖），與既有 `allow write: if isDirector(schoolId)` 並存（OR 語意，互不影響——新校此刻沒有 director，兩分支不會同時命中同一次請求）
+- 頂層 `userDirectory/{uid}`：自寫分支新增 `isEmailVerified()`（Stage 3 上線時刻意留白，本階段補上）；新增 `isPlatformAdmin()` 代寫分支（approval 時代寫申請人 userDirectory，不要求 email_verified——申請時已在 schoolApplications 驗證過一次）。權限面誠實揭露：platformAdmin 可代寫**任意** uid 的 userDirectory，不限申請中那一位，理由與風險評估寫在該 match 區塊完整註解
+- `schools/{schoolId}/joinAttempts/{uid}`：create/update 新增 `isEmailVerified()`（opus 驗收 B3）
+- 新增頂層 `platformAdmins/{uid}`：read 僅本人，write 恆 `false`
+- 新增頂層 `schoolDirectory/{schoolId}`：read 拆 `get`（任何登入者）/`list`（僅 platformAdmin，opus 驗收 M1），write 僅 platformAdmin 且僅 create
+- 新增頂層 `schoolApplications/{uid}`：create 需本人 + `isEmailVerified()` + 欄位白名單/型別/長度驗證 + `status=='pending'`；update 分 platformAdmin（`pending→{approved,rejected}` 或 `approved→rejected`，opus 驗收 H2 新增後者，僅能動流程欄位且審核欄位另有型別/長度驗證）與本人（僅限 `status=='rejected'` 時重新送出，`createdAt` 鎖定不可變，opus 驗收 L4）兩分支；delete 恆 `false`
+
+### 測試
+
+- `test/v2-rules-matrix.mjs` 新增 X31-X42（12 條攻擊案例，涵蓋 schoolApplications 的 applicantUid/欄位白名單/狀態機/讀寫越權/自我核准、platformAdmins 自我提權與越權讀取、schoolDirectory 與新校 config 的非 platformAdmin 建立嘗試、schoolDirectory update/delete 恆 DENY）。只寫碼未執行；絕大多數是 DENY 案例，唯一含正向 setup 步驟的 X40 依賴 email_verified 狀態（改用解析 idToken 的 email claim，不依賴憑證檔的 `.email` 欄位，opus 驗收 M5）；「platformAdmin 把已核准申請改成 rejected 以外的值應 DENY」因缺 platformAdmin 測試帳號如實記錄為已知覆蓋缺口（不硬湊誤導性案例）
+- `npm run check`（38 檔語法檢查）與 `npm test`（既有 5 支測試，合計 99 案）皆通過（opus 驗收修復後重跑同樣全過）
+
+### 修復（opus 驗收：3 阻斷、3 高、5 中、6 輕）
+
+**阻斷**
+- **[B1]** 原設計沒考慮到「新校第二位（含之後）教師從未登入過、無 `userDirectory` 條目」這一類使用者——`authGuardV2.resolveSchoolIdForUid()` 查無條目原本無條件 fallback `DEFAULT_SCHOOL_ID`（`inhu`），會讓這類教師的登入永遠去 `inhu` 的 `emailIndex` 找自己（查無所獲），永遠卡在查無教師配對，原 TODO 描述的目標行為從未實作。修復：查無條目（非讀取失敗、非部署過渡期 `permission-denied`）回傳 `null`，`resolveIdentity()` 直接回傳 `null` 且不寫 `joinAttempt`；`v2-app.js` 登入遮罩新增「加入既有學校」（輸入代碼 → 自寫 `userDirectory` → 重跑登入鏈）與既有「申請開通新學校」並列的雙選項畫面。相容紅線：`scripts/backfill-user-directory.js` 對 `inhu` 現有成員的執行從「建議」提升為部署硬性前置條件（否則未回填成員會被誤判為查無所屬學校），四份文件已同步記錄
+- **[B2]** email 驗證完成後的「重新確認」按鈕原本只呼叫 `user.reload()`，只更新本機 `user` 物件的 `emailVerified` 屬性，未更新「已快取、附帶在後續請求上的 ID token」——Firestore 規則讀的是 `request.auth.token.email_verified`（token 內的 claim），需要 `getIdToken(true)` 強制刷新才會重新簽發。修復：補上 `await user.getIdToken(true)`，兩步都做才能讓緊接著的 `schoolApplications`/`joinAttempts`/`userDirectory` 寫入通過規則檢查
+- **[B3]** B1 修復後陌生人不再誤打 `inhu` 的 `emailIndex`；`joinAttempts` 的 create/update 規則補 `isEmailVerified()`（與 `schoolApplications`/`userDirectory` 收緊方向一致）；查無所屬學校（`schoolId===null`）時不再寫入任何學校的 `joinAttempts`（沒有學校可歸屬）
+
+**高**
+- **[H1]** `scripts/emergency-brake.js` 原本裸執行（不帶參數）就是拉煞車——對一個「一鍵讓全平台斷線」的腳本，這個預設行為誤觸發代價過高。改為必須同時帶 `--brake --yes`（拉煞車）或 `--restore --yes`（還原）才會執行，裸執行只印用法說明；刪除檔頭「沒有 --dry 是設計取捨」的錯誤陳述
+- **[H2]** `approveApplication()` 偵測到 `schoolDirectory` 同代碼同名紀錄時，原本靜默判定為「同一筆申請的重試」直接跳過第一批——但這個啟發式不是決定性證據，靜默跳過可能誤把一筆申請「綁」到另一筆不相關申請已建立的學校。修復：改丟 `SameNameConflictError`，`v2-app.js` 接住後顯示「該 schoolId 已存在同名學校，僅執行綁定」的二次確認，確認後才帶 `confirmedSkipFirstBatch:true` 重試；規則新增 platformAdmin 的 `approved→rejected` 解套分支，新增 `revertApprovedApplication()` 與對應 UI（「疑難排解：已核准的申請」區塊），供核准流程卡住或誤核准時撤銷（不會刪除已建立的學校資料）
+- **[H3]** `rejectApplication()` 原本沒有檢查「這筆申請是否已對應到真實建立的學校」，可能造成「申請顯示已駁回，但它宣稱的學校卻真實存在」的孤兒資料。修復：簽章改吃完整 `application` 物件（需要 `desiredSchoolId`/`status`），駁回前檢查 `status==='approved'` 或 `schoolDirectory` 同代碼同名，符合任一即阻擋並提示改用核准或人工清理（`docs/STAGE4-DEPLOY.md` 補人工清理程序）
+
+**中**
+- **[M1]** `schoolDirectory` 的 read 拆成 `get`（任何登入者，供加入流程查單一代碼）與 `list`（僅 platformAdmin），原本 `allow read` 會讓任何登入者一次撈走全平台學校名單
+- **[M2]** `emergency-brake.js --status` 原檔頭誤寫「本 API 不提供規則原始內容下載端點」——訂正：Rules API 的 `projects.rulesets.get` 本來就會回傳 `source.files[].content`，`--status` 改為實際取回目前線上 ruleset 內容並與 `DENY_ALL_RULES` 逐字比對，明確回報「目前是否處於緊急煞車狀態」
+- **[M3]** `renderPlatformAdminReviewTab()` 原本只在 bootstrap 執行一次，設定頁重複開啟看到的是過期快照。接上既有的「設定」頁籤切換 hook（`bindV2TabSwitches()`），每次切到設定頁都重繪
+- **[M4]** 平台管理者身份判斷（`isPlatformAdmin()`）原本在 bootstrap 對**每一位**登入者無條件查一次 `platformAdmins/{uid}`，絕大多數使用者都不是，等於白白多一次讀取。改為惰性查詢：`_v2IsPlatformAdmin` 初始為 `null`（尚未查過），只在第一次呼叫 `renderPlatformAdminReviewTab()` 時才查並快取，登出／身份切換時重置回 `null`
+- **[M5]** `test/v2-rules-matrix.mjs` 補 X40（教師合法建立自己的 pending 申請後，自我更新為 approved 應 DENY，測 update 規則而非既有 X33 的 create 規則）、X41/X42（`schoolDirectory` update/delete 恆 DENY，不論文件是否存在）；「platformAdmin 把已核准申請改成 rejected 以外的值應 DENY」因本檔三個測試帳號皆非 platformAdmin、無法建立前置狀態，如實記錄為已知覆蓋缺口（不硬湊會因為錯誤理由才 DENY 的誤導性案例）
+
+**輕**
+- **[L1]** `test/v2-rules-matrix.mjs` 檔頭版本字串訂正為 v2.7（原本仍寫 v2.6，與 firestore.rules 實際版本不同步）
+- **[L2]** `isValidNewSchoolConfigWrite()` 的 `initialAdminEmails` 原本只驗證「是 list 且非空」，未逐項驗證元素型別；Firestore 規則語言（CEL 子集）沒有確認可用的通用逐項述語語法（`.all()` 等 CEL 巨集未見官方文件列為 Firestore Security Rules 支援項目，貿然採用有部署期才發現語法錯誤的風險），改用「精確比對實際寫入形狀」：鎖 `size()==1` 並用陣列索引 `[0] is string` 驗證，比逐項驗證更嚴格且語法風險更低；另補 `docId=='main'` 鎖（見上方規則變更）
+- **[L3]** `schoolApplications` 的 platformAdmin 審核欄位（`reviewedAt`/`reviewedBy`/`rejectReason`）原本只有 `hasOnly()` 白名單、無型別/長度驗證，新增 `isValidSchoolApplicationReviewFields()`（容忍欄位不存在或為 `null`，比照既有 `archives.note`/`substituteRecords.details` 的既有驗證模式）
+- **[L4]** 申請人被駁回後重新申請（`update` 的本人分支）原本沒有鎖定 `createdAt`，理論上可被重寫成任意值；新增 `request.resource.data.createdAt == resource.data.createdAt`
+- **[L5]** `docs/STAGE4-DEPLOY.md` App Check 啟用步驟補充提醒：`firebaseConfig.js`/`authService.js` 等子模組沒有 import 版本查詢參數（沿用 `docs/STAGE0-DEPLOY.md` 既有結論，不新增機制），部署後需硬重新整理才會載到新版
+- **[L6]** `scripts/bootstrap-platform-admin.js` 的 `--remove` 補「最後一位平台管理者」保護——移除後若名冊會變空則預設拒絕，需明確加 `--force-remove-last` 才會放行，避免把系統鎖進「沒有任何人能審核學校申請」的狀態；檔頭補充本腳本以新增為主要用途的定位
+
 ## [2026-07-31]（feature/permission-system）多租戶研究 Stage 3：SCHOOL_ID 動態化（未 commit）
 
 依 `docs/RESEARCH-multitenancy-semester.md` §4（集合設計預告：頂層 `userDirectory`）／§8 Stage 3。動機：`SCHOOL_ID`（`schemaConstants.js:14`）原本是 import-time 常數，全 app 只能服務寫死的 `'inhu'`；要推廣多校（使用者已確定要做，Stage 4 開放註冊隨後即做），必須把「schoolId 從哪裡來」改為「登入後由使用者身份動態解析」。本階段是純鋪路，**不改變任何現有 `inhu` 使用者可觀察到的行為**——只是解析機制從寫死常數換成 runtime 解析 + 相容期 fallback。opus 重驗兩輪：第一輪 4 中／6 輕，第二輪 1 必修／4 小項＋1 筆另案記錄，本條目已含兩輪全部修復。**只寫程式碼，未寫 Firestore、未部署、未跑 `v2-rules-matrix.mjs`、未跑回填腳本、未 commit。**

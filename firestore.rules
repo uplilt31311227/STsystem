@@ -1,6 +1,6 @@
 rules_version = '2';
 
-// STsystem V2 權限系統 Firestore 規則（v2.6 — 三層角色 + 敏感欄位私有化 + 學期唯讀鎖 + 封存生命週期 + schoolId 反查目錄）
+// STsystem V2 權限系統 Firestore 規則（v2.7 — 三層角色 + 敏感欄位私有化 + 學期唯讀鎖 + 封存生命週期 + schoolId 反查目錄 + 多租戶開通）
 //
 // 設計原則：
 //   1. 兩條根路徑物理隔離
@@ -65,6 +65,39 @@ rules_version = '2';
 //      機制已經驗證過登入合法性「之後」才呼叫一次，不是任意登入者可自行決定寫入任意
 //      schoolId 的開放端點；email_verified 留給 Stage 4（開放註冊，屆時任意登入者都可能
 //      觸發建校/加入流程）收緊，見下方 match 區塊內的完整說明。
+//   9. Stage 4（2026-07-31，RESEARCH-multitenancy-semester.md §4／RESEARCH-blaze-followup.md；
+//      多租戶開通——自助申請 + 平台管理者輕量審核，非全自助建校）：新增三個頂層集合：
+//        - schoolApplications/{uid}（doc id 綁申請人 uid，一人一份，同 joinAttempts 的
+//          「doc id 天然限流」設計）：申請開通新學校。create 需 isEmailVerified()；
+//          platformAdmin 可 update 狀態（pending→approved/rejected）；申請人本人只能在
+//          status=='rejected' 時重新 update 回 'pending'（重新申請）；pending 期間任何一方
+//          都無法再用 create/update 產生第二份或搶改狀態（doc id 唯一 + 狀態機約束）。
+//        - platformAdmins/{uid}：平台管理者名冊，client 完全唯讀（write: false），只能由
+//          開發者以 gcloud/REST 離線寫入（scripts/bootstrap-platform-admin.js，只寫不執行）。
+//          isPlatformAdmin() 是本階段唯一新增的信任錨點，見該 helper 定義處的權限面說明。
+//        - schoolDirectory/{schoolId}：公開學校名錄（僅 schoolName/createdAt），供申請頁
+//          檢查 schoolId 是否已被使用；任何登入者可讀，寫入僅 platformAdmin、僅 create。
+//      既有 schools/{schoolId}/config/{docId} 的 write 規則新增一條 platformAdmin **create**
+//      分支（不含 update/delete）——新校核准當下還沒有 director，只有 platformAdmin 能完成
+//      config/main 的首次建立；核准動作實際上分兩個 writeBatch 循序執行（非單一原子批次），
+//      理由、schoolId 衝突處理與失敗重試設計見
+//      src/js/modules/v2/schoolApplicationService.js 的 approveApplication() 檔頭註解——
+//      簡述：Firestore 的 create 語意本身就是本設計依賴的「schoolId 衝突」防線，對已存在的
+//      config 文件送出寫入會被規則判定為 update 而非 create，platformAdmin 的 create-only
+//      權限即自然拒絕，不需要額外的樂觀鎖或版本欄位。
+//      userDirectory 的自寫分支新增 isEmailVerified() 檢查（Stage 3 上線時刻意留白，見上方
+//      該處說明，本階段開放註冊後補上；相容性見該 match 區塊內的完整註解）；新增
+//      platformAdmin 分支（approval 時代寫申請人的 userDirectory，不要求 email_verified——
+//      申請人的 email 已在 schoolApplications 的 create 規則驗證過一次，不重複驗證同一件事）。
+//      權限面刻意的留白（如實記錄，不誇大信任邊界）：platformAdmin **不能**讀取任何學校
+//      （含自己核准建立的新學校）的 config/teachers/substituteRecords 等業務資料——本次
+//      規則沒有對 config 的 read 開任何 platformAdmin 分支，只開了 write 的 create 分支；
+//      platformAdmin 也**能**代寫任意 uid 的 userDirectory（不限申請中那一位），這是刻意
+//      接受的權限面（理由見 userDirectory match 區塊內的完整說明），與 director 可代寫校內
+//      任何 userMappings 屬同一信任模型，非本次新增的獨立破口。
+//      App Check（classic reCAPTCHA v3，非 Enterprise，理由見 RESEARCH-blaze-followup.md §3）
+//      與支出風控（多門檻預算警報 + scripts/emergency-brake.js 緊急煞車腳本）皆為
+//      client SDK／Console／離線腳本層面的措施，與本檔規則內容無直接關聯，不在此列。
 //
 // 部署：透過 gcloud REST API 或 Firebase Console（見 docs/V2_PERMISSION_SYSTEM.md）
 
@@ -121,6 +154,56 @@ service cloud.firestore {
     // config，屬規則內部呼叫、不受 read 規則限制，因此收緊 config 的 read 不會讓白名單失效。
     function isMemberOrBootstrapDirector(schoolId) {
       return isMember(schoolId) || isInitialDirector(schoolId);
+    }
+
+    // ---- Stage 4（2026-07-31）：email 驗證 + 平台管理者（跨校信任錨點）----
+    function isEmailVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    // platformAdmins/{uid} 完全禁止 client 寫入（見下方頂層 match 區塊），只能由開發者以
+    // gcloud/REST 離線建立，是本次新增功能中唯一的信任根——理由與範圍見該 match 區塊註解。
+    // 沒有 schoolId 參數：platformAdmin 身份與「哪一所學校」無關，是跨校的平台層概念，
+    // 因此定義在 schools/{schoolId} 的 match 樹之外也適用（helpers 區在 match 樹外共用）。
+    function isPlatformAdmin() {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/platformAdmins/$(request.auth.uid));
+    }
+
+    // 新校首次建立 config/main 的欄位驗證（Stage 4 核准流程唯一使用點，見
+    // schools/{schoolId}/config/{docId} 的 create 規則）。
+    // opus 驗收 L2：initialAdminEmails 原本只驗證「是 list 且非空」，未逐項驗證元素型別。
+    // Firestore 規則語言（CEL 子集）沒有確認可用的通用「對每個元素套用述語」語法
+    // （`.all()`/`.map()` 這類 CEL 巨集在 Firestore Security Rules 官方文件未見明確列為
+    // 支援項目，本檔其餘 900+ 行也從未使用過，貿然採用有部署期才會發現語法錯誤的風險，
+    // 不採用）。改用「精確比對實際寫入形狀」的方式收緊：approveApplication() 的唯一寫入
+    // 呼叫點永遠只寫 `initialAdminEmails: [applicantEmail]`（單一元素），故直接鎖
+    // `size()==1` 並用陣列索引 `[0] is string` 驗證該唯一元素型別——這比「逐項驗證」更嚴格
+    // （不僅驗證型別，連元素數量都鎖死符合唯一合法呼叫端的實際形狀），且只用了本檔已大量
+    // 使用、確認可用的語法（`size()`、陣列索引、`is string`）。如實記錄：這不是「做不到逐項
+    // 驗證所以退而求其次」，而是「單一元素的形狀下，逐項驗證與索引驗證等價，且後者語法
+    // 風險更低」。
+    function isValidNewSchoolConfigWrite(data) {
+      return data.keys().hasOnly(['schoolName', 'currentSemester', 'initialAdminEmails', 'createdAt', 'updatedAt'])
+        && data.schoolName is string && data.schoolName.size() > 0 && data.schoolName.size() < 100
+        && data.currentSemester is string
+        && data.initialAdminEmails is list && data.initialAdminEmails.size() == 1
+        && data.initialAdminEmails[0] is string
+        && data.createdAt is string && data.updatedAt is string;
+    }
+
+    // opus 驗收 L3：schoolApplications 的 platformAdmin 審核欄位（reviewedAt/reviewedBy/
+    // rejectReason）原本只有 hasOnly() 白名單，沒有型別/長度驗證。三個欄位皆為選填（同一次
+    // update 不一定會全部帶到，例如核准動作不帶 rejectReason），且 JS 端在缺值時可能寫入
+    // `null`（見 schoolApplicationService.js 的 `reviewer || null`／`... || null`），故驗證
+    // 邏輯需同時容忍「欄位不存在」與「欄位為 null」兩種情況，比照 archives 的 `note` 欄位
+    // （firestore.rules 既有的 `!('note' in ...) || (...)` 模式）與 substituteRecords 的
+    // `details is map || details == null` 模式撰寫。
+    function isValidSchoolApplicationReviewFields(data) {
+      return (!('reviewedAt' in data) || data.reviewedAt is string)
+        && (!('reviewedBy' in data) || data.reviewedBy == null || data.reviewedBy is map)
+        && (!('rejectReason' in data) || data.rejectReason == null
+             || (data.rejectReason is string && data.rejectReason.size() < 500));
     }
 
     function myMapping(schoolId) {
@@ -294,9 +377,30 @@ service cloud.firestore {
       match /config/{docId} {
         // Stage 0 R2：成員或白名單初始主任可讀（後者靠 isInitialDirector 內部 get()
         // 繞過本 read 規則，白名單主任首登仍讀得到，見 isMemberOrBootstrapDirector 定義）
+        // ⚠ Stage 4：platformAdmin 不在這條 read 規則的任何分支——如實對齊檔頭第 9 點的
+        // 權限面設計，platformAdmin 不能讀任何學校（含自己核准建立的新學校）的 config 內容，
+        // 只有下面的 create 寫入權限。
         allow read:  if isMemberOrBootstrapDirector(schoolId);
         // 僅 director 可改學校名稱、白名單
         allow write: if isDirector(schoolId);
+        // Stage 4（多租戶開通，§4.2-4.4）：platformAdmin 核准學校申請時，代為建立全新學校的
+        // config/main（initialAdminEmails=[申請者 email]）。僅開放 create——Firestore 的
+        // create 語意只在文件「尚不存在」時成立，這正是本設計依賴的 schoolId 衝突防線：
+        // 若 docId 對應的學校已存在（不論是既有 inhu 還是別的已核准學校），這筆寫入會被
+        // Firestore 判定為 update 而非 create，本規則不涵蓋 update，寫入直接被拒
+        // （permission-denied），不需要額外的樂觀鎖或版本欄位，細節見
+        // schoolApplicationService.approveApplication() 檔頭註解。
+        // 不與上面的 `allow write: if isDirector(schoolId);` 衝突——Firestore 規則對同一
+        // 操作只要有任一條 allow 通過即放行，這裡是新增一條「OR」分支：新校此刻還沒有
+        // director，isDirector(schoolId) 必為 false，兩條分支不會同時命中同一次請求。
+        // opus 驗收 L2：補 `docId == 'main'`——原版只驗證了 request.resource.data 的內容，
+        // 沒有限制 platformAdmin 可以對 config/ 底下「哪一個」docId 寫入；雖然目前 client
+        // 只會呼叫 configDocForSchool() 組出 .../config/main，但規則本身應該獨立於「client
+        // 目前恰好只這樣呼叫」這個事實成立，直接鎖死唯一合法的 docId 值，杜絕未來任何呼叫
+        // 端誤植路徑、或 platformAdmin 帳號被盜用後對 config/ 底下灌入其他文件。
+        allow create: if isPlatformAdmin()
+          && docId == 'main'
+          && isValidNewSchoolConfigWrite(request.resource.data);
       }
 
       // ----- Email 索引（首登配對用，Stage 0 R3 配套，§3.4a） -----
@@ -327,7 +431,14 @@ service cloud.firestore {
       //   - 欄位型別與長度驗證，避免超長字串塞爆文件 / 灌垃圾資料。
       match /joinAttempts/{uid} {
         allow read:   if isApprover(schoolId);
+        // Stage 4 opus 驗收 B3：補 isEmailVerified()——與 schoolApplications／userDirectory
+        // 自寫分支的收緊方向一致（任意登入者皆可觸發的寫入端點都應要求 email 已驗證）。
+        // 相容性：joinAttempts 只在「schoolId 已知」的失敗登入路徑才會被寫（見
+        // authGuardV2.resolveIdentity()——B1 修復後，schoolId 完全未知時直接回傳 null、
+        // 不寫任何 joinAttempts），未驗證 email 的使用者頂多是這筆稽核紀錄寫不進去
+        // （logJoinAttempt() 吞掉錯誤、不阻擋既有的拒絕流程），不影響登入結果本身。
         allow create, update: if isSignedIn() && request.auth.uid == uid
+                              && isEmailVerified()
                               && configExists(schoolId)
                               && request.resource.data.keys().hasOnly(['email', 'attemptedAt', 'reason'])
                               && request.resource.data.email is string
@@ -764,11 +875,27 @@ service cloud.firestore {
       // 全字串匹配（比照 Python re.fullmatch，理論上不加錨點也不會有子字串繞過），但明確寫出
       // 錨點不依賴這個「文件說隱含全字串匹配」的間接保證，直接在規則本文表達「整段字串必須從
       // 頭到尾都符合」的意圖，可讀性與防禦力都更高，成本是零（不影響任何合法的 schoolId 值）。
-      // ⚠ 未驗證 email_verified：見檔頭第 8 點——本階段唯一的寫入路徑是
-      // authGuardV2.upsertUserDirectoryEntry()，只在既有 isMember/isInitialDirector 等機制
-      // 已判定登入合法「之後」才呼叫，不是任意登入者可自由決定寫入任意 schoolId 的端點。
-      // Stage 4（開放註冊）收緊時再補這一項。
-      allow create, update: if isSignedIn() && request.auth.uid == uid
+      // Stage 4：補上 Stage 3 刻意留白的 email_verified 檢查（見上方原本的留白說明，
+      // 現已改寫如下）——自寫分支要求 isEmailVerified()；新增 platformAdmin 分支供核准
+      // 申請時代寫申請人的 userDirectory（申請人此刻可能尚未重新登入，無法靠自寫分支完成；
+      // 不要求 email_verified，因為申請人 email 已在 schoolApplications 的 create 規則驗證
+      // 過一次，見該 match 區塊）。
+      // 相容性：現有 inhu 使用者的 userDirectory 已由 scripts/backfill-user-directory.js
+      // 離線建立（不受 client 規則限制，見該腳本檔頭），這條規則只影響「文件尚不存在，
+      // 需要靠這條自寫規則首次建立」的使用者——已回填過的既有成員這輩子不會再走到這個分支
+      // （見 authGuardV2.resolveIdentity 的 `if (!userDirectoryExisted)` 守門），故本次收緊
+      // 不影響任何現有 inhu 使用者的登入。
+      // ⚠ 權限面誠實揭露（platformAdmin 分支）：允許 platformAdmin 寫入「任意」uid 的
+      // userDirectory（不限於申請中的那一位），只要目標 schoolId 存在。理論上可被用來把
+      // 既有教師的 userDirectory 指向另一所學校，但不構成帳號接管——目標學校仍需要獨立的
+      // teachers/emailIndex 配對，該使用者下次登入若配對不到，只會被導向 Stage 4 的申請
+      // 流程（見 authGuardV2.resolveIdentity 的 no_teacher_match 分支），不會被授予任何角色。
+      // 這是 platformAdmin 作為唯一信任錨點本來就該承擔的風險層級，與 director 可代寫校內
+      // 任何 userMappings（linkedTeacherId 不受限）是同一信任模型，非本次新增的獨立破口。
+      allow create, update: if (
+          (isSignedIn() && request.auth.uid == uid && isEmailVerified())
+          || isPlatformAdmin()
+        )
         && request.resource.data.keys().hasOnly(['schoolId', 'createdAt'])
         && request.resource.data.schoolId is string
         && request.resource.data.schoolId.matches('^[a-z0-9_-]{1,50}$')
@@ -779,6 +906,133 @@ service cloud.firestore {
       // （例如未來允許使用者主動「離開學校」）不構成額外風險——能刪的永遠只是自己那一份，
       // 刪除後下次登入會重新走 resolveSchoolIdForUid() 的 fallback，不影響其他任何人。
       allow delete: if isSignedIn() && request.auth.uid == uid;
+    }
+
+    // ================ Stage 4：頂層 platformAdmins（跨校信任錨點） ================
+    // 見檔頭第 9 點與 isPlatformAdmin() 定義處。完全禁止 client 寫入——這是整套 Stage 4
+    // 設計唯一沒有 client 路徑可寫的集合，只能由開發者以 gcloud/REST 個人帳號離線寫入
+    // （scripts/bootstrap-platform-admin.js，只寫不執行，需人工確認 --dry-run 輸出後才能
+    // 拿掉旗標執行），與報告 §4.3「platformAdmins 集合完全禁止 client 寫入」的設計一致。
+    match /platformAdmins/{uid} {
+      // 讀取：僅本人（供 client 端自我判斷「我是不是 platformAdmin」以決定是否渲染審核頁，
+      // 不對外開放任何人查任何人是否為 platformAdmin）。
+      allow read:  if isSignedIn() && request.auth.uid == uid;
+      allow write: if false;
+    }
+
+    // ================ Stage 4：頂層 schoolDirectory（公開學校名錄） ================
+    // 見檔頭第 9 點。僅 schoolName/createdAt 兩個公開欄位，供申請頁檢查 schoolId 是否已被
+    // 使用（比探測 schools/{schoolId}/config 是否存在更正當——config 的 read 規則本身就是
+    // 拒絕任意登入者探測的對象，見 R1/R2）。
+    match /schoolDirectory/{schoolId} {
+      // 讀取：opus 驗收 M1，原本用 `allow read`（＝ get + list）一次放行——但這個集合的
+      // 「加入既有學校」流程（見 v2-app.js 的 join 流程與 authGuardV2 B1 修復）只需要查
+      // 「某一個已知代碼是否存在」，不需要列出全部學校名單；開放 `list` 等於讓任何登入者
+      // 一次撈走全平台所有學校的名稱與建立時間，多此一舉的資訊暴露面。拆成：
+      //   - get：任何登入者可查單一已知 schoolId（申請頁查重、加入流程查代碼皆走這條）。
+      //   - list：僅 platformAdmin（例如未來若要做「列出所有學校」的管理功能）。
+      allow get:  if isSignedIn();
+      allow list: if isPlatformAdmin();
+      // 寫入：僅 platformAdmin，且僅 create（與 config/main 的 create-only 設計對稱——
+      // 一旦某個 schoolId 已被使用，這筆寫入會被 Firestore 判定為 update 而非 create，
+      // 本規則不涵蓋 update，天然拒絕「用同一個 schoolId 二次核准」）。不開放 update：校名
+      // 一旦公告不應被悄悄改掉，真要改名屬於例外情況，留給開發者離線處理；不開放 delete
+      // 避免 schoolId 這個「一旦用過就永久佔用」的槽位被騰出來給另一所學校重複使用（沿用中
+      // 的 userDirectory/teachers 等資料仍會指向舊的 schoolId，delete 後產生的混淆遠大於好處）。
+      allow create: if isPlatformAdmin()
+        && request.resource.data.keys().hasOnly(['schoolName', 'createdAt'])
+        && request.resource.data.schoolName is string
+        && request.resource.data.schoolName.size() > 0 && request.resource.data.schoolName.size() < 100
+        && request.resource.data.createdAt is string;
+      allow update, delete: if false;
+    }
+
+    // ================ Stage 4：頂層 schoolApplications（開通新學校申請） ================
+    // 見檔頭第 9 點／RESEARCH-multitenancy-semester.md §4.4 變體 B（自助申請 + 平台管理者
+    // 輕量審核）。doc id 綁申請人 uid——「一人一申請」與 joinAttempts（§3.4b）同一設計：
+    // doc id 本身就是天然的去重鍵，不需要額外查詢或計數器。
+    match /schoolApplications/{uid} {
+      // 讀取：本人（查自己的申請狀態）或 platformAdmin（審核列表）。
+      allow read: if isSignedIn() && (request.auth.uid == uid || isPlatformAdmin());
+
+      // 建立：首次申請。要求 isEmailVerified()——這是本階段唯一「任意登入者皆可觸發」的
+      // 開放寫入端點（不像 userDirectory 的自寫分支只在既有機制已判定登入合法之後才被呼叫，
+      // 見檔頭第 8 點的對照說明），必須擋掉未驗證的 email，理由與報告 §4.1「強制 email
+      // 驗證」一致。欄位白名單 + 型別/長度驗證；status 建立當下必須是 'pending'；
+      // applicantUid/applicantEmail 必須等於本人，防止代人申請或塞入偽造的聯絡資訊。
+      allow create: if isSignedIn() && request.auth.uid == uid
+        && isEmailVerified()
+        && request.resource.data.keys().hasOnly([
+             'schoolName', 'applicantEmail', 'applicantUid', 'desiredSchoolId',
+             'status', 'createdAt', 'updatedAt'
+           ])
+        && request.resource.data.applicantUid == uid
+        && request.resource.data.applicantEmail == userEmail().lower()
+        && request.resource.data.schoolName is string
+        && request.resource.data.schoolName.size() > 0 && request.resource.data.schoolName.size() < 100
+        && request.resource.data.desiredSchoolId is string
+        && request.resource.data.desiredSchoolId.matches('^[a-z0-9_-]{1,50}$')
+        && request.resource.data.status == 'pending'
+        && request.resource.data.createdAt is string
+        && request.resource.data.updatedAt is string;
+
+      // 更新：兩種情境，皆不可越權竄改對方負責的欄位——
+      //   (a) platformAdmin 審核：狀態機兩條合法轉移路徑——
+      //       (a-1) 'pending' → 'approved'/'rejected'：正常審核。
+      //       (a-2) 'approved' → 'rejected'（opus 驗收 H2 新增，解套路徑）：核准流程若卡在
+      //             「schoolDirectory 已有同代碼同名紀錄」的死局（見
+      //             schoolApplicationService.js 的 SameNameConflictError／approveApplication
+      //             檔頭說明），或核准後才發現需要撤銷，platformAdmin 可把已核准的申請改回
+      //             駁回狀態，讓申請人得以重新申請（走下面 (b) 分支換一個代碼）。⚠ 這個
+      //             分支**不會**復原已經建立的學校資料（config/schoolDirectory）——那些
+      //             寫入是 create-only、client 規則沒有任何刪除路徑，需要的話得靠開發者
+      //             離線用 gcloud/REST 清理，見 docs/STAGE4-DEPLOY.md「已知限制」。
+      //       兩條路徑皆只能動流程欄位（status/updatedAt/reviewedAt/reviewedBy/
+      //       rejectReason），不能改申請人填寫的內容（schoolName/desiredSchoolId 等）——
+      //       避免審核者順手「校正」申請內容卻沒有留下申請人知情的軌跡；reviewedAt/
+      //       reviewedBy/rejectReason 三個選填欄位另外驗證型別/長度（見
+      //       isValidSchoolApplicationReviewFields()，opus 驗收 L3）。
+      //   (b) 申請人本人在被駁回後重新申請：僅在目前狀態是 'rejected' 時，把整份申請內容
+      //       連同 status 重設為 'pending'（等同重新提交），驗證同 create，唯一差異是
+      //       `createdAt` 必須與既有值相同（opus 驗收 L4：鎖住「送出時間」不可被重新申請
+      //       洗掉，語意上代表第一次申請的時間，不是「最近一次」）。pending 期間本人不能再
+      //       update（此時本人分支的 `resource.data.status == 'rejected'` 前提不成立，只有
+      //       platformAdmin 的分支可能命中）——這正是「pending 期間不可重複」的實際落地
+      //       方式：doc id 已綁 uid（無法用 create 建第二份），pending 狀態下本人也無法用
+      //       update 繞過（唯一能動狀態的是 platformAdmin）。
+      allow update: if (
+          isPlatformAdmin()
+          && (
+            (resource.data.status == 'pending' && request.resource.data.status in ['approved', 'rejected'])
+            || (resource.data.status == 'approved' && request.resource.data.status == 'rejected')
+          )
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+               'status', 'updatedAt', 'reviewedAt', 'reviewedBy', 'rejectReason'
+             ])
+          && isValidSchoolApplicationReviewFields(request.resource.data)
+        )
+        || (
+          isSignedIn() && request.auth.uid == uid
+          && isEmailVerified()
+          && resource.data.status == 'rejected'
+          && request.resource.data.keys().hasOnly([
+               'schoolName', 'applicantEmail', 'applicantUid', 'desiredSchoolId',
+               'status', 'createdAt', 'updatedAt'
+             ])
+          && request.resource.data.applicantUid == uid
+          && request.resource.data.applicantEmail == userEmail().lower()
+          && request.resource.data.schoolName is string
+          && request.resource.data.schoolName.size() > 0 && request.resource.data.schoolName.size() < 100
+          && request.resource.data.desiredSchoolId is string
+          && request.resource.data.desiredSchoolId.matches('^[a-z0-9_-]{1,50}$')
+          && request.resource.data.status == 'pending'
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.updatedAt is string
+        );
+
+      // 刪除：不開放。核准/駁回都是永久記錄（比照 operationLogs/archives 的稽核精神），
+      // 駁回後的重新申請走上面的 update 分支，不需要刪除重建。
+      allow delete: if false;
     }
 
     // ================ 穩定版 master：保留原規則 ================

@@ -17,6 +17,7 @@ import * as teacherMgr          from './modules/v2/teacherAccountManager.js';
 import * as requestSvc          from './modules/v2/pendingRequestService.js';
 import * as logger              from './modules/v2/operationLogger.js';
 import * as legacyMigration     from './modules/v2/legacyMigrationService.js';
+import * as schoolAppSvc        from './modules/v2/schoolApplicationService.js';
 import { LOG_ACTIONS, LOG_TARGET_TYPES, ROLES, REQUEST_STATUS, REQUEST_TYPES, getActiveSchoolId, resetActiveSchoolId, DEFAULT_SCHOOL_ID } from './modules/v2/schemaConstants.js';
 import * as authMod from './modules/authService.js';
 import * as cloudSyncSvc from './modules/cloudSyncService.js';
@@ -69,9 +70,16 @@ function injectV2Styles() {
 
 /* ===== 登入遮罩（V2 未授權時鎖定整個 app）===== */
 
-// 遮罩狀態：拒絕帳號 email（非 null 顯示「尚未授權」）、驗證錯誤旗標（顯示錯誤+重試）。
+// 遮罩狀態：申請流程狀態（非 null 顯示「申請開通新學校」相關畫面，Stage 4 新增，取代原本
+// 單純的「尚未授權」拒絕訊息，見 enterApplyFlow() 定義處）、驗證錯誤旗標（顯示錯誤+重試）。
 // 授權登入成功後由 unlockV2App 一併清除。
-let _v2GateDeniedEmail = null;
+let _v2ApplyState = null;
+// Stage 4：目前登入者是否為平台管理者（跨校概念，與 roleService 的校內角色無關，見
+// schoolApplicationService.isPlatformAdmin() 定義處）。
+// opus 驗收 M4：改為惰性查詢——`null` 代表「尚未查過」，不再於 bootstrap 對每一位登入者
+// 無條件查一次 platformAdmins/{uid}（即使絕大多數使用者都不是，也是一次白白的讀取）；
+// 改到「設定」頁籤第一次被打開時才查一次並快取結果，見 renderPlatformAdminReviewTab()。
+let _v2IsPlatformAdmin = null;
 let _v2GateError = false;
 // opus 重驗 4：resolveIdentity() 拋出的錯誤訊息（例如 resolveSchoolIdForUid() 的 readFailed
 // 分支，見 authGuardV2.js），讓遮罩顯示具體原因而不是永遠只有通用的「登入驗證時發生錯誤」。
@@ -93,47 +101,388 @@ function injectV2AuthGate() {
     renderAuthGate();
 }
 
-/** 依目前狀態渲染遮罩內容（預設登入 / 拒絕 / 錯誤），並綁定登入入口。相同狀態不重繪。 */
+/**
+ * Stage 4（RESEARCH-multitenancy-semester.md §4.4 變體 B）：resolveIdentity() 找不到任何
+ * 學校歸屬（userDirectory 查無、DEFAULT_SCHOOL_ID fallback 配對也失敗，見 authGuardV2.js
+ * resolveIdentity() 的 no_teacher_match 分支）時呼叫，取代原本「直接登出」的行為。
+ *
+ * 刻意不登出——保留 Firebase Auth session，讓使用者能在遮罩內完成「驗證 email → 送出申請 →
+ * 查看審核狀態」整套流程，都需要一個活著的登入 session 才能對 schoolApplications 寫入/讀取
+ * （見 firestore.rules 的 schoolApplications match 區塊：create/update 都要求
+ * `request.auth.uid == uid`）。使用者若想改用別的帳號，遮罩內另有「登出，改用其他帳號」
+ * 按鈕（見 renderApplyGateContent()），是唯一會真的呼叫 signOutUser() 的路徑。
+ *
+ * @param {import('firebase/auth').User} user - Firebase Auth 使用者物件（非 authGuardV2 組的
+ *   plain object，需要 emailVerified 這個原生欄位，plain object 沒有帶這個欄位）。
+ */
+async function enterApplyFlow(user) {
+    _v2ApplyState = {
+        uid: user.uid,
+        email: (user.email || '').toLowerCase().trim(),
+        emailVerified: !!user.emailVerified,
+        application: null,
+        loading: true,
+        error: null,
+    };
+    lockV2App();
+    await refreshApplyState();
+}
+
+/** 重新讀取目前使用者的申請狀態，並重繪遮罩。 */
+async function refreshApplyState() {
+    if (!_v2ApplyState) return;
+    _v2ApplyState.loading = true;
+    _v2ApplyState.error = null;
+    renderAuthGate();
+    try {
+        _v2ApplyState.application = await schoolAppSvc.getApplication(_v2ApplyState.uid);
+    } catch (e) {
+        console.error('[v2] 讀取申請狀態失敗:', e);
+        _v2ApplyState.error = e;
+    } finally {
+        _v2ApplyState.loading = false;
+        renderAuthGate();
+    }
+}
+
+/** 依目前狀態渲染遮罩內容（預設登入 / 申請流程 / 錯誤），並綁定登入入口。相同狀態不重繪。 */
 function renderAuthGate() {
     const gate = document.getElementById('v2-auth-gate');
     if (!gate) return;
-    // key 併入錯誤訊息本身：兩次連續失敗若訊息不同（例如先是 readFailed、重試後變成別的
-    // 錯誤），沒有這個併入的話 key 都會是同一個 'error'，第二次 renderAuthGate() 會被上面
-    // 「相同狀態免重繪」擋下，畫面停留在第一次的訊息，使用者看到的會是過期的錯誤原因。
+    // key 併入狀態摘要：兩次連續的同一大類狀態（例如都在 loading）若沒有這個併入，
+    // 「相同狀態免重繪」會擋下畫面更新，使用者看到的會是過期的內容。
+    const applyKey = _v2ApplyState
+        ? `apply:${_v2ApplyState.uid}:${_v2ApplyState.loading}:${_v2ApplyState.error ? 'err' : ''}:` +
+          `${_v2ApplyState.emailVerified}:${_v2ApplyState.application?.status || 'none'}`
+        : '';
     const key = _v2GateError ? 'error:' + (_v2GateErrorMessage || '')
-              : _v2GateDeniedEmail ? 'denied:' + _v2GateDeniedEmail
+              : _v2ApplyState ? applyKey
               : 'default';
     if (gate.dataset.renderKey === key) return;   // 相同狀態免重繪 / 重綁監聽
     gate.dataset.renderKey = key;
 
-    const msg = _v2GateError
-        ? `<p class="v2-gate-denied">⚠ ${_v2GateErrorMessage ? escapeHtml(_v2GateErrorMessage) : '登入驗證時發生錯誤'}，請點下方按鈕重試，或重新整理頁面。</p>`
-        : _v2GateDeniedEmail
-            ? `<p class="v2-gate-denied">🔒 帳號 ${escapeHtml(_v2GateDeniedEmail)} 尚未被授權。<br>請改用已授權的帳號登入，或聯絡管理員在「教師管理」為您指派 email。</p>`
-            : `<p>本系統為全校共用，請先登入以使用。</p>`;
-    gate.innerHTML = `
+    if (_v2GateError) {
+        gate.innerHTML = renderDefaultGateShell(
+            `<p class="v2-gate-denied">⚠ ${_v2GateErrorMessage ? escapeHtml(_v2GateErrorMessage) : '登入驗證時發生錯誤'}，請點下方按鈕重試，或重新整理頁面。</p>` +
+            renderGateSignInActions()
+        );
+        bindGateSignInActions(gate);
+        return;
+    }
+
+    if (_v2ApplyState) {
+        gate.innerHTML = renderApplyGateContent(_v2ApplyState);
+        bindApplyGateActions(gate);
+        return;
+    }
+
+    gate.innerHTML = renderDefaultGateShell(
+        `<p>本系統為全校共用，請先登入以使用。</p>` + renderGateSignInActions()
+    );
+    bindGateSignInActions(gate);
+}
+
+function renderDefaultGateShell(bodyHtml) {
+    return `
         <div class="v2-auth-gate-card">
             <h2>國中調代課自動化系統</h2>
-            ${msg}
-            <div class="v2-auth-gate-actions">
-                <button id="v2-gate-google" class="btn btn-google">
-                    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
-                        <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
-                        <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
-                        <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/>
-                        <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
-                    </svg>
-                    使用 Google 登入
-                </button>
-                <button id="v2-gate-email" class="btn btn-ghost btn-sm">使用 Email / 密碼登入</button>
-            </div>
+            ${bodyHtml}
         </div>
     `;
+}
+
+function renderGateSignInActions() {
+    return `
+        <div class="v2-auth-gate-actions">
+            <button id="v2-gate-google" class="btn btn-google">
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                    <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                    <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                    <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/>
+                    <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+                </svg>
+                使用 Google 登入
+            </button>
+            <button id="v2-gate-email" class="btn btn-ghost btn-sm">使用 Email / 密碼登入</button>
+        </div>
+    `;
+}
+
+function bindGateSignInActions(gate) {
     // 直接呼叫既有處理器（不依賴遮罩下 DOM id；底層 .app-container 已 inert，程式化呼叫不受影響）
     gate.querySelector('#v2-gate-google')?.addEventListener('click', () => {
         window.app?.handleGoogleSignIn?.();
     });
     gate.querySelector('#v2-gate-email')?.addEventListener('click', () => openAuthModal('signin'));
+}
+
+/**
+ * Stage 4：申請流程遮罩內容。依 _v2ApplyState 目前狀態分支：
+ *   1. loading → 過場文字
+ *   2. error（讀取申請狀態失敗）→ 錯誤卡片 + 重試鈕
+ *   3. !emailVerified → 「請先驗證 email」畫面（僅 Email/密碼登入者可能命中——Google 登入
+ *      的 email 天然已驗證，見報告 §4.1）
+ *   4. emailVerified===true 之後，畫面固定分兩段（opus 驗收 B1：雙選項流程）：
+ *      (a)「加入既有學校」——恆常顯示的輸入框 + 按鈕，供已被某校 director 建檔（teachers/
+ *          emailIndex 已存在）、但自己從未登入過（無 userDirectory 條目）的教師輸入學校代碼
+ *          自行綁定，這是本次修復新校第二位（含之後）教師登入的主要路徑，見
+ *          authGuardV2.js B1 註解與下方 attemptJoinSchool()。
+ *      (b) 依 application 狀態分支的既有申請表單／狀態卡（pending/approved/rejected/none）。
+ * 所有分支底部都有「登出，改用其他帳號」，是這個畫面唯一會真的呼叫 signOutUser() 的入口。
+ */
+function renderApplyGateContent(state) {
+    const logoutBtn = `<button id="v2-gate-logout" class="btn btn-ghost btn-sm" style="margin-top:0.8rem;">登出，改用其他帳號</button>`;
+
+    if (state.loading) {
+        return renderDefaultGateShell(`<p>確認申請狀態中…</p>`);
+    }
+
+    if (state.error) {
+        return renderDefaultGateShell(
+            `<p class="v2-gate-denied">⚠ 無法確認申請狀態：${escapeHtml((state.error && state.error.message) || '未知錯誤')}</p>` +
+            `<div class="v2-auth-gate-actions"><button id="v2-gate-apply-retry" class="btn btn-secondary btn-sm">重試</button></div>` +
+            logoutBtn
+        );
+    }
+
+    if (!state.emailVerified) {
+        return renderDefaultGateShell(`
+            <p class="v2-gate-denied">🔒 帳號 ${escapeHtml(state.email)} 尚未綁定任何學校。</p>
+            <p>加入既有學校或申請開通新學校前，請先完成 email 驗證（Google 登入的帳號通常已自動驗證；
+            若您看到這則訊息，請至信箱點擊驗證信中的連結，或重新點下方按鈕再寄一次）。</p>
+            <div class="v2-auth-gate-actions">
+                <button id="v2-gate-send-verify" class="btn btn-primary btn-sm">寄送 / 重新寄送驗證信</button>
+                <button id="v2-gate-verify-done" class="btn btn-secondary btn-sm">我已完成驗證，重新確認</button>
+            </div>
+            ${logoutBtn}
+        `);
+    }
+
+    const app = state.application;
+
+    // opus 驗收 B1：「加入既有學校」——恆常顯示（不依賴 application 狀態），因為它與
+    // 「申請開通新學校」是互斥但並列的兩條路，不是同一個狀態機的分支。若正在申請審核中或
+    // 剛核准，也保留這個入口——使用者可能記錯自己該用哪個選項，不強行只顯示一種。
+    const joinSection = `
+        <div class="data-management-section" style="text-align:left;">
+            <strong>加入既有學校</strong>
+            <p class="hint">若您的學校已經開通、且校內主任／組長已經在教師名單建立您的帳號，請在這裡輸入學校代碼即可直接使用（代碼由該校主任／組長提供）。</p>
+            <div style="display:flex;gap:0.5rem;align-items:flex-start;flex-wrap:wrap;margin-top:0.4rem;">
+                <input type="text" id="v2-join-school-id" placeholder="例如：inhu" style="flex:1;min-width:140px;">
+                <button id="v2-gate-join-school" class="btn btn-primary btn-sm">加入</button>
+            </div>
+            <span class="hint" id="v2-join-school-hint"></span>
+        </div>
+        <p style="text-align:center;color:var(--text-muted,#888);margin:0.6rem 0;">－ 或 －</p>
+    `;
+
+    if (app?.status === 'pending') {
+        return renderDefaultGateShell(
+            `<p class="v2-gate-denied">🔒 帳號 ${escapeHtml(state.email)} 尚未綁定任何學校。</p>` +
+            joinSection + `
+            <div class="data-management-section">
+                <strong>申請審核中</strong>
+                <p class="hint">
+                    學校名稱：${escapeHtml(app.schoolName || '')}<br>
+                    學校代碼：${escapeHtml(app.desiredSchoolId || '')}<br>
+                    送出時間：${escapeHtml(fmtDate(app.createdAt))}
+                </p>
+                <p>平台管理者審核通過後，請重新登入即可開始使用（首次登入會自動成為該校教務主任）。</p>
+            </div>
+            <div class="v2-auth-gate-actions"><button id="v2-gate-apply-retry" class="btn btn-secondary btn-sm">重新整理狀態</button></div>
+            ${logoutBtn}`
+        );
+    }
+
+    if (app?.status === 'approved') {
+        // 邊界情況：申請已核准，但這次 resolveIdentity() 仍然沒找到教師配對——理論上核准
+        // 動作（schoolApplicationService.approveApplication()）已經把 userDirectory 指向
+        // 新學校，下次登入應該會直接成功；會落到這裡通常是「核准後這是同一個分頁、尚未
+        // 重新整理」或「userDirectory 寫入當下失敗」等邊界狀況，不強行猜測原因，只提供
+        // 「重新嘗試登入」讓使用者用當下 session 重跑一次 resolveIdentity()。
+        return renderDefaultGateShell(
+            joinSection + `
+            <p>申請已核准（學校：${escapeHtml(app.schoolName || '')}）。若畫面沒有自動跳轉，請點下方按鈕重新嘗試登入；仍失敗請重新整理頁面。</p>
+            <div class="v2-auth-gate-actions"><button id="v2-gate-retry-login" class="btn btn-primary btn-sm">重新嘗試登入</button></div>
+            ${logoutBtn}`
+        );
+    }
+
+    // app 為 null 或 status==='rejected'：顯示申請表單。
+    const rejectedNote = app?.status === 'rejected'
+        ? `<p class="v2-gate-denied">上次申請已被駁回${app.rejectReason ? '：' + escapeHtml(app.rejectReason) : '。'}如仍需使用，請確認資訊後重新送出。</p>`
+        : '';
+    return renderDefaultGateShell(
+        `<p class="v2-gate-denied">🔒 帳號 ${escapeHtml(state.email)} 尚未綁定任何學校。</p>` +
+        joinSection + `
+        <div class="data-management-section" style="text-align:left;">
+            <strong>申請開通新學校</strong>
+            <p class="hint">若您的學校尚未開通，可在此送出申請；平台管理者審核通過後即可使用（一所學校僅需申請一次）。</p>
+            ${rejectedNote}
+            <label style="display:block;margin-top:0.4rem;">學校名稱
+                <input type="text" id="v2-apply-school-name" placeholder="例如：新竹市立內湖國民中學"
+                       value="${escapeHtml(app?.schoolName || '')}" style="width:100%;margin-top:0.2rem;">
+            </label>
+            <label style="display:block;margin-top:0.6rem;">學校代碼（僅小寫英數字、底線、連字號）
+                <input type="text" id="v2-apply-school-id" placeholder="例如：newschool"
+                       value="${escapeHtml(app?.desiredSchoolId || '')}" style="width:100%;margin-top:0.2rem;">
+                <span class="hint" id="v2-apply-school-id-hint"></span>
+            </label>
+            <div class="v2-auth-gate-actions" style="margin-top:0.6rem;">
+                <button id="v2-gate-submit-apply" class="btn btn-primary btn-sm">送出申請</button>
+            </div>
+        </div>
+        ${logoutBtn}`
+    );
+}
+
+function bindApplyGateActions(gate) {
+    gate.querySelector('#v2-gate-logout')?.addEventListener('click', async () => {
+        try {
+            await authMod.signOutUser();
+        } catch (err) {
+            console.error('[v2] 登出失敗:', err);
+            notifyError(err, '登出');
+        }
+        // 不手動清 _v2ApplyState——onAuthStateChanged(user=null) 的既有分支會清乾淨並重繪。
+    });
+
+    gate.querySelector('#v2-gate-apply-retry')?.addEventListener('click', () => refreshApplyState());
+
+    gate.querySelector('#v2-gate-send-verify')?.addEventListener('click', async (e) => {
+        const btn = e.currentTarget;
+        btn.disabled = true;
+        try {
+            await authMod.sendVerificationEmail();
+            notify('驗證信已寄出，請至信箱點擊連結，完成後回來按「我已完成驗證」', 'success', 6000);
+        } catch (err) {
+            notifyError(err, '寄送驗證信');
+        } finally {
+            btn.disabled = false;
+        }
+    });
+
+    gate.querySelector('#v2-gate-verify-done')?.addEventListener('click', async (e) => {
+        const btn = e.currentTarget;
+        btn.disabled = true;
+        // opus 驗收 B2：user.reload() 只更新本機 user 物件的 emailVerified 屬性，不會更新
+        // 「已快取、附帶在後續請求上的 ID token」——Firestore 規則讀的是
+        // request.auth.token.email_verified（token 內的 claim），token 本身要等到
+        // getIdToken(true)（強制刷新）才會重新簽發、帶上最新的 email_verified 值。少了這一步，
+        // 使用者在信箱點完驗證連結、回來按這顆按鈕後，畫面雖然顯示「已驗證」（因為 user 物件
+        // 更新了），但緊接著送出的 schoolApplications/joinAttempts/userDirectory 寫入仍會被
+        // 規則拒絕（因為當下這個請求所附的 token 還是舊的、claim 還是 false）——必須兩步都做。
+        try {
+            const user = authMod.getCurrentUser();
+            await user?.reload?.();
+            await user?.getIdToken?.(true);
+            const refreshed = authMod.getCurrentUser();
+            if (_v2ApplyState) _v2ApplyState.emailVerified = !!refreshed?.emailVerified;
+            if (!refreshed?.emailVerified) {
+                notify('尚未偵測到驗證完成，請確認已點擊信件中的連結後再試一次', 'warning');
+            }
+            renderAuthGate();
+        } catch (err) {
+            notifyError(err, '確認驗證狀態');
+        } finally {
+            btn.disabled = false;
+        }
+    });
+
+    // opus 驗收 B1：加入既有學校——輸入代碼後直接嘗試自寫 userDirectory（見
+    // attemptJoinSchool()），不先用 schoolDirectory 探測是否存在。理由：既有 inhu 尚未回填進
+    // schoolDirectory（見 docs/STAGE4-DEPLOY.md「已知限制」），若拿 schoolDirectory 存在與否
+    // 當前置關卡，會誤擋 inhu 自己的新教師；規則的 configExists() 才是唯一權威，直接嘗試寫入
+    // 讓規則決定成敗，失敗給明確訊息即可。
+    gate.querySelector('#v2-gate-join-school')?.addEventListener('click', async (e) => {
+        const btn = e.currentTarget;
+        const idInput = gate.querySelector('#v2-join-school-id');
+        const hint = gate.querySelector('#v2-join-school-hint');
+        const code = (idInput?.value || '').trim();
+        if (!schoolAppSvc.isValidSchoolIdFormat(code)) {
+            if (hint) hint.textContent = '代碼格式不正確（僅限小寫英數字、底線、連字號，1-50 字）';
+            return;
+        }
+        btn.disabled = true;
+        btn.textContent = '加入中…';
+        if (hint) hint.textContent = '';
+        try {
+            await dataSvc.upsertUserDirectoryEntry(_v2ApplyState.uid, code);
+            notify(`已綁定學校代碼「${code}」，重新整理頁面套用…`, 'success', 3000);
+            // B1：寫入成功後必須重跑一次完整登入鏈（resolveSchoolIdForUid() 才能讀到剛寫入的
+            // 條目），用 reload 換乾淨狀態，比照 switchToNewSemester()／retry-login 的既有慣例。
+            setTimeout(() => window.location.reload(), 800);
+        } catch (err) {
+            console.error('[v2] 加入學校失敗:', err);
+            if (hint) {
+                hint.textContent = err?.code === 'permission-denied'
+                    ? '找不到此代碼對應的學校，請確認代碼是否正確（可向該校主任／組長確認）'
+                    : `加入失敗：${err?.message || err}`;
+            }
+            btn.disabled = false;
+            btn.textContent = '加入';
+        }
+    });
+
+    gate.querySelector('#v2-gate-retry-login')?.addEventListener('click', async () => {
+        const user = authMod.getCurrentUser();
+        if (!user) { notify('登入狀態已遺失，請重新整理頁面', 'error'); return; }
+        // 直接重跑一次 onAuthStateChange 的核心邏輯最簡單的方式：重新整理頁面，讓
+        // bootstrap 從頭走一次（比手動重放 bootstrap 內部邏輯更不容易遺漏步驟，
+        // 比照本專案其餘「狀態大改動後用 reload 換乾淨狀態」的既有慣例，見
+        // switchToNewSemester() 檔頭註解）。
+        window.location.reload();
+    });
+
+    const nameInput = gate.querySelector('#v2-apply-school-name');
+    const idInput   = gate.querySelector('#v2-apply-school-id');
+    const idHint    = gate.querySelector('#v2-apply-school-id-hint');
+    let idCheckToken = 0;
+    const checkIdAvailability = async () => {
+        if (!idInput || !idHint) return;
+        const val = idInput.value.trim();
+        if (!val) { idHint.textContent = ''; return; }
+        if (!schoolAppSvc.isValidSchoolIdFormat(val)) {
+            idHint.textContent = '格式不正確（僅限小寫英數字、底線、連字號，1-50 字）';
+            return;
+        }
+        const token = ++idCheckToken;
+        idHint.textContent = '確認可用性中…';
+        try {
+            const taken = await schoolAppSvc.isSchoolIdTaken(val);
+            if (token !== idCheckToken) return; // 較新一次輸入已觸發，這次結果作廢
+            idHint.textContent = taken ? '⚠ 此代碼可能已被使用，建議更換' : '✓ 可使用';
+        } catch (e) {
+            if (token !== idCheckToken) return;
+            idHint.textContent = '';
+            console.warn('[v2] 檢查學校代碼可用性失敗：', e);
+        }
+    };
+    idInput?.addEventListener('blur', checkIdAvailability);
+
+    gate.querySelector('#v2-gate-submit-apply')?.addEventListener('click', async (e) => {
+        const btn = e.currentTarget;
+        const schoolName = nameInput?.value.trim() || '';
+        const desiredSchoolId = idInput?.value.trim() || '';
+        if (!schoolName) { notify('請填寫學校名稱', 'warning'); return; }
+        if (!schoolAppSvc.isValidSchoolIdFormat(desiredSchoolId)) {
+            notify('學校代碼格式不正確（僅限小寫英數字、底線、連字號，1-50 字）', 'warning');
+            return;
+        }
+        btn.disabled = true;
+        btn.textContent = '送出中…';
+        try {
+            await schoolAppSvc.submitApplication({
+                uid: _v2ApplyState.uid, email: _v2ApplyState.email, schoolName, desiredSchoolId,
+            });
+            notify('申請已送出，請等待平台管理者審核', 'success', 5000);
+            await refreshApplyState();
+        } catch (err) {
+            notifyError(err, '送出申請');
+            btn.disabled = false;
+            btn.textContent = '送出申請';
+        }
+    });
 }
 
 /**
@@ -154,7 +503,7 @@ function lockV2App() {
 
 /** 解鎖 app（授權身份確認且初次渲染完成後）：清除拒絕/錯誤狀態並解除封鎖。 */
 function unlockV2App() {
-    _v2GateDeniedEmail = null;
+    _v2ApplyState = null;
     _v2GateError = false;
     _v2GateErrorMessage = null;
     setAppLocked(false);
@@ -2313,6 +2662,246 @@ async function renderArchiveAdminTab() {
     await syncArchiveSectionState();
 }
 
+/* ===== Stage 4：學校申請審核（平台管理者專用，RESEARCH-multitenancy-semester.md §4.4） ===== */
+
+/**
+ * 設定頁「學校申請審核」卡片。與 renderSemesterAdminTab／renderArchiveAdminTab 不同，這裡
+ * 的守門不是校內角色（isDirector/isApprover），而是跨校的 isPlatformAdmin()。
+ *
+ * opus 驗收 M3/M4：
+ *   - M4：`_v2IsPlatformAdmin` 改為惰性查詢——只有第一次呼叫本函式（`null` 代表尚未查過）
+ *     才會真的打一次 `schoolAppSvc.isPlatformAdmin()`，之後沿用快取結果，不用每次開設定頁
+ *     都重查（身份不會在一個 session 內中途改變）。
+ *   - M3：本函式現在會在**每次**切到「設定」頁籤時被呼叫（見 bindV2TabSwitches()），
+ *     確保待審／已核准清單不會停留在上次打開時的過期快照。
+ * 容器在 index.html 裡沒有靜態標題（不像 semester-admin/archive-admin 那樣有固定 `<h3>`）
+ * ——非平台管理者完全看不到這張卡片存在過的痕跡，不只是內容被清空。
+ */
+async function renderPlatformAdminReviewTab() {
+    const host = document.getElementById('v2-platform-admin-review');
+    const card = document.getElementById('v2-platform-admin-card');
+    if (!host) return;
+
+    if (_v2IsPlatformAdmin === null) {
+        const me = roleSvc.getCurrentIdentity();
+        _v2IsPlatformAdmin = me?.uid ? await schoolAppSvc.isPlatformAdmin(me.uid) : false;
+    }
+    if (!_v2IsPlatformAdmin) {
+        host.innerHTML = '';
+        if (card) card.style.display = 'none';
+        return;
+    }
+    if (card) card.style.display = '';
+
+    const _gen = _v2IdentityGen;
+    let pending = [];
+    let approved = [];
+    let loadError = null;
+    try {
+        [pending, approved] = await Promise.all([
+            schoolAppSvc.listPendingApplications(),
+            schoolAppSvc.listApprovedApplications(),
+        ]);
+    } catch (e) {
+        console.error('[V2] 讀取學校申請清單失敗:', e);
+        loadError = e;
+    }
+    if (isStaleRender(_gen)) return;
+
+    const pendingRows = pending.length === 0
+        ? `<p class="hint">目前沒有待審申請。</p>`
+        : pending.map(app => `
+            <div class="data-management-section" data-uid="${escapeHtml(app.uid)}">
+                <strong>${escapeHtml(app.schoolName || '')}</strong>
+                <p class="hint">
+                    代碼：${escapeHtml(app.desiredSchoolId || '')}
+                    申請人：${escapeHtml(app.applicantEmail || '')}
+                    送出時間：${escapeHtml(fmtDate(app.createdAt))}
+                </p>
+                <div style="display:flex;gap:0.5rem;">
+                    <button class="btn btn-primary btn-sm v2-app-approve-btn" data-uid="${escapeHtml(app.uid)}">核准</button>
+                    <button class="btn btn-danger btn-sm v2-app-reject-btn" data-uid="${escapeHtml(app.uid)}">駁回</button>
+                </div>
+            </div>
+        `).join('');
+
+    // opus 驗收 H2：疑難排解區塊——只有「已核准」的申請才會出現在這裡，正常情況下應該是空的
+    // 或很快就消失（核准後申請人登入即完成任務，這筆紀錄不需要再被關注）。持續出現在這裡的
+    // 項目通常代表核准流程卡在某個中間狀態，需要人工判斷是否要用「解套」撤銷。
+    const approvedRows = approved.length === 0 ? '' : `
+        <details style="margin-top:1rem;">
+            <summary style="cursor:pointer;font-weight:600;">疑難排解：已核准的申請（${approved.length}）</summary>
+            <p class="hint">正常情況下這裡應該是空的——核准後申請人登入即完成任務。若某筆申請持續停留在這裡，
+            可能代表核准流程卡在中間狀態，需要人工確認學校是否已可正常使用；若確定需要撤銷，可用「解套：改為駁回」
+            （不會刪除已建立的學校資料，只讓申請人得以換代碼重新申請，見說明文件已知限制）。</p>
+            ${approved.map(app => `
+                <div class="data-management-section" data-uid="${escapeHtml(app.uid)}">
+                    <strong>${escapeHtml(app.schoolName || '')}</strong>
+                    <p class="hint">
+                        代碼：${escapeHtml(app.desiredSchoolId || '')}
+                        申請人：${escapeHtml(app.applicantEmail || '')}
+                        核准時間：${escapeHtml(fmtDate(app.reviewedAt || app.updatedAt))}
+                    </p>
+                    <button class="btn btn-danger btn-sm v2-app-revert-btn" data-uid="${escapeHtml(app.uid)}">解套：改為駁回</button>
+                </div>
+            `).join('')}
+        </details>
+    `;
+
+    host.innerHTML = `
+        <h3>學校申請審核</h3>
+        ${loadError ? `<p class="v2-gate-denied">讀取學校申請清單失敗：${escapeHtml(loadError.message || String(loadError))}</p>` : ''}
+        ${pendingRows}
+        ${approvedRows}
+    `;
+
+    const reviewerMeta = () => {
+        const me = roleSvc.getCurrentIdentity();
+        return { uid: me?.uid || null, email: me?.email || null, name: me?.name || null };
+    };
+
+    /**
+     * opus 驗收 H2：核准動作抽成獨立函式，支援 confirmedSkipFirstBatch 重試——
+     * 第一次呼叫遇到 SameNameConflictError 時，向審核者顯示二次確認（訊息取自錯誤本身，
+     * 已包含「該 schoolId 已存在同名學校，僅執行綁定」的具體內容），確認後帶著
+     * confirmedSkipFirstBatch:true 重新呼叫；不確認就中止，不自動做任何事。
+     *
+     * opus 驗收 R1：審核者選擇「不綁定」後，原版只顯示一句提示文字「可選擇駁回」，但沒有
+     * 提供實際可用的路徑——`rejectApplication()` 的孤兒學校防呆（見該函式檔頭 (b)）恰好會在
+     * 「schoolName 相同」時阻擋駁回，而 H2 死局的定義正是 schoolName 相同，導致審核者兩條路
+     * 都走不通（H2 想放行的駁回，正是 H3 想擋下的駁回）。修復：不綁定後改為顯示第二個確認，
+     * 若審核者明確表示「這不是同一所學校」，帶 `confirmedNotSameSchool:true` 呼叫
+     * `rejectApplication()` 覆寫這條啟發式檢查——這是審核者的主動判斷，不是自動放行。
+     */
+    async function doApprove(app, btn, confirmedSkipFirstBatch = false) {
+        try {
+            await schoolAppSvc.approveApplication(app, { reviewer: reviewerMeta(), confirmedSkipFirstBatch });
+            notify(`已核准「${app.schoolName}」`, 'success', 5000);
+            await renderPlatformAdminReviewTab();
+        } catch (e) {
+            if (e?.code === 'SAME_NAME_CONFLICT') {
+                const bind = await window.app?.confirmDialog?.({
+                    title: '學校代碼已被使用（同名）',
+                    message:
+                        `${e.message}\n\n` +
+                        `確定要僅執行綁定（不重新建立學校，只把這筆申請標記為核准並指向既有的` +
+                        `「${e.info?.existingSchoolName || ''}」）嗎？`,
+                    confirmText: '確認僅執行綁定',
+                    danger: true,
+                });
+                if (bind) {
+                    await doApprove(app, btn, true);
+                    return;
+                }
+                const rejectInstead = await window.app?.confirmDialog?.({
+                    title: '改為駁回此申請？',
+                    message:
+                        `未執行綁定。若您已確認這不是同一所學校（例如另一筆申請合法占用了這個代碼），` +
+                        `可駁回本申請，讓申請人核對後更換代碼重新送出。`,
+                    confirmText: '駁回（已確認非同一所學校）',
+                    danger: true,
+                });
+                if (rejectInstead) {
+                    const reason = await promptRejectReason();
+                    if (reason !== null) {
+                        try {
+                            await schoolAppSvc.rejectApplication(app, {
+                                reviewer: reviewerMeta(), reason, confirmedNotSameSchool: true,
+                            });
+                            notify(`已駁回「${app.schoolName}」`, 'success', 4000);
+                            await renderPlatformAdminReviewTab();
+                            return;
+                        } catch (e2) {
+                            console.error('[V2] 駁回學校申請失敗:', e2);
+                            notifyError(e2, '駁回申請');
+                        }
+                    }
+                }
+                btn.disabled = false;
+                return;
+            }
+            console.error('[V2] 核准學校申請失敗:', e);
+            notifyError(e, '核准申請');
+            btn.disabled = false;
+        }
+    }
+
+    host.querySelectorAll('.v2-app-approve-btn').forEach(btn => btn.addEventListener('click', async () => {
+        const uid = btn.dataset.uid;
+        const app = pending.find(a => a.uid === uid);
+        if (!app) return;
+        const ok = await window.app?.confirmDialog?.({
+            title: '核准學校申請',
+            message:
+                `確定要核准「${app.schoolName}」（代碼：${app.desiredSchoolId}，申請人：${app.applicantEmail}）嗎？\n\n` +
+                `核准後會立即建立這所學校（config + 公開名錄），申請人下次登入將自動成為該校教務主任。\n` +
+                `此操作無法復原（不會刪除已建立的學校）。`,
+            confirmText: '確認核准',
+            danger: false,
+        });
+        if (!ok) return;
+        btn.disabled = true;
+        await doApprove(app, btn);
+    }));
+
+    host.querySelectorAll('.v2-app-reject-btn').forEach(btn => btn.addEventListener('click', async () => {
+        const uid = btn.dataset.uid;
+        const app = pending.find(a => a.uid === uid);
+        if (!app) return;
+        // 比照既有 pendingRequests 拒絕流程，沿用同一個 promptRejectReason() textarea modal
+        // （Stage 5「殺 prompt()」統一成果，見該函式定義處），不另外做一套 window.prompt()。
+        const reason = await promptRejectReason();
+        if (reason === null) return; // 使用者取消
+        const ok = await window.app?.confirmDialog?.({
+            title: '駁回學校申請',
+            message: `確定要駁回「${app.schoolName}」（申請人：${app.applicantEmail}）嗎？申請人之後可重新送出申請。`,
+            confirmText: '確認駁回',
+            danger: true,
+        });
+        if (!ok) return;
+        btn.disabled = true;
+        try {
+            // opus 驗收 H3：rejectApplication 簽章改吃完整 app 物件（需要 desiredSchoolId/
+            // schoolName/status 做孤兒學校防呆，見該函式定義處）。
+            await schoolAppSvc.rejectApplication(app, { reviewer: reviewerMeta(), reason });
+            notify(`已駁回「${app.schoolName}」`, 'success', 4000);
+            await renderPlatformAdminReviewTab();
+        } catch (e) {
+            console.error('[V2] 駁回學校申請失敗:', e);
+            notifyError(e, '駁回申請');
+            btn.disabled = false;
+        }
+    }));
+
+    host.querySelectorAll('.v2-app-revert-btn').forEach(btn => btn.addEventListener('click', async () => {
+        const uid = btn.dataset.uid;
+        const app = approved.find(a => a.uid === uid);
+        if (!app) return;
+        const reason = await promptRejectReason();
+        if (reason === null) return;
+        const ok = await window.app?.confirmDialog?.({
+            title: '解套：把已核准的申請改為駁回',
+            message:
+                `確定要把「${app.schoolName}」的申請狀態從「已核准」改回「已駁回」嗎？\n\n` +
+                `⚠ 這不會刪除已經建立的學校資料（config/公開名錄）——只是讓這筆申請的狀態` +
+                `回到可重新申請的狀態。若學校資料本身需要清理，需另外由開發者離線處理。`,
+            confirmText: '確認解套',
+            danger: true,
+        });
+        if (!ok) return;
+        btn.disabled = true;
+        try {
+            await schoolAppSvc.revertApprovedApplication(app, { reviewer: reviewerMeta(), reason });
+            notify(`已將「${app.schoolName}」改回駁回狀態`, 'success', 4000);
+            await renderPlatformAdminReviewTab();
+        } catch (e) {
+            console.error('[V2] 解套失敗:', e);
+            notifyError(e, '解套（改為駁回）');
+            btn.disabled = false;
+        }
+    }));
+}
+
 /* ===== 頁籤切換偵測 ===== */
 
 function bindV2TabSwitches() {
@@ -2326,6 +2915,10 @@ function bindV2TabSwitches() {
             if (tab === 'settings') {
                 await renderSemesterAdminTab();
                 await renderArchiveAdminTab();
+                // opus 驗收 M3/M4：平台管理者審核卡片改在設定頁每次開啟時重繪（列表可能在
+                // 離開/回來之間變動），且 renderPlatformAdminReviewTab() 內部會惰性判斷
+                // `_v2IsPlatformAdmin === null` 時才去查一次身份，不在 bootstrap 無條件查。
+                await renderPlatformAdminReviewTab();
             }
         }, { passive: true });
     });
@@ -2369,7 +2962,7 @@ function forceActivateTab(dataTab) {
 
 // 所有「由登入身份動態渲染、含個資」的容器 id。切換身份時必須全部清空。
 // 集中一處列舉：日後新增受限頁籤只需在此補一個 id，避免遺漏造成殘留外洩。
-const V2_IDENTITY_CONTENT_HOSTS = ['v2-teachers-admin', 'v2-logs', 'v2-pending-list', 'v2-records-section', 'v2-semester-admin', 'v2-archive-admin'];
+const V2_IDENTITY_CONTENT_HOSTS = ['v2-teachers-admin', 'v2-logs', 'v2-pending-list', 'v2-records-section', 'v2-semester-admin', 'v2-archive-admin', 'v2-platform-admin-review'];
 
 /**
  * 身份切換 / 登出時重置 V2 視圖狀態（資安）。僅在身份「實際改變」時呼叫
@@ -2387,6 +2980,13 @@ function resetV2ViewState() {
         const el = document.getElementById(id);
         if (el) el.innerHTML = '';
     });
+    // Stage 4：平台管理者審核卡片不是 CSS role class 驅動（見 renderPlatformAdminReviewTab
+    // 定義處），身份切換時額外把外層卡片藏回去，避免新身份的 bootstrap 完成前有一格空卡片
+    // 短暫殘留可見。
+    const platformAdminCard = document.getElementById('v2-platform-admin-card');
+    if (platformAdminCard) platformAdminCard.style.display = 'none';
+    // M4：新身份的平台管理者狀態未知，重置為 null（「尚未查過」），設定頁下次開啟時重新查詢。
+    _v2IsPlatformAdmin = null;
     _v2RecordsCache = [];
     _v2PendingCache = [];
     _v2RecordDetailCache.clear();
@@ -3940,6 +4540,12 @@ async function bootstrap() {
             _v2DateRangeQueryCache.clear();
             _v2PendingSourceError = null; // 驗收修復（中 #A）：同上
             resetSyncStatus();
+            // Stage 4：登出（含申請流程遮罩內的「登出，改用其他帳號」）一併清空申請流程狀態，
+            // 避免下一位登入者（不同 uid）短暫看到上一位使用者殘留的申請資訊。
+            _v2ApplyState = null;
+            // M4：登出重置為「尚未查過」（null），不是 false——下一位登入者可能是也可能不是
+            // 平台管理者，false 會誤導成「已查過、確定不是」，導致設定頁永遠不再查詢。
+            _v2IsPlatformAdmin = null;
             // 登出即鎖定整個 app：遮罩 + .app-container inert 阻擋所有互動（含鍵盤跳至月結算下載）。
             // 不再 clearAll()——那只清記憶體不清 localStorage，反而會讓再登入資料看似遺失並有覆蓋風險。
             lockV2App();
@@ -3954,13 +4560,11 @@ async function bootstrap() {
                 providerId,
             });
             if (!identity) {
-                // 未授權：立即在遮罩顯示拒絕訊息（不依賴 signOut 的 re-emit；signOut 失敗也看得到原因），再嘗試登出
-                _v2GateDeniedEmail = user.email || '(未知)';
-                lockV2App();
-                try { await authMod.signOutUser(); } catch (err) {
-                    console.error('[v2] 拒絕後登出失敗:', err);
-                    notifyError(err, '登出');
-                }
+                // Stage 4（RESEARCH-multitenancy-semester.md §4.4 變體 B）：未綁定任何學校，
+                // 不再直接登出——改導向「申請開通新學校」流程，保留登入 session 供使用者在
+                // 遮罩內完成驗證 email／送出申請／查看審核狀態，見 enterApplyFlow() 定義處。
+                // 唯一真正登出的路徑是該流程畫面裡的「登出，改用其他帳號」按鈕。
+                await enterApplyFlow(user);
                 return;
             }
             // Stage 3（§8 Stage 3）：identity 已解析成功＝getActiveSchoolId() 已經是這位使用者
@@ -4053,6 +4657,12 @@ async function bootstrap() {
                 await safeBootstrapStep('學期管理', renderSemesterAdminTab);
                 await safeBootstrapStep('資料封存', renderArchiveAdminTab);
             }
+            // Stage 4 opus 驗收 M4：平台管理者身份判斷改為惰性——不在 bootstrap 對「每一位」
+            // 登入者無條件查一次 platformAdmins/{uid}（絕大多數使用者都不是，等於白白多一次
+            // 讀取）。改到「設定」頁籤第一次被切換到時才查，見 bindV2TabSwitches() 與
+            // renderPlatformAdminReviewTab() 內部的惰性判斷（`_v2IsPlatformAdmin === null` 時
+            // 才查詢）。平台管理者身份與校內角色（director/section_chief/teacher）無關——
+            // 一個人可能同時是 inhu 的 director，也是平台管理者，兩個身份分開判斷。
             // Stage 1（讀取成本止血，§5.4）：操作日誌不再於 bootstrap 就讀（原本這裡對每個
             // approver 登入都無條件打一次 fetchLogs，即使這次登入完全不會打開日誌頁）。
             // 改為真的進入「操作日誌」頁籤才讀，見 bindV2TabSwitches 的

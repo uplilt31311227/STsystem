@@ -2,11 +2,15 @@
 /**
  * V2 Firestore 規則 allow/deny 矩陣測試
  *
- * 目的：firestore.rules（v2.3，三層角色 + Phase 6 敏感欄位私有化）從未有自動化測試，
- * 每次改規則都靠人肉推理。本檔直接打 Firestore REST API（純 node 內建 fetch，無外部
- * 依賴），驗證 43 個正向／攻擊案例是否符合預期的 ALLOW/DENY，其中 P13-P19／X15-X24
+ * 目的：firestore.rules（現行 v2.7，三層角色 + Phase 6 敏感欄位私有化 + 多租戶開通）從未有
+ * 自動化測試，每次改規則都靠人肉推理。本檔直接打 Firestore REST API（純 node 內建 fetch，
+ * 無外部依賴），驗證 60 個正向／攻擊案例是否符合預期的 ALLOW/DENY，其中 P13-P19／X15-X24
  * 專門覆蓋 substituteRecords/{id}/private/detail 與 pendingRequests/{id}/private/detail
- * 這兩處敏感欄位（leaveType/leaveTypeName/reason）子文件的權限邊界。
+ * 這兩處敏感欄位（leaveType/leaveTypeName/reason）子文件的權限邊界；X25-X30 為 Stage 0
+ * 補充攻擊案例；X31-X40／X42 為 Stage 4（多租戶開通）補充攻擊案例，全數為 DENY 案例（opus
+ * 驗收 R3 後 X40 改為不留永久殘留的兩步 DENY 驗證；X41 因故意保留原 id 空號——opus 驗收 R4
+ * 認定原版是「檢驗到錯誤機制卻剛好也回傳 DENY」的假測試，移除並在該處改寫成明確的已知覆蓋
+ * 缺口說明，不編號重排以保留變更軌跡）。
  *
  * 用法：node test/v2-rules-matrix.mjs
  *
@@ -1040,6 +1044,225 @@ function buildCases({ A, B, C }) {
             collectionPath: col.emailIndex, docId: 'zz_test_attacker2@example.com',
             expect: 'DENY', idToken: A.idToken,
             data: { teacherId: A.teacherId, extra: 'zz_test 白名單外欄位' },
+        }],
+    });
+
+    // ===================== Stage 4 補充攻擊案例（X31-X39） =====================
+    // 只寫碼、未執行（本次任務範圍明確要求「不寫 Firestore、不跑本檔」，比照上面
+    // Stage 0 補充案例 X25-X30 的既有先例）。
+    //
+    // 刻意全部是攻擊／DENY 案例，不寫正向／ALLOW 案例，理由：
+    //   1. schoolApplications 的 create/update 規則要求 isEmailVerified()（token 的
+    //      email_verified 欄位），本檔三個測試帳號（v2t1/v2t2/v2t3）的實際驗證狀態未知
+    //      （且如 X26 案例註解所述，憑證檔甚至不保證帶 `.email` 欄位）——若拿一個
+    //      email_verified 狀態未知的帳號寫「應該 ALLOW」的正向案例，測試失敗時無法分辨
+    //      是「規則真的有 bug」還是「這個測試帳號剛好沒驗證 email」，會產生誤導性的紅燈。
+    //      DENY 案例沒有這個問題：不論 email_verified 是真是假，凡是下面任何一個案例，
+    //      都還有至少一個「與 email_verified 無關」的理由必然導致 DENY（uid 不符／欄位
+    //      白名單外／狀態機非法／根本不是 platformAdmin），結果穩定可預期。
+    //   2. schoolDirectory／platformAdmins 的「讀取本人可讀但文件不存在」情境，Firestore
+    //      REST getDocument 對「規則放行但文件不存在」的實際回應（是 404 NOT_FOUND 還是
+    //      200 附空 fields）未經本次查證，`classify()`（僅認 200→ALLOW／403→DENY，其餘
+    //      一律 ERROR）在這個情境下可能誤判為 ERROR 而非 ALLOW——為避免寫出一條「跑起來
+    //      多半會顯示 ERROR、卻不代表規則有問題」的誤導案例，本次不寫這類正向讀取案例。
+    //   3. 核准流程（approveApplication）需要一個真正的 platformAdmin 測試帳號才能走完整
+    //      「申請→核准→開通新學校」鏈路，本檔三個帳號都不是 platformAdmin（見上）也不會
+    //      臨時被加入 platformAdmins（那需要另外執行 scripts/bootstrap-platform-admin.js，
+    //      超出本次「只寫不執行」的範圍）——這條鏈路的正確性已在
+    //      docs/STAGE4-DEPLOY.md／本次交付報告的「全鏈走讀」中以程式碼引用＋規則行號的方式
+    //      逐步推演，留待日後有專用 platformAdmin 測試帳號時再補正向端到端案例。
+    const zzNewSchoolId = 'zz_test_stage4_school_never_created';
+
+    cases.push({
+        id: 'X31', type: 'attack', actor: 'A(教師甲)', method: 'CREATE', severity: 'high',
+        desc: '攻擊㉛教師甲 建立 schoolApplications 時 applicantUid 指向別人（乙），應被 applicantUid==uid 擋下',
+        path: `schoolApplications/${A.uid}`, expect: 'DENY',
+        rulesRef: 'firestore.rules schoolApplications create（request.resource.data.applicantUid == uid，rules:908 起）',
+        steps: [{
+            kind: 'create', label: 'create applicantUid 指向乙',
+            collectionPath: 'schoolApplications', docId: A.uid, expect: 'DENY', idToken: A.idToken,
+            data: {
+                schoolName: 'zz_test_school_x31', applicantEmail: 'zz_test_x31@example.com',
+                applicantUid: B.uid, desiredSchoolId: 'zz_test_id_x31',
+                status: 'pending', createdAt: nowIso(), updatedAt: nowIso(),
+            },
+        }],
+    });
+
+    cases.push({
+        id: 'X32', type: 'attack', actor: 'A(教師甲)', method: 'CREATE', severity: 'medium',
+        desc: '攻擊㉜教師甲 建立 schoolApplications 時夾帶白名單外欄位（note）',
+        path: `schoolApplications/${A.uid}`, expect: 'DENY',
+        rulesRef: 'firestore.rules schoolApplications create（keys().hasOnly([...])，rules:908 起）',
+        steps: [{
+            kind: 'create', label: 'create 夾帶 note 欄位',
+            collectionPath: 'schoolApplications', docId: A.uid, expect: 'DENY', idToken: A.idToken,
+            data: {
+                schoolName: 'zz_test_school_x32', applicantEmail: 'zz_test_x32@example.com',
+                applicantUid: A.uid, desiredSchoolId: 'zz_test_id_x32',
+                status: 'pending', createdAt: nowIso(), updatedAt: nowIso(),
+                note: 'zz_test 白名單外欄位',
+            },
+        }],
+    });
+
+    cases.push({
+        id: 'X33', type: 'attack', actor: 'A(教師甲)', method: 'CREATE', severity: 'critical',
+        desc: '攻擊㉝教師甲 建立 schoolApplications 時直接把 status 寫成 approved（跳過審核自我核准）',
+        path: `schoolApplications/${A.uid}`, expect: 'DENY',
+        rulesRef: 'firestore.rules schoolApplications create（request.resource.data.status == \'pending\'，rules:908 起）',
+        steps: [{
+            kind: 'create', label: 'create status=approved',
+            collectionPath: 'schoolApplications', docId: A.uid, expect: 'DENY', idToken: A.idToken,
+            data: {
+                schoolName: 'zz_test_school_x33', applicantEmail: 'zz_test_x33@example.com',
+                applicantUid: A.uid, desiredSchoolId: 'zz_test_id_x33',
+                status: 'approved', createdAt: nowIso(), updatedAt: nowIso(),
+            },
+        }],
+    });
+
+    cases.push({
+        id: 'X34', type: 'attack', actor: 'A(教師甲)', method: 'GET', severity: 'high',
+        desc: '攻擊㉞教師甲（非 platformAdmin）讀取乙的 schoolApplications 文件',
+        path: `schoolApplications/${B.uid}`, expect: 'DENY',
+        rulesRef: 'firestore.rules schoolApplications read（request.auth.uid == uid || isPlatformAdmin()，rules:908 起）',
+        steps: [{ kind: 'get', label: '甲讀乙的申請文件', docPath: `schoolApplications/${B.uid}`, expect: 'DENY', idToken: A.idToken }],
+    });
+
+    cases.push({
+        id: 'X35', type: 'attack', actor: 'A(教師甲)', method: 'PATCH', severity: 'critical',
+        desc: '攻擊㉟教師甲（非 platformAdmin、非申請人本人）嘗試把乙的 schoolApplications 狀態改成 approved',
+        path: `schoolApplications/${B.uid}`, expect: 'DENY',
+        rulesRef: 'firestore.rules schoolApplications update（isPlatformAdmin() 分支 || 本人 rejected→pending 分支，rules:908 起）',
+        steps: [{
+            kind: 'patch', label: '甲竄改乙的申請狀態',
+            docPath: `schoolApplications/${B.uid}`, expect: 'DENY', idToken: A.idToken,
+            data: { status: 'approved', updatedAt: nowIso() },
+        }],
+    });
+
+    cases.push({
+        id: 'X36', type: 'attack', actor: 'A(教師甲)', method: 'CREATE', severity: 'critical',
+        desc: '攻擊㊱教師甲 嘗試自行把自己寫入 platformAdmins（自我提權為平台管理者）',
+        path: `platformAdmins/${A.uid}`, expect: 'DENY',
+        rulesRef: 'firestore.rules platformAdmins write（恆為 false，rules:876-881）',
+        steps: [{
+            kind: 'create', label: '自我寫入 platformAdmins',
+            collectionPath: 'platformAdmins', docId: A.uid, expect: 'DENY', idToken: A.idToken,
+            data: { addedAt: nowIso(), addedBy: 'zz_test_self', note: 'zz_test 自我提權' },
+        }],
+    });
+
+    cases.push({
+        id: 'X37', type: 'attack', actor: 'A(教師甲)', method: 'GET', severity: 'medium',
+        desc: '攻擊㊲教師甲 讀取乙的 platformAdmins 文件（只能讀自己那一份）',
+        path: `platformAdmins/${B.uid}`, expect: 'DENY',
+        rulesRef: 'firestore.rules platformAdmins read（request.auth.uid == uid，rules:876-881）',
+        steps: [{ kind: 'get', label: '甲讀乙的 platformAdmins', docPath: `platformAdmins/${B.uid}`, expect: 'DENY', idToken: A.idToken }],
+    });
+
+    cases.push({
+        id: 'X38', type: 'attack', actor: 'A(教師甲)', method: 'CREATE', severity: 'high',
+        desc: '攻擊㊳教師甲（非 platformAdmin）嘗試建立 schoolDirectory 條目',
+        path: `schoolDirectory/${zzNewSchoolId}`, expect: 'DENY',
+        rulesRef: 'firestore.rules schoolDirectory create（isPlatformAdmin()，rules:887 起）',
+        steps: [{
+            kind: 'create', label: '非 platformAdmin 建立學校名錄',
+            collectionPath: 'schoolDirectory', docId: zzNewSchoolId, expect: 'DENY', idToken: A.idToken,
+            data: { schoolName: 'zz_test 冒名建校', createdAt: nowIso() },
+        }],
+    });
+
+    cases.push({
+        id: 'X39', type: 'attack', actor: 'A(教師甲)', method: 'CREATE', severity: 'critical',
+        desc: '攻擊㊴教師甲（非 platformAdmin、也非該校 director——該校根本不存在）嘗試建立全新學校的 config/main',
+        path: `schools/${zzNewSchoolId}/config/main`, expect: 'DENY',
+        rulesRef: 'firestore.rules schools/{schoolId}/config/{docId} create（isPlatformAdmin() && isValidNewSchoolConfigWrite，rules:370）',
+        steps: [{
+            kind: 'create', label: '非 platformAdmin 建立新學校 config',
+            collectionPath: `schools/${zzNewSchoolId}/config`, docId: 'main', expect: 'DENY', idToken: A.idToken,
+            data: {
+                schoolName: 'zz_test 冒名建校', currentSemester: '114-2',
+                initialAdminEmails: ['zz_test_attacker@example.com'],
+                createdAt: nowIso(), updatedAt: nowIso(),
+            },
+        }],
+    });
+
+    // ===================== opus 驗收 M5 補充案例（X40-X42） =====================
+    // 只寫碼、未執行，理由同上（見 X31-X39 區塊開頭說明）。
+
+    cases.push({
+        id: 'X40', type: 'attack', actor: 'A(教師甲)', method: 'CREATE then PATCH', severity: 'high',
+        // opus 驗收 R3：原版第一步是「甲合法建立自己的 pending 申請」（ALLOW），問題是
+        // schoolApplications 的 delete 規則恆為 false、且駁回/核准都需要 platformAdmin 才能
+        // 觸發——這筆文件會永久留在 A 帳號名下（status 永遠停在 pending，沒有任何清理路徑），
+        // 每次執行本檔測試都會多一筆殘留，長期會污染 A 帳號的申請紀錄與 platformAdmin 審核
+        // 清單。改為兩步皆為 DENY 的版本，不寫入任何會持久存在的文件：用一個不屬於甲的合成
+        // doc id（不是 A.uid），驗證「陌生人無法在別人的／合成的申請路徑上建立或更新文件」。
+        // ⚠ 範圍限縮（如實記錄，不假裝仍覆蓋原本範圍）：這個版本不再驗證原本 M5 想測的
+        // 「申請人在 pending 期間對自己的申請 update DENY」——那需要一份真實存在、屬於甲自己
+        // 的 pending 文件，建立它就會產生上述殘留問題。這是刻意接受的覆蓋縮小（避免測試副
+        // 作用 > 保留原始語意）；規則本身這一段的邏輯（自寫分支要求 `resource.data.status==
+        // 'rejected'` 才能 update，pending 狀態下必然不成立）屬於單純的欄位比對，可讀性高、
+        // 出錯風險低，人工複查規則文字即可，不強求自動化案例覆蓋。
+        desc: '攻擊㊵教師甲嘗試對一個不屬於自己的（合成）schoolApplications doc id 建立並更新為 approved',
+        path: `schoolApplications/${zz('x40_stranger_app')}`, expect: 'DENY',
+        rulesRef: 'firestore.rules schoolApplications create（request.auth.uid == uid，rules:917 起）＋ update（非本人、非 platformAdmin 恆 DENY，rules:940 起）',
+        steps: [
+            {
+                kind: 'create', label: '甲嘗試在非自己 uid 的路徑建立申請',
+                collectionPath: 'schoolApplications', docId: zz('x40_stranger_app'), expect: 'DENY', idToken: A.idToken,
+                data: {
+                    schoolName: 'zz_test_school_x40', applicantEmail: 'zz_test_x40@example.com',
+                    applicantUid: A.uid, desiredSchoolId: 'zz_test_id_x40',
+                    status: 'pending', createdAt: nowIso(), updatedAt: nowIso(),
+                },
+            },
+            {
+                kind: 'patch', label: '甲嘗試更新同一個（應該不存在的）文件為 approved',
+                docPath: `schoolApplications/${zz('x40_stranger_app')}`, expect: 'DENY', idToken: A.idToken,
+                data: { status: 'approved', updatedAt: nowIso() },
+            },
+        ],
+    });
+
+    // ⚠ 已知覆蓋缺口（opus 驗收 M5／R4，如實記錄而非湊一個假案例，不寫會因為錯誤理由才
+    // DENY 的誤導性案例）：
+    //
+    // 1. 「platformAdmin 把一筆 status=='approved' 的申請改成 'rejected' 以外的值應 DENY」
+    //    （對應 firestore.rules 的 update 規則 platformAdmin 分支：只允許
+    //    pending→{approved,rejected} 與 approved→rejected 兩條路徑，approved→其他值皆不合法）
+    //    需要一個真正的 platformAdmin 測試帳號才能先合法把某筆申請推進到 approved 狀態，本檔
+    //    三個帳號（v2t1/v2t2/v2t3）皆非 platformAdmin，無法在不執行
+    //    scripts/bootstrap-platform-admin.js（本次任務範圍明確排除）的情況下建立這個前置
+    //    狀態。硬湊一個「非 platformAdmin 對某份文件送出這個更新」的案例，DENY 的真正原因
+    //    會是「根本不是 platformAdmin」而非「approved→非rejected 的狀態機不合法」，兩者是
+    //    規則裡不同的檢查點，掛羊頭賣狗肉沒有實質驗證價值，故不寫。
+    //
+    // 2. 「非 platformAdmin 對一筆已存在的 schoolDirectory 文件執行 update 應 DENY」
+    //    （對應 `schoolDirectory` 的 `allow update: if false;`）——opus 驗收 R4 訂正：原版
+    //    在這裡寫了一個對**不存在**文件送出 PATCH 的案例（用 `zzNewSchoolId`，一個從未建立
+    //    過的路徑）。這個案例雖然會回傳 DENY（符合預期），但驗證的其實不是 `update: if
+    //    false` 這條規則——Firestore 對「目標文件是否已存在」決定該次寫入請求要被歸類為
+    //    `create` 還是 `update`，PATCH 到一個不存在的文件，規則引擎很可能是依 `create` 規則
+    //    （`isPlatformAdmin()`）評估，而非 `update` 規則（`if false`），兩者剛好都會拒絕
+    //    非 platformAdmin 的甲，讓案例「看起來通過」，但實際上完全沒驗證到 `update: if
+    //    false` 這條規則本身——是一個會亮綠燈、卻檢驗到錯誤機制的假測試，故移除。要真正驗證
+    //    `update: if false`，需要先有一份**已存在**的 `schoolDirectory` 文件（只有
+    //    platformAdmin 能建立），同一個「缺 platformAdmin 測試帳號」的限制，日後與上一項一併
+    //    補上。（`allow delete: if false` 不受此問題影響——delete 請求不論目標是否存在，
+    //    Firestore 都直接歸類為 `delete` 方法，見下方 X42 保留為有效案例。）
+
+    cases.push({
+        id: 'X42', type: 'attack', actor: 'A(教師甲)', method: 'DELETE', severity: 'medium',
+        desc: '攻擊㊷教師甲嘗試 delete 一筆 schoolDirectory 文件（規則恆為 false）',
+        path: `schoolDirectory/${zzNewSchoolId}`, expect: 'DENY',
+        rulesRef: 'firestore.rules schoolDirectory delete（allow delete: if false，rules:887 起）',
+        steps: [{
+            kind: 'delete', label: '嘗試 delete schoolDirectory',
+            docPath: `schoolDirectory/${zzNewSchoolId}`, expect: 'DENY', idToken: A.idToken,
         }],
     });
 
