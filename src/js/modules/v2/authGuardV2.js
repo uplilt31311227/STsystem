@@ -2,14 +2,24 @@
  * V2 登入綁定閘
  *
  * 於 Google OAuth 登入完成後呼叫 resolveIdentity(user)：
- *   1. 讀 schools/{id}/emailIndex/{我的email} 拿 teacherId（Stage 0 §3.4a）。
+ *   0.（Stage 4，opus 驗收 B1）先解析 uid 屬於哪所學校（resolveSchoolIdForUid()）。完全
+ *      查無所屬學校時（不是讀取失敗、不是部署過渡期，是真的沒有）直接回傳 null，**不寫
+ *      joinAttempt**（沒有學校可歸屬）——呼叫端（v2-app.js）導向「加入既有學校／申請開通
+ *      新學校」雙選項畫面，不再呼叫 signOut。
+ *   1. schoolId 確定後，讀 schools/{id}/emailIndex/{我的email} 拿 teacherId（Stage 0 §3.4a）。
  *   2. 若 email 在 config.initialAdminEmails 清單中（白名單，主任初始名單）
  *      → 找到 teacherId 則升級該教師檔為 director；
  *        找不到則建立一筆「教務主任」教師紀錄並綁定為 director（全新學校 bootstrap）。
  *   3. 若 email 對到 emailIndex 中的 teacherId（一般教師）
  *      → 設為該教師（role 依 teachers 紀錄；舊 'admin' 由 normalizeRole 轉為 'director'）。
- *   4. 否則
- *      → 寫 joinAttempt 紀錄，拒絕登入（回傳 null，呼叫端自行 signOut）。
+ *   4. schoolId 已知但配對不到教師（例如 director 尚未在該校建檔，或曾被移除，或
+ *      userDirectory 記錯了學校）
+ *      → 寫 joinAttempt 紀錄到「該校」（讓該校 approver 看得到有人嘗試加入），回傳 null；
+ *        呼叫端同樣導向雙選項畫面（不會自動 signOut），使用者可再次嘗試「加入」不同代碼，
+ *        或送出「申請開通新學校」。opus 驗收 R2：Stage 3 原本在這裡有一個「自救」機制
+ *        （schoolId 來自既有條目但配對失敗時，靜默改用 DEFAULT_SCHOOL_ID 重試一次），
+ *        多租戶下已移除——「使用者自己在雙選項畫面輸入正確代碼」是比「系統替他猜一次」
+ *        更明確、更不會猜錯的復原路徑，見 resolveIdentity() 內對應說明。
  *
  * 成功綁定時會將身份寫入 roleService（setCurrentIdentity，內部自動 normalizeRole）。
  *
@@ -77,25 +87,58 @@ import { ROLES, normalizeRole, DEFAULT_SCHOOL_ID, getActiveSchoolId, setActiveSc
  * 碼理論上不會再出現於穩定態，可以安全地當作「這個功能還沒佈署好」而非「我們不知道答案」。
  * 其餘任何錯誤碼（網路逾時、服務不可用等）才真正代表「不知道」，readFailed=true。
  *
- * TODO（Stage 4，§8 路線圖「多租戶開通」）：開放註冊上線後，「查無條目」這條路徑不該再無
- * 條件 fallback 到 DEFAULT_SCHOOL_ID——那等於把所有查無 userDirectory 的人都靜默當成 inhu
- * 的人，一旦出現第二所學校，這個假設就不成立了。屆時應改為回傳 null，讓呼叫端把使用者導向
- * 「申請加入 / 建立新學校」的流程，而不是在這裡替使用者決定學校。
+ * opus 驗收 B1（TODO 完成，2026-07-31）：開放註冊上線後，「查無條目」這條路徑**不再**無條件
+ * fallback 到 DEFAULT_SCHOOL_ID——原本的假設（「查無 userDirectory 的人一律視為 inhu 的人」）
+ * 只在「全站只有一所學校」時成立；Stage 4 核准第二所學校後，這個假設會讓「新校的第二位（含
+ * 之後）教師」永遠無法登入：director 在教師管理幫他們建了 teachers/emailIndex 記錄，但這些
+ * 教師自己從未登入過、沒有 userDirectory 條目，若還 fallback 到 inhu，就會拿他們的 email 去
+ * inhu 的 emailIndex 查（查無所獲，因為他們根本不是 inhu 的教師），永遠卡在「查無教師配對」。
+ *
+ * 修復後的語意分層（三種情況，回傳值用 `schoolId===null` 統一表示「不知道」）：
+ *   1. 讀到條目（`entry.schoolId` 存在）→ 回傳該值，`existed:true`。
+ *   2. 讀取遭拒（`permission-denied`）→ **僅此情況**才 fallback 到 DEFAULT_SCHOOL_ID，理由是
+ *      部署過渡期的已知情境（見下方原本保留的說明）——這不是「不知道」，是「規則還沒佈署好，
+ *      暫時假設是目前唯一穩定運作的學校」，語意上與「真的查無條目」不同，故保留 fallback。
+ *   3. 真的查無條目（不是被拒，Firestore 明確告知「這份文件不存在」）→ 回傳 `schoolId: null`，
+ *      不再猜測。呼叫端（resolveIdentity()）看到 null 時直接回傳 null，不寫 joinAttempt（沒有
+ *      學校可歸屬），交給 v2-app.js 的申請流程遮罩導向「加入既有學校（輸入代碼）」或「申請
+ *      開通新學校」雙選項——這正是原 TODO 描述的目標行為。
+ *
+ * ⚠ 相容性紅線（務必在部署前確認）：此修復生效後，任何「從未登入過、且尚無 userDirectory
+ * 條目」的使用者都會被導向雙選項畫面，**包含 inhu 自己未來新聘、第一次登入的教師**——這是
+ * 刻意接受的行為變更（開放多租戶後，「schoolId 從哪裡來」不能再靠單校時代的隱含假設），但
+ * 前提是 `scripts/backfill-user-directory.js` 必須已經對 inhu**現有**全體成員執行過，否則
+ * 這些既有成員會被誤判成「查無條目」而被擋在雙選項畫面外——這不是新聘教師的情境，是回歸
+ * 到「不知道自己是誰」的錯誤狀態。**本次修復把回填腳本從 Stage 3 的「建議」提升為 Stage 4
+ * 部署的硬性前置條件**，見 docs/STAGE4-DEPLOY.md 部署順序一節。
  */
 async function resolveSchoolIdForUid(uid) {
     let entry = null;
+    let permissionDenied = false;
     let readFailed = false;
     try {
         entry = await dataSvc.getUserDirectoryEntry(uid);
     } catch (e) {
         if (e?.code === 'permission-denied') {
+            permissionDenied = true;
             console.warn('[v2] 讀取 userDirectory 遭拒（部署過渡期已知情境，見函式註解），改用預設學校 fallback：', e?.message || e);
         } else {
             readFailed = true;
             console.error('[v2] 讀取 userDirectory 失敗（非查無條目，是讀取本身出錯）：', e?.message || e);
         }
     }
-    return { schoolId: entry?.schoolId || DEFAULT_SCHOOL_ID, existed: !!entry?.schoolId, readFailed };
+    if (entry?.schoolId) {
+        return { schoolId: entry.schoolId, existed: true, readFailed: false };
+    }
+    if (readFailed) {
+        return { schoolId: null, existed: false, readFailed: true };
+    }
+    if (permissionDenied) {
+        // 僅部署過渡期的已知情境才 fallback——見函式頭「情況 2」說明。
+        return { schoolId: DEFAULT_SCHOOL_ID, existed: false, readFailed: false };
+    }
+    // B1：真的查無條目，不再猜測，回傳 null 交給呼叫端導向「加入/申請」流程。
+    return { schoolId: null, existed: false, readFailed: false };
 }
 
 async function getInitialDirectorEmails() {
@@ -126,10 +169,12 @@ function buildMappingPatch(email, googleUser, providerId) {
  * 給定「呼叫前 getActiveSchoolId() 已指向的學校」，依 email 走完整配對流程並回傳教師檔
  * （查無配對回傳 null）。
  *
- * 抽成獨立函式的理由（Stage 3 opus 驗收 中3）：下方 resolveIdentity() 的自救機制需要對
- * 兩個不同的 schoolId（userDirectory 記錄的值、以及自救時嘗試的 DEFAULT_SCHOOL_ID）各跑
- * 一次同一套邏輯，不重複貼兩份幾乎一樣的程式碼。呼叫前呼叫端必須已經呼叫過
- * setActiveSchoolId()，本函式內部所有 dataSvc 呼叫都依賴這個值。
+ * opus 驗收 R2：原本抽成獨立函式是因為 Stage 3 的「自救」機制需要對兩個不同的 schoolId
+ * （userDirectory 記錄的值、以及自救時嘗試的 DEFAULT_SCHOOL_ID）各跑一次同一套邏輯——該
+ * 機制已移除（見 resolveIdentity() 內對應說明），本函式目前只會被呼叫一次。維持獨立函式
+ * 純粹是保留清楚的職責邊界（「已知 schoolId，做教師配對」與「resolveIdentity 的其餘流程
+ * 控制」分開），不是因為還需要重跑兩次。呼叫前呼叫端必須已經呼叫過 setActiveSchoolId()，
+ * 本函式內部所有 dataSvc 呼叫都依賴這個值。
  */
 async function attemptResolveTeacherForActiveSchool(email, googleUser, mappingPatch) {
     const initialDirectors  = await getInitialDirectorEmails();
@@ -237,40 +282,42 @@ export async function resolveIdentity(googleUser) {
         // 「發生了什麼事」，避免兩段呼籲重試的文字疊在一起讀起來很怪。
         throw new Error('無法確認使用者所屬學校（讀取 userDirectory 失敗）');
     }
+    if (!schoolId) {
+        // opus 驗收 B1：resolveSchoolIdForUid() 回傳 null 代表「真的查無條目，不是讀取失敗、
+        // 也不是部署過渡期」——我們完全不知道這位使用者屬於哪所學校，連要對哪個 schoolId 呼叫
+        // setActiveSchoolId() 都不知道，後面所有 dataSvc 呼叫（依賴 getActiveSchoolId()）都
+        // 無從進行，也沒有任何學校可以寫 joinAttempt。直接回傳 null，呼叫端（v2-app.js
+        // enterApplyFlow()）會導向「加入既有學校／申請開通新學校」雙選項畫面——「加入既有
+        // 學校」成功後（使用者輸入代碼、自寫 userDirectory）會重新整理頁面重跑一次
+        // resolveIdentity()，屆時 resolveSchoolIdForUid() 就能讀到剛寫入的條目，不再進到這裡。
+        return null;
+    }
     setActiveSchoolId(schoolId);
 
     let teacher = await attemptResolveTeacherForActiveSchool(email, googleUser, mappingPatch);
 
-    // Stage 3 opus 驗收 中3：自救——若這個 schoolId 是從既有 userDirectory 條目讀來的
-    // （不是 fallback 預設值，即 userDirectoryExisted===true），但在這所學校底下找不到任何
-    // 教師配對，且該 schoolId 不是 DEFAULT_SCHOOL_ID，代表 userDirectory 可能記錯了學校
-    // （資料損毀／人工誤植／理論上的邊界情況——目前只有一所學校，正常流程不會走到這裡）。
-    // 與其讓使用者永久被鎖死在一個查無教師檔的學校，值得再試一次 DEFAULT_SCHOOL_ID（僅
-    // 一次、不遞迴，天然防迴圈——下面不論成敗都不會再進入這個分支第二次）。
-    // 刻意不在這裡自動改寫 userDirectory 的既有條目：若真正的問題不是「userDirectory 記錯」
-    // 而是「該學校的教師檔本身被誤刪」，自動改寫成 DEFAULT 會掩蓋這個資料完整性問題。這裡
-    // 只解決「這次登入」，讓使用者能先用得了系統；殘留的 userDirectory 不一致會在每次登入
-    // 都重新觸發這個自救分支（console.warn 可見），這是刻意的——比默默改寫更容易被日後排查
-    // 發現，需要人工介入才會真正修正 userDirectory/{uid} 那份文件。
-    if (!teacher && userDirectoryExisted && schoolId !== DEFAULT_SCHOOL_ID) {
-        console.warn(`[v2] schoolId=${schoolId}（來自 userDirectory）查無教師配對，嘗試自救改用 DEFAULT_SCHOOL_ID=${DEFAULT_SCHOOL_ID}（僅一次，若仍失敗則正常走拒絕流程）`);
-        setActiveSchoolId(DEFAULT_SCHOOL_ID);
-        teacher = await attemptResolveTeacherForActiveSchool(email, googleUser, mappingPatch);
-        // 注意：不更新 userDirectoryExisted——維持 true，讓下面「查無既有條目才補寫」的判斷
-        // 繼續跳過，避免把這次自救的暫時結果誤寫回一份可能仍不正確的學校歸屬。
-    }
-
+    // opus 驗收 R2：移除 Stage 3 原本的「自救」機制（曾經：schoolId 來自既有 userDirectory
+    // 條目但查無教師配對時，嘗試改用 DEFAULT_SCHOOL_ID 重試一次）。Stage 3 設計這個機制時，
+    // 全站只有一所學校，「userDirectory 記錯校」在單校世界裡幾乎只可能是「其實沒記錯，只是
+    // 教師檔剛好被刪」，重試 DEFAULT_SCHOOL_ID 頂多是無害的白工。開放多租戶後，這個假設不再
+    // 成立：若某教師的 userDirectory 真的指向「錯的學校」（例如人工誤植、或未來允許使用者
+    // 自行更正時的中間態），自救機制會讓他被靜默導去 inhu 重試——如果他剛好在 inhu 也查無
+    // 教師配對（多租戶下的常態，畢竟他多半根本不是 inhu 的教師），才會失敗回到雙選項畫面；
+    // 但如果 inhu 剛好也能配對到什麼（理論上不該發生，但沒有機制保證不會），會把他錯誤地
+    // 登入成 inhu 的身份，這是比「原本卡住」更危險的錯置風險。
+    // 移除後的復原路徑：`resolveIdentity()` 直接把 `!teacher` 交給下面的 joinAttempt +
+    // 回傳 null，`v2-app.js` 的雙選項畫面本身就是更好的復原手段——使用者可以在「加入既有
+    // 學校」欄位自行輸入正確的代碼重新綁定 `userDirectory`（不需要系統替他猜），這條路徑
+    // 遠比「系統猜一次 DEFAULT_SCHOOL_ID」更明確、更不會猜錯。
     if (!teacher) {
         await logger.logJoinAttempt(googleUser.uid, { email, reason: 'no_teacher_match' });
         return null;
     }
 
-    // Stage 3：登入成功（確定屬於 getActiveSchoolId() 目前指向的學校，可能已經過上面的自救
-    // 改成 DEFAULT_SCHOOL_ID）且 userDirectory 尚未有這位使用者的條目時，寫入一筆，讓下次
-    // 登入直接命中、不必再靠 resolveSchoolIdForUid() 的 fallback。只在「查無既有條目」時才
-    // 寫——已存在的條目（含上面自救情境的舊條目）不重寫，避免每次登入都多一次寫入，也避免
-    // 自救情境下覆蓋一份可能仍需要人工檢視的既有資料；失敗不阻擋登入（單純的收斂優化，不是
-    // 這次登入成立與否的必要條件）。
+    // 登入成功、且 userDirectory 尚未有這位使用者的條目時，寫入一筆，讓下次登入直接命中、
+    // 不必再靠 resolveSchoolIdForUid() 的 fallback。只在「查無既有條目」時才寫——已存在的
+    // 條目不重寫，避免每次登入都多一次寫入；失敗不阻擋登入（單純的收斂優化，不是這次登入
+    // 成立與否的必要條件）。
     if (!userDirectoryExisted) {
         try {
             await dataSvc.upsertUserDirectoryEntry(googleUser.uid, getActiveSchoolId());

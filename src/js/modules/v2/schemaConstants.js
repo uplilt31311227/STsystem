@@ -100,6 +100,18 @@ export const SCHEMA_PATHS = {
     // 規則層 create-only + update/delete 皆 false，寫入後永久不可變，見 firestore.rules）。
     archivesCol:       ()    => `schools/${getActiveSchoolId()}/archives`,
     archiveDoc:        (sid) => `schools/${getActiveSchoolId()}/archives/${sid}`,
+    // Stage 4（2026-07-31，RESEARCH-multitenancy-semester.md §4／RESEARCH-blaze-followup.md；
+    // 多租戶開通）：新校核准時，platformAdmin 需要對「非自己目前所屬學校」的 schoolId 寫入
+    // config/main——不能用 SCHEMA_PATHS.config()（吃 getActiveSchoolId()，那是 platformAdmin
+    // 自己所屬的學校，不是正在核准的新學校），故獨立提供一個吃任意 schoolId 參數的版本，
+    // 僅供 schoolApplicationService.approveApplication() 使用。
+    configDocForSchool: (sid) => `schools/${sid}/config/main`,
+    // 以下三個為頂層集合（不在 schools/{schoolId} 之下，與 userDirectoryDoc 同一類），
+    // 見 firestore.rules 檔頭第 9 點。
+    platformAdminDoc:      (uid) => `platformAdmins/${uid}`,
+    schoolDirectoryDoc:    (sid) => `schoolDirectory/${sid}`,
+    schoolApplicationDoc:  (uid) => `schoolApplications/${uid}`,
+    schoolApplicationsCol: ()    => `schoolApplications`,
 };
 
 /**

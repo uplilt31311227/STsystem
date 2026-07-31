@@ -665,6 +665,14 @@
                     <div id="v2-archive-admin"></div>
                 </div>
 
+                <!-- Stage 4（RESEARCH-multitenancy-semester.md §4.4）：學校申請審核，平台管理者
+                     專用——不是校內角色（無 v2-director-only），守門邏輯在 JS（isPlatformAdmin()）。
+                     預設隱藏；renderPlatformAdminReviewTab() 只在確認是平台管理者時才顯示並填入
+                     內容（含自己的 <h3> 標題），非平台管理者完全看不到這張卡片存在過的痕跡。 -->
+                <div class="card v2-only" id="v2-platform-admin-card" style="display:none;">
+                    <div id="v2-platform-admin-review"></div>
+                </div>
+
                 <div class="card v2-approver-only">
                     <h3>學年度管理</h3>
 
@@ -956,9 +964,14 @@
         </div>
     </div>
 
-    <!-- 載入 JavaScript 模組 -->
-    <script type="module" src="src/js/app.js?v=1.13.6"></script>
+    <!-- 載入 JavaScript 模組
+         Firebase SDK（含 Stage 4 新增的 App Check／classic reCAPTCHA v3）皆由
+         src/js/modules/firebaseConfig.js 動態 import 載入與初始化，本頁不直接引入
+         Firebase <script> 標籤——比照既有 Auth/Firestore SDK 的載入方式，見該檔
+         initializeFirebase()、RECAPTCHA_V3_SITE_KEY 常數與 docs/STAGE4-DEPLOY.md
+         「App Check 啟用步驟」。 -->
+    <script type="module" src="src/js/app.js?v=1.13.7"></script>
     <!-- V2 權限系統（?v2=1 或預覽站才啟用；對穩定版無影響） -->
-    <script type="module" src="src/js/v2-app.js?v=0.1.9"></script>
+    <script type="module" src="src/js/v2-app.js?v=0.1.10"></script>
 </body>
 </html>
