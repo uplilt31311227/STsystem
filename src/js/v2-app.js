@@ -4469,11 +4469,8 @@ async function bootstrap() {
     injectV2Styles();
     document.body.classList.add('v2-active');
 
-    // 讓 V2 專屬頁籤不受原「需先匯入課表」閘門擋下
-    if (window.app && typeof window.app.canSwitchToTab === 'function') {
-        const orig = window.app.canSwitchToTab.bind(window.app);
-        window.app.canSwitchToTab = (tabId) => tabId.startsWith('v2-') ? true : orig(tabId);
-    }
+    // V2 專屬頁籤不受「需先匯入課表」閘門擋下：已改為 app.js canSwitchToTab 原生支援（見該檔案），
+    // 不再需要在此 monkey-patch（此處執行時 window.app 尚未建立，原 patch 從未生效）。
 
     injectEmailLoginTrigger();
     injectV2AuthGate();

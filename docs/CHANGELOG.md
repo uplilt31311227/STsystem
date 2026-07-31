@@ -9,6 +9,17 @@ tags:
 
 ---
 
+## [2026-07-31] hotfix：v2- 頁籤點擊無反應（P1，上線後即時修復）
+
+`app.js` 1.13.7→1.13.8、`v2-app.js` 0.1.10→0.1.11。正式站課表為空時，「待辦/調代課紀錄/操作日誌」等 `v2-` 開頭頁籤點擊完全無反應（靜默 no-op）。根因是 `v2-app.js` `bootstrap()` 前段（原約第 4472-4476 行）對 `window.app.canSwitchToTab` 的 monkey-patch 執行時 `window.app` 尚未建立（於 `await authMod.initAuthService()` 之後才由 `app.js` 的 `DOMContentLoaded` 建立），`if (window.app && ...)` 防呆檢查本身失敗，patch 整段被跳過、從未真正生效。此問題於 Stage 3 opus 重驗時已發現並記錄於 `docs/ISSUES_LOG.md`（原判斷為「行為變化需另案評估、非本次修復範圍」），此次因正式站課表為空、缺陷實際影響使用而列為 P1 即時修復。
+
+修法（根治，消除時序依賴）：
+- `src/js/app.js` `canSwitchToTab()`（約 986 行起）原生加入 `if (tabId.startsWith('v2-')) return true;`，緊接在 `schedule`/`teachers`/`settings` 白名單之後。V1 模式沒有 `v2-` 開頭的頁籤，此檢查無害；註解說明這取代了原 v2-app.js 的 monkey-patch。
+- `src/js/v2-app.js` `bootstrap()` 內原本的 monkey-patch 區塊（含其誤導性的時序註解）整段刪除，原地留一行註解指向 `app.js` 的原生支援。
+- `docs/ISSUES_LOG.md` 對應條目（Stage 3 opus 重驗另案記錄）狀態更新為已解決，附修法與日期。
+
+走讀確認：`v2-` 頁籤在 `scheduleData` 為空時可正常切換；V1 模式（無 `?v2=1`）完全不受影響（其頁籤本來就不以 `v2-` 開頭，新增的判斷分支不會命中）；月結算等既有 V1 頁籤的「需先匯入課表」鎖定行為不變（新分支只新增放行條件，不影響原有的 `schedule`/`teachers`/`settings`/鎖定判斷邏輯）。`npm run check`、`npm test` 皆通過。**只改上述範圍，未 commit。**
+
 ## [2026-07-31]（feature/permission-system）多租戶研究 Stage 4：多租戶開通（未 commit）
 
 依 `docs/RESEARCH-multitenancy-semester.md` §4（開放註冊的誠實風險評估）／§8 路線圖 Stage 4，與 `docs/RESEARCH-blaze-followup.md` 的補充查證（Blaze 無硬性支出上限、App Check 改選 classic reCAPTCHA v3 免費額度更高、實際部署區域 asia-east1 單價比原估的 nam5 便宜四成）。動機：開放 20+ 校自助申請使用。已定案設計：自助申請 + 平台管理者輕量審核（非全自助建校）。opus 驗收第一輪不通過（3 阻斷/3 高/5 中/6 輕），逐項修復詳見下方「修復」小節，本條目已含全部修復。**只寫程式碼，未寫 Firestore、未部署、未跑 `v2-rules-matrix.mjs`、未跑任何離線腳本、未 commit。**
