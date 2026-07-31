@@ -10,10 +10,10 @@ tags:
 
 ## Stage 3（SCHOOL_ID 動態化）opus 重驗發現，另案記錄（2026-07-31）
 
-### `window.app.canSwitchToTab` patch 套用時機早於 `window.app` 建立，從未生效 🟡 既有問題備查，未修
+### `window.app.canSwitchToTab` patch 套用時機早於 `window.app` 建立，從未生效 🟢 已解決（2026-07-31）
 
-- **日期**: 2026-07-31
-- **狀態**: 🟡 已知，本次（Stage 3 opus 重驗）發現但刻意不修，另案處理
+- **日期**: 2026-07-31（發現）／2026-07-31（修復，P1 hotfix，正式站課表為空、「待辦/調代課紀錄/操作日誌」頁籤點擊完全無反應後即時修復）
+- **狀態**: 🟢 已解決。修法：`app.js` `canSwitchToTab()` 原生加入 `if (tabId.startsWith('v2-')) return true;`（V1 模式沒有 v2- 頁籤，此檢查無害），消除對 `window.app` 建立時序的依賴；`v2-app.js` `bootstrap()` 內原本從未生效的 monkey-patch 區塊已刪除，原地留一行註解指向 app.js 的原生支援。已走讀確認：v2- 頁籤在 scheduleData 為空時可切換、V1 模式行為不變、月結算等 V1 頁籤鎖定行為不變。`npm run check`、`npm test` 皆過。版本號：`app.js` 1.13.7→1.13.8、`v2-app.js` 0.1.10→0.1.11。
 - **描述**: `v2-app.js` `bootstrap()` 內，「讓 V2 專屬頁籤不受原『需先匯入課表』閘門擋下」這段 patch：
   ```js
   if (window.app && typeof window.app.canSwitchToTab === 'function') {
