@@ -38,7 +38,7 @@ const FIREBASE_CONFIG = {
  * 這裡的初始化只是「載入 App Check SDK 並開始產生 token」，不等於「Firestore 已要求驗證
  * token」，兩者刻意分開，避免站台金鑰填錯／SDK 初始化有誤直接鎖死所有既有使用者的存取。
  */
-const RECAPTCHA_V3_SITE_KEY = '';
+const RECAPTCHA_V3_SITE_KEY = '6LfE9m4tAAAAAOhI27cN7sx38AbEm7MEF5BaYK9t';
 
 // Firebase 實例
 let firebaseApp = null;
