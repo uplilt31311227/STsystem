@@ -8,7 +8,7 @@
 
 ## 架構隔離
 
-- **Firestore 路徑**：全部位於 `schools/{schoolId}/` 之下，正式資料 schoolId 為 `inhu`（`schools/default` 為 2026-04 alpha 期舊備份，保留不刪）
+- **Firestore 路徑**：全部位於 `schools/{schoolId}/` 之下，正式資料 schoolId 為 `inhu`（`schools/default` 為 2026-04 alpha 期舊備份，保留不刪）。Stage 3 起 `schoolId` 為 runtime 動態解析（登入後由 `authGuardV2.resolveIdentity()` 讀頂層 `userDirectory/{uid}` 決定，見下表 `schemaConstants.js`），不再是寫死的 import-time 常數
 - **舊資料**：`users/{uid}/data/substituteSystem` 不讀不寫，完全保留
 - **啟用方式**：URL 參數 `?v2=1` 或 hostname 含 `preview`（見 `envDetector.js`）
 
@@ -16,7 +16,7 @@
 
 | 檔案 | 說明 |
 |---|---|
-| `schemaConstants.js` | Firestore 路徑產生器、角色/狀態/日誌動作常量（`SCHOOL_ID='inhu'`、三層 ROLES、REQUEST_TYPES） |
+| `schemaConstants.js` | Firestore 路徑產生器、角色/狀態/日誌動作常量（Stage 3 起 `getActiveSchoolId()`／`setActiveSchoolId()` 動態解析，`DEFAULT_SCHOOL_ID='inhu'` 為相容期 fallback；三層 ROLES、REQUEST_TYPES） |
 | `envDetector.js` | 判定是否進入 V2 模式 |
 | `firebaseV2.js` | 動態載入擴充 Firestore 操作（addDoc/updateDoc/query…） |
 | `schoolDataService.js` | 全校集合 CRUD（teachers / schedule / substitute / pending / logs / userMapping） |

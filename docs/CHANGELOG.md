@@ -9,6 +9,66 @@ tags:
 
 ---
 
+## [2026-07-31]（feature/permission-system）多租戶研究 Stage 3：SCHOOL_ID 動態化（未 commit）
+
+依 `docs/RESEARCH-multitenancy-semester.md` §4（集合設計預告：頂層 `userDirectory`）／§8 Stage 3。動機：`SCHOOL_ID`（`schemaConstants.js:14`）原本是 import-time 常數，全 app 只能服務寫死的 `'inhu'`；要推廣多校（使用者已確定要做，Stage 4 開放註冊隨後即做），必須把「schoolId 從哪裡來」改為「登入後由使用者身份動態解析」。本階段是純鋪路，**不改變任何現有 `inhu` 使用者可觀察到的行為**——只是解析機制從寫死常數換成 runtime 解析 + 相容期 fallback。opus 重驗兩輪：第一輪 4 中／6 輕，第二輪 1 必修／4 小項＋1 筆另案記錄，本條目已含兩輪全部修復。**只寫程式碼，未寫 Firestore、未部署、未跑 `v2-rules-matrix.mjs`、未跑回填腳本、未 commit。**
+
+### 修復（opus 重驗第二輪：1 必修、4 小項）
+- **[必修1]** `resetV2ViewState()` 清空 `dm.scheduleData` 等欄位（第一輪中4修復）打破了「dm 內容與 `_v2LastAppliedScheduleSig` 恆一致」的不變式：同一分頁內登出後用同一帳號再登入，若新一輪課表快照與上次相同（`updatedAt`/長度都沒變），`applyRemoteSchedule()` 算出的簽章會跟殘留的舊值相等而提早 `return`，但 `dm.scheduleData` 已經被清空——本該回填的快照被誤判成「重複，不必套用」，畫面永久空白，且下次 approver 編輯課表時會把這份空快照當「本機完整快照」回寫、覆蓋全校雲端課表。修法：`resetV2ViewState()` 在 `_v2ScheduleReady = false;` 旁一併 `_v2LastAppliedScheduleSig = null;`
+- **[輕2]** `applyV2LocalStorageKey(getActiveSchoolId())` 之後緊接呼叫 `window.app?.loadSavedData?.()`，從「這所學校」的 school-scoped 本機鏡像回填 `dataManager`——key 已切換到正確學校，不違反 school 隔離；同時修復 `resetV2ViewState()` 清空 dm 欄位後、Firestore 課表訂閱首次快照抵達前這段視窗內畫面空白閃爍，以及暫時離線時完全沒有本機資料可顯示的離線韌性下降。`loadSavedData()` 內部走 `dataManager.loadFromStorage()` 直接賦值，不經 `wrapScheduleMutator`，不觸發回寫，也不受 `_v2ScheduleReady` 影響（這批資料只用於顯示，是否放行回寫雲端仍然只看 `_v2ScheduleReady`）
+- **[nit3]** 同 uid re-emit（`identityChanged===false`，Firebase SDK 本機快取還原/token 刷新等情境會觸發）路徑原本不會重置 `_v2ScheduleReady`（該旗標只在 `resetV2ViewState()`——即 `identityChanged===true`——內被清空），但 `clearSubs()` 在**每一次** `onAuthStateChange` 都會執行、無條件取消所有既有訂閱（含課表訂閱）。若 `identityChanged===false`，舊訂閱已停但旗標維持前一輪的 stale-true，於「舊訂閱已停、新訂閱還沒回報」的窗口內誤放行課表回寫。改為 `clearSubs()` 之後、判斷 `identityChanged` 之前，無條件把 `_v2ScheduleReady` 設為 `false`（與 `resetV2ViewState()` 內的重置疊加執行，冪等無害）
+- **[nit4]** `authGuardV2.resolveSchoolIdForUid()` 的 `readFailed` 分支拋出的錯誤，原本只讓遮罩顯示通用文案「登入驗證時發生錯誤」。新增 `_v2GateErrorMessage` 記錄拋出的 `e.message`，`renderAuthGate()` 改顯示具體原因（例如「無法確認使用者所屬學校（讀取 userDirectory 失敗）」）；`unlockV2App()` 一併清除這個訊息；渲染去重的 `key` 併入訊息內容，避免兩次連續、訊息不同的失敗被誤判成「同一狀態」而跳過重繪
+- **[nit5]** `userDirectory` 規則的白名單正則加上 `^`/`$` 錨點（`matches('^[a-z0-9_-]{1,50}$')`），不依賴「`.matches()` 文件上說隱含全字串匹配」的間接保證，直接在規則本文表達完整意圖，成本為零
+
+### 另案記錄（不在本輪修，已寫入 `docs/ISSUES_LOG.md`）
+- `v2-app.js` 的 `window.app.canSwitchToTab` patch 位於 `initAuthService()` 之前，該時點 `window.app` 尚未由 `app.js` 的 `DOMContentLoaded` 建立，patch 的防呆檢查 `if (window.app && ...)` 因此恆為假，patch 從未生效——Stage 3 之前就存在的既有問題，非本次改動引入。意外關聯：這正是必修 1 情境下（`dm.scheduleData` 短暫被清空）approver 仍能正常切換到課表管理／教師管理／學校設定等頁籤、沒有觀察到連鎖症狀的原因（`window.app.canSwitchToTab` 其實一直是原始 V1 版本，判斷條件不只看 `dm.scheduleData` 是否為空）。修復需要先評估「patch 真正生效後」各頁籤可進入性的完整變化範圍，是獨立的分析與驗證工作，故不在本輪 Stage 3 任務範圍內順手修，另案處理
+
+### 新增（schoolId 解析，`schemaConstants.js`／`authGuardV2.js`／`schoolDataService.js`）
+- `schemaConstants.js`：移除 `export const SCHOOL_ID = 'inhu'`，改為模組層狀態 `getActiveSchoolId()`／`setActiveSchoolId()`／`resetActiveSchoolId()` + `DEFAULT_SCHOOL_ID='inhu'`（未設定時的相容期 fallback）；`SCHEMA_PATHS` 全部 15 個路徑產生器改吃 `getActiveSchoolId()`；新增 `SCHEMA_PATHS.userDirectoryDoc(uid)` → `userDirectory/{uid}`（頂層路徑，刻意不依賴 schoolId——這正是它存在的意義：在還不知道 schoolId 之前就要能讀到它）
+- `schoolDataService.js`：新增 `getUserDirectoryEntry(uid)`／`upsertUserDirectoryEntry(uid, schoolId)`；其餘既有函式**零改動**——已核實它們本來就只透過 `SCHEMA_PATHS.*()` 組路徑，從未直接引用 `SCHOOL_ID` 常數本身，全 app 只有 `v2-app.js` 一處匯出 meta 欄位直接引用過（已改 `getActiveSchoolId()`）
+- `authGuardV2.js`：`resolveIdentity()` 開頭新增 `resolveSchoolIdForUid(uid)`——讀頂層 `userDirectory/{uid}` 取得 schoolId（讀取失敗一律 try/catch 接住，視同查無條目）→ `setActiveSchoolId()`，才繼續走既有的 `getInitialDirectorEmails()`/emailIndex/teachers/userMappings 配對流程（這些函式全部依賴 `SCHEMA_PATHS`，必須排在 `setActiveSchoolId()` 之後才會讀到正確學校的資料）；查無條目時 fallback 到 `DEFAULT_SCHOOL_ID`；登入成功（`teacher` 確定非 null）且 `userDirectory` 尚無條目時，補寫一筆（`upsertUserDirectoryEntry`，失敗不阻擋登入）——讓現有成員不必等到回填腳本執行才收斂，下一次登入即為穩定態
+- `clear()` 新增 `resetActiveSchoolId()`（登出清空，實際登出路徑走 `v2-app.js` 的 `onAuthStateChange(user=null)` 分支直接呼叫，這裡是讓本函式自身行為完整，不依賴呼叫端多做一步）
+
+### 新增（規則，`firestore.rules` v2.5 → v2.6）
+- 新增頂層 `match /userDirectory/{uid}`（見檔頭第 8 點）：`read`／`create`／`update`／`delete` 皆限本人（`request.auth.uid == uid`）；`create`/`update` 欄位白名單 `hasOnly(['schoolId','createdAt'])`、`schoolId` 須為字串、不可含 `/`（防止字串插入路徑模板 `schools/$(schoolId)/config/main` 而使解析出的路徑段數偏離文件路徑必為偶數段的規則，比照 `schemaConstants.emailIndexDoc()` 對相同類型輸入的既有防禦）、且須通過 `configExists(schoolId)`（防止指向不存在的學校）
+- 刻意未加 `email_verified` 收緊——本階段唯一寫入路徑是 `authGuardV2.upsertUserDirectoryEntry()`，只在既有 `isMember`/`isInitialDirector` 等機制已判定登入合法「之後」才呼叫，不是任意登入者可自由決定寫入任意 schoolId 的開放端點；留給 Stage 4（開放註冊，屆時任意登入者都可能觸發建校/加入流程）收緊
+
+### 新增（localStorage 前綴化，`v2-app.js`／`app.js`）
+- `app.js`：新增 `getLocalStorageKey()` 方法（V1 預設回傳未加前綴的 `'substituteSystemData'`，行為與 Stage 3 之前完全一致）；`loadSavedData()`／`saveDataToStorage()`／`clearLocalData()` 三處硬寫的字面值改呼叫這個方法
+- `v2-app.js`：新增 `applyV2LocalStorageKey(schoolId)`，於身份解析成功後呼叫——僅對 `DEFAULT_SCHOOL_ID`（`'inhu'`）執行一次性遷移（新 key `substituteSystemData:{schoolId}` 不存在、舊 key 存在時，**複製**一份到新 key，刻意不刪除舊 key，讓 V1 模式維持舊 key 不動）；之後覆寫 `window.app.getLocalStorageKey` 回傳新 key。已知限制：app.js 建構子在 DOMContentLoaded 時的第一次 `loadSavedData()` 早於身份解析完成，無可避免仍讀舊 key，不影響正確性（V2 真相來源是 Firestore 訂閱，很快會覆蓋）
+- `patchClearLocalData()` 改用 `this.getLocalStorageKey()` 清除 school-scoped key，不再清舊的未加前綴 key（V1 資料不受 V2 的「清除所有資料」波及）
+
+### 新增（快取隔離，`v2-app.js`／`semesterState.js`）
+- `resetV2ViewState()` 新增 `semesterState.setCurrentSemesterId(null)`——「school 切換」維度：schoolId 改變必然伴隨身份改變（不同 uid），本函式本來就在身份「實際改變」時無條件執行，故不需要額外判斷「schoolId 是否真的不同」，直接併入既有的清空範圍
+- 登出分支（`onAuthStateChange(user=null)`）新增 `schemaConstants.resetActiveSchoolId()`
+- `semesterState.js` 檔頭原本標記的 Stage 3 相依（「若 SCHOOL_ID 改成 runtime 解析，本模組須改為 `Map<schoolId, semesterId>`」）已重新評估並訂正：不需要改成 Map——「一個分頁同時只服務一所學校」這個前提在 Stage 3 之後依然成立（`getActiveSchoolId()` 本身也只有單一模組層級變數），真正需要處理的只是「切換時舊值不能殘留」，已透過上述 `resetV2ViewState()` 的新增一行解決
+
+### 新增（回填腳本）
+- `scripts/backfill-user-directory.js`：讀 `schools/{school}/userMappings`（既有成員），為每個 uid 建立 `userDirectory/{uid}` 條目；`--school=` 參數（預設 `inhu`）；`--dry-run` 預設要求；偵測「uid 已登記在其他 schoolId」的衝突並拒絕覆寫（目前只有一校，理論上不會觸發，防禦性設計）。**本次僅寫好腳本，未執行（含 --dry-run）**
+
+### 四組合部署矩陣（`docs/STAGE0-DEPLOY.md`「附註：Stage 3」）
+- 與 Stage 0（`emailIndex`）／Stage 2（`semesterId`）的「必須先部署 rules 再部署 client」不同：Stage 3 的 `resolveSchoolIdForUid()`／`upsertUserDirectoryEntry()` 呼叫兩邊都包 try/catch、失敗一律 fallback 或靜默略過、不 rethrow，四組合矩陣顯示**兩個部署順序皆安全**——「新 client × 舊 rules」時 `userDirectory` 讀寫皆被舊規則的預設 DENY 擋下，但 fallback 讓行為等同「舊 client × 舊 rules」；「舊 client × 新 rules」時舊 client 完全不知道這個新集合存在，新增的 match 區塊是純附加、不影響任何既有 match，行為同樣不受影響
+- 回填腳本因此**不是部署前置條件**（與 Stage 0/2 的回填不同，那兩者缺席會造成功能性中斷或查詢遺漏）：新 client × 新 rules 且回填未跑時，首次登入靠 `getDoc` 對不存在文件回傳 `exists()===false`（不是 `permission-denied`）觸發 fallback，登入成功後自動補寫，下一次登入即為穩定態，全程不需要人工介入
+- 建議部署順序仍維持與 Stage 0/2 一致的「rules → client」節奏，理由不是正確性風險（兩個順序都安全），而是減少「新 client × 舊 rules」這格會出現的、本身無害但屬雜訊的 `permission-denied` console 警告
+
+### 修復（opus 驗收：4 中、6 輕）
+- **[中1]** 「清除所有資料」（`patchClearLocalData()`）原本只清 school-scoped 新 key，不清未加前綴的舊 key——舊 key 在 Stage 3 之後不再被 V2 持續覆寫，成為「一次性遷移時複製過去」的永凍快照，若之後觸發 `legacyMigrationService` 的偵測流程，會把已清除的舊資料誤判成「V1 遺留資料」提供遷移，執行後等於把已刪除的紀錄復活寫回 Firestore。改為兩把 key 一起清；同步訂正 `legacyMigrationService.js` 檔頭一段寫反的風險結論（原文誤稱「風險變小」，實為「風險變大」，見該檔案修正後的完整說明）
+- **[中2]** `resolveSchoolIdForUid()` 原本把「讀取失敗」與「查無條目」都 fallback 到 `DEFAULT_SCHOOL_ID`，混為一談。改為回傳值加 `readFailed` 旗標：`permission-denied`（部署過渡期已知情境）仍視同查無條目 fallback；其餘任何錯誤碼視為 `readFailed=true`，`resolveIdentity()` 據此 `throw`，沿用既有的「resolveIdentity 本身失敗」外層 catch（`_v2GateError` + 可重試，不 signOut）中止本次登入，不寫入 `joinAttempt`
+- **[中3]** 新增自救機制：若 `userDirectory` 記錄的 schoolId（非 fallback 值）底下查無教師配對，改用 `DEFAULT_SCHOOL_ID` 再跑一次配對鏈（僅一次，不遞迴）。抽出 `attemptResolveTeacherForActiveSchool()` 共用邏輯，避免兩份幾乎一樣的配對程式碼；刻意不自動改寫 `userDirectory` 既有條目，避免掩蓋「教師檔本身被誤刪」這類真正的資料完整性問題
+- **[中4]** school 切換未清 `window.app.dataManager` 記憶體 → A 校課表可能被 `setDoc` 進 B 校。`resetV2ViewState()` 新增直接欄位賦值清空 `scheduleData`/`teachers`/`classes`/`schoolName`/`substituteRecords`（比照 `applyRemoteSchedule()` 不經 mutator 的做法，避免觸發回寫）。**取捨**：未依原始要求把 `requireSchedule` 守門擴及 `setScheduleData`/`addScheduleEntry`/`updateScheduleEntry`/`removeScheduleEntry` 四個既有方法——實際走讀發現這會產生迴歸：`app.js editorDeleteTeacher()`／`v2-app.js` 教師刪除流程在「刪除全校唯一教師」這個合法邊界情況下會呼叫 `setScheduleData([])`，若這四個方法都套上 `requireSchedule`，這個合法的「清空」操作會被靜默擋下、不回寫雲端，與 `wrapScheduleMutator` 既有註解「這四者允許空課表寫入，那是正確的課表異動」直接衝突。改為更精準地命中風險視窗本身：新增 `_v2ScheduleReady` 旗標，`resetV2ViewState()` 時歸零，`subscribeSchedule()` 收到「目前這所學校」的第一次快照（不論是否為 null）才轉為 `true`；`queueScheduleSync()`（8 個 wrapped mutator 唯一共用的回寫入口）在旗標為 `false` 時一律不回寫。這同時涵蓋「空」與「非空但過期/錯校」兩種情況，且不影響任何既有 mutator 的 `requireSchedule` 語意。已完成走讀確認：「清除所有資料」（`clearAllSchoolData()`）課表歸零走 `dataSvc.saveSchedule()`，完全不經過 `wrapScheduleMutator`/`queueScheduleSync()`，不受這次改動影響；正常課表匯入/編輯發生在登入後的互動階段，`_v2ScheduleReady` 屆時早已為 `true`，不受影響
+- **[輕5]** 登出分支新增 `delete window.app.getLocalStorageKey`，還原 `applyV2LocalStorageKey()` 對 `window.app` 的覆寫，避免同分頁登出後未整頁重新整理就換帳號登入時，短暫空窗期間沿用上一所學校的 key
+- **[輕6]** `userDirectory` 規則的 schoolId 驗證原本用負面檢查 `!schoolId.matches('.*/.*')`，但 Firestore 規則的 `.matches()` 是 RE2 全字串匹配、`.` 預設不匹配換行字元，一個同時含 `\n` 與 `/` 的字串（例如 `"inhu\n/x"`）會讓 `.matches('.*/.*')` 因無法跨越 `\n` 而回傳 `false`，負面檢查因此被繞過（即使字串明明含 `/`）。改為正面白名單 `matches('^[a-z0-9_-]{1,50}$')`（opus 重驗 5 再加上 `^`/`$` 錨點，不依賴「文件說 `.matches()` 隱含全字串匹配」的間接保證），只允許小寫英數字/底線/連字號、長度 1-50，無繞過空間
+- **[輕7]** `operationLogger.js` 新增匯出 `clearFailedLogs()`，`resetV2ViewState()` 呼叫——`failedLogs` 記的是「哪次寫入失敗」，身份/學校切換若不清空，操作日誌頁籤的「寫入失敗」橫幅會沿用上一位使用者（可能是不同學校）的殘留計數
+- **[輕9]**（原編號 8 併入中1；此處為報告取捨記錄）`userDirectory/{uid}` 與報告 §4.2 規劃中的 `schoolOwners/{uid}` 高度重疊，Stage 4 收斂方向已記錄於下方「取捨與報告規格出入」
+- **[中10]** 部署矩陣訂正：「新 client × 舊 rules」時每次登入的失敗請求數，原稿估計「兩次」，但 `onAuthStateChange` 在單次登入過程中會因 Firebase SDK 內部行為 re-emit 多次，實測環境下 `resolveIdentity()` 平均被觸發 2 次、每次各 2 次 `userDirectory` 請求，**實際約 4 次**，已於 `docs/STAGE0-DEPLOY.md`「附註：Stage 3」訂正；另補記 `userDirectory` 的 `configExists(schoolId)` 檢查構成一個 schoolId 存在性探測端點，歸入報告 §4.5 已列的「偵測式跨校探測」殘留風險類別（非新增破口），見同一份文件新增的「已知殘留風險」一節
+
+### 取捨與報告規格出入
+- **userDirectory 的 create 未加 `email_verified` 驗證**：報告 §4.1 把 `email_verified` 列為開放註冊（Stage 4）才需要的防線之一，但也提到「create 需 email_verified 可留到 Stage 4 再收緊」（本次任務規格原話）——本階段唯一的寫入路徑是登入已通過 `isMember`/`isInitialDirector` 驗證後才觸發的一次性收斂寫入，不是任意登入者可自由觸發的開放端點，故本階段不加，Stage 4 開放註冊時再收緊，已在規則與程式碼中留 TODO 註記
+- **`userDirectory` 允許本人自行 `delete`**：報告 §4 沒有細談這個操作；本次判斷"本人可讀寫自己的"字面上涵蓋 delete，且目前沒有任何 client 路徑會呼叫刪除，開放此權限不構成額外風險（能刪的永遠只是自己那一份，刪除後下次登入會重新走 fallback），故予以開放，為未來「使用者主動離開學校」之類的功能保留彈性
+- **`semesterState.js` 未改為 `Map<schoolId, semesterId>`**：該檔案 Stage 2 驗收修復（輕 11）曾預告 Stage 3 可能需要這個改動；重新評估後判斷不需要——理由見上方「新增（快取隔離）」一節，「一個分頁同時只服務一所學校」的前提沒有被 Stage 3 打破，用 `resetV2ViewState()` 補一行清空即可解決實際的殘留風險，改用 Map 只是換一種形式維護同一份「單一作用中值」的狀態，不會多解決任何問題，且會讓所有既有呼叫端（`getCurrentSemesterId()`/`setCurrentSemesterId()`）的呼叫介面被迫改變（本次任務範圍之外的擴大改動）
+- **localStorage 遷移用「複製」而非「搬移」**：任務規格原文使用「搬移」一詞，但同時要求「V1 模式維持舊 key 不動」——若真的搬移（含刪除舊 key），使用者之後切回 V1 模式會看到資料消失，與後者要求直接衝突。判斷「複製、不刪除舊 key」才是唯一能同時滿足兩項要求的實作，已在程式碼與本文件中明確記錄這個字面出入
+- **`userDirectory/{uid}` 與報告 §4.2 規劃中的 `schoolOwners/{uid}` 高度重疊**（opus 驗收 輕9）：兩者結構幾乎相同（doc id 綁 uid、記錄一段歸屬關係），差別只在 `schoolOwners` 多了「一人一校、只能 create 不能 update」這個更嚴格的硬約束（見報告 §4.2 的 `schoolOwners` 規則片段），是為「全自助建校」變體設計的節流閥。Stage 4 若採報告推薦的「變體 B：自助申請＋平台管理者審核開通」，`schoolOwners` 的「防止同一人建立第二所學校」語意仍有價值，但不必是獨立集合——建議收斂方向：**Stage 4 直接沿用 `userDirectory` 作為唯一的 uid→schoolId 反查來源，在其上加一個 `role: 'owner' | 'member'`（或等義）欄位區分「這個人是否為建校者」，或改用 create-only 的子規則（`userDirectory` 一旦建立 `schoolId` 後不可 update 改成別的學校）來實現「一人一校」的約束**，而不是維護兩個內容高度重疊、容易漂移不同步的頂層集合。此為 Stage 4 規劃階段的取捨方向記錄，本階段（Stage 3）不實作 `schoolOwners`，也不改動 `userDirectory` 現有的 `create`/`update` 皆允許的權限（本階段自救機制正需要 `update`，見 `authGuardV2.js` 的自救分支說明）
+
 ## [2026-07-31]（feature/permission-system）多租戶研究 Stage 5：封存與生命週期工具（未 commit）
 
 依 `docs/RESEARCH-multitenancy-semester.md` §6.2（封存流程＋三個陷阱）／§6.5（operationLogs 衝突解法 b）／§8 Stage 5。動機：完成「保留 3 年 → 期滿匯出封存 → 從雲端刪除」的生命週期閉環。設定頁新增「資料封存」卡片（director 專用，緊鄰「學期管理」）：選學期 → 匯出該學期完整資料（課表、`substituteRecords`/`pendingRequests` 含 private/detail、`operationLogs`）為單一 JSON → 選擇剛下載的檔案做 SHA-256 雜湊 + 雲端當下筆數雙重驗證 → 輸入學期代碼二次確認 → 執行刪除（僅限非目前學期；private/detail 先刪、父文件後刪，沿用既有 `deleteSubstituteRecordsBatch`/`deletePendingRequestsBatch`；課表 doc 一併刪除）→ 寫入不可改/刪的 `archives/{semesterId}` 封存紀錄與操作日誌。全流程每一步失敗或資料在期間漂移都 fail-closed 中止、不推進到可刪除狀態。`operationLogs` 不在 UI 刪除範圍內（client 規則本次未鬆綁「不可改/刪」），改由新增的離線腳本 `scripts/cleanup-operation-logs.js`（`--before=<日期>`，預設 dry-run、需 `--yes` 才實際刪除，永遠先匯出備份）以 gcloud REST 憑證清理，腳本頭註記已核實「gcloud OAuth 憑證不受 client Security Rules 限制」這個前提（引 `firestore-backup.js`/`backfill-semester-id.js` 既有行為為佐證）。opus 驗收第一輪不通過（2 阻斷/4 中/7 輕），第二輪重驗定案通過、追加 6 項非阻斷收尾（1 中/5 輕），本條目已含兩輪全部修復。**只寫程式碼，未寫 Firestore、未部署、未跑 `cleanup-operation-logs.js`、未 commit。**

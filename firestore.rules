@@ -1,6 +1,6 @@
 rules_version = '2';
 
-// STsystem V2 權限系統 Firestore 規則（v2.5 — 三層角色 + 敏感欄位私有化 + 學期唯讀鎖 + 封存生命週期）
+// STsystem V2 權限系統 Firestore 規則（v2.6 — 三層角色 + 敏感欄位私有化 + 學期唯讀鎖 + 封存生命週期 + schoolId 反查目錄）
 //
 // 設計原則：
 //   1. 兩條根路徑物理隔離
@@ -55,6 +55,16 @@ rules_version = '2';
 //      approver-or-initiator，皆無學期鎖）未變動，封存流程直接沿用；operationLogs 的
 //      「不可改/刪」規則同樣未變動——期滿清理改由平台管理者離線以 gcloud/REST owner 憑證執行
 //      （不受 client Security Rules 限制），見 scripts/cleanup-operation-logs.js 檔頭說明。
+//   8. Stage 3（2026-07-31，RESEARCH-multitenancy-semester.md §4 集合設計預告／§8 Stage 3；
+//      SCHOOL_ID 動態化）：新增頂層（不在 schools/{schoolId} 之下）集合 userDirectory/{uid}，
+//      供登入後「反查這個 uid 屬於哪所學校」——純前端在不知道 schoolId 之前無法組出
+//      schools/{schoolId}/... 路徑，也無法用 exists()/get() 判斷成員資格，故這份文件必須是
+//      頂層、且不依賴任何 schoolId 參數就能讀到。規則本身只驗證「本人讀寫自己那一份」+
+//      「schoolId 必須指向一所存在的學校（configExists）」，不驗證 email_verified——本階段
+//      唯一的寫入路徑是 authGuardV2.resolveIdentity() 在既有 isMember/isInitialDirector 等
+//      機制已經驗證過登入合法性「之後」才呼叫一次，不是任意登入者可自行決定寫入任意
+//      schoolId 的開放端點；email_verified 留給 Stage 4（開放註冊，屆時任意登入者都可能
+//      觸發建校/加入流程）收緊，見下方 match 區塊內的完整說明。
 //
 // 部署：透過 gcloud REST API 或 Firebase Console（見 docs/V2_PERMISSION_SYSTEM.md）
 
@@ -724,6 +734,51 @@ service cloud.firestore {
         // 刪除：只有 director
         allow delete: if isDirector(schoolId);
       }
+    }
+
+    // ================ Stage 3：頂層 userDirectory（uid → schoolId 反查） ================
+    // 見檔頭第 8 點。schools/{schoolId} 之外的頂層集合，不依賴任何 schoolId 路徑參數，
+    // 純粹以 request.auth.uid 為 key，供 authGuardV2.resolveIdentity() 在還不知道
+    // schoolId 之前就能讀到自己屬於哪所學校。
+    match /userDirectory/{uid} {
+      // 讀取：僅本人。之後才會走 schools/{schoolId}/... 底下依 isMember 等機制判斷的既有規則，
+      // 這裡不需要、也不應該對外開放任何人查任何人屬於哪所學校。
+      allow read: if isSignedIn() && request.auth.uid == uid;
+
+      // 建立/更新：僅本人，且 schoolId 必須指向一所「存在」的學校（configExists，防止指向
+      // 不存在的 schoolId——若不擋，之後 getActiveSchoolId() 會被設成一個永遠讀不到 config
+      // 的值，等同把自己鎖進一個死路徑；也防止被用來當作任意字串的免費寫入端點探測）。
+      // 欄位白名單 schoolId/createdAt，型別驗證。
+      // ⚠ schoolId 格式驗證（Stage 3 opus 驗收 輕6，訂正原版負面檢查的繞過漏洞）：
+      // configExists() 內部把這個值原文拼進 `schools/$(schoolId)/config/main` 這個路徑模板，
+      // 值本身若含 '/' 會多插入路徑段，使解析出的路徑段數偏離「文件路徑必為偶數段」的規則。
+      // 原版用負面檢查 `!schoolId.matches('.*/.*')` 想擋含 '/' 的值，但 Firestore 規則的
+      // `.matches()` 是 RE2 引擎、且是全字串匹配（比照 Python re.fullmatch）；RE2 的 `.`
+      // 預設不匹配換行字元 `\n`，若 schoolId 裡同時含 `\n` 與 `/`（例如 `"inhu\n/x"`），
+      // `.*` 無法跨過 `\n` 去匹配到後面的 `/`，導致整串「找不到符合 `.*/.*` 的完整匹配」，
+      // `.matches('.*/.*')` 回傳 false，`!false` 變成 true——負面檢查被繞過，即使字串裡
+      // 明明含有 `/`。改為正面白名單 `matches('^[a-z0-9_-]{1,50}$')`（只允許小寫英數字、底線、
+      // 連字號，長度 1-50）：白名單只列出「允許什麼」，不會有「忘記擋什麼」的繞過空間，且與
+      // 現行唯一的 schoolId 值 `'inhu'` 及未來預期的 slug 風格命名一致。
+      // opus 重驗 5：明確加上 `^`/`$` 錨點——雖然 Firestore 規則文件說明 `.matches()` 本身即為
+      // 全字串匹配（比照 Python re.fullmatch，理論上不加錨點也不會有子字串繞過），但明確寫出
+      // 錨點不依賴這個「文件說隱含全字串匹配」的間接保證，直接在規則本文表達「整段字串必須從
+      // 頭到尾都符合」的意圖，可讀性與防禦力都更高，成本是零（不影響任何合法的 schoolId 值）。
+      // ⚠ 未驗證 email_verified：見檔頭第 8 點——本階段唯一的寫入路徑是
+      // authGuardV2.upsertUserDirectoryEntry()，只在既有 isMember/isInitialDirector 等機制
+      // 已判定登入合法「之後」才呼叫，不是任意登入者可自由決定寫入任意 schoolId 的端點。
+      // Stage 4（開放註冊）收緊時再補這一項。
+      allow create, update: if isSignedIn() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['schoolId', 'createdAt'])
+        && request.resource.data.schoolId is string
+        && request.resource.data.schoolId.matches('^[a-z0-9_-]{1,50}$')
+        && configExists(request.resource.data.schoolId)
+        && request.resource.data.createdAt is string;
+
+      // 刪除：僅本人。目前 client 沒有任何路徑會呼叫刪除，保留給本人自行清空的彈性
+      // （例如未來允許使用者主動「離開學校」）不構成額外風險——能刪的永遠只是自己那一份，
+      // 刪除後下次登入會重新走 resolveSchoolIdForUid() 的 fallback，不影響其他任何人。
+      allow delete: if isSignedIn() && request.auth.uid == uid;
     }
 
     // ================ 穩定版 master：保留原規則 ================

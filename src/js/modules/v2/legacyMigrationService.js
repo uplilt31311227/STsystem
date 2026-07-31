@@ -48,6 +48,21 @@ import { getV2Firestore }  from './firebaseV2.js';
 import { LOG_ACTIONS, LOG_TARGET_TYPES } from './schemaConstants.js';
 import { dateToSemesterId } from './semesterUtils.js';
 
+// Stage 3（2026-07-31，§8 Stage 3）：這裡刻意維持讀「未加前綴」的舊 key，不要跟著改成
+// `substituteSystemData:{schoolId}`——這支模組的用途本來就是偵測 V1 遺留在舊 key 底下的
+// 資料。
+// ⚠ opus 驗收 中1 訂正（原版這裡的結論寫反了）：Stage 3 之後 V2 的 saveDataToStorage 鏡像
+// 已改寫新的 school-scoped key（見 v2-app.js applyV2LocalStorageKey()），不再持續覆寫這個
+// 舊 key——但這**不是**「假警報情境變少」的好消息，而是風險變大：舊 key 從此變成一份
+// 「永凍快照」，永遠停在 Stage 3 部署當下（一次性遷移複製過去）的內容，之後不論雲端資料
+// 怎麼異動（含被 director 用「清除所有資料」整批刪除），舊 key 都不會跟著更新或清空。
+// 一份長期存在、內容早已與雲端脫鉤、卻仍然「非空」的舊快照，正是本模組
+// `resolveLegacySources()` 的「只認非空 substituteRecords」判斷會誤判成「偵測到 V1 舊資料」
+// 的典型情境——且比 Stage 3 之前更容易誤判成功，因為 Stage 3 之前舊 key 至少會持續被
+// V2 自己的操作覆寫、內容通常貼近雲端現況；現在它是靜止的、可能早已過期甚至包含已刪除
+// 紀錄的快照。真正的修復是讓「清除所有資料」（v2-app.js patchClearLocalData()）把舊 key
+// 與新 key 一起清掉，不留下這顆不會自己消失的地雷——已補上，見該函式定義處。這裡維持讀
+// 舊 key 的決定本身不變（本模組的用途仍然只認舊 key），只是訂正對風險方向的描述。
 const LEGACY_LOCALSTORAGE_KEY = 'substituteSystemData';
 
 function legacyDocPath(uid) {

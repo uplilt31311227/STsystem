@@ -1181,6 +1181,34 @@ export async function upsertUserMapping(uid, patch) {
     await fs.setDoc(ref, { ...patch, lastLoginAt: new Date().toISOString() }, { merge: true });
 }
 
+/* ===== 頂層 userDirectory（uid → schoolId 反查，Stage 3 §4） ===== */
+
+/**
+ * 讀取這個 uid 屬於哪所學校（頂層集合，不在 schools/{schoolId} 之下——讀這份文件本身
+ * 不需要知道 schoolId，這正是它存在的意義：resolveIdentity() 靠它才知道接下來要對哪個
+ * schoolId 呼叫 setActiveSchoolId()）。查無條目回傳 null，呼叫端自行決定 fallback。
+ */
+export async function getUserDirectoryEntry(uid) {
+    const fs   = await getV2Firestore();
+    const ref  = fs.doc(fs.db, SCHEMA_PATHS.userDirectoryDoc(uid));
+    const snap = await fs.getDoc(ref);
+    return snap.exists() ? snap.data() : null;
+}
+
+/**
+ * 寫入/更新自己的 userDirectory 條目。firestore.rules 僅放行本人寫自己的 uid，
+ * 且 schoolId 必須指向一所存在的學校（configExists(schoolId)），欄位白名單
+ * hasOnly(['schoolId','createdAt'])。呼叫端（authGuardV2.resolveIdentity）只在
+ * 「查無既有條目、剛用 fallback 解析出 schoolId」時呼叫一次，讓下次登入不必再靠
+ * fallback（見該函式呼叫點註解）。用 merge:true 但只帶這兩個欄位，createdAt 只在
+ * 文件真的不存在時才有意義；已存在的條目理論上不會再被呼叫到這裡（見呼叫端判斷）。
+ */
+export async function upsertUserDirectoryEntry(uid, schoolId) {
+    const fs  = await getV2Firestore();
+    const ref = fs.doc(fs.db, SCHEMA_PATHS.userDirectoryDoc(uid));
+    await fs.setDoc(ref, { schoolId, createdAt: new Date().toISOString() }, { merge: true });
+}
+
 /* ===== Operation Logs（僅寫入與查詢；由 operationLogger 包裝使用） ===== */
 
 export async function appendLog(entry) {

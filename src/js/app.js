@@ -4224,7 +4224,9 @@ class SubstituteTeacherApp {
                 danger: true,
             });
             if (secondOk) {
-                localStorage.removeItem('substituteSystemData');
+                // Stage 3：V1（本方法）用 this.getLocalStorageKey()，V2 模式下這整個方法會被
+                // v2-app.js 的 patchClearLocalData() 覆寫（見該函式），不會執行到這裡。
+                localStorage.removeItem(this.getLocalStorageKey());
                 localStorage.removeItem('gasUrl');
                 this.showToast('所有資料已清除，頁面將重新載入', 'success');
                 location.reload();
@@ -4950,10 +4952,22 @@ class SubstituteTeacherApp {
     }
 
     /**
+     * localStorage 儲存 key（Stage 3，RESEARCH-multitenancy-semester.md §8 Stage 3）。
+     * V1（本方法）預設回傳未加前綴的舊 key，行為與 Stage 3 之前完全一致——V1 模式
+     * （無 ?v2=1）不知道、也不需要知道 schoolId 這個概念。
+     * V2 模式下由 v2-app.js 的 applyV2LocalStorageKey() 在身份解析成功後覆寫這個方法，
+     * 改回傳 `substituteSystemData:{schoolId}`，讓不同學校的本機資料互不覆蓋；覆寫只在
+     * V2 bootstrap 內發生，純 V1 使用者（多數教師目前的日常用法）完全不受影響。
+     */
+    getLocalStorageKey() {
+        return 'substituteSystemData';
+    }
+
+    /**
      * 從 localStorage 載入已儲存的資料
      */
     loadSavedData() {
-        const savedData = localStorage.getItem('substituteSystemData');
+        const savedData = localStorage.getItem(this.getLocalStorageKey());
         if (savedData) {
             try {
                 const data = JSON.parse(savedData);
@@ -5013,7 +5027,7 @@ class SubstituteTeacherApp {
         this.dataManager.updateLastModified();
 
         const data = this.dataManager.exportToStorage();
-        localStorage.setItem('substituteSystemData', JSON.stringify(data));
+        localStorage.setItem(this.getLocalStorageKey(), JSON.stringify(data));
 
         // 如果已登入且需要同步，則同步到雲端
         if (syncToCloud && isSignedIn()) {

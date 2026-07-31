@@ -9,35 +9,73 @@
  *   - ROLES 從 2 層（admin/teacher）擴成 3 層（director/section_chief/teacher）。
  *     舊 role='admin' 由 normalizeRole() 自動 alias 為 'director'，過渡期不必批量改資料。
  *   - 新增 REQUEST_TYPES：代課單簽 / 調課雙簽 / 多重全員同意，三流由 pendingRequestService 分支處理。
+ *
+ * Stage 3（2026-07-31，RESEARCH-multitenancy-semester.md §8 Stage 3；§4.2-4.4 集合設計預告）：
+ * SCHOOL_ID 動態化。原本的 `export const SCHOOL_ID = 'inhu'` 是 import-time 單點常數，
+ * 全 app 只能服務寫死的 'inhu'。改為 getActiveSchoolId()：模組層狀態，登入後由
+ * authGuardV2.resolveIdentity() 呼叫 setActiveSchoolId() 設定；尚未設定（例如尚未登入、
+ * 或 Node 腳本/測試環境完全不會呼叫這個函式）時 fallback 回 DEFAULT_SCHOOL_ID。
+ * SCHEMA_PATHS 全部改吃這個動態值，App 端所有呼叫端（schoolDataService.js 等）完全不需要
+ * 額外改動——它們本來就只透過 SCHEMA_PATHS.*() 組路徑，從未直接引用 SCHOOL_ID 常數本身
+ * （唯一例外是 v2-app.js 的一處匯出 meta 欄位，已改呼叫 getActiveSchoolId()）。
+ * scripts/ 與 test/ 下的 Node 腳本各自有獨立的 `const SCHOOL_ID = ... '--school=' ... || 'inhu'`
+ * 或直接寫死 'inhu'，皆不 import 這個模組的 SCHOOL_ID／getActiveSchoolId，是刻意設計的單校
+ * 維運工具（各自已有 --school= 參數），本次不動。
  */
 
-export const SCHOOL_ID = 'inhu';
+// 相容期 fallback：找不到 schoolId 時（例如 userDirectory 尚未回填、或腳本/測試環境從未
+// 呼叫 setActiveSchoolId）一律視為 'inhu'——這是目前唯一正式服務的學校，維持現行使用者
+// 體驗完全不變。Stage 4（開放註冊）上線後，這個 fallback 的適用範圍應該限縮，見
+// authGuardV2.js 的 resolveSchoolIdForUid() 內的 TODO 註記。
+export const DEFAULT_SCHOOL_ID = 'inhu';
+
+let _activeSchoolId = null;
+
+/** 目前作用中的 schoolId；尚未由 setActiveSchoolId() 設定時回傳 DEFAULT_SCHOOL_ID。 */
+export function getActiveSchoolId() {
+    return _activeSchoolId || DEFAULT_SCHOOL_ID;
+}
+
+/** 登入解析完成後呼叫，之後所有 SCHEMA_PATHS.*() 組路徑皆改用這個值。 */
+export function setActiveSchoolId(schoolId) {
+    _activeSchoolId = schoolId || null;
+}
+
+/** 登出 / school 切換時呼叫，清空後下一次 getActiveSchoolId() 會回退到 DEFAULT_SCHOOL_ID。 */
+export function resetActiveSchoolId() {
+    _activeSchoolId = null;
+}
 
 export const SCHEMA_PATHS = {
-    config:            ()    => `schools/${SCHOOL_ID}/config/main`,
-    teachersCol:       ()    => `schools/${SCHOOL_ID}/teachers`,
-    teacherDoc:        (id)  => `schools/${SCHOOL_ID}/teachers/${id}`,
+    config:            ()    => `schools/${getActiveSchoolId()}/config/main`,
+    teachersCol:       ()    => `schools/${getActiveSchoolId()}/teachers`,
+    teacherDoc:        (id)  => `schools/${getActiveSchoolId()}/teachers/${id}`,
     // 舊：單一文件、整份覆寫，換學期即蓋掉舊課表（RESEARCH-multitenancy-semester.md §5.1）。
     // Stage 2 起改由 schedules/{semesterId} 取代為主要讀寫路徑；此路徑保留給
     // getSchedule()/subscribeSchedule() 的一次性讀取 fallback（per-semester 文件尚未建立時，
     // 例如剛從 Stage 1 升級、還沒建立任何 schedules/{semesterId} 文件的學校），以及
     // scripts/migrate-schedule-to-semester.js 的遷移來源，不再被任何寫入路徑使用。
-    scheduleDoc:       ()    => `schools/${SCHOOL_ID}/data/schedule`,
+    scheduleDoc:       ()    => `schools/${getActiveSchoolId()}/data/schedule`,
     // Stage 2（§5.3）：per-semester 課表文件，取代上面的單一文件。
-    schedulesCol:      ()    => `schools/${SCHOOL_ID}/schedules`,
-    scheduleDocForSemester: (sid) => `schools/${SCHOOL_ID}/schedules/${sid}`,
-    substituteCol:     ()    => `schools/${SCHOOL_ID}/substituteRecords`,
-    substituteDoc:     (id)  => `schools/${SCHOOL_ID}/substituteRecords/${id}`,
+    schedulesCol:      ()    => `schools/${getActiveSchoolId()}/schedules`,
+    scheduleDocForSemester: (sid) => `schools/${getActiveSchoolId()}/schedules/${sid}`,
+    substituteCol:     ()    => `schools/${getActiveSchoolId()}/substituteRecords`,
+    substituteDoc:     (id)  => `schools/${getActiveSchoolId()}/substituteRecords/${id}`,
     // Phase 6（2026-07-29）：leaveType/leaveTypeName/reason 私有化，搬到父文件底下的
     // private/detail 子文件，只有 approver 或 allowedTeacherIds 內的當事人可讀。
-    substituteDetailDoc: (id) => `schools/${SCHOOL_ID}/substituteRecords/${id}/private/detail`,
-    pendingCol:        ()    => `schools/${SCHOOL_ID}/pendingRequests`,
-    pendingDoc:        (id)  => `schools/${SCHOOL_ID}/pendingRequests/${id}`,
-    pendingDetailDoc:  (id)  => `schools/${SCHOOL_ID}/pendingRequests/${id}/private/detail`,
-    logsCol:           ()    => `schools/${SCHOOL_ID}/operationLogs`,
-    logDoc:            (id)  => `schools/${SCHOOL_ID}/operationLogs/${id}`,
-    userMapCol:        ()    => `schools/${SCHOOL_ID}/userMappings`,
-    userMapDoc:        (uid) => `schools/${SCHOOL_ID}/userMappings/${uid}`,
+    substituteDetailDoc: (id) => `schools/${getActiveSchoolId()}/substituteRecords/${id}/private/detail`,
+    pendingCol:        ()    => `schools/${getActiveSchoolId()}/pendingRequests`,
+    pendingDoc:        (id)  => `schools/${getActiveSchoolId()}/pendingRequests/${id}`,
+    pendingDetailDoc:  (id)  => `schools/${getActiveSchoolId()}/pendingRequests/${id}/private/detail`,
+    logsCol:           ()    => `schools/${getActiveSchoolId()}/operationLogs`,
+    logDoc:            (id)  => `schools/${getActiveSchoolId()}/operationLogs/${id}`,
+    userMapCol:        ()    => `schools/${getActiveSchoolId()}/userMappings`,
+    userMapDoc:        (uid) => `schools/${getActiveSchoolId()}/userMappings/${uid}`,
+    // Stage 3（2026-07-31，§4 集合設計預告）：頂層（不在 schools/{schoolId} 之下）的
+    // uid → schoolId 反查索引。resolveIdentity() 必須先讀這份文件才知道要對哪個 schoolId
+    // 呼叫 setActiveSchoolId()，故不能放在 schools/{schoolId} 底下（那時候還不知道
+    // schoolId 是什麼，Firestore 也不支援跨集合搜尋 uid，見報告 §4 開頭的動機說明）。
+    userDirectoryDoc:  (uid) => `userDirectory/${uid}`,
     // Stage 0（2026-07-31，§3.4）：email → teacherId 索引，供首登配對用；
     // 規則只開放 get 自己一份（emailKey == 登入 email），不開放 list，故 emailKey 一律小寫。
     // 驗收修復 S11：Firestore 文件 ID 不可含 '/'（會被誤解成路徑分隔）、不可恰好等於
@@ -53,15 +91,15 @@ export const SCHEMA_PATHS = {
         if (!normalized || normalized.includes('/') || normalized === '.' || normalized === '..') {
             throw new Error(`emailIndexDoc: 不合法的 email，無法組出 Firestore 文件路徑：${JSON.stringify(email)}`);
         }
-        return `schools/${SCHOOL_ID}/emailIndex/${normalized}`;
+        return `schools/${getActiveSchoolId()}/emailIndex/${normalized}`;
     },
     // Stage 0（2026-07-31，§3.4b）：login_denied 改道，doc id 綁 uid，一人一份可覆寫。
-    joinAttemptDoc:    (uid) => `schools/${SCHOOL_ID}/joinAttempts/${uid}`,
-    joinAttemptsCol:   ()    => `schools/${SCHOOL_ID}/joinAttempts`,
+    joinAttemptDoc:    (uid) => `schools/${getActiveSchoolId()}/joinAttempts/${uid}`,
+    joinAttemptsCol:   ()    => `schools/${getActiveSchoolId()}/joinAttempts`,
     // Stage 5（2026-07-31，§6.2/§6.5）：封存紀錄，doc id 綁 semesterId（一學期最多封存一次，
     // 規則層 create-only + update/delete 皆 false，寫入後永久不可變，見 firestore.rules）。
-    archivesCol:       ()    => `schools/${SCHOOL_ID}/archives`,
-    archiveDoc:        (sid) => `schools/${SCHOOL_ID}/archives/${sid}`,
+    archivesCol:       ()    => `schools/${getActiveSchoolId()}/archives`,
+    archiveDoc:        (sid) => `schools/${getActiveSchoolId()}/archives/${sid}`,
 };
 
 /**
