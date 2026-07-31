@@ -15,13 +15,21 @@
  * 的一部分，同一學校內不同使用者登入看到的應該是同一個值；下一次 bootstrap 重新讀 config
  * 時自然會覆蓋成當下的正確值。
  *
- * ⚠ 驗收修復（輕 11）：本模組只有單一模組層級變數，這個設計成立的前提是「一個瀏覽器分頁
- * 內同時只服務一所學校」——目前整個 V2 架構本來就是如此（`schemaConstants.SCHOOL_ID` 是
- * import-time 的單點常數，見 §8 Stage 3「SCHOOL_ID 動態化」規劃），本模組沿用同一個假設，
- * 不是本模組獨有的限制。Stage 3 若把 `SCHOOL_ID` 改成 runtime 依登入使用者解析（多租戶、
- * 同一使用者可能屬於不同學校），本模組必須同步改為以 schoolId 為 key 的 Map
- * （例如 `Map<schoolId, semesterId>`），否則同一分頁內切換學校時，目前學期會被錯誤地
- * 沿用成上一個學校的值。這裡先記錄下來，避免 Stage 3 實作時漏掉這個相依。
+ * ⚠ 驗收修復（輕 11，Stage 3 已處理，見下）：本模組只有單一模組層級變數，這個設計成立的
+ * 前提是「一個瀏覽器分頁內同時只服務一所學校」——Stage 3（2026-07-31，§8 Stage 3
+ * 「SCHOOL_ID 動態化」）把 `schemaConstants.SCHOOL_ID` 這個 import-time 單點常數改成
+ * `getActiveSchoolId()`（登入後由 `authGuardV2.resolveIdentity()` 動態解析設定），
+ * 理論上同一使用者確實可能在不同次登入屬於不同學校。
+ *
+ * 這裡刻意**不**把本模組改成 `Map<schoolId, semesterId>`——因為「一個分頁同時只服務一所
+ * 學校」這個前提在 Stage 3 之後依然成立（`getActiveSchoolId()` 本身也只有單一模組層級變數，
+ * 同一分頁同一時刻只可能有一個 activeSchoolId，不會同時服務兩所學校），改用 Map 只是換一種
+ * 形式維護同一份「單一作用中值」的狀態，不會多解決任何問題。真正需要處理的是「切換學校時
+ * 舊值不能殘留」：`v2-app.js` 的 `resetV2ViewState()`（身份「實際改變」時必呼叫，schoolId
+ * 改變必然伴隨身份改變，見該函式呼叫點的 identityChanged 守門）新增了
+ * `semesterState.setCurrentSemesterId(null)` 這一步，把本模組納入「school 切換」要清空的
+ * 狀態清單，下一次 bootstrap 的「學期設定」步驟會重新讀新學校的 `config.currentSemester`
+ * 填回正確值。
  */
 
 let _currentSemesterId = null;

@@ -24,6 +24,17 @@ export function getFailedLogCount() {
     return failedLogs.length;
 }
 
+/**
+ * Stage 3 opus 驗收 輕7：清空本次工作階段累積的寫入失敗紀錄。
+ * 供 v2-app.js 的 resetV2ViewState() 在身份「實際改變」時呼叫——failedLogs 記的是「寫入
+ * 哪個學校失敗」（entry 本身經由 appendLog()/upsertJoinAttempt() 寫向 getActiveSchoolId()
+ * 當下指向的學校），若身份切換後不清空，操作日誌頁籤的「寫入失敗」橫幅會沿用上一位使用者
+ * （可能是不同學校）留下的失敗計數，對新登入者是誤導性的殘留狀態。
+ */
+export function clearFailedLogs() {
+    failedLogs.length = 0;
+}
+
 function safeActor() {
     const id = getCurrentIdentity();
     if (!id) {

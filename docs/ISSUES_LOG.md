@@ -1,12 +1,31 @@
 ---
 created: 2026-04-10
-updated: 2026-07-30
+updated: 2026-07-31
 tags:
   - issues
   - troubleshooting
 ---
 
 # 問題追蹤：國中調代課自動化系統
+
+## Stage 3（SCHOOL_ID 動態化）opus 重驗發現，另案記錄（2026-07-31）
+
+### `window.app.canSwitchToTab` patch 套用時機早於 `window.app` 建立，從未生效 🟡 既有問題備查，未修
+
+- **日期**: 2026-07-31
+- **狀態**: 🟡 已知，本次（Stage 3 opus 重驗）發現但刻意不修，另案處理
+- **描述**: `v2-app.js` `bootstrap()` 內，「讓 V2 專屬頁籤不受原『需先匯入課表』閘門擋下」這段 patch：
+  ```js
+  if (window.app && typeof window.app.canSwitchToTab === 'function') {
+      const orig = window.app.canSwitchToTab.bind(window.app);
+      window.app.canSwitchToTab = (tabId) => tabId.startsWith('v2-') ? true : orig(tabId);
+  }
+  ```
+  寫在 `await authMod.initAuthService();` 之前。同一函式稍後的既有註解明講「`window.app` 於此（`initAuthService` 之後）已由 `app.js` 的 `DOMContentLoaded` 建立」——也就是說，patch 執行的當下 `window.app` 很可能還不存在，`if (window.app && ...)` 這個防呆檢查本身會失敗，patch 整段被跳過、從未真正套用到 `window.app.canSwitchToTab`。這是 Stage 3 之前就存在的既有程式碼，不是本次改動引入的。
+- **意外的關聯**：Stage 3 opus 重驗必修 1（`resetV2ViewState()` 直接清空 `dm.scheduleData` 等欄位）之所以在走讀時沒有觀察到「approver 被課表匯入閘門擋在 `v2-` 開頭以外的頁籤（例如課表管理／教師管理／學校設定）外面」這個預期中的連鎖症狀，根本原因正是這個 patch 從未生效——`window.app.canSwitchToTab` 一直是原始的 V1 版本，而 V1 版本判斷「是否需要先匯入課表」本來就不是只看 `dm.scheduleData` 是否為空這一個條件（實際判斷邏輯見 `app.js canSwitchToTab()`），使 approver 在 `dm.scheduleData` 被清空的短暫視窗內仍能正常切換到這些頁籤。換言之，這個既有的「patch 沒生效」缺陷，意外地讓必修 1 情境下的使用者體感比「patch 有生效」時更不容易被卡住——但這是巧合造成的正面副作用，不代表這個 patch 本身沒問題，也不代表可以依賴這個巧合。
+- **為何本次不修**：把 patch 挪到 `initAuthService()` 之後（讓它真正生效）會改變「V2 專屬頁籤是否受課表匯入閘門管制」的既有行為——需要重新評估頁籤守門邏輯的完整變化範圍（哪些頁籤原本被擋、修好之後哪些頁籤的可進入條件會不同、是否有既有使用者流程依賴目前「patch 未生效」的實際行為），這是獨立的一塊分析與驗證工作，不是 Stage 3 SCHOOL_ID 動態化任務範圍內的「順手修」，也不應該在還沒評估清楚行為變化前就倉促修掉。
+- **後續建議**: 另案處理時，先確認 `app.js` 原始 `canSwitchToTab()` 的完整判斷條件、列出目前每個頁籤在「patch 生效」與「patch 未生效」兩種情況下的可進入性差異，再決定是否修復與如何驗證。
+- **相關檔案**: `src/js/v2-app.js`（`bootstrap()` 內的 `canSwitchToTab` patch 區塊、`await authMod.initAuthService()` 呼叫點）、`src/js/app.js`（`canSwitchToTab()` 原始定義）
 
 ## 「清除所有資料」V2 重寫相關（2026-07-30）
 

@@ -17,7 +17,7 @@ import * as teacherMgr          from './modules/v2/teacherAccountManager.js';
 import * as requestSvc          from './modules/v2/pendingRequestService.js';
 import * as logger              from './modules/v2/operationLogger.js';
 import * as legacyMigration     from './modules/v2/legacyMigrationService.js';
-import { LOG_ACTIONS, LOG_TARGET_TYPES, ROLES, REQUEST_STATUS, REQUEST_TYPES, SCHOOL_ID } from './modules/v2/schemaConstants.js';
+import { LOG_ACTIONS, LOG_TARGET_TYPES, ROLES, REQUEST_STATUS, REQUEST_TYPES, getActiveSchoolId, resetActiveSchoolId, DEFAULT_SCHOOL_ID } from './modules/v2/schemaConstants.js';
 import * as authMod from './modules/authService.js';
 import * as cloudSyncSvc from './modules/cloudSyncService.js';
 import { notify, notifyError, setSyncStatus, resetSyncStatus } from './modules/v2/uiFeedback.js';
@@ -73,6 +73,10 @@ function injectV2Styles() {
 // 授權登入成功後由 unlockV2App 一併清除。
 let _v2GateDeniedEmail = null;
 let _v2GateError = false;
+// opus 重驗 4：resolveIdentity() 拋出的錯誤訊息（例如 resolveSchoolIdForUid() 的 readFailed
+// 分支，見 authGuardV2.js），讓遮罩顯示具體原因而不是永遠只有通用的「登入驗證時發生錯誤」。
+// null 時 renderAuthGate() 退回原本的通用文案（例如非 authGuard 拋出、訊息不明的例外）。
+let _v2GateErrorMessage = null;
 
 /** 最小 HTML 逸出，避免 email 等外部值注入遮罩 innerHTML。 */
 function escapeHtml(s) {
@@ -93,14 +97,17 @@ function injectV2AuthGate() {
 function renderAuthGate() {
     const gate = document.getElementById('v2-auth-gate');
     if (!gate) return;
-    const key = _v2GateError ? 'error'
+    // key 併入錯誤訊息本身：兩次連續失敗若訊息不同（例如先是 readFailed、重試後變成別的
+    // 錯誤），沒有這個併入的話 key 都會是同一個 'error'，第二次 renderAuthGate() 會被上面
+    // 「相同狀態免重繪」擋下，畫面停留在第一次的訊息，使用者看到的會是過期的錯誤原因。
+    const key = _v2GateError ? 'error:' + (_v2GateErrorMessage || '')
               : _v2GateDeniedEmail ? 'denied:' + _v2GateDeniedEmail
               : 'default';
     if (gate.dataset.renderKey === key) return;   // 相同狀態免重繪 / 重綁監聽
     gate.dataset.renderKey = key;
 
     const msg = _v2GateError
-        ? `<p class="v2-gate-denied">⚠ 登入驗證時發生錯誤，請點下方按鈕重試，或重新整理頁面。</p>`
+        ? `<p class="v2-gate-denied">⚠ ${_v2GateErrorMessage ? escapeHtml(_v2GateErrorMessage) : '登入驗證時發生錯誤'}，請點下方按鈕重試，或重新整理頁面。</p>`
         : _v2GateDeniedEmail
             ? `<p class="v2-gate-denied">🔒 帳號 ${escapeHtml(_v2GateDeniedEmail)} 尚未被授權。<br>請改用已授權的帳號登入，或聯絡管理員在「教師管理」為您指派 email。</p>`
             : `<p>本系統為全校共用，請先登入以使用。</p>`;
@@ -149,6 +156,7 @@ function lockV2App() {
 function unlockV2App() {
     _v2GateDeniedEmail = null;
     _v2GateError = false;
+    _v2GateErrorMessage = null;
     setAppLocked(false);
 }
 
@@ -1754,7 +1762,7 @@ async function collectSemesterArchiveData(semesterId, onProgress) {
 
     const payload = {
         meta: {
-            schoolId: SCHOOL_ID,
+            schoolId: getActiveSchoolId(),
             semesterId,
             counts: {
                 ...counts,
@@ -2398,6 +2406,51 @@ function resetV2ViewState() {
     // Stage 5：封存流程的匯出/驗證狀態同屬「含個資的畫面狀態」（雜湊/筆數綁定特定一次匯出），
     // 身份切換一律清空——不同 director 不該沿用前一位的匯出狀態解鎖刪除按鈕。
     _archiveState = null;
+    // Stage 3（§8 Stage 3）：新增「school 切換」維度。resetV2ViewState() 只在身份「實際改變」
+    // 時被呼叫（見 onAuthStateChange 的 identityChanged 守門），而 schoolId 改變必然伴隨身份
+    // 改變（不同 uid），故這裡屬於同一守門條件的超集合，不需要另外判斷「schoolId 是否真的不
+    // 同」——semesterState 是「目前作用中學期」的 session 快取，換了學校（或換了同校的人，
+    // 值本來就該相同）都必須清空，避免下一位使用者的寫入/查詢在還沒跑到 bootstrap「學期設定」
+    // 那一步之前，短暫沿用上一所學校的 semesterId（見 semesterState.js 檔頭原本標記的
+    // Stage 3 相依）。
+    semesterState.setCurrentSemesterId(null);
+    // Stage 3 opus 驗收 中4：直接清空 window.app.dataManager 的課表/教師/班級/學校名稱/
+    // 調代課紀錄欄位——不透過 setScheduleData() 等 mutator（那些方法被 patchDataManager 的
+    // wrapScheduleMutator 包裝，呼叫它們會觸發 queueScheduleSync() 把清空後的資料回寫雲端，
+    // 等於自己造成一次不必要、且時機錯誤的寫入）。比照 applyRemoteSchedule()「直接寫欄位、
+    // 不走 setter」的既有慣例，見該函式定義處。
+    // 這是本次修復的核心：Stage 3 之前，同一分頁內只可能服務同一所學校，dataManager 裡殘留
+    // 的「上一位使用者」課表本來就是同一所學校的課表，沒有跨校問題；Stage 3 讓 schoolId 可能
+    // 隨身份改變，若不清空，這份殘留資料會在新使用者的 school context 下被
+    // syncScheduleToV2() 讀到並 setDoc 進新學校的路徑（dataSvc.saveSchedule 的路徑取決於
+    // getActiveSchoolId()，內容卻還是舊學校的殘留）——這是唯一真正會把 A 校資料寫進 B 校的
+    // 路徑，見 queueScheduleSync() 旁的 _v2ScheduleReady 說明（第二道防線）。
+    const dmForReset = window.app?.dataManager;
+    if (dmForReset) {
+        dmForReset.scheduleData      = [];
+        dmForReset.teachers          = [];
+        dmForReset.classes           = [];
+        dmForReset.schoolName        = '';
+        dmForReset.substituteRecords = [];
+    }
+    // 同步鎖住課表回寫，直到新身份的 bootstrap 真正收到「這所學校」的課表快照為止——
+    // 見 _v2ScheduleReady 宣告處的完整說明，這是防止上面清空後的空狀態本身被誤當成合法的
+    // 「清空課表」操作而回寫的第二道防線（第一道是不透過 mutator 清空，本來就不會觸發回寫；
+    // 這一道防的是清空「之後」、新快照抵達「之前」這段視窗內若有其他程式路徑呼叫了 mutator）。
+    _v2ScheduleReady = false;
+    // opus 重驗必修1：與上面清空 dm 欄位同一時機，一併清空 applyRemoteSchedule() 的重複快照
+    // 簽章快取——不清的話會打破「dm 內容與 _v2LastAppliedScheduleSig 恆一致」這個不變式：
+    // 同一分頁內登出後用同一帳號再登入（uid 相同，identityChanged 仍為 true，本函式仍會被
+    // 呼叫），新一輪 bootstrap 收到的課表快照若與上次相同（doc.updatedAt/長度都沒變，因為
+    // 雲端資料本來就沒變），applyRemoteSchedule() 算出的 sig 會跟這個殘留的舊值相等而提早
+    // return——但上面已經把 dm.scheduleData 清成 []，等於「本該回填的快照被誤判成重複，
+    // 永遠不會真的填回去」，畫面上課表變成永久空白，且下一次 approver 編輯課表時，
+    // syncScheduleToV2() 會把這份空的 dm.scheduleData 當作「本機完整快照」回寫，用空課表
+    // 覆蓋掉全校雲端資料。清空這個簽章快取，讓下一次真正的快照必定被判定為「新的」而套用。
+    _v2LastAppliedScheduleSig = null;
+    // Stage 3 opus 驗收 輕7：清空上一位使用者（可能屬於不同學校）殘留的寫入失敗計數，
+    // 見 operationLogger.clearFailedLogs() 定義處的完整說明。
+    logger.clearFailedLogs();
     resetSyncStatus();
     forceActivateTab('substitute');
 }
@@ -2961,6 +3014,23 @@ let _v2ScheduleSyncInFlight = false;
 let _v2ScheduleSyncPending = false;
 // 已套用的遠端課表簽章（updatedAt|長度），用來略過重複快照（含 approver 自己的 echo）。
 let _v2LastAppliedScheduleSig = null;
+// Stage 3 opus 驗收 中4：「目前這所學校（getActiveSchoolId()）的課表訂閱是否已經送達過至少
+// 一次真正的快照」。false 時 queueScheduleSync() 一律不回寫（見該函式），不論觸發它的是哪個
+// mutator、也不論本機 scheduleData 是空是滿——這與既有的 requireSchedule（只擋「空」）是兩件
+// 不同的事：resetV2ViewState() 在身份/學校切換時，會把 dm.scheduleData 等欄位直接清空（見
+// resetV2ViewState 定義處），此時 scheduleData 確實是空的，但危險視窗不是「空」本身，而是
+// 「還沒真正確認過這所學校的課表長什麼樣子」——即使使用者在極短的視窗內操作課表編輯器讓
+// scheduleData 從空變成非空（例如新增一格），那份資料仍是建立在「尚未跟雲端對齊」的基礎上，
+// requireSchedule 的空陣列檢查完全看不出這個問題。用一個獨立旗標直接鎖住「還沒收到快照」這個
+// 狀態本身，才能同時涵蓋「空」與「非空但過期/錯校」兩種情況，且不需要更動任何既有 mutator 的
+// requireSchedule 語意（維持「刪除全校唯一教師導致 scheduleData 變空」這類合法清空操作可以
+// 正常回寫的既有行為，見 wrapScheduleMutator 定義處的既有註解）。
+// 初始值 false：任何一次 bootstrap（含第一次登入）在收到 subscribeSchedule 首次快照之前，
+// 都不允許任何 mutator 觸發回寫——這同時也堵住了「登入後 unlockV2App() 早於課表快照抵達」
+// 這段既有視窗（見 bootstrap 內 unlockV2App() 呼叫點在 subscribeSchedule 之前）的既有風險，
+// 不是 Stage 3 才出現的新問題，只是 Stage 3 的 school 切換讓風險從「同校資料延遲」升級成
+// 「不同校資料錯置」，值得一併補上。
+let _v2ScheduleReady = false;
 
 /**
  * 把全校課表快照（Stage 2 起為 schools/{schoolId}/schedules/{semesterId}，見
@@ -3209,6 +3279,14 @@ function patchDataManager() {
      */
     const queueScheduleSync = (opts = {}) => {
         if (!roleSvc.isApprover()) return;   // 教師無寫入權（rules 亦擋），不回寫
+        // Stage 3 opus 驗收 中4：還沒收到「目前這所學校」課表訂閱的第一次快照之前，一律不
+        // 回寫——見 _v2ScheduleReady 宣告處的完整說明。集中放在這個共用入口（8 個 wrapped
+        // mutator 全部經過這裡），比逐一改各 mutator 的 requireSchedule 更不容易漏掉，也
+        // 不影響 requireSchedule 既有的「擋空陣列」語意（兩個守門條件彼此獨立、互不取代）。
+        if (!_v2ScheduleReady) {
+            console.warn('[V2] 課表回寫已略過：尚未收到目前學校的課表快照，避免以未對齊的本機資料覆蓋雲端');
+            return;
+        }
         queueMicrotask(() => { syncScheduleToV2(opts); });
     };
     const wrapScheduleMutator = (name, { requireSchedule = false, silent = false } = {}) => {
@@ -3315,6 +3393,55 @@ async function clearAllSchoolData() {
 // console 呼叫），直接忽略。理由見 patchClearLocalData 內用法——這是唯一一份雲端全校資料，
 // 兩個併發執行緒同時刪除／批次寫入沒有任何好處，只會放大競態風險（驗收缺陷 #7）。
 let _v2ClearAllDataInFlight = false;
+
+/**
+ * Stage 3（2026-07-31，§8 Stage 3）：localStorage key 前綴化。
+ *
+ * app.js 的 `substituteSystemData` 是單一、未加校別前綴的 key（見 app.js getLocalStorageKey()
+ * 定義處）；同一支方法也被 V2 拿來當本機課表/紀錄鏡像（見本檔多處
+ * `window.app?.saveDataToStorage?.()`）。多校之後，同一瀏覽器設定檔不該讓不同學校的本機
+ * 鏡像互相覆蓋——改為 `substituteSystemData:{schoolId}`。
+ *
+ * 這裡做兩件事：
+ *   1. 一次性遷移（僅對 DEFAULT_SCHOOL_ID＝'inhu'）：新 key 不存在、舊 key 存在時，把舊 key
+ *      的內容「複製」一份到新 key——刻意用複製不用搬移／不刪除舊 key，讓使用者之後若切回
+ *      V1 模式（無 ?v2=1 access，例如同瀏覽器另開分頁不帶參數）時，舊 key 仍完整保留，
+ *      行為與 Stage 3 之前一致（任務規格明文要求「V1 模式維持舊 key 不動」）。其他 schoolId
+ *      目前尚不存在（Stage 4 才會開放），且新學校不可能在舊的無前綴 key 底下留有屬於自己的
+ *      資料，故跳過遷移。
+ *   2. 覆寫 `window.app.getLocalStorageKey`，讓之後所有 `saveDataToStorage()`/
+ *      `loadSavedData()` 呼叫改用新 key。
+ *
+ * ⚠ 已知限制（不在本次範圍內解決，見 app.js getLocalStorageKey() 定義處的說明）：
+ * app.js 建構子在 DOMContentLoaded 時會先呼叫一次 `loadSavedData()`（早於本函式，因為
+ * 這時候 V2 尚未完成登入身份解析、根本不知道 schoolId），那一次無可避免仍讀舊 key。
+ * 不影響正確性——V2 的真相來源是 Firestore 訂閱，這次初始讀取很快就會被
+ * `subscribeSchedule`/`subscribeSubstituteRecords` 等的首次快照覆蓋，localStorage 在 V2
+ * 模式下本來就只是離線鏡像，不是登入後畫面顯示的依據。
+ *
+ * 每次身份解析成功都會呼叫一次（不是只做一次的「patched」guard）：同一分頁內登出後換一個
+ * 屬於不同學校的帳號登入時（SPA 內不強制整頁重新整理），key 必須跟著換，不能沿用上一位
+ * 使用者所屬學校的 key。
+ */
+function applyV2LocalStorageKey(schoolId) {
+    if (!window.app) return;
+    const LEGACY_KEY = 'substituteSystemData';
+    const newKey = `substituteSystemData:${schoolId}`;
+    try {
+        if (schoolId === DEFAULT_SCHOOL_ID) {
+            const oldRaw = localStorage.getItem(LEGACY_KEY);
+            const newRaw = localStorage.getItem(newKey);
+            if (oldRaw !== null && newRaw === null) {
+                localStorage.setItem(newKey, oldRaw);
+                console.log(`[V2] localStorage 一次性遷移：已將「${LEGACY_KEY}」內容複製到「${newKey}」（舊 key 保留不動，供 V1 模式使用）`);
+            }
+        }
+    } catch (e) {
+        // 僅影響本機離線鏡像（V2 真相來源是 Firestore），失敗不阻擋登入或任何雲端功能。
+        console.warn('[V2] localStorage key 遷移失敗（不影響雲端資料）:', e);
+    }
+    window.app.getLocalStorageKey = () => newKey;
+}
 
 /**
  * 接手 app.js 的 clearLocalData()：V2 全校共享模式下，原本只清 2 個 localStorage key
@@ -3426,6 +3553,20 @@ function patchClearLocalData() {
         // 仍加 .catch(() => {}) 做防禦性保底，日誌失敗在任何情況下都不得影響清除結果判定。
         logger.log(LOG_ACTIONS.CLEAR_ALL_DATA, LOG_TARGET_TYPES.SYSTEM, null, {}).catch(() => {});
 
+        // Stage 3 opus 驗收 中1（訂正）：清 school-scoped 新 key（this.getLocalStorageKey()
+        // 此刻已被 applyV2LocalStorageKey() 覆寫，見該函式）之外，**也要**清未加前綴的舊 key。
+        // 原版理由「V1 模式維持舊 key 不動」只適用於「一次性遷移」那個動作本身（複製、不刪除
+        // 舊 key，讓純 V1 使用者的資料不受 Stage 3 部署影響）——不適用於「清除所有資料」這個
+        // V2 專屬、由 director 主動觸發的破壞性操作。若只清新 key，舊 key 在遷移時複製過去的
+        // 那份「清除前」內容會原封不動留在瀏覽器裡；一旦之後有人（同一 director 或任何能看到
+        // 「偵測到舊資料」入口的人）觸發 legacyMigrationService 的偵測流程，會把這份已經被
+        // 明確清除的舊資料誤判成「V1 遺留資料」，提供「遷移」選項，若使用者真的點下去，等於
+        // 把已刪除的紀錄透過遷移復活寫回 Firestore——即使沒人手動觸發，這份殘留本身也是一顆
+        // 不會自己消失的地雷。清除所有資料的語意本來就該是「這台裝置上這所學校的本機鏡像，
+        // 不論存在哪個 key，一起清乾淨」，兩個 key 都是同一份資料的複本，理應同進同出。
+        // 見 legacyMigrationService.js 檔頭附近對舊 key 現況（Stage 3 之後成為「永凍快照」）
+        // 風險的訂正說明。
+        localStorage.removeItem(this.getLocalStorageKey());
         localStorage.removeItem('substituteSystemData');
         localStorage.removeItem('gasUrl');
         dismissClearingToast?.();
@@ -3752,6 +3893,15 @@ async function bootstrap() {
 
     authMod.onAuthStateChange(async (user) => {
         clearSubs();
+        // opus 重驗 3：不論這次 emit 是不是「身份實際改變」（identityChanged 尚未算出），
+        // clearSubs() 剛把包含課表訂閱在內的所有既有 Firestore 監聽全部取消——舊訂閱不再
+        // 送任何快照，代表「已確認拿到這所學校目前課表」這個保證從這一刻起失效，必須立刻
+        // 歸零，等下面重建的新訂閱送來第一次快照才能重新確立。若只在 identityChanged===true
+        // （resetV2ViewState() 內）才歸零，同一 uid 的 re-emit（identityChanged===false，
+        // Firebase SDK 在本機快取還原／token 刷新等情境會觸發，見 docs/STAGE0-DEPLOY.md
+        // 「附註：Stage 3」矩陣組合②訂正說明）會讓這個旗標維持前一輪 bootstrap 留下的
+        // stale-true，於「舊訂閱已停、新訂閱還沒回報」這段窗口內誤放行課表回寫。
+        _v2ScheduleReady = false;
         const newUid = user ? user.uid : null;
         const identityChanged = newUid !== lastAuthUid;
         lastAuthUid = newUid;
@@ -3764,6 +3914,19 @@ async function bootstrap() {
         }
         if (!user) {
             roleSvc.clearCurrentIdentity();
+            // Stage 3（§8 Stage 3）：登出清空 activeSchoolId——下一位登入者（可能屬於不同學校）
+            // 不該沿用上一位使用者解析出來的 schoolId。resetV2ViewState() 上面已經因
+            // identityChanged 執行過，但它不清這個值（schemaConstants 是比 v2-app.js 更底層
+            // 的模組狀態，獨立管理，見 resetActiveSchoolId 定義處）。
+            resetActiveSchoolId();
+            // Stage 3 opus 驗收 輕5：一併還原 applyV2LocalStorageKey() 對 window.app 的覆寫
+            // （見該函式定義處）。不還原的話，登出後若同一分頁未整頁重新整理就換一個帳號登入，
+            // 短暫的「尚未執行 applyV2LocalStorageKey()」空窗期間，window.app.getLocalStorageKey
+            // 仍是上一位使用者所屬學校的覆寫版本，任何在這個空窗期間發生的
+            // saveDataToStorage()/loadSavedData() 呼叫（例如 app.js 自身某些與登入無關的既有
+            // 呼叫點）會誤用到上一所學校的 key。用 delete 還原成 App.prototype 上的預設方法
+            // （見 app.js getLocalStorageKey() 定義處：預設回傳未加前綴的舊 key）。
+            if (window.app) delete window.app.getLocalStorageKey;
             document.body.classList.remove('v2-admin', 'v2-director', 'v2-section-chief', 'v2-teacher', 'v2-approver');
             _v2RecordsCache = [];
             _v2PendingCache = [];
@@ -3800,6 +3963,21 @@ async function bootstrap() {
                 }
                 return;
             }
+            // Stage 3（§8 Stage 3）：identity 已解析成功＝getActiveSchoolId() 已經是這位使用者
+            // 所屬學校（authGuard.resolveIdentity 內部已呼叫 setActiveSchoolId()，見該函式）。
+            // 在任何 saveDataToStorage() 可能被觸發之前（下面課表/紀錄的初次渲染與即時訂閱都
+            // 可能觸發），先把 localStorage key 換成這所學校的 school-scoped key。
+            applyV2LocalStorageKey(getActiveSchoolId());
+            // opus 重驗 2：換好 key 後立刻從「這所學校」的本機鏡像回填 dataManager——
+            // resetV2ViewState() 剛把 dm.scheduleData 等欄位清空（見必修1一併修正的說明），
+            // 這裡補回本機最後一次已知的快照，讓畫面在等待 Firestore 課表訂閱的第一次快照
+            // 送達之前不會呈現空白，暫時離線時也仍有本機資料可用（離線韌性）。key 已經是
+            // 這所學校的 school-scoped key（上一行剛切換），不會誤用到其他學校的本機鏡像，
+            // 不違反 school 隔離。loadSavedData() 內部走 dataManager.loadFromStorage() 直接
+            // 賦值（同 applyRemoteSchedule() 的模式），不經 wrapScheduleMutator，不會觸發
+            // 回寫；這批資料只用於「顯示」，是否允許回寫雲端仍然只看 _v2ScheduleReady
+            // （要等到真正的 Firestore 快照抵達才解鎖，見該旗標定義處）。
+            window.app?.loadSavedData?.();
             // v2.0.0 三層角色 body class：
             //   v2-director / v2-section-chief / v2-teacher 三選一
             //   v2-approver = director ∪ section_chief（CSS .v2-approver-only 用）
@@ -3933,6 +4111,11 @@ async function bootstrap() {
             // 簽章變動），故需帶入 semesterState 目前快取的學期 id。
             const scheduleUnsub = await safeBootstrapStep('課表即時同步', () => dataSvc.subscribeSchedule(semesterState.getCurrentSemesterId(), (sched) => {
                 if (sched) applyRemoteSchedule(sched);
+                // Stage 3 opus 驗收 中4：不論 sched 是否存在（null 代表這所學校/這個學期目前
+                // 真的還沒有課表文件，也是一個確定的答案），都代表「已經真正確認過目前這所
+                // 學校的課表狀態」，queueScheduleSync() 的旗標守門從這一刻起解除。見
+                // _v2ScheduleReady 宣告處的完整說明。
+                _v2ScheduleReady = true;
                 setSyncStatus('schedule', true);
             }, makeSyncErrorHandler('schedule')));
             if (scheduleUnsub) unsubs.push(scheduleUnsub);
@@ -4013,6 +4196,11 @@ async function bootstrap() {
             console.error('[v2] resolveIdentity 失敗:', e);
             // 維持鎖定並在遮罩顯示錯誤+重試入口，避免授權者被永久卡在誤導的「請登入」畫面。
             _v2GateError = true;
+            // opus 重驗 4：把例外訊息帶進遮罩文案（例如 authGuardV2.resolveSchoolIdForUid()
+            // 的 readFailed 分支拋出的「無法確認使用者所屬學校」），不要只留通用的「登入驗證
+            // 時發生錯誤」——具體原因能讓使用者/管理者判斷這是暫時性網路問題還是別的狀況。
+            // e 不一定是 Error 實例（理論上任何值都可能被 throw），做防禦性字串化。
+            _v2GateErrorMessage = (e && e.message) ? String(e.message) : null;
             lockV2App();
         }
     });

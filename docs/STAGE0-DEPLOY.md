@@ -278,3 +278,56 @@ Stage 2（`RESEARCH-multitenancy-semester.md` §5/§6.1/§8 Stage 2 一列）在
 1. 部署 client 後、第一次有人打開「紀錄頁」的學期選擇器之前，下拉選單只會看到「當前學期」一個選項（`v2ListSemesterOptions()` 的 `schedules/` 集合查詢會是空的，僅靠 `∪ currentSemester` 補上目前學期本身）。
 2. 課表讀取不受影響（`getSchedule`/`subscribeSchedule` 內建的一次性 fallback 會退回讀舊 `data/schedule`，見該函式註解）。
 3. 建議部署後盡快跑一次 `node scripts/migrate-schedule-to-semester.js --dry-run` 確認計畫、再正式執行，讓目前學期立刻有一份 per-semester 文件；歷史學期的 `schedules/{semesterId}` 文件則會在第一次「開新學期」時自動補建（`switchToNewSemester()` 內建的空殼補建邏輯，見 `v2-app.js`），不需要額外手動處理。
+
+## 附註：Stage 3（SCHOOL_ID 動態化）部署節
+
+> 對應設計：[`RESEARCH-multitenancy-semester.md`](./RESEARCH-multitenancy-semester.md) §4（集合設計預告）、§8 路線圖 Stage 3。
+> 目的：`SCHOOL_ID` 從 `schemaConstants.js` 的 import-time 常數改為登入後由 `authGuardV2.resolveIdentity()` 動態解析（`getActiveSchoolId()`/`setActiveSchoolId()`），為 Stage 4（開放註冊）鋪路。本階段**不改變任何現有使用者可觀察到的行為**——`inhu` 仍是唯一正式服務的學校，只是「schoolId 從哪裡來」這件事從寫死常數換成了 runtime 解析＋fallback。
+
+### 本次新增了什麼
+
+| 類別 | 內容 |
+|---|---|
+| `schemaConstants.js` | `SCHOOL_ID` 常數移除，改為 `getActiveSchoolId()`／`setActiveSchoolId()`／`resetActiveSchoolId()`（模組層狀態）＋ `DEFAULT_SCHOOL_ID='inhu'`（相容期 fallback）；`SCHEMA_PATHS` 全部改吃動態值；新增 `SCHEMA_PATHS.userDirectoryDoc(uid)`（頂層路徑，不依賴 schoolId） |
+| `schoolDataService.js` | 新增 `getUserDirectoryEntry(uid)`／`upsertUserDirectoryEntry(uid, schoolId)`，其餘函式**零改動**（本來就只透過 `SCHEMA_PATHS.*()` 組路徑，未直接引用 `SCHOOL_ID`） |
+| `authGuardV2.js` | `resolveIdentity()` 開頭新增 `resolveSchoolIdForUid()` 呼叫：讀頂層 `userDirectory/{uid}` 取得 schoolId → `setActiveSchoolId()` → 才繼續走既有的 emailIndex/teachers/userMappings 配對流程；成功登入後若 `userDirectory` 尚無條目，補寫一筆（自我收斂，不需要每個人都跑過回填腳本） |
+| `v2-app.js` | 匯出 meta 的 `schoolId: SCHOOL_ID` 改 `getActiveSchoolId()`；登出分支新增 `resetActiveSchoolId()`；`resetV2ViewState()` 新增 `semesterState.setCurrentSemesterId(null)`（「school 切換」維度）；新增 `applyV2LocalStorageKey()`（localStorage key 前綴化＋一次性遷移，於身份解析成功後呼叫）；`patchClearLocalData()` 改清 school-scoped key |
+| `app.js` | 新增 `getLocalStorageKey()` 方法（V1 預設回傳未加前綴的舊 key，行為不變）；`loadSavedData()`／`saveDataToStorage()`／`clearLocalData()` 改呼叫這個方法而非寫死字面值 |
+| `firestore.rules` | 新增頂層 `match /userDirectory/{uid}`：self read/write，`create`/`update` 欄位白名單 `schoolId`/`createdAt`，`schoolId` 需 `configExists()`（防指向不存在的學校）且不可含 `/`（防路徑插入） |
+| `scripts/backfill-user-directory.js` | 回填既有 `schools/{school}/userMappings` 成員的 `userDirectory` 條目，`--dry-run` 預設、**本次未執行** |
+
+### 四組合部署矩陣：與 Stage 0 的關鍵差異
+
+Stage 0 的四組合矩陣（見本文件最上方一節）之所以要求「必須先部署 rules、再部署 client」，根因是**舊 client 對新規則的失敗完全沒有 fallback**（新教師讀不到 `teachers`，直接卡死）。Stage 3 的設計刻意反過來：`resolveSchoolIdForUid()` 與 `upsertUserDirectoryEntry()` 的呼叫**兩邊都包 try/catch，任何失敗一律 fallback 或靜默略過，不 rethrow**（見 `authGuardV2.js` 對應函式）。這讓 Stage 3 的四組合矩陣呈現「兩個方向都安全」的結果，與 Stage 0/2 不同：
+
+| 組合 | 現有 `inhu` 成員（已有 `userMappings`） | 行為分析 |
+|---|---|---|
+| ① 舊 client × 舊 rules（**現況**） | 正常 | `SCHOOL_ID` 仍是 import-time 常數 `'inhu'`，完全不涉及 `userDirectory`，行為與 Stage 3 之前一致 |
+| ② **新 client × 舊 rules**（先部署 client、還沒部署 rules 的時間窗） | 正常 | `getUserDirectoryEntry()` 讀頂層 `userDirectory/{uid}`——舊規則對這個路徑沒有 `match` 區塊，Firestore 預設 `DENY`，`getDoc` 拋 `permission-denied`；`resolveSchoolIdForUid()` 的 try/catch 接住（新版已依 `e.code==='permission-denied'` 明確判斷，見該函式），`entry=null` → fallback 到 `DEFAULT_SCHOOL_ID='inhu'`，效果等同組合①。登入成功後嘗試 `upsertUserDirectoryEntry()` 同樣被舊規則拒絕，同樣被 try/catch 接住只留一則 `console.warn`，**不阻擋登入**。⚠ 實測修正：原稿估計「每次登入多兩次註定失敗的 Firestore 請求」，但 `onAuthStateChange` 在單次登入過程中會因 Firebase SDK 內部行為（本機快取還原、token 就緒後的正式回呼等）re-emit 多次，實測環境下 `resolveIdentity()` 於一次登入內平均被觸發 2 次，每次各自產生 2 次 `userDirectory` 請求（讀 `getUserDirectoryEntry` + 寫 `upsertUserDirectoryEntry`）——**一次登入實際觀察到約 4 次註定失敗的請求與對應的 console 警告**，不是原估的 2 次。全部仍是無害的失敗請求（皆被 try/catch 接住、皆不計費以外無其他影響），只是雜訊量比原稿估計多一倍，這裡訂正，不影響「不阻擋登入」的結論 |
+| ③ **舊 client × 新 rules**（先部署 rules、還沒部署 client 的時間窗） | 正常 | 舊 client 完全不知道 `userDirectory` 這個集合存在，新規則只是「多了一個沒人用的 match 區塊」，對舊 client 的任何既有請求零影響（新增的 match 是純附加，不修改任何既有 match 區塊）。效果等同組合① |
+| ④ 新 client × 新 rules（**目標穩定態，回填已跑**） | 正常，且更快 | `userDirectory/{uid}` 已有條目，`getDoc` 一次到位讀到 `schoolId='inhu'`，不需要 fallback，也不再嘗試（不必要的）`upsertUserDirectoryEntry()`（`userDirectoryExisted===true` 時跳過） |
+| ④' 新 client × 新 rules（**回填未跑**） | 正常，行為等同④，只是多一輪收斂 | 第一次登入：`getDoc(userDirectory/{uid})` 因文件不存在回傳 `exists()===false`（**不是** `permission-denied`——新規則允許本人 `get` 自己的路徑，文件是否存在是另一回事），`entry=null` → fallback `'inhu'`；登入成功後 `upsertUserDirectoryEntry()` 這次規則允許寫入（`configExists('inhu')` 成立），成功建立條目。**下一次登入起就是穩定態④**，不需要人工介入 |
+
+**結論（與 Stage 0/2 的部署順序要求相反）**：
+
+1. **兩個部署順序皆安全，沒有「必須先做哪一個」的硬性順序**——這是 Stage 3 刻意的設計目標，不是巧合。所有跨越尚未部署一方的請求（讀/寫 `userDirectory`）都設計成「失敗即 fallback／靜默略過」，不會讓任何請求鏈條中斷。
+2. 即便如此，仍建議依照與 Stage 0/2 一致的節奏（rules → client）操作，理由不是正確性風險，而是**噪音管理**：先部署 rules 可以讓「新 client × 舊 rules」這格完全不會出現，減少過渡期 console 出現的預期外 `permission-denied` 警告（雖然這些警告本身無害，但排查其他問題時少一點雜訊更好）。
+3. **回填（`scripts/backfill-user-directory.js`）不是部署前置條件**（與 Stage 0 的 `emailIndex` 回填、Stage 2 的 `semesterId` 回填不同，那兩個回填缺席會直接造成功能性中斷或資料查詢遺漏）。回填的價值是**收斂速度**：讓所有現有成員不必各自登入一次才補齊 `userDirectory` 條目，對維運（例如未來要離線批次查詢「這個 uid 屬於哪校」）更方便。建議順序仍是「先跑 `--dry-run` 核對、確認無 CONFLICT 後再部署 rules/client」，純粹是良好衛生習慣，不是阻斷關係。
+
+### 相容紅線驗證重點
+
+- **現有 `inhu` 使用者在「新 client＋新 rules＋回填已跑」下體驗完全不變**：見組合④，`getActiveSchoolId()` 恆為 `'inhu'`，`SCHEMA_PATHS.*()` 組出的路徑與 Stage 3 之前完全相同字串。
+- **回填未跑時靠 DEFAULT fallback 也不得中斷**：見組合④'，`resolveSchoolIdForUid()` 的 fallback 保證任何一步失敗都收斂到 `DEFAULT_SCHOOL_ID`，且失敗路徑不 rethrow、不阻擋 `resolveIdentity()` 繼續往下走既有的 `isMember`/`isInitialDirector` 判斷鏈。
+
+### localStorage 遷移驗證
+
+`applyV2LocalStorageKey('inhu')` 在每次身份解析成功後執行：新 key（`substituteSystemData:inhu`）不存在且舊 key（`substituteSystemData`）存在時，複製（非搬移）一份到新 key；之後 `window.app.getLocalStorageKey()` 改回傳新 key。驗證重點：
+
+- 部署後首次登入，瀏覽器 devtools → Application → Local Storage 應同時看到 `substituteSystemData`（舊，內容不變）與 `substituteSystemData:inhu`（新，內容為舊 key 的複本）。
+- 不帶 `?v2=1` 開啟同一個瀏覽器設定檔（V1 模式），`loadSavedData()` 讀的是 `this.getLocalStorageKey()` 的 V1 預設值（未加前綴的舊 key），資料應與 Stage 3 之前完全一致——這是任務規格「V1 模式維持舊 key 不動」的驗收點。
+- ⚠ opus 驗收 中1 訂正：「清除所有資料」（V2，director）**同時清掉 `substituteSystemData:inhu`（新）與 `substituteSystemData`（舊）兩把 key**，不再是只清新 key。原版只清新 key 的設計會讓舊 key 停留在「一次性遷移時複製過去」的內容（Stage 3 之後 V2 不再持續覆寫舊 key，見 `legacyMigrationService.js` 檔頭訂正說明），若之後觸發 `legacyMigrationService` 的偵測流程，會把這份已被清除的舊資料誤判為「V1 遺留資料」提供遷移選項，一旦真的執行遷移，等於把已刪除的紀錄復活寫回 Firestore。「V1 模式維持舊 key 不動」這條紅線只保護「V1 使用者不受 Stage 3 部署影響」，不保護「V2 的清除動作不能波及舊 key」——後者本來就是 V2 director 主動觸發的破壞性操作，理應把這台裝置上這所學校的本機鏡像（不論存在哪個 key）一起清乾淨。
+- 登出後（不整頁重新整理）換帳號登入前，`window.app.getLocalStorageKey` 應已被還原成 `App.prototype` 的預設方法（`delete window.app.getLocalStorageKey` 於登出分支執行，見 opus 驗收 輕5）——可在 devtools console 執行 `Object.prototype.hasOwnProperty.call(window.app, 'getLocalStorageKey')` 確認登出後回傳 `false`。
+
+### 已知殘留風險：`userDirectory` 的 schoolId 存在性探測（opus 驗收 中10 後半）
+
+`userDirectory/{uid}` 的 `create`/`update` 規則要求 `configExists(request.resource.data.schoolId)`——任何已登入使用者可以對自己的 `userDirectory/{我的uid}` 嘗試寫入任意候選字串當 `schoolId`，藉由請求成功/失敗（`permission-denied`）反推「這個 schoolId 是否對應一所真實存在的學校」。這與報告 [`RESEARCH-multitenancy-semester.md`](./RESEARCH-multitenancy-semester.md) §4.5 第 2 點「偵測式的跨校探測（修補後仍殘留）」是同一類別的殘留風險——即使做完所有規則收緊，攻擊者仍可用「請求某校資料 → 看是被拒還是通過」確認某個 schoolId 存在，且每次探測都會觸發規則的 `get()/exists()` 並計費。這不是 Stage 3 新增的破口，只是多了一個探測端點，歸入報告已經誠實列出、目前無解的殘留風險類別，不在本階段（也不在 Stage 4）試圖消除——報告本身也說明這類探測是低價值的資訊洩漏。
