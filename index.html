@@ -19,7 +19,10 @@
     <!-- html2canvas - HTML 轉圖片（用於 PDF 中文支援） -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 
-    <link rel="stylesheet" href="src/css/style.css">
+    <link rel="stylesheet" href="src/css/tokens.css?v=2.6.0">
+    <link rel="stylesheet" href="src/css/base.css?v=2.6.0">
+    <link rel="stylesheet" href="src/css/components.css?v=2.6.0">
+    <link rel="stylesheet" href="src/css/features.css?v=2.6.0">
 </head>
 <body>
     <div class="app-container">
@@ -31,7 +34,7 @@
                 <div class="user-auth-section" id="user-auth-section">
                     <!-- 未登入狀態 -->
                     <div id="auth-logged-out" class="auth-state">
-                        <button class="btn-google-signin" id="google-signin-btn">
+                        <button class="btn btn-google-signin" id="google-signin-btn">
                             <svg class="google-icon" viewBox="0 0 24 24" width="18" height="18">
                                 <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
                                 <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
@@ -51,206 +54,164 @@
                             <img class="user-avatar" id="user-avatar" src="" alt="使用者頭像">
                             <span class="user-name" id="user-name"></span>
                         </div>
-                        <button class="btn-signout" id="signout-btn" title="登出">登出</button>
+                        <button class="btn btn-ghost btn-sm" id="signout-btn" title="登出">登出</button>
                     </div>
                 </div>
             </div>
             <nav class="nav-tabs">
-                <button class="tab-btn active" data-tab="import">課表匯入</button>
-                <button class="tab-btn" data-tab="schedule-editor">課表編輯</button>
                 <button class="tab-btn" data-tab="substitute">調代課申請</button>
+                <button class="tab-btn v2-only" data-tab="v2-pending">待辦</button>
                 <button class="tab-btn" data-tab="records">調代課紀錄</button>
-                <button class="tab-btn" data-tab="settlement">月結算</button>
+                <div class="nav-tabs__divider" aria-hidden="true"></div>
+                <button class="tab-btn active v2-approver-only" data-tab="schedule">課表管理</button>
+                <button class="tab-btn v2-approver-only" data-tab="teachers">教師管理</button>
+                <button class="tab-btn v2-approver-only" data-tab="settlement">月結算</button>
+                <button class="tab-btn v2-only v2-approver-only" data-tab="v2-logs">操作日誌</button>
                 <button class="tab-btn" data-tab="settings">設定</button>
             </nav>
         </header>
 
         <main class="main-content">
-            <!-- 頁籤一：課表匯入 -->
-            <section id="import-tab" class="tab-content active">
-                <div class="import-layout">
-                    <!-- 左側：課表上傳 -->
-                    <div class="import-left">
-                        <div class="card compact-card">
-                            <h3>匯入課表資料</h3>
-                            <div class="upload-area upload-area-compact" id="schedule-upload">
-                                <div class="upload-icon-compact">📅</div>
-                                <p>拖放課表檔案或<label for="schedule-file" class="upload-link">點擊選擇</label></p>
-                                <span class="upload-hint">支援 .xls / .xlsx / .csv</span>
-                                <input type="file" id="schedule-file" accept=".xls,.xlsx,.csv" hidden>
-                            </div>
-
-                            <div id="schedule-status" class="status-box status-box-compact hidden">
-                                <div class="status-header">
-                                    <span class="status-icon">✓</span>
-                                    <span class="status-text">課表已載入</span>
-                                </div>
-                                <div class="status-details status-details-inline">
-                                    <span>班級 <strong id="class-count">0</strong></span>
-                                    <span>教師 <strong id="teacher-count">0</strong></span>
-                                    <span>課程 <strong id="course-count">0</strong></span>
-                                </div>
-                                <div id="schedule-conflicts" class="hidden"></div>
-                            </div>
-
-                            <!-- 學校名稱設定 -->
-                            <div id="school-name-section" class="school-name-setting school-name-compact hidden">
-                                <label for="school-name"><strong>學校名稱</strong> <span style="color: red;">*</span></label>
-                                <div class="school-name-row">
-                                    <input type="text" id="school-name" placeholder="如：臺北市立大安國民中學">
-                                    <button class="btn btn-primary btn-sm" id="save-school-name-btn">確認</button>
-                                </div>
-                                <p class="hint" id="school-name-hint">系統已從檔名自動擷取，請確認或修改</p>
-                                <div id="school-name-warning" class="hidden" style="color: #dc2626; background: #fef2f2; padding: 6px 10px; border-radius: 6px; margin-top: 6px; font-size: 0.85rem;">
-                                    ⚠ 請先設定學校名稱
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- 資料備份還原 -->
-                        <div class="card compact-card backup-restore-card">
-                            <h3>資料備份還原</h3>
-                            <div class="backup-restore-row">
-                                <button class="btn btn-secondary btn-sm" id="tab-export-btn">匯出備份</button>
-                                <button class="btn btn-primary btn-sm" id="tab-import-btn">匯入還原</button>
-                                <input type="file" id="tab-import-file" accept=".json" style="display: none;">
-                            </div>
-                            <span class="import-filename" id="tab-import-filename"></span>
-                            <div id="tab-import-preview" class="import-preview import-preview-compact hidden">
-                                <h4>檔案內容預覽</h4>
-                                <div class="import-stats import-stats-compact" id="tab-import-stats"></div>
-                                <div class="import-actions">
-                                    <button class="btn btn-primary btn-sm" id="tab-confirm-import-btn">確認匯入</button>
-                                    <button class="btn btn-secondary btn-sm" id="tab-cancel-import-btn">取消</button>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- 右側：教師屬性 -->
-                    <div class="import-right">
-                        <div class="card compact-card">
-                            <div class="teacher-header">
-                                <h3>教師屬性</h3>
-                                <div class="teacher-header-actions">
-                                    <button class="btn btn-secondary btn-sm" id="add-teacher-btn">+ 新增教師</button>
-                                    <button class="btn btn-primary btn-sm" id="save-data-btn">儲存資料</button>
-                                </div>
-                            </div>
-                            <div id="teacher-editor" class="hidden">
-                                <table class="data-table data-table-compact" id="teacher-table">
-                                    <thead>
-                                        <tr>
-                                            <th>教師姓名</th>
-                                            <th>任教領域</th>
-                                            <th>導師班級</th>
-                                            <th>操作</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody id="teacher-tbody">
-                                    </tbody>
-                                </table>
-                            </div>
-                            <div id="save-status" class="hidden" style="margin-top: 0.5rem;"></div>
-                        </div>
-                    </div>
-                </div>
-            </section>
-
-            <!-- 頁籤：課表編輯 -->
-            <section id="schedule-editor-tab" class="tab-content hidden">
-                <div class="card compact-card">
-                    <div class="editor-toolbar">
-                        <div class="editor-toolbar-left">
-                            <label for="editor-teacher-select">選擇教師：</label>
-                            <select id="editor-teacher-select">
-                                <option value="">請選擇教師</option>
-                            </select>
-                        </div>
-                        <p class="hint" style="margin:0;">選擇教師後可編輯其週課表，新增教師請至「課表匯入」頁籤</p>
-                    </div>
+            <!-- 頁籤：課表管理（Stage 2 起合併原「課表匯入」與「課表編輯」為同一分頁下的兩個 sub-view） -->
+            <section id="schedule-tab" class="tab-content active v2-approver-only">
+                <div class="subview-switch">
+                    <button type="button" class="btn btn-primary btn-sm subview-switch-btn" data-subview="import">📤 課表匯入</button>
+                    <button type="button" class="btn btn-secondary btn-sm subview-switch-btn" data-subview="editor">✏️ 課表編輯</button>
                 </div>
 
-                <!-- 課表編輯區域 -->
-                <div id="editor-schedule-section" class="card compact-card hidden">
-                    <div class="editor-schedule-header">
-                        <h3>
-                            <span id="editor-teacher-name-display"></span> 的週課表
-                            <span class="editor-hours-badge">每週 <strong id="editor-weekly-hours">0</strong> 節</span>
-                        </h3>
-                        <div class="editor-schedule-actions">
-                            <button class="btn btn-primary btn-sm" id="editor-save-schedule-btn">儲存課表</button>
-                            <button class="btn btn-danger btn-sm" id="editor-delete-teacher-btn">刪除此教師</button>
+                <!-- sub-view：課表匯入 -->
+                <div id="schedule-import-view" class="schedule-subview">
+                    <div class="card">
+                        <h3>匯入課表資料</h3>
+                        <div class="upload-area upload-area-compact v2-approver-only" id="schedule-upload">
+                            <div class="upload-icon-compact">📅</div>
+                            <p>拖放課表檔案或<label for="schedule-file" class="upload-link">點擊選擇</label></p>
+                            <span class="upload-hint">支援 .xls / .xlsx / .csv</span>
+                            <input type="file" id="schedule-file" accept=".xls,.xlsx,.csv" hidden>
+                        </div>
+
+                        <div id="schedule-status" class="status-box status-box-compact hidden">
+                            <div class="status-header">
+                                <span class="status-icon">✓</span>
+                                <span class="status-text">課表已載入</span>
+                            </div>
+                            <div class="status-details status-details-inline">
+                                <span>班級 <strong id="class-count">0</strong></span>
+                                <span>教師 <strong id="teacher-count">0</strong></span>
+                                <span>課程 <strong id="course-count">0</strong></span>
+                            </div>
+                            <div id="schedule-conflicts" class="hidden"></div>
+                        </div>
+
+                        <!-- 學校名稱設定 -->
+                        <div id="school-name-section" class="school-name-setting school-name-compact hidden">
+                            <label for="school-name"><strong>學校名稱</strong> <span style="color: red;">*</span></label>
+                            <div class="school-name-row">
+                                <input type="text" id="school-name" placeholder="如：臺北市立大安國民中學">
+                                <button class="btn btn-primary btn-sm" id="save-school-name-btn">確認</button>
+                            </div>
+                            <p class="hint" id="school-name-hint">系統已從檔名自動擷取，請確認或修改</p>
+                            <div id="school-name-warning" class="hidden" style="color: #dc2626; background: #fef2f2; padding: 6px 10px; border-radius: 6px; margin-top: 6px; font-size: 0.85rem;">
+                                ⚠ 請先設定學校名稱
+                            </div>
                         </div>
                     </div>
-                    <p class="hint">點擊空白格新增課程，點擊已有課程進行編輯或刪除</p>
 
-                    <div class="schedule-grid" id="editor-schedule-grid">
-                        <!-- 動態生成可編輯週課表 -->
-                    </div>
-                    <div id="editor-save-status" class="hidden" style="margin-top: 0.5rem;"></div>
+                    <p class="hint schedule-backup-hint">💾 備份與還原請至「<button type="button" class="btn-inline" id="schedule-goto-settings-btn">設定</button>」分頁</p>
                 </div>
 
-                <!-- 課程編輯對話框 -->
-                <div id="course-edit-modal" class="modal hidden">
-                    <div class="modal-content">
-                        <div class="modal-header">
-                            <h3 id="course-modal-title">新增課程</h3>
-                            <button class="modal-close" id="close-course-modal-btn">&times;</button>
-                        </div>
-                        <div class="modal-body">
-                            <div class="course-modal-info" style="margin-bottom: 1rem; padding: 0.75rem; background: var(--background-color); border-radius: 6px;">
-                                <span id="course-modal-slot-info"></span>
-                            </div>
-                            <div class="form-group" style="margin-bottom: 1rem;">
-                                <label for="course-modal-class">班級：<span style="color: red;">*</span></label>
-                                <input type="text" id="course-modal-class" placeholder="如：7年1班" list="class-datalist">
-                                <datalist id="class-datalist"></datalist>
-                            </div>
-                            <div class="form-group" style="margin-bottom: 1rem;">
-                                <label for="course-modal-subject">科目：<span style="color: red;">*</span></label>
-                                <input type="text" id="course-modal-subject" placeholder="如：數學" list="subject-datalist" autocomplete="off">
-                                <datalist id="subject-datalist"></datalist>
-                                <p class="hint" style="margin:0.25rem 0 0;">可從清單選擇，選後自動帶出領域；亦可手動輸入新科目</p>
-                            </div>
-                            <div class="form-group" style="margin-bottom: 1rem;">
-                                <label for="course-modal-domain">領域：</label>
-                                <select id="course-modal-domain">
-                                    <option value="">請選擇領域</option>
-                                    <option value="語文領域">語文領域</option>
-                                    <option value="數學領域">數學領域</option>
-                                    <option value="社會領域">社會領域</option>
-                                    <option value="自然科學領域">自然科學領域</option>
-                                    <option value="藝術領域">藝術領域</option>
-                                    <option value="綜合活動領域">綜合活動領域</option>
-                                    <option value="科技領域">科技領域</option>
-                                    <option value="健康與體育領域">健康與體育領域</option>
-                                    <option value="彈性學習">彈性學習</option>
-                                    <option value="其他">其他</option>
+                <!-- sub-view：課表編輯 -->
+                <div id="schedule-editor-view" class="schedule-subview hidden">
+                    <div class="card">
+                        <div class="editor-toolbar">
+                            <div class="editor-toolbar-left">
+                                <label for="editor-teacher-select">選擇教師：</label>
+                                <select id="editor-teacher-select">
+                                    <option value="">請選擇教師</option>
                                 </select>
                             </div>
-                            <div class="modal-actions">
-                                <button class="btn btn-primary" id="course-modal-save-btn">儲存</button>
-                                <button class="btn btn-danger" id="course-modal-delete-btn" style="display: none;">刪除此課程</button>
-                                <button class="btn btn-secondary" id="course-modal-cancel-btn">取消</button>
+                            <p class="hint" style="margin:0;">選擇教師後可編輯其週課表，新增教師請至「教師管理」頁籤</p>
+                        </div>
+                    </div>
+
+                    <!-- 課表編輯區域 -->
+                    <div id="editor-schedule-section" class="card hidden">
+                        <div class="editor-schedule-header">
+                            <h3>
+                                <span id="editor-teacher-name-display"></span> 的週課表
+                                <span class="editor-hours-badge">每週 <strong id="editor-weekly-hours">0</strong> 節</span>
+                            </h3>
+                            <div class="editor-schedule-actions">
+                                <button class="btn btn-primary btn-sm" id="editor-save-schedule-btn">儲存課表</button>
                             </div>
                         </div>
+                        <p class="hint">點擊空白格新增課程，點擊已有課程進行編輯或刪除</p>
+
+                        <!-- 手機日切換器（640+ 由 .hidden-desktop 隱藏，桌機顯示完整週課表） -->
+                        <div class="day-switcher hidden-desktop" id="editor-day-switcher" role="tablist"></div>
+
+                        <div class="schedule-grid" id="editor-schedule-grid">
+                            <!-- 動態生成可編輯週課表 -->
+                        </div>
+                        <div id="editor-save-status" class="hidden" style="margin-top: 0.5rem;"></div>
                     </div>
                 </div>
             </section>
 
-            <!-- 頁籤二：調代課申請 -->
+            <!-- 頁籤：教師管理。兩張表二擇一顯示，不再並存：
+                 純 V1 單機 → 下方 .v1-only 的教師屬性表（姓名／領域／導師班級）
+                 V2 模式    → #v2-teachers-admin 的合併表（再加 Email／角色，欄位依角色分權） -->
+            <section id="teachers-tab" class="tab-content hidden v2-approver-only">
+                <!-- V1 單機模式的教師屬性表。V2 模式下由下方 #v2-teachers-admin 的合併表
+                     取代（同時管理課表屬性與帳號），故加 v1-only 隱藏，避免兩張表重複。 -->
+                <div class="card v1-only" id="teacher-editor-card">
+                    <div class="teacher-header">
+                        <h3>教師屬性</h3>
+                        <div class="teacher-header-actions">
+                            <button class="btn btn-secondary btn-sm" id="add-teacher-btn">+ 新增教師</button>
+                            <span class="hint" style="margin:0;">變更即時自動儲存</span>
+                        </div>
+                    </div>
+                    <div id="teacher-editor" class="hidden">
+                        <div class="table-wrap">
+                        <table class="data-table data-table-compact data-table-cards" id="teacher-table">
+                            <thead>
+                                <tr>
+                                    <th>教師姓名</th>
+                                    <th>任教領域</th>
+                                    <th>導師班級</th>
+                                    <th>操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="teacher-tbody">
+                            </tbody>
+                        </table>
+                        </div>
+                    </div>
+                    <div id="save-status" class="hidden" style="margin-top: 0.5rem;"></div>
+                </div>
+
+                <!-- V2 教師管理合併表：課表屬性（領域／導師班級，approver 可編）與帳號
+                     （Email／角色，僅 director 可編）併為一張表，欄位層級再依角色分權。
+                     卡片本身放寬到 v2-approver-only，組長才不會因上方 v1-only 表被隱藏
+                     而失去編輯教師課表屬性的能力。 -->
+                <div class="card v2-only v2-approver-only">
+                    <div id="v2-teachers-admin"></div>
+                </div>
+            </section>
+
+            <!-- 頁籤：調代課申請 -->
             <section id="substitute-tab" class="tab-content hidden">
                 <!-- 未載入資料提示 -->
-                <div id="substitute-no-data" class="card compact-card notice-card notice-card-compact">
+                <div id="substitute-no-data" class="card notice-card notice-card-compact">
                     <h3>尚未載入課表資料</h3>
-                    <p>請先至「課表匯入」頁籤上傳課表檔案</p>
+                    <p>請先至「課表管理」頁籤上傳課表檔案</p>
                 </div>
 
                 <div id="substitute-content" class="hidden">
                 <!-- 步驟一+二：教師日期 + 異動類型 並排 -->
                 <div class="sub-top-row">
-                    <div class="card compact-card sub-top-left">
+                    <div class="card sub-top-left">
                         <h3>步驟一：選擇教師與日期</h3>
                         <div class="form-row" style="margin-bottom:0;">
                             <div class="form-group" style="flex:1;">
@@ -266,7 +227,7 @@
                         </div>
                     </div>
 
-                    <div id="step-change-type" class="card compact-card sub-top-right">
+                    <div id="step-change-type" class="card sub-top-right">
                         <h3>步驟二：選擇異動類型</h3>
                         <div class="change-type-selector change-type-compact">
                             <label class="change-type-option">
@@ -332,19 +293,19 @@
                 </div>
 
                 <!-- 步驟三：選擇課程 -->
-                <div id="step-select-course" class="card compact-card hidden">
+                <div id="step-select-course" class="card hidden">
                     <div class="step-header-with-toggle">
                         <h3>步驟三：選擇課程</h3>
                         <!-- 多節課模式切換 -->
                         <label class="multi-course-toggle">
                             <input type="checkbox" id="multi-course-mode">
                             <span class="toggle-slider"></span>
-                            <span class="toggle-label">多節課模式</span>
+                            <span class="toggle-label">一次選多節（同一天）</span>
                         </label>
                     </div>
                     <p class="hint" id="schedule-hint">點擊要調課的課程（僅顯示 <span id="selected-weekday"></span> 的課程）</p>
                     <p class="hint multi-course-hint hidden" id="multi-course-hint">
-                        <span class="hint-icon">💡</span> 多節課模式：可點擊選擇多節課程，再次點擊可取消選擇
+                        <span class="hint-icon">💡</span> 一次選多節（同一天）：可點擊選擇多節課程，再次點擊可取消選擇
                     </p>
 
                     <!-- 原任課教師週課表 -->
@@ -355,8 +316,8 @@
                     </div>
 
                     <!-- 已選課程列表（多節課模式） -->
-                    <div id="selected-courses-list" class="selected-courses-container hidden">
-                        <div class="selected-courses-header">
+                    <div id="selected-courses-list" class="selected-courses-container selection-tray hidden">
+                        <div class="selected-courses-header selection-tray-header">
                             <span class="selected-count">已選擇 <strong id="selected-course-count">0</strong> 節課</span>
                             <button class="btn btn-sm btn-secondary" id="clear-all-courses-btn">清除全部</button>
                         </div>
@@ -367,7 +328,7 @@
                 </div>
 
                 <!-- 步驟四：選中課程資訊與確認 -->
-                <div id="selected-course-info" class="card compact-card hidden">
+                <div id="selected-course-info" class="card hidden">
                     <h3>步驟四：確認調代課資訊</h3>
 
                     <!-- 單節課摘要（原有） -->
@@ -397,7 +358,7 @@
                             <span>共 <strong id="confirm-course-count">0</strong> 節課需要代課</span>
                         </div>
                         <div class="multi-course-table-wrapper">
-                            <table class="multi-course-table">
+                            <table class="data-table data-table-compact multi-course-table">
                                 <thead>
                                     <tr>
                                         <th>節次</th>
@@ -464,18 +425,28 @@
 
                     <div class="action-buttons" style="margin-top: 1rem;">
                         <button class="btn btn-primary btn-sm" id="confirm-substitute-btn">確認並產生表單</button>
+                        <button type="button" class="btn btn-primary btn-sm hidden" id="add-to-batch-btn">加入批次</button>
                         <button class="btn btn-secondary btn-sm" id="cancel-substitute-btn">重新選擇</button>
                     </div>
                 </div>
 
                 <!-- 多重調課批次面板（獨立 card，不隨步驟四隱藏） -->
-                <div id="multi-swap-batch-panel" class="card compact-card hidden">
-                    <h3>多重調課批次</h3>
+                <div id="multi-swap-batch-panel" class="card hidden">
+                    <h3>待送出的調課組合</h3>
                     <p class="hint">逐一新增調課組合，新增時不設限制。系統會在整批送出時檢查衝突，全部無衝突才可產生表單。</p>
 
-                    <!-- 待處理調課清單 -->
-                    <div id="batch-swap-list" class="batch-swap-list">
-                        <div class="batch-empty-message">尚未加入任何調課，請從上方課表選擇課程後點擊「加入批次」</div>
+                    <!-- 待處理調課清單（驗收缺陷修正：標題列移入 tray 容器內，與步驟三
+                         「已選課程」巢狀層級一致——外層 .selection-tray 負責視覺容器，
+                         內層 #batch-swap-list 維持純內容替換目標，id、內部結構與
+                         renderSwapBatch() 的 innerHTML 綁定完全不動，清除鈕對齊右上） -->
+                    <div class="batch-swap-container selection-tray">
+                        <div class="selection-tray-header">
+                            <span class="selected-count">已加入 <strong id="batch-swap-count">0</strong> 組調課</span>
+                            <button class="btn btn-sm btn-secondary" id="batch-clear-btn">清除全部</button>
+                        </div>
+                        <div id="batch-swap-list" class="batch-swap-list">
+                            <div class="batch-empty-message">尚未加入任何調課，請從上方課表選擇課程後點擊「加入批次」</div>
+                        </div>
                     </div>
 
                     <!-- 衝突檢查結果 -->
@@ -486,7 +457,6 @@
                     <!-- 批次操作按鈕 -->
                     <div class="action-buttons" style="margin-top: 1rem;">
                         <button class="btn btn-primary" id="batch-submit-btn" disabled>確認全部調課並產生表單</button>
-                        <button class="btn btn-secondary" id="batch-clear-btn">清除全部</button>
                     </div>
                 </div>
 
@@ -499,28 +469,16 @@
                 </div>
             </section>
 
-            <!-- 頁籤三：調課紀錄 -->
+            <!-- 頁籤：調課紀錄 -->
             <section id="records-tab" class="tab-content hidden">
                 <!-- 未載入資料提示 -->
-                <div id="records-no-data" class="card compact-card notice-card notice-card-compact">
+                <div id="records-no-data" class="card notice-card notice-card-compact">
                     <h3>尚未載入課表資料</h3>
-                    <p>請先至「課表匯入」頁籤上傳課表檔案</p>
+                    <p>請先至「課表管理」頁籤上傳課表檔案</p>
                 </div>
 
                 <div id="records-content" class="hidden">
-                <div class="card compact-card">
-                    <!-- 詳細資料彈窗 -->
-                    <div id="record-detail-modal" class="modal hidden">
-                        <div class="modal-content">
-                            <div class="modal-header">
-                                <h3>調代課詳細資料</h3>
-                                <button class="modal-close" id="close-modal-btn">&times;</button>
-                            </div>
-                            <div class="modal-body" id="record-detail-content">
-                            </div>
-                        </div>
-                    </div>
-
+                <div class="card">
                     <div class="toolbar-row">
                         <h3>調代課紀錄查詢</h3>
                         <div class="toolbar-controls">
@@ -543,31 +501,8 @@
                         </div>
                     </div>
 
-                    <!-- 週彙整 modal -->
-                    <div id="weekly-summary-modal" class="modal hidden">
-                        <div class="modal-content">
-                            <div class="modal-header">
-                                <h3>列印本週調代課彙整單</h3>
-                                <button class="modal-close" id="close-weekly-summary-btn">&times;</button>
-                            </div>
-                            <div class="modal-body">
-                                <div class="form-group">
-                                    <label for="weekly-summary-date">選擇週內任一日期</label>
-                                    <input type="date" id="weekly-summary-date">
-                                    <p class="hint" id="weekly-summary-range-hint" style="margin-top:6px;">系統將自動取該日所在週一到週五。</p>
-                                </div>
-                                <div id="weekly-summary-preview" style="margin-top:12px; padding:10px; background:#f5f5f5; border-radius:6px; font-size:13px;">
-                                    請先選擇日期。
-                                </div>
-                                <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:14px;">
-                                    <button class="btn btn-default btn-sm" id="cancel-weekly-summary-btn">取消</button>
-                                    <button class="btn btn-primary btn-sm" id="confirm-weekly-summary-btn" disabled>產生 PDF</button>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <table class="data-table data-table-compact" id="records-table">
+                    <div class="table-wrap">
+                    <table class="data-table data-table-compact data-table-cards" id="records-table">
                         <thead>
                             <tr>
                                 <th>日期</th>
@@ -586,29 +521,29 @@
                             </tr>
                         </tbody>
                     </table>
+                    </div>
                 </div>
                 </div>
             </section>
 
-            <!-- 頁籤四：月結算 -->
-            <section id="settlement-tab" class="tab-content hidden">
+            <!-- 頁籤：月結算 -->
+            <section id="settlement-tab" class="tab-content hidden v2-approver-only">
                 <!-- 未載入資料提示 -->
-                <div id="settlement-no-data" class="card compact-card notice-card notice-card-compact">
+                <div id="settlement-no-data" class="card notice-card notice-card-compact">
                     <h3>尚未載入課表資料</h3>
-                    <p>請先至「課表匯入」頁籤上傳課表檔案</p>
+                    <p>請先至「課表管理」頁籤上傳課表檔案</p>
                 </div>
 
                 <div id="settlement-content" class="hidden">
-                <div class="card compact-card">
+                <div class="card">
                     <div class="toolbar-row">
                         <h3>月結算報表</h3>
                         <div class="toolbar-controls">
                             <div class="form-group form-group-inline">
                                 <label for="settle-year">學年度</label>
-                                <select id="settle-year">
-                                    <option value="114">114</option>
-                                    <option value="113">113</option>
-                                </select>
+                                <!-- 選項由 app.js populateSettlementYearOptions() 依當前日期動態產生，
+                                     不可寫死——跨學年度後寫死的選項會讓月結算選不到當期資料。 -->
+                                <select id="settle-year"></select>
                             </div>
                             <div class="form-group form-group-inline">
                                 <label for="settle-month">月份</label>
@@ -643,6 +578,7 @@
                                 <span id="changed-count" class="changed-count"></span>
                             </div>
                         </div>
+                        <div class="table-wrap">
                         <table class="data-table data-table-compact" id="settlement-table">
                             <thead>
                                 <tr>
@@ -657,17 +593,18 @@
                             <tbody id="settlement-tbody">
                             </tbody>
                         </table>
+                        </div>
                     </div>
                 </div>
                 </div>
             </section>
 
-            <!-- 頁籤五：設定 -->
+            <!-- 頁籤：設定 -->
             <section id="settings-tab" class="tab-content hidden">
                 <div class="settings-layout">
                 <!-- 左側：雲端同步 -->
                 <div class="settings-left">
-                <div class="card compact-card">
+                <div class="card">
                     <h3>雲端同步</h3>
                     <div class="cloud-sync-info cloud-sync-compact">
                         <div class="sync-feature">
@@ -714,98 +651,29 @@
                 <!-- 右側：資料管理 -->
                 <div class="settings-right">
 
-                <!-- 同步衝突對話框 -->
-                <div id="sync-conflict-modal" class="modal hidden">
-                    <div class="modal-content">
-                        <div class="modal-header">
-                            <h3>資料同步衝突</h3>
-                        </div>
-                        <div class="modal-body">
-                            <p class="conflict-description">發現本機和雲端都有資料，請選擇要保留哪一份：</p>
-
-                            <div class="conflict-options">
-                                <div class="conflict-option" id="conflict-local">
-                                    <div class="conflict-option-header">
-                                        <span class="conflict-icon">💻</span>
-                                        <strong>使用本機資料</strong>
-                                    </div>
-                                    <div class="conflict-option-details" id="local-data-summary">
-                                        <p>調代課紀錄：<span id="local-record-count">0</span> 筆</p>
-                                        <p>最後修改：<span id="local-last-modified">-</span></p>
-                                    </div>
-                                </div>
-
-                                <div class="conflict-option" id="conflict-cloud">
-                                    <div class="conflict-option-header">
-                                        <span class="conflict-icon">☁️</span>
-                                        <strong>使用雲端資料</strong>
-                                    </div>
-                                    <div class="conflict-option-details" id="cloud-data-summary">
-                                        <p>調代課紀錄：<span id="cloud-record-count">0</span> 筆</p>
-                                        <p>最後修改：<span id="cloud-last-modified">-</span></p>
-                                    </div>
-                                </div>
-
-                                <div class="conflict-option" id="conflict-merge">
-                                    <div class="conflict-option-header">
-                                        <span class="conflict-icon">🔀</span>
-                                        <strong>智慧合併</strong>
-                                    </div>
-                                    <div class="conflict-option-details">
-                                        <p>合併兩份資料，保留所有不重複的紀錄</p>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div class="conflict-warning">
-                                <p>⚠️ 建議先<button class="btn-link" id="export-before-sync-btn">匯出備份</button>再進行選擇</p>
-                            </div>
-
-                            <div class="modal-actions">
-                                <button class="btn btn-primary" id="confirm-sync-choice-btn" disabled>確認選擇</button>
-                                <button class="btn btn-secondary" id="cancel-sync-btn">稍後決定</button>
-                            </div>
-                        </div>
-                    </div>
+                <!-- Stage 2（RESEARCH-multitenancy-semester.md §6.1）：學期管理，director 專用。
+                     內容由 v2-app.js renderSemesterAdminTab() 動態渲染（比照 #v2-teachers-admin）。 -->
+                <div class="card v2-only v2-director-only">
+                    <h3>學期管理</h3>
+                    <div id="v2-semester-admin"></div>
                 </div>
 
-                <!-- 合併確認對話框（學校相同時） -->
-                <div id="merge-confirm-modal" class="modal hidden">
-                    <div class="modal-content">
-                        <div class="modal-header">
-                            <h3>資料同步確認</h3>
-                        </div>
-                        <div class="modal-body">
-                            <p class="conflict-description">
-                                偵測到本機和雲端都有「<strong id="merge-school-name">-</strong>」的資料：
-                            </p>
-
-                            <div class="merge-data-summary">
-                                <div class="merge-summary-item">
-                                    <span class="merge-icon">💻</span>
-                                    <span>本機：<strong id="merge-local-record-count">0</strong> 筆調代課紀錄</span>
-                                </div>
-                                <div class="merge-summary-item">
-                                    <span class="merge-icon">☁️</span>
-                                    <span>雲端：<strong id="merge-cloud-record-count">0</strong> 筆調代課紀錄</span>
-                                </div>
-                            </div>
-
-                            <p style="margin-top: 1rem; color: #666;">請選擇要如何處理這些資料：</p>
-
-                            <div class="modal-actions" style="flex-direction: column; gap: 0.75rem;">
-                                <button class="btn btn-primary" id="merge-data-btn" style="width: 100%;">
-                                    🔀 合併資料（保留兩邊所有紀錄）
-                                </button>
-                                <button class="btn btn-secondary" id="use-cloud-data-btn" style="width: 100%;">
-                                    ☁️ 使用雲端資料（清除本機）
-                                </button>
-                            </div>
-                        </div>
-                    </div>
+                <!-- Stage 5（RESEARCH-multitenancy-semester.md §6.2）：資料封存，director 專用。
+                     內容由 v2-app.js renderArchiveAdminTab() 動態渲染（比照 #v2-semester-admin）。 -->
+                <div class="card v2-only v2-director-only">
+                    <h3>資料封存</h3>
+                    <div id="v2-archive-admin"></div>
                 </div>
 
-                <div class="card compact-card">
+                <!-- Stage 4（RESEARCH-multitenancy-semester.md §4.4）：學校申請審核，平台管理者
+                     專用——不是校內角色（無 v2-director-only），守門邏輯在 JS（isPlatformAdmin()）。
+                     預設隱藏；renderPlatformAdminReviewTab() 只在確認是平台管理者時才顯示並填入
+                     內容（含自己的 <h3> 標題），非平台管理者完全看不到這張卡片存在過的痕跡。 -->
+                <div class="card v2-only" id="v2-platform-admin-card" style="display:none;">
+                    <div id="v2-platform-admin-review"></div>
+                </div>
+
+                <div class="card v2-approver-only">
                     <h3>學年度管理</h3>
 
                     <div class="data-management-section">
@@ -819,7 +687,7 @@
                     </div>
                 </div>
 
-                <div class="card compact-card">
+                <div class="card v2-approver-only">
                     <h3>科目領域對應表</h3>
                     <p class="hint">匯入課表時自動擷取「科目→領域」對應；課表編輯選擇科目時會據此自動帶出領域。可在此手動增修。一個科目可對應多個領域（編輯課程時預設帶第一個）。</p>
 
@@ -830,7 +698,7 @@
                             <datalist id="domain-datalist"></datalist>
                             <button class="btn btn-primary btn-sm" id="subject-map-add-btn">新增</button>
                         </div>
-                        <div class="subject-domain-table-wrap">
+                        <div class="subject-domain-table-wrap table-wrap">
                             <table class="data-table data-table-compact subject-domain-table">
                                 <thead>
                                     <tr><th>科目</th><th>領域（可編輯，多個用、分隔）</th><th></th></tr>
@@ -845,7 +713,7 @@
                     </div>
                 </div>
 
-                <div class="card compact-card">
+                <div class="card v2-approver-only">
                     <h3>資料管理</h3>
 
                     <div class="data-management-section">
@@ -872,13 +740,22 @@
                         </div>
                     </div>
 
-                    <div class="data-management-section danger-zone">
+                    <div class="data-management-section danger-zone v2-director-only">
                         <strong>危險操作</strong>
                         <button class="btn btn-danger btn-sm" id="clear-local-data-btn" style="margin-top:0.4rem;">清除所有資料</button>
                     </div>
                 </div>
                 </div>
                 </div>
+            </section>
+
+            <!-- ===== V2 權限系統頁籤（僅 ?v2=1 或預覽站啟用） ===== -->
+            <section id="v2-pending-tab" class="tab-content hidden v2-only">
+                <div class="card"><div id="v2-pending-list"></div></div>
+            </section>
+
+            <section id="v2-logs-tab" class="tab-content hidden v2-only v2-approver-only">
+                <div class="card"><div id="v2-logs"></div></div>
             </section>
         </main>
 
@@ -892,7 +769,209 @@
     <!-- Toast 通知容器 -->
     <div id="toast-container"></div>
 
-    <!-- 載入 JavaScript 模組 -->
-    <script type="module" src="src/js/app.js?v=1.13.1"></script>
+    <!-- 所有 modal 集中於此（Stage 2 起：原本散落各分頁內，分頁非 active 時 modal 因祖先
+         display:none 而打不開；全部只靠 getElementById 存取，搬到這裡後不受任何分頁切換影響） -->
+    <div id="modal-root">
+        <!-- 統一 confirm 對話框（Stage 5：取代原生 confirm()，見 app.js confirmDialog()） -->
+        <div id="confirm-modal" class="modal hidden">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3 id="confirm-modal-title">確認</h3>
+                </div>
+                <div class="modal-body">
+                    <p id="confirm-modal-message"></p>
+                    <div class="modal-actions">
+                        <button type="button" class="btn btn-secondary" id="confirm-modal-cancel-btn">取消</button>
+                        <button type="button" class="btn btn-primary" id="confirm-modal-confirm-btn">確認</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 課程編輯對話框（原在課表編輯 sub-view 內） -->
+        <div id="course-edit-modal" class="modal hidden">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3 id="course-modal-title">新增課程</h3>
+                    <button class="modal-close" id="close-course-modal-btn">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="course-modal-info" style="margin-bottom: 1rem; padding: 0.75rem; background: var(--background-color); border-radius: 6px;">
+                        <span id="course-modal-slot-info"></span>
+                    </div>
+                    <div class="form-group" style="margin-bottom: 1rem;">
+                        <label for="course-modal-class">班級：<span style="color: red;">*</span></label>
+                        <input type="text" id="course-modal-class" placeholder="如：7年1班" list="class-datalist">
+                        <datalist id="class-datalist"></datalist>
+                    </div>
+                    <div class="form-group" style="margin-bottom: 1rem;">
+                        <label for="course-modal-subject">科目：<span style="color: red;">*</span></label>
+                        <input type="text" id="course-modal-subject" placeholder="如：數學" list="subject-datalist" autocomplete="off">
+                        <datalist id="subject-datalist"></datalist>
+                        <p class="hint" style="margin:0.25rem 0 0;">可從清單選擇，選後自動帶出領域；亦可手動輸入新科目</p>
+                    </div>
+                    <div class="form-group" style="margin-bottom: 1rem;">
+                        <label for="course-modal-domain">領域：</label>
+                        <select id="course-modal-domain">
+                            <option value="">請選擇領域</option>
+                            <option value="語文領域">語文領域</option>
+                            <option value="數學領域">數學領域</option>
+                            <option value="社會領域">社會領域</option>
+                            <option value="自然科學領域">自然科學領域</option>
+                            <option value="藝術領域">藝術領域</option>
+                            <option value="綜合活動領域">綜合活動領域</option>
+                            <option value="科技領域">科技領域</option>
+                            <option value="健康與體育領域">健康與體育領域</option>
+                            <option value="彈性學習">彈性學習</option>
+                            <option value="其他">其他</option>
+                        </select>
+                    </div>
+                    <p class="form-msg" id="course-modal-msg" style="display:none;"></p>
+                    <div class="modal-actions">
+                        <button class="btn btn-primary" id="course-modal-save-btn">儲存</button>
+                        <button class="btn btn-danger" id="course-modal-delete-btn" style="display: none;">刪除此課程</button>
+                        <button class="btn btn-secondary" id="course-modal-cancel-btn">取消</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 調代課詳細資料彈窗（原在調課紀錄分頁內） -->
+        <div id="record-detail-modal" class="modal hidden">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>調代課詳細資料</h3>
+                    <button class="modal-close" id="close-modal-btn">&times;</button>
+                </div>
+                <div class="modal-body" id="record-detail-content">
+                </div>
+            </div>
+        </div>
+
+        <!-- 週彙整 modal（原在調課紀錄分頁內） -->
+        <div id="weekly-summary-modal" class="modal hidden">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>列印本週調代課彙整單</h3>
+                    <button class="modal-close" id="close-weekly-summary-btn">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label for="weekly-summary-date">選擇週內任一日期</label>
+                        <input type="date" id="weekly-summary-date">
+                        <p class="hint" id="weekly-summary-range-hint" style="margin-top:6px;">系統將自動取該日所在週一到週五。</p>
+                    </div>
+                    <div id="weekly-summary-preview" style="margin-top:12px; padding:10px; background:#f5f5f5; border-radius:6px; font-size:13px;">
+                        請先選擇日期。
+                    </div>
+                    <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:14px;">
+                        <button class="btn btn-secondary btn-sm" id="cancel-weekly-summary-btn">取消</button>
+                        <button class="btn btn-primary btn-sm" id="confirm-weekly-summary-btn" disabled>產生 PDF</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 同步衝突對話框（原在設定分頁內） -->
+        <div id="sync-conflict-modal" class="modal hidden">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>資料同步衝突</h3>
+                </div>
+                <div class="modal-body">
+                    <p class="conflict-description">發現本機和雲端都有資料，請選擇要保留哪一份：</p>
+
+                    <div class="conflict-options">
+                        <div class="conflict-option" id="conflict-local">
+                            <div class="conflict-option-header">
+                                <span class="conflict-icon">💻</span>
+                                <strong>使用本機資料</strong>
+                            </div>
+                            <div class="conflict-option-details" id="local-data-summary">
+                                <p>調代課紀錄：<span id="local-record-count">0</span> 筆</p>
+                                <p>最後修改：<span id="local-last-modified">-</span></p>
+                            </div>
+                        </div>
+
+                        <div class="conflict-option" id="conflict-cloud">
+                            <div class="conflict-option-header">
+                                <span class="conflict-icon">☁️</span>
+                                <strong>使用雲端資料</strong>
+                            </div>
+                            <div class="conflict-option-details" id="cloud-data-summary">
+                                <p>調代課紀錄：<span id="cloud-record-count">0</span> 筆</p>
+                                <p>最後修改：<span id="cloud-last-modified">-</span></p>
+                            </div>
+                        </div>
+
+                        <div class="conflict-option" id="conflict-merge">
+                            <div class="conflict-option-header">
+                                <span class="conflict-icon">🔀</span>
+                                <strong>智慧合併</strong>
+                            </div>
+                            <div class="conflict-option-details">
+                                <p>合併兩份資料，保留所有不重複的紀錄</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="conflict-warning">
+                        <p>⚠️ 建議先<button class="btn-inline" id="export-before-sync-btn">匯出備份</button>再進行選擇</p>
+                    </div>
+
+                    <div class="modal-actions">
+                        <button class="btn btn-primary" id="confirm-sync-choice-btn" disabled>確認選擇</button>
+                        <button class="btn btn-secondary" id="cancel-sync-btn">稍後決定</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 合併確認對話框（學校相同時，原在設定分頁內） -->
+        <div id="merge-confirm-modal" class="modal hidden">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>資料同步確認</h3>
+                </div>
+                <div class="modal-body">
+                    <p class="conflict-description">
+                        偵測到本機和雲端都有「<strong id="merge-school-name">-</strong>」的資料：
+                    </p>
+
+                    <div class="merge-data-summary">
+                        <div class="merge-summary-item">
+                            <span class="merge-icon">💻</span>
+                            <span>本機：<strong id="merge-local-record-count">0</strong> 筆調代課紀錄</span>
+                        </div>
+                        <div class="merge-summary-item">
+                            <span class="merge-icon">☁️</span>
+                            <span>雲端：<strong id="merge-cloud-record-count">0</strong> 筆調代課紀錄</span>
+                        </div>
+                    </div>
+
+                    <p style="margin-top: 1rem; color: #666;">請選擇要如何處理這些資料：</p>
+
+                    <div class="modal-actions" style="flex-direction: column; gap: 0.75rem;">
+                        <button class="btn btn-primary" id="merge-data-btn" style="width: 100%;">
+                            🔀 合併資料（保留兩邊所有紀錄）
+                        </button>
+                        <button class="btn btn-secondary" id="use-cloud-data-btn" style="width: 100%;">
+                            ☁️ 使用雲端資料（清除本機）
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 載入 JavaScript 模組
+         Firebase SDK（含 Stage 4 新增的 App Check／classic reCAPTCHA v3）皆由
+         src/js/modules/firebaseConfig.js 動態 import 載入與初始化，本頁不直接引入
+         Firebase <script> 標籤——比照既有 Auth/Firestore SDK 的載入方式，見該檔
+         initializeFirebase()、RECAPTCHA_V3_SITE_KEY 常數與 docs/STAGE4-DEPLOY.md
+         「App Check 啟用步驟」。 -->
+    <script type="module" src="src/js/app.js?v=1.13.7"></script>
+    <!-- V2 權限系統（?v2=1 或預覽站才啟用；對穩定版無影響） -->
+    <script type="module" src="src/js/v2-app.js?v=0.1.10"></script>
 </body>
 </html>

@@ -74,10 +74,34 @@ class SubstituteTeacherApp {
         this.isMultiSwapMode = false;
         this.swapBatch = [];  // 待處理調課批次
 
+        // 統一 confirm 對話框（Stage 5）：目前開啟中的 confirmDialog() resolve callback，
+        // 供單例機制使用（重複呼叫時，前一個尚未關閉的 confirm 先以 resolve(false) 關閉）
+        this._confirmDialogResolve = null;
+
+        // Stage 1 修復（阻斷 #2）：showRecommendations() 改 async 按需查詢後，快速切換課程/
+        // 日期可能讓較舊一輪的查詢在較新一輪之後才回來、把新結果覆蓋回舊的。世代計數器守門。
+        this._recommendationsGen = 0;
+        // 輕 #12：updateWeeklySummaryPreview() 改 async 後同理，快速切換週次也需要世代守門。
+        this._weeklySummaryPreviewGen = 0;
+        // 驗收修復（輕 #C）：checkAndShowExistingRecordWarning() 改 async 後，單選模式下
+        // 快速切換課程可能讓較舊一輪的衝堂檢查在較新一輪之後才回來、顯示錯的警告。世代守門。
+        this._courseSelectionGen = 0;
+        // 驗收修復（輕 #C）：handleMultiCourseSelection() 改 async 後，多選模式允許同時有多個
+        // 選取在途（這是多選模式本身的正常行為，不能用單一世代計數器整批作廢），改用
+        // 「正在檢查中的課程 key」集合去重——同一格在前一次 await 還沒回來前被重複點擊，
+        // 直接忽略，不重入。
+        this._inFlightMultiCourseKeys = new Set();
+
         // 課表編輯器相關
         this.editorCurrentTeacher = null;  // 目前編輯的教師
         this.editorEditingCell = null;     // 目前編輯的時段 { weekday, period }
         this.editorIsEditMode = false;     // 是否為編輯模式（vs 新增）
+
+        // 手機日切換器（Stage 4）目前選取的星期：課表編輯器沒有「已選日期」可判斷單日，
+        // 初始預設今日星期，週末（週六、週日）沒有正課可編輯故 fallback 週一。
+        // 640+ 桌機恆顯示全週，此欄位僅影響手機單日檢視。
+        const todayWeekday = this.numberToWeekday(new Date().getDay());
+        this.editorActiveDay = (todayWeekday === '週六' || todayWeekday === '週日') ? '週一' : todayWeekday;
 
         // 初始化應用程式
         this.init();
@@ -108,6 +132,9 @@ class SubstituteTeacherApp {
         // 綁定課表編輯器事件
         this.bindScheduleEditorEvents();
 
+        // 綁定課表管理頁籤 sub-view 切換（課表匯入／課表編輯）
+        this.bindScheduleSubviewSwitch();
+
         // 綁定 Firebase 認證相關事件
         this.bindFirebaseAuthEvents();
 
@@ -116,6 +143,16 @@ class SubstituteTeacherApp {
 
         // 從 localStorage 載入已儲存的資料
         this.loadSavedData();
+
+        // 補視覺：loadSavedData() 只在「有課表資料」分支內呼叫過 updateTabLockStatus()，
+        // 全新（無資料）載入時鎖定分頁從未套用 is-locked 灰化樣式（點擊攔截本來就有效，
+        // 這裡補上對應的視覺狀態，避免看起來像可點但其實會被擋下）
+        this.updateTabLockStatus();
+
+        // 課表管理頁籤開機一律預設 import view：即使已有課表資料，直接落在空白的課表編輯器
+        // （要先選教師才有內容）不如 import view 的課表狀態盒資訊量高；使用者需要編輯課表時
+        // 自行點「課表編輯」segmented 按鈕切換
+        this.activateScheduleSubview('import');
 
         // 初始化 Firebase（如果已設定）
         this.initFirebase();
@@ -397,22 +434,24 @@ class SubstituteTeacherApp {
     /**
      * 顯示合併確認對話框（學校相同時）
      */
-    showMergeConfirmModal(localData, cloudData) {
+    async showMergeConfirmModal(localData, cloudData) {
         const modal = document.getElementById('merge-confirm-modal');
         if (!modal) {
-            // 如果沒有對話框，使用 confirm
+            // 如果沒有對話框，使用統一 confirm（呼叫端 initFirebase 流程呼叫本方法後即 return，
+            // 改 async 不影響任何依賴同步完成時序的後續邏輯）
             const localRecords = localData?.substituteRecords?.length || 0;
             const cloudRecords = cloudData?.substituteRecords?.length || 0;
             const schoolName = localData?.schoolName || cloudData?.schoolName || '未設定';
 
-            const shouldMerge = confirm(
-                `偵測到本機和雲端都有「${schoolName}」的資料：\n\n` +
-                `本機：${localRecords} 筆調代課紀錄\n` +
-                `雲端：${cloudRecords} 筆調代課紀錄\n\n` +
-                `是否要合併資料？\n\n` +
-                `【確定】合併兩邊資料\n` +
-                `【取消】使用雲端資料（清除本機）`
-            );
+            const shouldMerge = await this.confirmDialog({
+                title: '資料同步確認',
+                message: `偵測到本機和雲端都有「${schoolName}」的資料：\n\n` +
+                    `本機：${localRecords} 筆調代課紀錄\n` +
+                    `雲端：${cloudRecords} 筆調代課紀錄\n\n` +
+                    `是否要合併資料？`,
+                confirmText: '合併兩邊資料',
+                cancelText: '使用雲端資料（清除本機）',
+            });
 
             if (shouldMerge) {
                 // 合併資料
@@ -653,10 +692,14 @@ class SubstituteTeacherApp {
                     this.loadCurrentMonthRecords();
                 }
 
-                // 切換到課表編輯頁籤時，更新教師選單
-                if (targetTab === 'schedule-editor') {
-                    this.populateEditorTeacherDropdown();
+                // 進課表管理頁籤一律預設 import sub-view（見 activateScheduleSubview 註解與
+                // init() 開機呼叫的說明）；使用者需要編輯課表時自行點「課表編輯」切換
+                if (targetTab === 'schedule') {
+                    this.activateScheduleSubview('import');
                 }
+
+                // 手機可捲 tab bar：確保剛切換的分頁按鈕捲動到可視範圍內
+                btn.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
             });
         });
     }
@@ -724,11 +767,6 @@ class SubstituteTeacherApp {
         // 新增教師按鈕
         document.getElementById('add-teacher-btn')?.addEventListener('click', () => {
             this.addNewTeacherRow();
-        });
-
-        // 儲存資料按鈕
-        document.getElementById('save-data-btn')?.addEventListener('click', () => {
-            this.saveDataManually();
         });
 
         // 學校名稱確認按鈕
@@ -922,7 +960,8 @@ class SubstituteTeacherApp {
         const hasSchedule = this.dataManager.getScheduleData().length > 0;
         const isConfigured = schoolName && hasSchedule;
 
-        // 取得所有頁籤按鈕（除了課表匯入和設定）
+        // 鎖定清單：僅這三個依賴「已設校名+已匯入課表」的分頁需要鎖定；
+        // 課表管理（資料入口，見 canSwitchToTab）與教師管理（無資料時仍可手動新增教師）故意不列入
         const lockedTabs = ['substitute', 'records', 'settlement'];
 
         lockedTabs.forEach(tabId => {
@@ -930,13 +969,11 @@ class SubstituteTeacherApp {
             if (btn) {
                 if (isConfigured) {
                     btn.classList.remove('disabled');
-                    btn.style.opacity = '1';
-                    btn.style.cursor = 'pointer';
                 } else {
                     btn.classList.add('disabled');
-                    btn.style.opacity = '0.5';
-                    btn.style.cursor = 'not-allowed';
                 }
+                // F10 修復：改用 class 切換而非 inline style，避免蓋掉新 CSS（見 hotfix 區塊 .tab-btn.is-locked）
+                btn.classList.toggle('is-locked', !isConfigured);
             }
         });
     }
@@ -947,8 +984,9 @@ class SubstituteTeacherApp {
      * @returns {boolean} 是否允許切換
      */
     canSwitchToTab(tabId) {
-        // 課表匯入、課表編輯和設定頁籤始終可用
-        if (tabId === 'import' || tabId === 'settings' || tabId === 'schedule-editor') {
+        // 課表管理（含匯入/編輯兩個 sub-view）、教師管理、設定頁籤始終可用：
+        // 課表管理是資料入口，教師管理無資料時仍可先手動新增教師，兩者都不該被「先匯入課表」擋住
+        if (tabId === 'schedule' || tabId === 'teachers' || tabId === 'settings') {
             return true;
         }
 
@@ -961,7 +999,7 @@ class SubstituteTeacherApp {
         }
 
         if (!schoolName) {
-            this.showToast('請先在「課表匯入」頁籤設定學校名稱', 'warning');
+            this.showToast('請先在「課表管理」頁籤設定學校名稱', 'warning');
             return false;
         }
 
@@ -1043,7 +1081,7 @@ class SubstituteTeacherApp {
             html += `<div class="schedule-conflict-section"><strong>同一教師同時段多班級（${teacherConflicts.length} 筆）：</strong></div>`;
             html += `<ul class="schedule-conflict-list">`;
             teacherConflicts.forEach(c => {
-                html += `<li><strong>${c.teacher}</strong> ${c.weekday} ${c.period}：${c.classes.join('、')}</li>`;
+                html += `<li><strong>${esc(c.teacher)}</strong> ${esc(c.weekday)} ${esc(c.period)}：${c.classes.map(esc).join('、')}</li>`;
             });
             html += `</ul>`;
         }
@@ -1052,7 +1090,7 @@ class SubstituteTeacherApp {
             html += `<div class="schedule-conflict-section"><strong>同一班級同時段多教師（${classConflicts.length} 筆）：</strong></div>`;
             html += `<ul class="schedule-conflict-list">`;
             classConflicts.forEach(c => {
-                html += `<li><strong>${c.className}</strong> ${c.weekday} ${c.period}：${c.teachers.join('、')}</li>`;
+                html += `<li><strong>${esc(c.className)}</strong> ${esc(c.weekday)} ${esc(c.period)}：${c.teachers.map(esc).join('、')}</li>`;
             });
             html += `</ul>`;
         }
@@ -1076,27 +1114,27 @@ class SubstituteTeacherApp {
         teachers.forEach((teacher, index) => {
             const row = document.createElement('tr');
             row.innerHTML = `
-                <td>
-                    <input type="text" value="${teacher.name}"
+                <td data-label="教師姓名" class="cell-primary">
+                    <input type="text" value="${esc(teacher.name)}"
                            data-index="${index}" data-field="name"
                            class="teacher-input">
                 </td>
-                <td>
-                    <input type="text" value="${teacher.domains.join(', ')}"
+                <td data-label="任教領域">
+                    <input type="text" value="${esc(teacher.domains.join(', '))}"
                            data-index="${index}" data-field="domains"
                            class="teacher-input"
                            title="多個領域請用逗號分隔，例如：國文, 英語"
                            placeholder="例如：國文, 英語">
                 </td>
-                <td>
+                <td data-label="導師班級">
                     <select data-index="${index}" data-field="homeroomClass" class="teacher-input">
                         <option value="">非導師</option>
                         ${this.dataManager.getClasses().map(c =>
-                `<option value="${c}" ${teacher.homeroomClass === c ? 'selected' : ''}>${c}</option>`
+                `<option value="${esc(c)}" ${teacher.homeroomClass === c ? 'selected' : ''}>${esc(c)}</option>`
             ).join('')}
                     </select>
                 </td>
-                <td>
+                <td class="cell-actions">
                     <button class="btn btn-sm btn-danger delete-teacher-btn" data-index="${index}">刪除</button>
                 </td>
             `;
@@ -1146,6 +1184,10 @@ class SubstituteTeacherApp {
         });
         this.updateTeacherTable();
         this.saveDataToStorage();
+        // 尚未匯入課表時 #teacher-editor 仍帶著初始 hidden（要匯入課表才會由
+        // updateScheduleStatus() 移除），導致這裡新增的列不會顯示；手動新增教師
+        // 屬於「尚未匯入課表也能用」的合理入口，故在此保底移除 hidden。
+        document.getElementById('teacher-editor')?.classList.remove('hidden');
     }
 
     /**
@@ -1191,14 +1233,14 @@ class SubstituteTeacherApp {
                     this.onChangeTypeSelected('swap');
                     document.getElementById('change-type').value = 'swap';
                     document.getElementById('multi-swap-batch-panel').classList.remove('hidden');
-                    document.getElementById('confirm-substitute-btn').textContent = '加入批次';
+                    this.setSubmitButtonMode(true);
                 } else {
                     this.isMultiSwapMode = false;
                     this.swapBatch = [];
                     this.onChangeTypeSelected(val);
                     document.getElementById('change-type').value = val;
                     document.getElementById('multi-swap-batch-panel').classList.add('hidden');
-                    document.getElementById('confirm-substitute-btn').textContent = '確認並產生表單';
+                    this.setSubmitButtonMode(false);
                 }
             });
         });
@@ -1226,8 +1268,12 @@ class SubstituteTeacherApp {
             this.onSwapCourseSelected(e.target.value);
         });
 
-        // 確認調課按鈕
+        // 確認調課按鈕（多重調課批次模式下改顯示「加入批次」鈕，語意不同但共用同一個
+        // confirmSubstitute()——內部已依 isMultiSwapMode 分流，見 confirmSubstitute() 尾端）
         document.getElementById('confirm-substitute-btn').addEventListener('click', () => {
+            this.confirmSubstitute();
+        });
+        document.getElementById('add-to-batch-btn')?.addEventListener('click', () => {
             this.confirmSubstitute();
         });
 
@@ -1284,7 +1330,7 @@ class SubstituteTeacherApp {
             document.getElementById('substitute-options-early').classList.add('hidden');
             document.getElementById('substitute-options').classList.add('hidden');
             document.getElementById('swap-options').classList.remove('hidden');
-            document.getElementById('confirm-substitute-btn').textContent = '加入批次';
+            this.setSubmitButtonMode(true);
         } else {
             // 重置異動類型為代課
             const substituteRadio = document.querySelector('input[name="change-type-radio"][value="substitute"]');
@@ -1327,6 +1373,18 @@ class SubstituteTeacherApp {
     }
 
     /**
+     * 切換步驟四送出鈕的顯示模式（F3/R2：拆同鈕兩語意為兩顆獨立按鈕）。
+     * 多重調課批次模式：顯示「加入批次」、隱藏「確認並產生表單」；反之相反。
+     * 兩顆鈕共用同一個 confirmSubstitute()（內部依 isMultiSwapMode 分流），
+     * 這裡只負責顯示哪一顆，不改寫任何按鈕文字。
+     * @param {boolean} isBatch
+     */
+    setSubmitButtonMode(isBatch) {
+        document.getElementById('confirm-substitute-btn')?.classList.toggle('hidden', isBatch);
+        document.getElementById('add-to-batch-btn')?.classList.toggle('hidden', !isBatch);
+    }
+
+    /**
      * 當異動類型變更時觸發（調課/代課）
      */
     onChangeTypeSelected(type) {
@@ -1334,6 +1392,9 @@ class SubstituteTeacherApp {
         const substituteOptions = document.getElementById('substitute-options');
         const swapOptions = document.getElementById('swap-options');
         const dateLabelHint = document.getElementById('date-label-hint');
+        // F4 修復：「一次選多節（同一天）」只支援代課，調課/多重調課下該 toggle 應完全不可見，
+        // 而非現有的「勾了也無效」（confirmMultiCourseSubstitute 開頭直接 return）。
+        const multiCourseToggle = document.querySelector('.multi-course-toggle');
 
         if (type === 'swap') {
             // 調課模式：隱藏假別選擇（步驟二）和代課教師推薦（步驟四）
@@ -1351,6 +1412,14 @@ class SubstituteTeacherApp {
                 this.updateSwapSlotAInfo();
                 this.updateSwapCourseList();
             }
+
+            // 隱藏「一次選多節（同一天）」toggle；若切換當下仍是開啟狀態，走既有清理路徑關閉它
+            multiCourseToggle?.classList.add('hidden');
+            if (this.isMultiCourseMode) {
+                const multiCourseModeInput = document.getElementById('multi-course-mode');
+                if (multiCourseModeInput) multiCourseModeInput.checked = false;
+                this.onMultiCourseModeToggle(false);
+            }
         } else {
             // 代課模式：顯示假別選擇和代課教師推薦
             substituteOptionsEarly.classList.remove('hidden');
@@ -1361,6 +1430,9 @@ class SubstituteTeacherApp {
             if (dateLabelHint) {
                 dateLabelHint.textContent = '';
             }
+
+            // 僅代課支援「一次選多節（同一天）」，還原顯示
+            multiCourseToggle?.classList.remove('hidden');
         }
     }
 
@@ -1406,10 +1478,10 @@ class SubstituteTeacherApp {
         }) : '';
 
         slotAInfo.innerHTML = `
-            <span style="color: #1d4ed8;">📅 ${formattedDateA}</span>
-            <span style="margin-left: 10px;">${this.selectedCourse.weekday} ${this.selectedCourse.period}</span>
-            <span style="margin-left: 10px;">${this.selectedCourse.className}</span>
-            <span style="margin-left: 10px;">${this.selectedCourse.originalTeacher}（${this.selectedCourse.subject}）</span>
+            <span style="color: #1d4ed8;">📅 ${esc(formattedDateA)}</span>
+            <span style="margin-left: 10px;">${esc(this.selectedCourse.weekday)} ${esc(this.selectedCourse.period)}</span>
+            <span style="margin-left: 10px;">${esc(this.selectedCourse.className)}</span>
+            <span style="margin-left: 10px;">${esc(this.selectedCourse.originalTeacher)}（${esc(this.selectedCourse.subject)}）</span>
         `;
     }
 
@@ -1433,7 +1505,7 @@ class SubstituteTeacherApp {
 
         // 取得時段 B 日期對應的星期
         const swapWeekday = this.getDateWeekday(date);
-        swapDateHint.innerHTML = `<span style="color: #b45309;">→ ${swapWeekday}</span>`;
+        swapDateHint.innerHTML = `<span style="color: #b45309;">→ ${esc(swapWeekday)}</span>`;
 
         // 更新課程列表（根據時段 B 的星期過濾）
         this.updateSwapCourseListForDate(swapWeekday);
@@ -1472,7 +1544,7 @@ class SubstituteTeacherApp {
         );
 
         if (sameclassCourses.length === 0) {
-            swapCourseSelect.innerHTML = `<option value="">${swapWeekday} ${targetClass} 沒有課程可調換</option>`;
+            swapCourseSelect.innerHTML = `<option value="">${esc(swapWeekday)} ${esc(targetClass)} 沒有課程可調換</option>`;
             swapHint.innerHTML = `調課說明：選擇同班級的另一時段課程進行互換`;
             swapHint.style.color = '#6b7280';
             return;
@@ -1502,7 +1574,7 @@ class SubstituteTeacherApp {
         // 可調換的課程
         eligibleCourses.forEach(course => {
             const courseId = `${course.weekday}_${course.period}_${course.teacher}`;
-            options += `<option value="${courseId}">${course.period} - ${course.teacher}（${course.subject}）</option>`;
+            options += `<option value="${esc(courseId)}">${esc(course.period)} - ${esc(course.teacher)}（${esc(course.subject)}）</option>`;
         });
 
         // 衝堂的課程
@@ -1516,7 +1588,7 @@ class SubstituteTeacherApp {
             // 單次調課模式：禁用衝堂課程
             conflictCourses.forEach(({ course, conflict }) => {
                 const courseId = `${course.weekday}_${course.period}_${course.teacher}`;
-                options += `<option value="${courseId}" disabled style="color: #999;">⚠ ${course.period} - ${course.teacher}（${course.subject}）- ${conflict}</option>`;
+                options += `<option value="${esc(courseId)}" disabled style="color: #999;">⚠ ${esc(course.period)} - ${esc(course.teacher)}（${esc(course.subject)}）- ${esc(conflict)}</option>`;
             });
         }
 
@@ -1525,15 +1597,15 @@ class SubstituteTeacherApp {
         if (this.isMultiSwapMode) {
             // 多重調課模式：所有課程皆可選取，衝突整批檢查
             const totalCourses = eligibleCourses.length + conflictCourses.length;
-            swapHint.innerHTML = `✓ ${swapWeekday} ${targetClass} 有 ${totalCourses} 堂可互換課程` +
+            swapHint.innerHTML = `✓ ${esc(swapWeekday)} ${esc(targetClass)} 有 ${totalCourses} 堂可互換課程` +
                 (conflictCourses.length > 0 ? `<br><span style="color: #b45309;">⚠ ${conflictCourses.length} 堂有潛在衝堂，加入批次後將於送出時整批檢查</span>` : '');
             swapHint.style.color = '#16a34a';
         } else if (eligibleCourses.length > 0) {
-            swapHint.innerHTML = `✓ ${swapWeekday} ${targetClass} 有 ${eligibleCourses.length} 堂可互換課程` +
+            swapHint.innerHTML = `✓ ${esc(swapWeekday)} ${esc(targetClass)} 有 ${eligibleCourses.length} 堂可互換課程` +
                 (conflictCourses.length > 0 ? `<br><span style="color: #dc2626;">⚠ ${conflictCourses.length} 堂因衝堂無法調換</span>` : '');
             swapHint.style.color = '#16a34a';
         } else {
-            swapHint.innerHTML = `<span style="color: #dc2626;">⚠ ${swapWeekday} ${targetClass} 的課程皆因衝堂無法調換</span>`;
+            swapHint.innerHTML = `<span style="color: #dc2626;">⚠ ${esc(swapWeekday)} ${esc(targetClass)} 的課程皆因衝堂無法調換</span>`;
         }
     }
 
@@ -1650,34 +1722,42 @@ class SubstituteTeacherApp {
 
         // 顯示調課預覽（包含日期）
         const originalCourse = this.selectedCourse;
+        // esc() 防 XSS：weekday/period/teacher/subject/className 均為使用者輸入資料
+        const swapSummary = originalCourse.originalTeacher === swapCourse.teacher
+            ? `✓ ${esc(originalCourse.className)} 的 ${esc(originalCourse.originalTeacher)} 自行調動課程時段，科目互換`
+            : `✓ ${esc(originalCourse.className)} 的 ${esc(originalCourse.originalTeacher)} 與 ${esc(swapCourse.teacher)} 互換課程時段，雙方總時數不變`;
         swapPreviewContent.innerHTML = `
-            <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
-                <tr style="background: #e0f2fe;">
-                    <th style="padding: 8px; border: 1px solid #bae6fd; text-align: center;">時段</th>
-                    <th style="padding: 8px; border: 1px solid #bae6fd; text-align: center;">日期</th>
-                    <th style="padding: 8px; border: 1px solid #bae6fd; text-align: center;">調課前</th>
-                    <th style="padding: 8px; border: 1px solid #bae6fd; text-align: center;">→</th>
-                    <th style="padding: 8px; border: 1px solid #bae6fd; text-align: center;">調課後</th>
+            <div class="table-wrap">
+            <table class="data-table swap-preview-table">
+                <thead>
+                <tr>
+                    <th>時段</th>
+                    <th>日期</th>
+                    <th>調課前</th>
+                    <th>→</th>
+                    <th>調課後</th>
                 </tr>
-                <tr style="background: #dbeafe;">
-                    <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center; font-weight: bold;">A</td>
-                    <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center;">${formattedDateA}<br>${originalCourse.weekday} ${originalCourse.period}</td>
-                    <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center;">${originalCourse.originalTeacher}（${originalCourse.subject}）</td>
-                    <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center;">→</td>
-                    <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center; color: #0369a1; font-weight: bold;">${swapCourse.teacher}（${swapCourse.subject}）</td>
+                </thead>
+                <tbody>
+                <tr class="swap-row-a">
+                    <td>A</td>
+                    <td>${esc(formattedDateA)}<br>${esc(originalCourse.weekday)} ${esc(originalCourse.period)}</td>
+                    <td>${esc(originalCourse.originalTeacher)}（${esc(originalCourse.subject)}）</td>
+                    <td>→</td>
+                    <td class="swap-target-cell">${esc(swapCourse.teacher)}（${esc(swapCourse.subject)}）</td>
                 </tr>
-                <tr style="background: #fef3c7;">
-                    <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center; font-weight: bold;">B</td>
-                    <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center;">${formattedDateB}<br>${swapCourse.weekday} ${swapCourse.period}</td>
-                    <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center;">${swapCourse.teacher}（${swapCourse.subject}）</td>
-                    <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center;">→</td>
-                    <td style="padding: 8px; border: 1px solid #bae6fd; text-align: center; color: #b45309; font-weight: bold;">${originalCourse.originalTeacher}（${originalCourse.subject}）</td>
+                <tr class="swap-row-b">
+                    <td>B</td>
+                    <td>${esc(formattedDateB)}<br>${esc(swapCourse.weekday)} ${esc(swapCourse.period)}</td>
+                    <td>${esc(swapCourse.teacher)}（${esc(swapCourse.subject)}）</td>
+                    <td>→</td>
+                    <td class="swap-target-cell">${esc(originalCourse.originalTeacher)}（${esc(originalCourse.subject)}）</td>
                 </tr>
+                </tbody>
             </table>
-            <p style="margin: 10px 0 0 0; color: #0369a1; font-size: 13px;">
-                ${originalCourse.originalTeacher === swapCourse.teacher
-                    ? `✓ ${originalCourse.className} 的 ${originalCourse.originalTeacher} 自行調動課程時段，科目互換`
-                    : `✓ ${originalCourse.className} 的 ${originalCourse.originalTeacher} 與 ${swapCourse.teacher} 互換課程時段，雙方總時數不變`}
+            </div>
+            <p class="swap-preview-summary">
+                ${swapSummary}
             </p>
         `;
         swapPreview.classList.remove('hidden');
@@ -1726,12 +1806,16 @@ class SubstituteTeacherApp {
 
         let html = '';
 
-        // 標題列
-        html += '<div class="schedule-cell schedule-header">節次</div>';
+        // 標題列（左上角「節次」與節次欄同屬「永遠顯示」的欄位，補 schedule-corner
+        // 讓手機單日檢視的隱藏規則排除它——它沒有 schedule-period/is-day-active，
+        // 若不排除會被 .schedule-grid-single 的隱藏規則誤蓋掉）
+        html += '<div class="schedule-cell schedule-header schedule-corner">節次</div>';
         days.forEach(day => {
             const dayName = '週' + day;
             const isActiveDay = highlightWeekday === dayName;
-            const headerClass = isActiveDay ? 'schedule-cell schedule-header active-day' : 'schedule-cell schedule-header';
+            const headerClass = isActiveDay
+                ? 'schedule-cell schedule-header active-day is-day-active'
+                : 'schedule-cell schedule-header';
             html += `<div class="${headerClass}">週${day}</div>`;
         });
 
@@ -1756,33 +1840,39 @@ class SubstituteTeacherApp {
                     const cellClasses = [
                         'schedule-cell',
                         'schedule-course',
-                        isActiveDay ? 'today-highlight' : '',
+                        isActiveDay ? 'today-highlight is-day-active' : '',
                         isGraduated ? 'disabled-course' : '',
                         isSelectable ? 'selectable' : 'disabled'
                     ].filter(Boolean).join(' ');
 
+                    // esc() 防 XSS：className/subject/domain/dayName/period 為使用者課表資料
                     html += `
-                        <div class="${cellClasses}"
-                             data-weekday="${dayName}"
-                             data-period="${period}"
-                             data-class="${course.className}"
-                             data-subject="${course.subject}"
-                             data-domain="${course.domain}"
+                        <div class="${esc(cellClasses)}"
+                             data-weekday="${esc(dayName)}"
+                             data-period="${esc(period)}"
+                             data-class="${esc(course.className)}"
+                             data-subject="${esc(course.subject)}"
+                             data-domain="${esc(course.domain)}"
                              data-selectable="${isSelectable}">
-                            <span class="course-class">${course.className}</span>
-                            <span class="course-subject">${course.subject}</span>
+                            <span class="course-class">${esc(course.className)}</span>
+                            <span class="course-subject">${esc(course.subject)}</span>
                         </div>
                     `;
                 } else {
                     const freeClasses = isActiveDay
-                        ? 'schedule-cell schedule-course free today-highlight'
+                        ? 'schedule-cell schedule-course free today-highlight is-day-active'
                         : 'schedule-cell schedule-course free';
-                    html += `<div class="${freeClasses}">空堂</div>`;
+                    // data-weekday 補上（原本空堂格缺這個屬性）：.schedule-grid-single 的手機
+                    // 單日檢視靠 .is-day-active 判斷顯隱，不依賴 data-weekday，但補上以利除錯與一致性。
+                    html += `<div class="${freeClasses}" data-weekday="${esc(dayName)}">空堂</div>`;
                 }
             });
         });
 
         grid.innerHTML = html;
+
+        // Stage 4：手機單日檢視——有 highlightWeekday 時只顯示節次欄＋當天欄；640+ 由 CSS 還原全週。
+        grid.classList.toggle('schedule-grid-single', !!highlightWeekday);
 
         // 綁定課程點擊事件（只綁定可選擇的課程）
         grid.querySelectorAll('.schedule-course.selectable:not(.free)').forEach(cell => {
@@ -1863,10 +1953,20 @@ class SubstituteTeacherApp {
 
     /**
      * 處理多選模式的課程選擇
+     *
+     * Stage 1 修復（阻斷 #1）：checkExistingRecord 已改 async 按需查詢，本函式隨之 async 化。
+     * 呼叫端 onCourseSelected() 是 click 事件處理常式，不 await 呼叫是既有慣例。
+     *
+     * 驗收修復（輕 #C）：多選模式允許同時有多格課程各自在做衝堂檢查（這是正常操作，不能
+     * 用單一世代計數器整批作廢），改用 this._inFlightMultiCourseKeys 這個 Set 擋「同一格
+     * 在前一次 await 還沒回來前又被點一次」——這種情況兩輪呼叫會並行讀 this.selectedCourses
+     * 判斷 existingIndex，可能都讀到「尚未選中」而各自 push 一次，選中同一格兩次。
      */
-    handleMultiCourseSelection(cell, courseInfo, date) {
+    async handleMultiCourseSelection(cell, courseInfo, date) {
         // 檢查課程是否已被選中
         const courseKey = `${courseInfo.weekday}_${courseInfo.period}_${courseInfo.className}`;
+        if (this._inFlightMultiCourseKeys.has(courseKey)) return; // 同一格的衝堂檢查還在跑，忽略這次重複點擊
+
         const existingIndex = this.selectedCourses.findIndex(c =>
             `${c.weekday}_${c.period}_${c.className}` === courseKey
         );
@@ -1878,12 +1978,18 @@ class SubstituteTeacherApp {
         } else {
             // 未選中，檢查衝堂後加入
             if (typeof this.dataManager?.checkExistingRecord === 'function') {
-                const existingRecord = this.dataManager.checkExistingRecord(
-                    date,
-                    courseInfo.period,
-                    courseInfo.className,
-                    courseInfo.originalTeacher
-                );
+                this._inFlightMultiCourseKeys.add(courseKey);
+                let existingRecord;
+                try {
+                    existingRecord = await this.dataManager.checkExistingRecord(
+                        date,
+                        courseInfo.period,
+                        courseInfo.className,
+                        courseInfo.originalTeacher
+                    );
+                } finally {
+                    this._inFlightMultiCourseKeys.delete(courseKey);
+                }
                 if (existingRecord) {
                     this.showToast(`此課堂（${courseInfo.period} ${courseInfo.className}）已有調代課紀錄，無法選擇`, 'error');
                     return;
@@ -1934,10 +2040,10 @@ class SubstituteTeacherApp {
         container.classList.remove('hidden');
         countElement.textContent = this.selectedCourses.length;
 
-        // 生成課程標籤
+        // 生成課程標籤（esc() 防 XSS：period/className/subject 為使用者輸入資料）
         chipsContainer.innerHTML = this.selectedCourses.map((course, index) => `
             <div class="course-chip" data-index="${index}">
-                <span class="chip-text">${course.period} ${course.className} ${course.subject}</span>
+                <span class="chip-text">${esc(course.period)} ${esc(course.className)} ${esc(course.subject)}</span>
                 <span class="chip-remove" data-index="${index}" title="移除">×</span>
             </div>
         `).join('');
@@ -2016,9 +2122,9 @@ class SubstituteTeacherApp {
 
         tbody.innerHTML = sortedCourses.map(course => `
             <tr>
-                <td>${course.weekday} ${course.period}</td>
-                <td>${course.className}</td>
-                <td>${course.subject}</td>
+                <td>${esc(course.weekday)} ${esc(course.period)}</td>
+                <td>${esc(course.className)}</td>
+                <td>${esc(course.subject)}</td>
             </tr>
         `).join('');
     }
@@ -2074,8 +2180,18 @@ class SubstituteTeacherApp {
      * 檢查並顯示已存在調代課紀錄的警告
      * @param {string} date - 選擇的日期
      * @param {Object} course - 選擇的課程
+     *
+     * Stage 1 修復（阻斷 #1）：checkExistingRecord 已改 async 按需查詢，本函式隨之 async 化。
+     * 唯一呼叫端 handleSingleCourseSelection() 不 await（既有慣例，fire-and-forget 的 UI 更新）。
+     *
+     * 驗收修復（輕 #C）：單選模式下，使用者可能在上一次選課的衝堂檢查還沒回來前就改選了
+     * 另一堂課——this.selectedCourse 已同步被 handleSingleCourseSelection 換成新的，但這裡
+     * 的 await 還在跑舊的那一輪，若不設守門，舊一輪較晚回來時會用舊課程的檢查結果覆蓋掉
+     * 新課程應該顯示的警告狀態（或反過來把新課程的警告誤植成舊課程的）。加世代計數器，
+     * 比照 _recommendationsGen 的做法：await 前遞增取號，await 後比對，號碼對不上就放棄
+     * 這一輪的 DOM 寫入（含 this.hasExistingRecord 賦值）。
      */
-    checkAndShowExistingRecordWarning(date, course) {
+    async checkAndShowExistingRecordWarning(date, course) {
         // 移除先前的警告訊息
         const existingWarning = document.getElementById('existing-record-warning');
         if (existingWarning) {
@@ -2095,12 +2211,14 @@ class SubstituteTeacherApp {
         }
 
         // 檢查是否已有紀錄
-        const existingRecord = this.dataManager.checkExistingRecord(
+        const gen = ++this._courseSelectionGen;
+        const existingRecord = await this.dataManager.checkExistingRecord(
             date,
             course.period,
             course.className,
             course.originalTeacher
         );
+        if (gen !== this._courseSelectionGen) return; // 期間使用者已改選其他課程，放棄本輪結果
 
         if (existingRecord) {
             // 建立警告訊息
@@ -2126,9 +2244,9 @@ class SubstituteTeacherApp {
                     <div>
                         <div style="font-weight: bold; margin-bottom: 4px;">此課堂已有調代課紀錄</div>
                         <div style="font-size: 13px; color: #7f1d1d;">
-                            ${existingRecord.date} ${existingRecord.weekday} ${existingRecord.period}<br>
-                            ${existingRecord.className} ${existingRecord.subject}（${recordType}）<br>
-                            ${substituteInfo}
+                            ${esc(existingRecord.date)} ${esc(existingRecord.weekday)} ${esc(existingRecord.period)}<br>
+                            ${esc(existingRecord.className)} ${esc(existingRecord.subject)}（${esc(recordType)}）<br>
+                            ${esc(substituteInfo)}
                         </div>
                         <div style="font-size: 12px; margin-top: 8px; color: #b91c1c;">
                             如需重新安排，請先至「調代課紀錄」刪除該筆紀錄
@@ -2152,13 +2270,20 @@ class SubstituteTeacherApp {
 
     /**
      * 顯示推薦代課教師列表
+     *
+     * Stage 1 修復（阻斷 #2）：改用 getSubstituteRecordsAsync(date, date) 對「選定日期」
+     * 單日按需查詢，不再用同步版 getSubstituteRecords()（V2 模式下讀即時訂閱視窗，最近
+     * N 筆）——候選教師名單若漏看視窗外、但落在同一天的既有代課安排，會把已經被排課的
+     * 教師重複推薦出去（正確性 bug，不只是效能問題）。
      */
-    showRecommendations() {
+    async showRecommendations() {
         const date = document.getElementById('sub-date').value;
         // 使用「有效課表」：九年級已畢業時排除其課程，避免已畢業班級擋住可代課老師
         const scheduleData = this.dataManager.getActiveScheduleData();
         const teachers = this.dataManager.getTeachers();
-        const substituteRecords = this.dataManager.getSubstituteRecords();
+        const gen = ++this._recommendationsGen;
+        const substituteRecords = await this.dataManager.getSubstituteRecordsAsync(date, date);
+        if (gen !== this._recommendationsGen) return; // 期間使用者已改選其他課程/日期，放棄本輪結果
 
         console.log('===== 代課教師推薦 =====');
         console.log('選擇的課程:', this.selectedCourse);
@@ -2204,10 +2329,10 @@ class SubstituteTeacherApp {
 
             item.innerHTML = `
                 <div class="recommendation-info">
-                    <span class="recommendation-name">${rec.teacher.name}</span>
-                    <span class="recommendation-reason">${rec.reasonText}</span>
+                    <span class="recommendation-name">${esc(rec.teacher.name)}</span>
+                    <span class="recommendation-reason">${esc(rec.reasonText)}</span>
                 </div>
-                <span class="recommendation-badge ${badgeClass}">${badgeText}</span>
+                <span class="recommendation-badge ${esc(badgeClass)}">${esc(badgeText)}</span>
             `;
 
             item.addEventListener('click', () => this.onSubstituteSelected(index, recommendations));
@@ -2315,9 +2440,11 @@ class SubstituteTeacherApp {
         }
 
         // 檢查該課堂是否已有調代課紀錄（衝堂檢查）
+        // Stage 1 修復（阻斷 #1）：checkExistingRecord 已改 async 按需查詢；confirmSubstitute()
+        // 本身已是 async（見上方 await this.confirmMultiCourseSubstitute），直接 await。
         let existingRecord = null;
         if (typeof this.dataManager?.checkExistingRecord === 'function') {
-            existingRecord = this.dataManager.checkExistingRecord(
+            existingRecord = await this.dataManager.checkExistingRecord(
                 date,
                 this.selectedCourse.period,
                 this.selectedCourse.className,
@@ -2352,13 +2479,16 @@ class SubstituteTeacherApp {
                 year: 'numeric', month: 'long', day: 'numeric'
             });
 
-            const confirmMsg = `日期與星期不符！\n\n` +
-                `選擇的課程是「${courseWeekday}」的課\n` +
+            const confirmMsg = `選擇的課程是「${courseWeekday}」的課\n` +
                 `但選擇的日期 ${formattedDate} 是「${dateWeekday}」\n\n` +
-                `建議調整為：${suggestedFormatted}（${courseWeekday}）\n\n` +
-                `是否自動調整日期？`;
+                `建議調整為：${suggestedFormatted}（${courseWeekday}）`;
 
-            if (confirm(confirmMsg)) {
+            const shouldAdjust = await this.confirmDialog({
+                title: '日期與星期不符',
+                message: confirmMsg,
+                confirmText: '自動調整日期',
+            });
+            if (shouldAdjust) {
                 document.getElementById('sub-date').value = suggestedDate;
                 this.showDateAdjustmentHint(courseWeekday, suggestedDate);
                 return;
@@ -2730,7 +2860,7 @@ class SubstituteTeacherApp {
         hint.style.padding = '8px';
         hint.style.borderRadius = '4px';
         hint.style.marginTop = '8px';
-        hint.innerHTML = `📅 請選擇「<strong>${weekday}</strong>」的日期`;
+        hint.innerHTML = `📅 請選擇「<strong>${esc(weekday)}</strong>」的日期`;
         hint.style.display = 'block';
     }
 
@@ -2769,7 +2899,7 @@ class SubstituteTeacherApp {
             const formattedDate = new Date(date).toLocaleDateString('zh-TW', {
                 year: 'numeric', month: 'long', day: 'numeric'
             });
-            warning.innerHTML = `⚠️ 日期不符：${formattedDate} 是「${dateWeekday}」，但課程是「${courseWeekday}」的課`;
+            warning.innerHTML = `⚠️ 日期不符：${esc(formattedDate)} 是「${esc(dateWeekday)}」，但課程是「${esc(courseWeekday)}」的課`;
             warning.style.display = 'block';
             if (hint) hint.style.display = 'none';
         } else {
@@ -2779,7 +2909,7 @@ class SubstituteTeacherApp {
                 const formattedDate = new Date(date).toLocaleDateString('zh-TW', {
                     year: 'numeric', month: 'long', day: 'numeric'
                 });
-                hint.innerHTML = `✅ ${formattedDate}（${courseWeekday}）`;
+                hint.innerHTML = `✅ ${esc(formattedDate)}（${esc(courseWeekday)}）`;
                 hint.style.color = '#16a34a';
                 hint.style.backgroundColor = '#f0fdf4';
             }
@@ -2907,7 +3037,7 @@ class SubstituteTeacherApp {
             multiSwapRadio.disabled = false;
             multiSwapRadio.closest('.change-type-option').style.opacity = '1';
         }
-        document.getElementById('confirm-substitute-btn').textContent = '確認並產生表單';
+        this.setSubmitButtonMode(false);
     }
 
     // ==========================================
@@ -3002,6 +3132,10 @@ class SubstituteTeacherApp {
      */
     renderSwapBatch() {
         const listEl = document.getElementById('batch-swap-list');
+        // Stage 4：selection-tray 標題列的即時筆數（與「已選課程」tray 的 #selected-course-count 對應）
+        const countEl = document.getElementById('batch-swap-count');
+        if (countEl) countEl.textContent = this.swapBatch.length;
+
         if (this.swapBatch.length === 0) {
             listEl.innerHTML = '<div class="batch-empty-message">尚未加入任何調課，請從上方課表選擇課程後點擊「加入批次」</div>';
             return;
@@ -3010,20 +3144,21 @@ class SubstituteTeacherApp {
         let html = '';
         this.swapBatch.forEach((swap, idx) => {
             const isSelf = swap.isSelfSwap;
+            // esc() 防 XSS：swap 各欄位為使用者課表/輸入資料
             html += `
                 <div class="batch-swap-item">
                     <div class="batch-swap-number">${idx + 1}</div>
                     <div class="batch-swap-detail">
                         <div class="batch-swap-slot-a">
                             <span class="batch-slot-label">A</span>
-                            ${swap.dateA} ${swap.weekdayA} ${swap.periodA}
-                            <strong>${swap.classNameA}</strong> ${swap.subjectA}（${swap.teacherA}）
+                            ${esc(swap.dateA)} ${esc(swap.weekdayA)} ${esc(swap.periodA)}
+                            <strong>${esc(swap.classNameA)}</strong> ${esc(swap.subjectA)}（${esc(swap.teacherA)}）
                         </div>
                         <div class="batch-swap-arrow">↕</div>
                         <div class="batch-swap-slot-b">
                             <span class="batch-slot-label batch-slot-label-b">B</span>
-                            ${swap.dateB} ${swap.weekdayB} ${swap.periodB}
-                            <strong>${swap.classNameB}</strong> ${swap.subjectB}（${swap.teacherB}）
+                            ${esc(swap.dateB)} ${esc(swap.weekdayB)} ${esc(swap.periodB)}
+                            <strong>${esc(swap.classNameB)}</strong> ${esc(swap.subjectB)}（${esc(swap.teacherB)}）
                         </div>
                         ${isSelf ? '<div class="batch-swap-badge">教師自行調課</div>' : ''}
                     </div>
@@ -3172,7 +3307,7 @@ class SubstituteTeacherApp {
                 </div>
                 <ul class="batch-conflict-list">`;
             conflicts.forEach(c => {
-                html += `<li><strong>${c.teacher}</strong> 在 ${c.date}（${c.weekday}）${c.period} 同時有 ${c.classes.join('、')} 的課</li>`;
+                html += `<li><strong>${esc(c.teacher)}</strong> 在 ${esc(c.date)}（${esc(c.weekday)}）${esc(c.period)} 同時有 ${c.classes.map(esc).join('、')} 的課</li>`;
             });
             html += '</ul>';
             conflictContent.innerHTML = html;
@@ -3183,8 +3318,13 @@ class SubstituteTeacherApp {
     /**
      * 清除批次
      */
-    clearSwapBatch() {
-        if (this.swapBatch.length > 0 && !confirm('確定要清除全部批次調課？')) return;
+    async clearSwapBatch() {
+        if (this.swapBatch.length > 0 && !(await this.confirmDialog({
+            title: '清除批次調課',
+            message: '確定要清除全部批次調課？',
+            confirmText: '清除',
+            danger: true,
+        }))) return;
         this.swapBatch = [];
         this.renderSwapBatch();
         this.checkBatchConflicts();
@@ -3206,7 +3346,11 @@ class SubstituteTeacherApp {
             return;
         }
 
-        if (!confirm(`確認送出 ${this.swapBatch.length} 筆調課？將同時產生調課紀錄與 PDF 表單。`)) {
+        if (!(await this.confirmDialog({
+            title: '送出多重調課',
+            message: `確認送出 ${this.swapBatch.length} 筆調課？將同時產生調課紀錄與 PDF 表單。`,
+            confirmText: '送出',
+        }))) {
             return;
         }
 
@@ -3307,8 +3451,16 @@ class SubstituteTeacherApp {
 
     /**
      * 即時更新「本週共 X 筆 → 預估 Y 頁」預覽
+     *
+     * Stage 1（讀取成本止血）：改用 getSubstituteRecordsAsync()——V2 已登入模式下，
+     * 即時訂閱只保留最近 N 筆（見 v2-app.js V2_RECORDS_PAGE_SIZE），使用者選的週次若是
+     * 較舊的一週，同步版 getSubstituteRecords() 只會在視窗內找，找不到就漏算。
+     * 本函式改為 async；呼叫端是 change 事件監聽（見 bindRecordEvents），
+     * 事件處理常式呼叫 async 函式而不 await 是既有慣例，不影響其他呼叫端。
+     * 輕 #12：async 化後若使用者快速切換週次，較舊一輪的查詢可能在較新一輪之後才回來、
+     * 把新結果覆蓋回舊的（後發先至）。用 this._weeklySummaryPreviewGen 世代計數器守門。
      */
-    updateWeeklySummaryPreview() {
+    async updateWeeklySummaryPreview() {
         const dateInput = document.getElementById('weekly-summary-date');
         const hint = document.getElementById('weekly-summary-range-hint');
         const preview = document.getElementById('weekly-summary-preview');
@@ -3322,9 +3474,11 @@ class SubstituteTeacherApp {
             return;
         }
 
+        const gen = ++this._weeklySummaryPreviewGen;
         const weekStart = this.pdfGenerator.getWeekStart(selected);
         const weekRange = this.pdfGenerator.getWeekRange(weekStart);
-        const records = this.dataManager.getSubstituteRecords(weekRange.start, weekRange.end);
+        const records = await this.dataManager.getSubstituteRecordsAsync(weekRange.start, weekRange.end);
+        if (gen !== this._weeklySummaryPreviewGen) return; // 期間使用者已切換週次，放棄本輪結果
 
         hint.textContent = `週次：${this.pdfGenerator.formatWeekLabel(weekRange.start)} ~ ${this.pdfGenerator.formatWeekLabel(weekRange.end)}`;
 
@@ -3362,7 +3516,8 @@ class SubstituteTeacherApp {
 
         const weekStart = this.pdfGenerator.getWeekStart(selected);
         const weekRange = this.pdfGenerator.getWeekRange(weekStart);
-        const records = this.dataManager.getSubstituteRecords(weekRange.start, weekRange.end);
+        // Stage 1：同上，改用 getSubstituteRecordsAsync（見 updateWeeklySummaryPreview 註解）。
+        const records = await this.dataManager.getSubstituteRecordsAsync(weekRange.start, weekRange.end);
         if (records.length === 0) {
             this.showToast('本週無調代課紀錄，無法產生彙整單', 'warning');
             return;
@@ -3390,6 +3545,15 @@ class SubstituteTeacherApp {
 
     /**
      * 查詢調課紀錄
+     *
+     * 輕 #13（驗收修復，未動邏輯，僅加註警告）：這裡仍呼叫同步版 getSubstituteRecords()，
+     * V2 模式下只讀即時訂閱視窗（最近 N 筆），日期範圍若落在視窗外會漏算——理論上與
+     * confirmSubstitute() 等其他呼叫點同一個問題（阻斷 #1/#2 已修）。本函式目前刻意不修：
+     * 唯一渲染對象 #records-content 在 V2 啟用時已被 CSS 強制隱藏（`body.v2-active
+     * #records-content { display: none !important; }`，見 src/css/base.css），此表格與
+     * #search-records-btn 在 V2 模式下不可觸達，只有 V1 離線模式會走到這裡——而 V1 模式的
+     * getSubstituteRecords() 本來就是讀本機完整陣列，沒有視窗截斷問題。若日後 V1 records-tab
+     * 又重新對 V2 使用者開放，必須連同這裡一併改 getSubstituteRecordsAsync()。
      */
     searchRecords() {
         const startDate = document.getElementById('record-start-date').value;
@@ -3414,19 +3578,20 @@ class SubstituteTeacherApp {
 
         tbody.innerHTML = records.map(record => {
             const leaveTypeName = record.leaveTypeName || this.getLeaveTypeName(record.leaveType) || '-';
+            // esc() 防 XSS：record 欄位均為使用者/Firestore 可控資料
             return `
                 <tr>
-                    <td>${record.date}</td>
-                    <td>${record.className}</td>
-                    <td>${record.weekday} ${record.period}</td>
-                    <td>${record.subject}</td>
-                    <td>${record.originalTeacher}</td>
-                    <td>${record.isSelfSwap ? '自行調課' : record.substituteTeacher}</td>
-                    <td>${leaveTypeName}</td>
-                    <td>
-                        <button class="btn btn-sm btn-more detail-btn" data-id="${record.id}">更多</button>
-                        <button class="btn btn-sm btn-primary reprint-btn" data-id="${record.id}">重印</button>
-                        <button class="btn btn-sm btn-danger delete-record-btn" data-id="${record.id}">刪除</button>
+                    <td data-label="日期" class="cell-primary">${esc(record.date)}</td>
+                    <td data-label="班級">${esc(record.className)}</td>
+                    <td data-label="節次">${esc(record.weekday)} ${esc(record.period)}</td>
+                    <td data-label="科目">${esc(record.subject)}</td>
+                    <td data-label="原任課教師">${esc(record.originalTeacher)}</td>
+                    <td data-label="代課教師">${record.isSelfSwap ? '自行調課' : esc(record.substituteTeacher)}</td>
+                    <td data-label="假別">${esc(leaveTypeName)}</td>
+                    <td class="cell-actions">
+                        <button class="btn btn-sm btn-secondary detail-btn" data-id="${esc(record.id)}">更多</button>
+                        <button class="btn btn-sm btn-primary reprint-btn" data-id="${esc(record.id)}">重印</button>
+                        <button class="btn btn-sm btn-danger delete-record-btn" data-id="${esc(record.id)}">刪除</button>
                     </td>
                 </tr>
             `;
@@ -3456,8 +3621,14 @@ class SubstituteTeacherApp {
 
         // 綁定刪除按鈕
         tbody.querySelectorAll('.delete-record-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                if (confirm('確定要刪除此筆調代課紀錄嗎？')) {
+            btn.addEventListener('click', async (e) => {
+                const ok = await this.confirmDialog({
+                    title: '刪除調代課紀錄',
+                    message: '確定要刪除此筆調代課紀錄嗎？',
+                    confirmText: '刪除',
+                    danger: true,
+                });
+                if (ok) {
                     const id = e.target.dataset.id;
                     this.dataManager.removeSubstituteRecord(id);
                     this.saveDataToStorage();
@@ -3477,38 +3648,39 @@ class SubstituteTeacherApp {
         const typeText = record.type === 'swap' ? '調課' : '代課';
         const leaveTypeName = record.leaveTypeName || this.getLeaveTypeName(record.leaveType) || '-';
 
+        // esc() 防 XSS：record 所有文字欄位均為使用者/Firestore 可控資料
         let detailHtml = `
             <div class="detail-row">
                 <span class="detail-label">異動類型</span>
-                <span class="detail-value">${typeText}</span>
+                <span class="detail-value">${esc(typeText)}</span>
             </div>
             <div class="detail-row">
                 <span class="detail-label">日期</span>
-                <span class="detail-value">${record.date} ${record.weekday}</span>
+                <span class="detail-value">${esc(record.date)} ${esc(record.weekday)}</span>
             </div>
             <div class="detail-row">
                 <span class="detail-label">節次</span>
-                <span class="detail-value">${record.period}</span>
+                <span class="detail-value">${esc(record.period)}</span>
             </div>
             <div class="detail-row">
                 <span class="detail-label">班級</span>
-                <span class="detail-value">${record.className}</span>
+                <span class="detail-value">${esc(record.className)}</span>
             </div>
             <div class="detail-row">
                 <span class="detail-label">科目</span>
-                <span class="detail-value">${record.subject}</span>
+                <span class="detail-value">${esc(record.subject)}</span>
             </div>
             <div class="detail-row">
                 <span class="detail-label">原任課教師</span>
-                <span class="detail-value">${record.originalTeacher}</span>
+                <span class="detail-value">${esc(record.originalTeacher)}</span>
             </div>
             <div class="detail-row">
                 <span class="detail-label">${record.isSelfSwap ? '調課方式' : '代課教師'}</span>
-                <span class="detail-value">${record.isSelfSwap ? '教師自行調課' : record.substituteTeacher}</span>
+                <span class="detail-value">${record.isSelfSwap ? '教師自行調課' : esc(record.substituteTeacher)}</span>
             </div>
             <div class="detail-row">
                 <span class="detail-label">假別</span>
-                <span class="detail-value">${leaveTypeName}</span>
+                <span class="detail-value">${esc(leaveTypeName)}</span>
             </div>
         `;
 
@@ -3519,8 +3691,8 @@ class SubstituteTeacherApp {
                               record.leaveType === '長期病假' ? '核准文號' : '喪假證明';
             detailHtml += `
                 <div class="detail-row">
-                    <span class="detail-label">${labelText}</span>
-                    <span class="detail-value">${record.docNumber}</span>
+                    <span class="detail-label">${esc(labelText)}</span>
+                    <span class="detail-value">${esc(record.docNumber)}</span>
                 </div>
             `;
         }
@@ -3530,7 +3702,7 @@ class SubstituteTeacherApp {
             detailHtml += `
                 <div class="detail-row">
                     <span class="detail-label">事由</span>
-                    <span class="detail-value">${record.reason}</span>
+                    <span class="detail-value">${esc(record.reason)}</span>
                 </div>
             `;
         }
@@ -3541,7 +3713,7 @@ class SubstituteTeacherApp {
             detailHtml += `
                 <div class="detail-row">
                     <span class="detail-label">建立時間</span>
-                    <span class="detail-value">${createdDate}</span>
+                    <span class="detail-value">${esc(createdDate)}</span>
                 </div>
             `;
         }
@@ -3566,6 +3738,8 @@ class SubstituteTeacherApp {
      * 綁定結算相關事件
      */
     bindSettlementEvents() {
+        this.populateSettlementYearOptions();
+
         document.getElementById('generate-settlement-btn').addEventListener('click', () => {
             this.generateSettlement();
         });
@@ -3581,28 +3755,77 @@ class SubstituteTeacherApp {
     }
 
     /**
-     * 產生月結算報表
+     * 取得指定日期所屬的學年度（民國）。
+     * 台灣學年度自 8 月起跳：8 月～翌年 7 月同屬一個學年度。
+     * 例：2026-07-31 → 民國 115 年 7 月，7 < 8，屬 114 學年度；
+     *     2026-08-01 → 民國 115 年 8 月，屬 115 學年度。
      */
-    generateSettlement() {
+    getCurrentAcademicYear(date = new Date()) {
+        const rocYear = date.getFullYear() - 1911;
+        return (date.getMonth() + 1) >= 8 ? rocYear : rocYear - 1;
+    }
+
+    /**
+     * 依當前日期動態產生月結算的「學年度」選項。
+     *
+     * 原本 index.html 把選項寫死為 114 / 113，跨到新學年度後就再也選不到當期資料，
+     * 月結算會直接失效（2026-07-29 上線驗收發現）。改為每次初始化時依實際日期產生
+     * 「當前學年度 +1 ～ -2」共 4 個選項，並預設選中當前學年度。
+     */
+    populateSettlementYearOptions() {
+        const select = document.getElementById('settle-year');
+        if (!select) return;
+
+        const current = this.getCurrentAcademicYear();
+        const years = [current + 1, current, current - 1, current - 2];
+
+        select.innerHTML = years
+            .map(y => `<option value="${y}"${y === current ? ' selected' : ''}>${y}</option>`)
+            .join('');
+        select.value = String(current);
+    }
+
+    /**
+     * 產生月結算報表
+     *
+     * Stage 1（讀取成本止血）：改用 getSubstituteRecordsAsync() 帶明確日期範圍，取代原本
+     * 「getSubstituteRecords() 撈全部 → settlementCalculator 內部用 startsWith 篩月份」的寫法。
+     * 月結算的年份下拉選項可選到當前學年度 +1 ~ -2（populateSettlementYearOptions），使用者
+     * 常態性查詢過去月份，遠超即時訂閱視窗（最近 N 筆）能涵蓋的範圍，若不下推查詢會
+     * 靜默算出錯誤（偏低）的鐘點時數——金額計算，正確性優先於少打一次 Firestore。
+     */
+    async generateSettlement() {
         const year = document.getElementById('settle-year').value;
         const month = document.getElementById('settle-month').value;
+        const btn = document.getElementById('generate-settlement-btn');
 
-        const settlementData = this.settlementCalculator.calculate(
-            year,
-            month,
-            this.dataManager.getScheduleData(),
-            this.dataManager.getSubstituteRecords(),
-            this.dataManager.getTeachers()
-        );
+        try {
+            if (btn) btn.disabled = true;
+            const { startDate, endDate } = this.settlementCalculator.getMonthDateRange(year, month);
+            const records = await this.dataManager.getSubstituteRecordsAsync(startDate, endDate);
 
-        // 儲存結算資料供篩選使用
-        this.currentSettlementData = settlementData;
+            const settlementData = this.settlementCalculator.calculate(
+                year,
+                month,
+                this.dataManager.getScheduleData(),
+                records,
+                this.dataManager.getTeachers()
+            );
 
-        // 重置勾選框
-        document.getElementById('show-changed-only').checked = false;
+            // 儲存結算資料供篩選使用
+            this.currentSettlementData = settlementData;
 
-        this.renderSettlementTable(settlementData);
-        document.getElementById('settlement-result').classList.remove('hidden');
+            // 重置勾選框
+            document.getElementById('show-changed-only').checked = false;
+
+            this.renderSettlementTable(settlementData);
+            document.getElementById('settlement-result').classList.remove('hidden');
+        } catch (err) {
+            console.error('產生月結算失敗:', err);
+            this.showToast('讀取月結算資料失敗，請查看 console', 'error', 5000);
+        } finally {
+            if (btn) btn.disabled = false;
+        }
     }
 
     /**
@@ -3632,19 +3855,19 @@ class SubstituteTeacherApp {
             const hasChange = row.substituteHours > 0 || row.substitutedHours > 0;
             const rowClass = hasChange ? 'settlement-row-changed' : '';
 
-            // 代課增加顯示
+            // 數值欄位直接顯示（已為 number，無 XSS 風險）
             const substituteDisplay = row.substituteHours > 0
                 ? `<span class="settlement-increase">+${row.substituteHours}</span>`
                 : `<span class="settlement-no-change">-</span>`;
 
-            // 被代課減少顯示
             const substitutedDisplay = row.substitutedHours > 0
                 ? `<span class="settlement-decrease">-${row.substitutedHours}</span>`
                 : `<span class="settlement-no-change">-</span>`;
 
+            // esc() 防 XSS：teacherName 為使用者輸入資料
             return `
-                <tr class="${rowClass}" data-has-change="${hasChange}">
-                    <td>${row.teacherName}</td>
+                <tr class="${esc(rowClass)}" data-has-change="${hasChange}">
+                    <td>${esc(row.teacherName)}</td>
                     <td>${row.originalHours}</td>
                     <td>${substituteDisplay}</td>
                     <td>${substitutedDisplay}</td>
@@ -3666,27 +3889,42 @@ class SubstituteTeacherApp {
 
     /**
      * 匯出結算表 Excel
+     *
+     * Stage 1：與 generateSettlement() 相同理由，改用 getSubstituteRecordsAsync() 帶明確日期範圍。
      */
-    exportSettlementExcel() {
+    async exportSettlementExcel() {
         const year = document.getElementById('settle-year').value;
         const month = document.getElementById('settle-month').value;
+        const btn = document.getElementById('export-settlement-btn');
 
-        const settlementData = this.settlementCalculator.calculate(
-            year,
-            month,
-            this.dataManager.getScheduleData(),
-            this.dataManager.getSubstituteRecords(),
-            this.dataManager.getTeachers()
-        );
+        try {
+            if (btn) btn.disabled = true;
+            const { startDate, endDate } = this.settlementCalculator.getMonthDateRange(year, month);
+            const records = await this.dataManager.getSubstituteRecordsAsync(startDate, endDate);
 
-        this.settlementCalculator.exportToExcel(settlementData, year, month);
+            const settlementData = this.settlementCalculator.calculate(
+                year,
+                month,
+                this.dataManager.getScheduleData(),
+                records,
+                this.dataManager.getTeachers()
+            );
+
+            this.settlementCalculator.exportToExcel(settlementData, year, month);
+        } catch (err) {
+            console.error('匯出月結算 Excel 失敗:', err);
+            this.showToast('讀取月結算資料失敗，請查看 console', 'error', 5000);
+        } finally {
+            if (btn) btn.disabled = false;
+        }
     }
 
     /**
      * 綁定資料管理事件
      */
     bindDataManagementEvents() {
-        // 匯入上下文元素對應表
+        // 匯入上下文元素對應表（Stage 2 起備份還原去重，只留設定頁一組；
+        // 原「課表匯入頁籤」那組 context 與其 6 個 DOM 綁定已隨備份還原卡移除一併刪除）
         this._importContexts = {
             settings: {
                 file: 'import-data-file',
@@ -3694,12 +3932,6 @@ class SubstituteTeacherApp {
                 preview: 'import-preview',
                 stats: 'import-stats',
             },
-            tab: {
-                file: 'tab-import-file',
-                filename: 'tab-import-filename',
-                preview: 'tab-import-preview',
-                stats: 'tab-import-stats',
-            }
         };
         this._activeImportCtx = 'settings';
 
@@ -3732,29 +3964,9 @@ class SubstituteTeacherApp {
             this.cancelImport();
         });
 
-        // === 課表匯入頁籤的備份還原 ===
-        document.getElementById('tab-export-btn')?.addEventListener('click', () => {
-            this.exportLocalData();
-        });
-
-        document.getElementById('tab-import-btn')?.addEventListener('click', () => {
-            this._activeImportCtx = 'tab';
-            document.getElementById('tab-import-file').click();
-        });
-
-        document.getElementById('tab-import-file')?.addEventListener('change', (e) => {
-            this._activeImportCtx = 'tab';
-            this.handleImportFile(e.target.files[0]);
-        });
-
-        document.getElementById('tab-confirm-import-btn')?.addEventListener('click', () => {
-            this._activeImportCtx = 'tab';
-            this.confirmImport();
-        });
-
-        document.getElementById('tab-cancel-import-btn')?.addEventListener('click', () => {
-            this._activeImportCtx = 'tab';
-            this.cancelImport();
+        // === 課表管理頁籤的備份還原提示連結（Stage 2 起去重，實際功能只留設定頁一份） ===
+        document.getElementById('schedule-goto-settings-btn')?.addEventListener('click', () => {
+            document.querySelector('.tab-btn[data-tab="settings"]')?.click();
         });
 
         // === 九年級已畢業開關 ===
@@ -3803,7 +4015,7 @@ class SubstituteTeacherApp {
                 <td>${esc(subject)}</td>
                 <td><input type="text" class="subject-domain-input" data-subject="${esc(subject)}"
                      value="${esc(domains)}" placeholder="（無）"></td>
-                <td><button class="btn btn-danger btn-xs subject-domain-del-btn" data-subject="${esc(subject)}">刪</button></td>
+                <td><button class="btn btn-danger btn-sm subject-domain-del-btn" data-subject="${esc(subject)}">刪</button></td>
             </tr>`;
         }).join('');
 
@@ -3873,12 +4085,18 @@ class SubstituteTeacherApp {
     /**
      * 設定頁：從目前課表重新擷取對應表（合併保留手動編輯）
      */
-    rebuildSubjectDomainMap() {
+    async rebuildSubjectDomainMap() {
         if (this.dataManager.getScheduleData().length === 0) {
             this.showToast('目前沒有課表資料可擷取', 'warning');
             return;
         }
-        if (!confirm('將以「目前課表」完全重建科目領域對應表，依出現次數重新排序，並覆蓋你手動的增修。確定要繼續嗎？')) {
+        const ok = await this.confirmDialog({
+            title: '重建科目領域對應表',
+            message: '將以「目前課表」完全重建科目領域對應表，依出現次數重新排序，並覆蓋你手動的增修。確定要繼續嗎？',
+            confirmText: '繼續重建',
+            danger: true,
+        });
+        if (!ok) {
             return;
         }
         this.dataManager.buildSubjectDomainMap(false);
@@ -3915,10 +4133,20 @@ class SubstituteTeacherApp {
         }
 
         // 調代課申請：原課表灰底
+        // 驗收缺陷修正：改呼叫 showScheduleForDate() 保留 highlightWeekday 上下文，
+        // 否則 renderTeacherSchedule() 會以 highlightWeekday=null 呼叫
+        // renderTeacherScheduleWithHighlight()，把 .schedule-grid-single 單日檢視
+        // toggle 掉，手機下當日高亮全失、16 格變回 48 格。
+        // 若尚未選日期則維持原本呼叫：showScheduleForDate() 在空日期下會把
+        // #selected-weekday 清空、且無條件顯示 #step-select-course，等於在背景同步
+        // 事件裡強行把使用者推進到步驟三，不安全，因此這種情況不改用它。
         const originalSchedule = document.getElementById('original-schedule');
         if (originalSchedule && !originalSchedule.classList.contains('hidden')) {
             const teacherName = document.getElementById('sub-teacher')?.value;
-            if (teacherName) {
+            const subDate = document.getElementById('sub-date')?.value;
+            if (teacherName && subDate) {
+                this.showScheduleForDate(teacherName, subDate);
+            } else if (teacherName) {
                 const weekSchedule = this.dataManager.getTeacherWeekSchedule(teacherName);
                 this.renderTeacherSchedule(weekSchedule, teacherName);
             }
@@ -3981,10 +4209,24 @@ class SubstituteTeacherApp {
     /**
      * 清除所有本機資料
      */
-    clearLocalData() {
-        if (confirm('確定要清除所有本機資料嗎？此操作無法復原！\n\n建議先使用「匯出本機資料」進行備份。')) {
-            if (confirm('再次確認：清除所有資料？')) {
-                localStorage.removeItem('substituteSystemData');
+    async clearLocalData() {
+        const firstOk = await this.confirmDialog({
+            title: '清除所有本機資料',
+            message: '確定要清除所有本機資料嗎？此操作無法復原！\n\n建議先使用「匯出本機資料」進行備份。',
+            confirmText: '繼續',
+            danger: true,
+        });
+        if (firstOk) {
+            const secondOk = await this.confirmDialog({
+                title: '再次確認',
+                message: '再次確認：清除所有資料？',
+                confirmText: '清除所有資料',
+                danger: true,
+            });
+            if (secondOk) {
+                // Stage 3：V1（本方法）用 this.getLocalStorageKey()，V2 模式下這整個方法會被
+                // v2-app.js 的 patchClearLocalData() 覆寫（見該函式），不會執行到這裡。
+                localStorage.removeItem(this.getLocalStorageKey());
                 localStorage.removeItem('gasUrl');
                 this.showToast('所有資料已清除，頁面將重新載入', 'success');
                 location.reload();
@@ -4077,13 +4319,19 @@ class SubstituteTeacherApp {
     /**
      * 確認匯入資料
      */
-    confirmImport() {
+    async confirmImport() {
         if (!this.pendingImportData) {
             this.showToast('沒有待匯入的資料', 'warning');
             return;
         }
 
-        if (!confirm('確定要匯入資料嗎？\n\n此操作將覆蓋目前的所有資料（課表、教師、調代課紀錄）。\n\n建議先匯出目前的資料作為備份。')) {
+        const ok = await this.confirmDialog({
+            title: '匯入資料確認',
+            message: '確定要匯入資料嗎？\n\n此操作將覆蓋目前的所有資料（課表、教師、調代課紀錄）。\n\n建議先匯出目前的資料作為備份。',
+            confirmText: '匯入並覆蓋',
+            danger: true,
+        });
+        if (!ok) {
             return;
         }
 
@@ -4137,11 +4385,6 @@ class SubstituteTeacherApp {
             this.editorSaveSchedule();
         });
 
-        // 刪除教師按鈕
-        document.getElementById('editor-delete-teacher-btn')?.addEventListener('click', () => {
-            this.editorDeleteTeacher();
-        });
-
         // 課程編輯對話框事件
         document.getElementById('close-course-modal-btn')?.addEventListener('click', () => {
             this.closeCourseEditModal();
@@ -4150,6 +4393,10 @@ class SubstituteTeacherApp {
         document.getElementById('course-modal-save-btn')?.addEventListener('click', () => {
             this.editorSaveCourse();
         });
+
+        // 欄位驗證訊息：下次輸入任一欄位即清除（F：modal 內訊息列，不再用全域 toast）
+        document.getElementById('course-modal-class')?.addEventListener('input', () => this.clearCourseModalMsg());
+        document.getElementById('course-modal-subject')?.addEventListener('input', () => this.clearCourseModalMsg());
 
         // 科目變更 → 依對應表自動帶出領域
         document.getElementById('course-modal-subject')?.addEventListener('change', () => {
@@ -4168,6 +4415,39 @@ class SubstituteTeacherApp {
         document.getElementById('course-edit-modal')?.addEventListener('click', (e) => {
             if (e.target.id === 'course-edit-modal') this.closeCourseEditModal();
         });
+    }
+
+    /**
+     * 綁定課表管理頁籤內的 sub-view 切換鈕（Stage 2：課表匯入／課表編輯合併為
+     * 同一分頁下的兩個 sub-view，segmented control 切換）
+     */
+    bindScheduleSubviewSwitch() {
+        document.querySelectorAll('.subview-switch-btn').forEach(btn => {
+            btn.addEventListener('click', () => this.activateScheduleSubview(btn.dataset.subview));
+        });
+    }
+
+    /**
+     * 切換課表管理頁籤的 sub-view（'import' | 'editor'）。
+     * 尚未匯入課表時，即使呼叫端要求 'editor' 也會被覆蓋為 import（那是資料入口，必須永遠
+     * 可進，切到空的 editor 沒有意義；此時提示使用者先匯入課表）。
+     */
+    activateScheduleSubview(name) {
+        const hasSchedule = this.dataManager.getScheduleData().length > 0;
+        if (!hasSchedule && name === 'editor') {
+            this.showToast('請先匯入課表', 'warning');
+            name = 'import';
+        }
+
+        document.querySelectorAll('.subview-switch-btn').forEach(btn => {
+            const isActive = btn.dataset.subview === name;
+            btn.classList.toggle('btn-primary', isActive);
+            btn.classList.toggle('btn-secondary', !isActive);
+        });
+        document.getElementById('schedule-import-view')?.classList.toggle('hidden', name !== 'import');
+        document.getElementById('schedule-editor-view')?.classList.toggle('hidden', name !== 'editor');
+
+        if (name === 'editor') this.populateEditorTeacherDropdown();
     }
 
     /**
@@ -4224,10 +4504,13 @@ class SubstituteTeacherApp {
 
         let html = '';
 
-        // 標題列
-        html += '<div class="schedule-cell schedule-header">節次</div>';
+        // 標題列（左上角「節次」補 schedule-corner，理由同申請頁課表——見該處註解）
+        html += '<div class="schedule-cell schedule-header schedule-corner">節次</div>';
         days.forEach(day => {
-            html += `<div class="schedule-cell schedule-header">週${day}</div>`;
+            const dayName = '週' + day;
+            const isActiveDay = dayName === this.editorActiveDay;
+            const headerClass = isActiveDay ? 'schedule-cell schedule-header is-day-active' : 'schedule-cell schedule-header';
+            html += `<div class="${headerClass}">週${day}</div>`;
         });
 
         // 各節次
@@ -4236,6 +4519,7 @@ class SubstituteTeacherApp {
 
             days.forEach(day => {
                 const dayName = '週' + day;
+                const isActiveDay = dayName === this.editorActiveDay;
                 const courses = weekSchedule.filter(c =>
                     c.weekday === dayName && c.period === period
                 );
@@ -4244,9 +4528,12 @@ class SubstituteTeacherApp {
                     const course = courses[0];
                     const isGraduated = this.dataManager.isGrade9Disabled()
                         && this.dataManager.isGraduatedClass(course.className);
-                    const courseCellClass = isGraduated
-                        ? 'schedule-cell editor-course disabled-course'
-                        : 'schedule-cell editor-course';
+                    const courseCellClass = [
+                        'schedule-cell',
+                        'editor-course',
+                        isGraduated ? 'disabled-course' : '',
+                        isActiveDay ? 'is-day-active' : ''
+                    ].filter(Boolean).join(' ');
                     const courseTitle = isGraduated
                         ? `九年級已畢業（停用）：${course.className} ${course.subject}`
                         : `點擊編輯：${course.className} ${course.subject}`;
@@ -4263,8 +4550,9 @@ class SubstituteTeacherApp {
                         </div>
                     `;
                 } else {
+                    const emptyCellClass = isActiveDay ? 'schedule-cell editor-empty is-day-active' : 'schedule-cell editor-empty';
                     html += `
-                        <div class="schedule-cell editor-empty"
+                        <div class="${emptyCellClass}"
                              data-weekday="${dayName}"
                              data-period="${period}"
                              title="點擊新增課程">
@@ -4280,9 +4568,30 @@ class SubstituteTeacherApp {
         });
 
         grid.innerHTML = html;
+        // Stage 4：編輯器恆掛 schedule-grid-single——手機單日檢視（依 editorActiveDay），
+        // 640+ 由 CSS 還原全週顯示（與申請頁課表共用同一組規則）。
+        grid.classList.add('schedule-grid-single');
 
         // 更新每週節數
         document.getElementById('editor-weekly-hours').textContent = weekSchedule.length;
+
+        // 手機日切換器：每次 render 重建（innerHTML 覆寫會自動釋放舊 listener，見 R12），
+        // 640+ 由 .hidden-desktop 隱藏，不影響桌機（桌機固定顯示全週，不需要切換）。
+        const daySwitcher = document.getElementById('editor-day-switcher');
+        if (daySwitcher) {
+            daySwitcher.innerHTML = days.map(day => {
+                const dayName = '週' + day;
+                const isActive = dayName === this.editorActiveDay;
+                return `<button type="button" class="day-switcher-btn${isActive ? ' is-active' : ''}" data-weekday="${dayName}">${day}</button>`;
+            }).join('');
+
+            daySwitcher.querySelectorAll('.day-switcher-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    this.editorActiveDay = btn.dataset.weekday;
+                    this.renderEditableScheduleGrid();
+                });
+            });
+        }
 
         // 綁定格子點擊事件
         grid.querySelectorAll('.editor-empty').forEach(cell => {
@@ -4313,6 +4622,7 @@ class SubstituteTeacherApp {
     openCourseEditModal(weekday, period, isEdit, courseData = null) {
         this.editorEditingCell = { weekday, period };
         this.editorIsEditMode = isEdit;
+        this.clearCourseModalMsg();
 
         const modal = document.getElementById('course-edit-modal');
         const title = document.getElementById('course-modal-title');
@@ -4326,7 +4636,7 @@ class SubstituteTeacherApp {
         // 填充班級 datalist
         const datalist = document.getElementById('class-datalist');
         const classes = this.dataManager.getClasses();
-        datalist.innerHTML = classes.map(c => `<option value="${c}">`).join('');
+        datalist.innerHTML = classes.map(c => `<option value="${esc(c)}">`).join('');
 
         // 填充科目 datalist（來自科目↔領域對應表）
         const subjectList = document.getElementById('subject-datalist');
@@ -4393,6 +4703,32 @@ class SubstituteTeacherApp {
     closeCourseEditModal() {
         document.getElementById('course-edit-modal').classList.add('hidden');
         this.editorEditingCell = null;
+        this.clearCourseModalMsg();
+    }
+
+    /**
+     * 課程編輯對話框內的欄位驗證訊息（F：手機 toast 會遮住 modal 關閉鈕，改在 modal 內顯示）。
+     * 3 秒後或下次任一欄位輸入時自動清除。
+     * @param {string} text
+     */
+    showCourseModalMsg(text) {
+        const msgEl = document.getElementById('course-modal-msg');
+        if (!msgEl) return;
+        msgEl.textContent = text;
+        msgEl.classList.add('error');
+        msgEl.style.display = 'block';
+        clearTimeout(this._courseModalMsgTimer);
+        this._courseModalMsgTimer = setTimeout(() => this.clearCourseModalMsg(), 3000);
+    }
+
+    /** 清除課程編輯對話框的欄位驗證訊息。 */
+    clearCourseModalMsg() {
+        const msgEl = document.getElementById('course-modal-msg');
+        if (!msgEl) return;
+        clearTimeout(this._courseModalMsgTimer);
+        msgEl.textContent = '';
+        msgEl.classList.remove('error');
+        msgEl.style.display = 'none';
     }
 
     /**
@@ -4406,11 +4742,11 @@ class SubstituteTeacherApp {
         const domain = document.getElementById('course-modal-domain').value;
 
         if (!className) {
-            this.showToast('請輸入班級', 'warning');
+            this.showCourseModalMsg('請輸入班級');
             return;
         }
         if (!subject) {
-            this.showToast('請輸入科目', 'warning');
+            this.showCourseModalMsg('請輸入科目');
             return;
         }
 
@@ -4474,12 +4810,18 @@ class SubstituteTeacherApp {
     /**
      * 課表編輯器：刪除課程
      */
-    editorDeleteCourse() {
+    async editorDeleteCourse() {
         if (!this.editorEditingCell) return;
         const { weekday, period } = this.editorEditingCell;
         const teacherName = this.editorCurrentTeacher;
 
-        if (!confirm(`確定要刪除 ${weekday} ${period} 的課程嗎？`)) {
+        const ok = await this.confirmDialog({
+            title: '刪除課程',
+            message: `確定要刪除 ${weekday} ${period} 的課程嗎？`,
+            confirmText: '刪除',
+            danger: true,
+        });
+        if (!ok) {
             return;
         }
 
@@ -4509,7 +4851,7 @@ class SubstituteTeacherApp {
     /**
      * 課表編輯器：刪除教師
      */
-    editorDeleteTeacher() {
+    async editorDeleteTeacher() {
         const teacherName = this.editorCurrentTeacher;
         if (!teacherName) return;
 
@@ -4518,7 +4860,8 @@ class SubstituteTeacherApp {
             ? `確定要刪除教師「${teacherName}」嗎？\n該教師有 ${weeklyHours} 節課將一併刪除。`
             : `確定要刪除教師「${teacherName}」嗎？`;
 
-        if (!confirm(confirmMsg)) return;
+        const ok = await this.confirmDialog({ title: '刪除教師', message: confirmMsg, confirmText: '刪除', danger: true });
+        if (!ok) return;
 
         // 刪除該教師的所有課表資料
         const scheduleData = this.dataManager.getScheduleData();
@@ -4609,10 +4952,22 @@ class SubstituteTeacherApp {
     }
 
     /**
+     * localStorage 儲存 key（Stage 3，RESEARCH-multitenancy-semester.md §8 Stage 3）。
+     * V1（本方法）預設回傳未加前綴的舊 key，行為與 Stage 3 之前完全一致——V1 模式
+     * （無 ?v2=1）不知道、也不需要知道 schoolId 這個概念。
+     * V2 模式下由 v2-app.js 的 applyV2LocalStorageKey() 在身份解析成功後覆寫這個方法，
+     * 改回傳 `substituteSystemData:{schoolId}`，讓不同學校的本機資料互不覆蓋；覆寫只在
+     * V2 bootstrap 內發生，純 V1 使用者（多數教師目前的日常用法）完全不受影響。
+     */
+    getLocalStorageKey() {
+        return 'substituteSystemData';
+    }
+
+    /**
      * 從 localStorage 載入已儲存的資料
      */
     loadSavedData() {
-        const savedData = localStorage.getItem('substituteSystemData');
+        const savedData = localStorage.getItem(this.getLocalStorageKey());
         if (savedData) {
             try {
                 const data = JSON.parse(savedData);
@@ -4672,7 +5027,7 @@ class SubstituteTeacherApp {
         this.dataManager.updateLastModified();
 
         const data = this.dataManager.exportToStorage();
-        localStorage.setItem('substituteSystemData', JSON.stringify(data));
+        localStorage.setItem(this.getLocalStorageKey(), JSON.stringify(data));
 
         // 如果已登入且需要同步，則同步到雲端
         if (syncToCloud && isSignedIn()) {
@@ -4762,7 +5117,7 @@ class SubstituteTeacherApp {
                 <span class="status-text">錯誤</span>
             </div>
             <div class="status-details">
-                <p>${message}</p>
+                <p>${esc(message)}</p>
             </div>
         `;
     }
@@ -4772,6 +5127,9 @@ class SubstituteTeacherApp {
      * @param {string} message - 通知訊息
      * @param {string} type - 類型：success, error, warning, info
      * @param {number} duration - 顯示時間（毫秒），預設 3000
+     * @returns {Function} dismiss - 手動提前關閉這顆 toast 的函式（例如「處理中」toast 要在
+     *   處理完成後立刻讓位給下一顆結果 toast，不必等原本的 duration 跑完）。#toast-container
+     *   是 append 疊加、非取代，呼叫端若不主動 dismiss，多顆 toast 會同時疊在畫面上。
      */
     showToast(message, type = 'info', duration = 3000) {
         const container = document.getElementById('toast-container');
@@ -4779,9 +5137,10 @@ class SubstituteTeacherApp {
 
         const toast = document.createElement('div');
         toast.className = `toast toast-${type}`;
+        // esc() 防 XSS：message 可能含使用者輸入資料（教師名、課程名等）
         toast.innerHTML = `
             <span class="toast-icon">${icons[type] || icons.info}</span>
-            <span class="toast-body">${message.replace(/\n/g, '<br>')}</span>
+            <span class="toast-body">${esc(message).replace(/\n/g, '<br>')}</span>
             <button class="toast-close">&times;</button>
         `;
 
@@ -4803,6 +5162,61 @@ class SubstituteTeacherApp {
         if (duration > 0) {
             setTimeout(dismiss, duration);
         }
+
+        return dismiss;
+    }
+
+    /**
+     * 統一 confirm 對話框（Stage 5：取代原生 confirm()）。
+     * 單例：呼叫時若前一個 confirm 尚未關閉，先以 resolve(false) 關閉它，避免重疊。
+     * Esc 不處理（現有 modal 慣例本就沒有全域 Esc 關閉）；點背景＝取消（跟現有多數 modal 一致）。
+     * @param {Object} opts
+     * @param {string} opts.title - 標題
+     * @param {string} opts.message - 內容（換行以 \n 表示，會轉成 <br>）
+     * @param {string} [opts.confirmText='確認']
+     * @param {string} [opts.cancelText='取消']
+     * @param {boolean} [opts.danger=false] - true 時確認鈕改為 .btn-danger
+     * @returns {Promise<boolean>} 使用者按下確認為 true，取消/點背景為 false
+     */
+    confirmDialog({ title = '確認', message = '', confirmText = '確認', cancelText = '取消', danger = false } = {}) {
+        // 單例：前一個 confirm 尚未關閉時，先關閉它（resolve(false)）再開新的
+        if (this._confirmDialogResolve) {
+            const prevResolve = this._confirmDialogResolve;
+            this._confirmDialogResolve = null;
+            prevResolve(false);
+        }
+
+        const modal = document.getElementById('confirm-modal');
+        const titleEl = document.getElementById('confirm-modal-title');
+        const messageEl = document.getElementById('confirm-modal-message');
+        const confirmBtn = document.getElementById('confirm-modal-confirm-btn');
+        const cancelBtn = document.getElementById('confirm-modal-cancel-btn');
+
+        titleEl.textContent = title;
+        // esc() 防 XSS：message 目前皆為程式內建文字，仍統一跳脫以防未來誤傳入使用者資料
+        messageEl.innerHTML = esc(message).replace(/\n/g, '<br>');
+        confirmBtn.textContent = confirmText;
+        cancelBtn.textContent = cancelText;
+        confirmBtn.classList.toggle('btn-danger', !!danger);
+        confirmBtn.classList.toggle('btn-primary', !danger);
+
+        modal.classList.remove('hidden');
+
+        return new Promise((resolve) => {
+            const finish = (result) => {
+                modal.classList.add('hidden');
+                confirmBtn.onclick = null;
+                cancelBtn.onclick = null;
+                modal.onclick = null;
+                if (this._confirmDialogResolve === finish) this._confirmDialogResolve = null;
+                resolve(result);
+            };
+            this._confirmDialogResolve = finish;
+            confirmBtn.onclick = () => finish(true);
+            cancelBtn.onclick = () => finish(false);
+            // 點背景關閉（跟 course-edit-modal / record-detail-modal 等既有 modal 慣例一致）
+            modal.onclick = (e) => { if (e.target === modal) finish(false); };
+        });
     }
 }
 

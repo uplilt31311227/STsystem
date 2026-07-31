@@ -165,6 +165,33 @@ async function downloadFromCloud() {
 }
 
 /**
+ * 刪除目前登入使用者的 V1 個人雲端備份文件（users/{uid}/data/substituteSystem）。
+ * V2「清除所有資料」原本只清 schools/{schoolId} 底下的全校資料，這份 V1 個人雲端備份完全
+ * 不受影響——只要換一台裝置 / 換網址重新登入舊版頁面，dataManager 啟動時的
+ * checkAndHandleSync（V2 模式下已停用，見 v2-app.js patchDataManager）以外的舊版流程仍會把
+ * 這份文件整包讀回來，讓使用者覺得「清除所有資料」沒有清乾淨。
+ * firestore.rules 對 users/{uid} 的規則是 `allow read, write: if ... uid == 自己`，
+ * write 涵蓋 delete，因此直接刪除文件，不需要退而求其次改成覆寫空物件。
+ * 只刪自己（目前登入 uid）的備份：rules 本來就無法刪到其他使用者的（uid 不符會被拒），
+ * 呼叫端不需額外過濾。
+ * @returns {Promise<boolean>} 未登入 / Firebase 未就緒時回傳 false 且不視為錯誤。
+ */
+async function deletePersonalCloudBackup() {
+    if (!isFirebaseInitialized() || !isSignedIn()) {
+        console.log('未登入或 Firebase 未初始化，無法刪除個人雲端備份');
+        return false;
+    }
+
+    const docPath = getUserDocPath();
+    if (!docPath) return false;
+
+    const { doc, deleteDoc } = window.firebaseModules;
+    const db = getDbInstance();
+    await deleteDoc(doc(db, docPath));
+    return true;
+}
+
+/**
  * 啟用即時同步
  * @param {Function} onDataChange - 資料變更回調
  * @returns {Function} 取消監聽函數
@@ -390,6 +417,7 @@ export {
     SyncStatus,
     uploadToCloud,
     downloadFromCloud,
+    deletePersonalCloudBackup,
     enableRealtimeSync,
     disableRealtimeSync,
     compareData,

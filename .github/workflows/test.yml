@@ -1,0 +1,25 @@
+# V2 商用上線自動化測試關卡：單元測試 + 全檔語法檢查
+# 不含 Playwright E2E（需要 Google 登入憑證，不適合在 CI 跑）。
+name: Test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run unit tests
+        run: npm test
+
+      - name: Syntax check (src/js + scripts)
+        run: npm run check

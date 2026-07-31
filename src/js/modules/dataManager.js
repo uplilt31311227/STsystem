@@ -526,6 +526,18 @@ export class DataManager {
     }
 
     /**
+     * getSubstituteRecords() 的非同步版本（Stage 1，讀取成本止血）。
+     * V1／離線模式（本函式）直接包一層 Promise 呼叫既有同步邏輯，行為完全不變；
+     * V2 已登入模式由 v2-app.js patchDataManager() 覆寫——超出即時訂閱視窗（最近 N 筆）
+     * 的日期範圍會改一次性查 Firestore，不再假設「快取裡就是全部歷史紀錄」。
+     * 月結算／週彙整 PDF 這類「明確帶日期範圍」的呼叫端一律改走這支，不再用同步版本。
+     * @returns {Promise<Array>}
+     */
+    async getSubstituteRecordsAsync(startDate = '', endDate = '', teacherFilter = '') {
+        return this.getSubstituteRecords(startDate, endDate, teacherFilter);
+    }
+
+    /**
      * 標準化日期格式為 YYYY-MM-DD
      * @param {string} dateStr - 日期字串
      * @returns {string} 標準化後的日期
@@ -543,6 +555,12 @@ export class DataManager {
      * @param {number} year - 年份
      * @param {number} month - 月份（1-12）
      * @returns {Array} 該月份的紀錄
+     *
+     * 輕 #13（驗收修復，未動邏輯，僅加註警告）：呼叫的是同步版 getSubstituteRecords()——
+     * V2 模式下只讀即時訂閱視窗（最近 N 筆），指定月份若落在視窗外會漏算。目前全專案
+     * 沒有任何呼叫端使用這支方法（`grep -rn "getMonthlyRecords" src/js/` 只有本檔定義處），
+     * 屬未串接的既有方法，暫不需要處理；若未來要接上，應改呼叫 getSubstituteRecordsAsync()，
+     * 不要直接用這支同步版本。
      */
     getMonthlyRecords(year, month) {
         const startDate = `${year}-${String(month).padStart(2, '0')}-01`;
