@@ -8,7 +8,20 @@
  */
 
 import { getV2Firestore } from './firebaseV2.js';
-import { SCHEMA_PATHS }   from './schemaConstants.js';
+import { SCHEMA_PATHS, REQUEST_STATUS } from './schemaConstants.js';
+
+// Stage 1（讀取成本止血，RESEARCH-multitenancy-semester.md §5.4）：即時訂閱的預設分頁大小。
+// 報告未給明確數字時的預設值（§8 路線圖 Stage 1 一列）。
+const DEFAULT_PAGE_SIZE = 50;
+
+// 「仍在途」的請求狀態：待同意 / 待核准（含 legacy 'pending'，由呼叫端 normalizeLegacyRequest
+// 映射）。已核准／已拒絕的請求不需即時監聽——核准後真相已轉移到 substituteRecords，
+// 拒絕後只是等發起人按「我知道了」關閉，兩者都不影響「有沒有新的待辦要處理」這件事。
+const OPEN_REQUEST_STATUSES = [
+    REQUEST_STATUS.PENDING,
+    REQUEST_STATUS.PENDING_SWAP_CONSENT,
+    REQUEST_STATUS.PENDING_APPROVAL,
+];
 
 export function genId(prefix) {
     return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
@@ -270,6 +283,151 @@ export async function listAllSubstituteRecordsForClear() {
     return snap.docs.map(d => ({ recordId: d.id, ...d.data() }));
 }
 
+/**
+ * Stage 1（讀取成本止血，§5.4）：一次性分頁讀取已成立紀錄，供「調代課紀錄」頁籤
+ * 「最近 N 筆＋載入更多」列表使用。
+ *
+ * 驗收修復（輕 #10）：cursor 改用 Firestore 原生 QueryDocumentSnapshot（而非值游標），
+ * 避免兩筆紀錄 createdAt 完全相同（同毫秒建立）時，純值游標 `startAfter(value)` 沒有
+ * 文件 ID 當 tiebreaker、可能漏掉或重複跳過同值的其中一筆。不用 offset——Firestore 對
+ * offset 跳過的文件一樣計費讀取，官方建議改用 cursor 分頁（報告 §5.4 引用 [S23]）。
+ *
+ * @param {{pageSize?: number, afterCursor?: import('firebase/firestore').QueryDocumentSnapshot|null}} opts
+ * @returns {Promise<{records: Array, nextCursor: object|null, hasMore: boolean}>}
+ *   nextCursor 是原生 QueryDocumentSnapshot（或 null），呼叫端應原樣保存、原樣傳回，不要
+ *   從中萃取欄位值自行組游標。
+ */
+export async function listSubstituteRecordsPage({ pageSize = DEFAULT_PAGE_SIZE, afterCursor = null } = {}) {
+    const fs   = await getV2Firestore();
+    const col  = fs.collection(fs.db, SCHEMA_PATHS.substituteCol());
+    const constraints = [fs.orderBy('createdAt', 'desc')];
+    if (afterCursor) constraints.push(fs.startAfter(afterCursor));
+    constraints.push(fs.limit(pageSize));
+    const q      = fs.query(col, ...constraints);
+    const snap   = await fs.getDocs(q);
+    const records = snap.docs.map(d => ({ recordId: d.id, ...d.data() }));
+    return {
+        records,
+        nextCursor: snap.docs.length ? snap.docs[snap.docs.length - 1] : afterCursor,
+        hasMore:    records.length === pageSize,
+    };
+}
+
+/**
+ * Stage 1 修復（阻斷 #1）：衝堂檢查（v2CheckExistingRecord）按日期一次性查詢已成立紀錄，
+ * 取代原本只看即時訂閱視窗（最近 N 筆）的作法——提前 2 週以上建立的紀錄不在視窗內，
+ * 漏檢會造成同節課重複建檔、月結算重複計費，是正確性 bug 不是效能問題。
+ * 單欄位相等查詢（date），屬 Firestore 自動建立的單欄位索引，不需複合索引。
+ * period/className/originalTeacher 由呼叫端在記憶體中比對（單日筆數天生有界，可忽略成本）。
+ */
+export async function queryRecordsByExactDate(date) {
+    if (!date) return [];
+    const fs   = await getV2Firestore();
+    const col  = fs.collection(fs.db, SCHEMA_PATHS.substituteCol());
+    const q    = fs.query(col, fs.where('date', '==', date));
+    const snap = await fs.getDocs(q);
+    return snap.docs.map(d => ({ recordId: d.id, ...d.data() }));
+}
+
+/**
+ * Stage 1 修復（阻斷 #1）：同上，pendingRequests 版本。刻意只用 `where('date','==',date)`
+ * 單欄位查詢（不疊加 status 條件），狀態篩選留給呼叫端在記憶體中做——若在查詢裡疊加
+ * `where('status','in',[...])` 會變成兩個不同欄位的條件組合，需要額外複合索引；單日的
+ * pendingRequests 筆數天生有界，記憶體篩選成本可忽略，用這個寫法換取「零新增複合索引」。
+ */
+export async function queryPendingRequestsByExactDate(date) {
+    if (!date) return [];
+    const fs   = await getV2Firestore();
+    const col  = fs.collection(fs.db, SCHEMA_PATHS.pendingCol());
+    const q    = fs.query(col, fs.where('date', '==', date));
+    const snap = await fs.getDocs(q);
+    return snap.docs.map(d => ({ reqId: d.id, ...d.data() }));
+}
+
+/** 今天的 YYYY-MM-DD（本機時區）。 */
+function todayDateString() {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/** 當前學年度起日（西元，YYYY-08-01）。台灣學年度 8 月開學，1-7 月屬前一學年度。 */
+function currentAcademicYearStartDate() {
+    const d = new Date();
+    const y = d.getFullYear();
+    const startYear = (d.getMonth() + 1) >= 8 ? y : y - 1; // getMonth() 0-based
+    return `${startYear}-08-01`;
+}
+
+/** dateStr（YYYY-MM-DD）的年份加上 years（可負）。格式不對就原樣回傳（不噴錯，交給呼叫端
+ * 的字串比較自然得出「查不到」，不會是更難查的例外）。 */
+function addYearsToDateString(dateStr, years) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr || '');
+    if (!m) return dateStr;
+    const [, y, mo, da] = m;
+    return `${Number(y) + years}-${mo}-${da}`;
+}
+
+/**
+ * 驗收修復（中 #B）：把「日期範圍缺一端時該怎麼補」抽成獨立、同步的純函式——原本的實作
+ * （見下方 queryRecordsByDateRange 的舊版註解）方向錯了：
+ *   - 只給 startDate 時，原本把缺席的 endDate 夾成「今天」——但調代課紀錄本來就可能是
+ *     預先排定的未來日期，只查「起日～今天」會把未來日期的紀錄全部漏掉。
+ *   - 只給 endDate 時，原本把缺席的 startDate 夾成「當前學年度起日」——若使用者查詢的
+ *     endDate 早於當前學年度起日（例如查前一學年度的某個月），會產生
+ *     effectiveStart > effectiveEnd 這種恆 0 筆的查詢，而且完全沒有任何提示，使用者只會
+ *     看到「查無紀錄」，以為是真的沒有資料。
+ * 修正為「以有給的那一端為基準，往缺席的方向推一年」：
+ *   - 只有 startDate → endDate = startDate + 1 年（往未來延伸，涵蓋預先排定的紀錄）。
+ *   - 只有 endDate → startDate = endDate − 1 年（往過去延伸）。
+ *   - 兩端都有 → 原樣使用，不做任何調整（呼叫端自己決定的範圍，交由 valid 判斷是否顛倒）。
+ *   - 兩端都沒有 → 退回「當前學年度起日～今天」這組保守預設（目前的呼叫端在兩端皆缺席時
+ *     都會在更早的邏輯分支就走同步視窗版，理論上不會落到這裡；這裡的 fallback 純屬防禦）。
+ *
+ * 回傳的 `valid` 讓呼叫端能在真正發送查詢之前（甚至不必打 Firestore）判斷範圍是否有效
+ * （effectiveStart <= effectiveEnd），無效時應提示使用者「範圍無效」，不要讓查詢默默回
+ * 0 筆、被誤讀成「真的沒有資料」。
+ * @returns {{ effectiveStart: string, effectiveEnd: string, valid: boolean }}
+ */
+export function resolveDateRangeBounds({ startDate = null, endDate = null } = {}) {
+    let effectiveStart = startDate;
+    let effectiveEnd   = endDate;
+    if (startDate && !endDate) {
+        effectiveEnd = addYearsToDateString(startDate, 1);
+    } else if (endDate && !startDate) {
+        effectiveStart = addYearsToDateString(endDate, -1);
+    } else if (!startDate && !endDate) {
+        effectiveStart = currentAcademicYearStartDate();
+        effectiveEnd   = todayDateString();
+    }
+    return { effectiveStart, effectiveEnd, valid: effectiveStart <= effectiveEnd };
+}
+
+/**
+ * Stage 1（§5.6）：依日期範圍一次性查詢已成立紀錄，供月結算／週彙整 PDF／紀錄頁日期篩選
+ * 在目標範圍落在即時訂閱視窗（最近 N 筆）之外時使用。range 條件與 orderBy 同一欄位
+ * （date），屬 Firestore 自動建立的單欄位索引即可涵蓋，不需額外複合索引。
+ *
+ * 驗收修復（中 #5，方向於 #B 訂正）：startDate／endDate 任一端缺席時，用
+ * resolveDateRangeBounds() 補上缺席的一端，不再讓查詢對整個集合做無界 range scan；
+ * `valid === false`（算出來的範圍起 > 迄，通常是呼叫端兩端都給了但順序顛倒）時短路
+ * 回傳空陣列、不發送查詢（呼叫端若要對使用者顯示「範圍無效」提示，應直接呼叫
+ * resolveDateRangeBounds() 自行同步判斷，不需要先跑一次注定 0 筆的非同步查詢才知道）。
+ */
+export async function queryRecordsByDateRange({ startDate = null, endDate = null } = {}) {
+    const { effectiveStart, effectiveEnd, valid } = resolveDateRangeBounds({ startDate, endDate });
+    if (!valid) return [];
+    const fs   = await getV2Firestore();
+    const col  = fs.collection(fs.db, SCHEMA_PATHS.substituteCol());
+    const q    = fs.query(
+        col,
+        fs.where('date', '>=', effectiveStart),
+        fs.where('date', '<=', effectiveEnd),
+        fs.orderBy('date', 'desc'),
+    );
+    const snap = await fs.getDocs(q);
+    return snap.docs.map(d => ({ recordId: d.id, ...d.data() }));
+}
+
 export async function getSubstituteRecord(recordId) {
     const fs   = await getV2Firestore();
     const ref  = fs.doc(fs.db, SCHEMA_PATHS.substituteDoc(recordId));
@@ -399,6 +557,10 @@ export async function getRecordDetailsBulk(recordIds) {
 
 /* ===== Pending Requests（待同意） ===== */
 
+// Stage 1（讀取成本止血）起，v2-app.js 主流程已改用 listOpenPendingRequests()／
+// listPendingRequestsByInitiator()（見下方），不再呼叫這支整集合無界讀取。保留匯出
+// 供未來需要「一次拿到全部待審請求」的場景使用（例如 legacyMigrationService.js 的對應
+// substituteRecords 版本 listSubstituteRecords() 就是這種低頻一次性用途），目前無呼叫端。
 export async function listPendingRequests() {
     const fs   = await getV2Firestore();
     const col  = fs.collection(fs.db, SCHEMA_PATHS.pendingCol());
@@ -412,6 +574,42 @@ export async function listAllPendingRequestsForClear() {
     const fs   = await getV2Firestore();
     const col  = fs.collection(fs.db, SCHEMA_PATHS.pendingCol());
     const snap = await fs.getDocs(col);
+    return snap.docs.map(d => ({ reqId: d.id, ...d.data() }));
+}
+
+/**
+ * Stage 1（§5.4）：一次性讀取「仍在途」的待審請求（待同意／待核准），行為與
+ * subscribePendingRequests 的 where 條件一致，供 bootstrap 初次塞 cache 用
+ * （不用 onSnapshot 首次快照前的空窗期）。
+ */
+export async function listOpenPendingRequests() {
+    const fs   = await getV2Firestore();
+    const col  = fs.collection(fs.db, SCHEMA_PATHS.pendingCol());
+    const q    = fs.query(
+        col,
+        fs.where('status', 'in', OPEN_REQUEST_STATUSES),
+        fs.orderBy('createdAt', 'desc'),
+    );
+    const snap = await fs.getDocs(q);
+    return snap.docs.map(d => ({ reqId: d.id, ...d.data() }));
+}
+
+/**
+ * Stage 1（§5.4）：單一教師發起過的全部請求（含已核准／已拒絕的歷史），供「待辦」頁籤
+ * 「我的申請」區塊使用。這段歷史對全校規模是無界的，但限定到「單一教師」天然有界
+ * （一人不會累積出全校等級的請求量），故用一次性按需查詢取代原本對整個 pendingRequests
+ * 集合的無界讀取。
+ */
+export async function listPendingRequestsByInitiator(teacherId) {
+    if (!teacherId) return [];
+    const fs   = await getV2Firestore();
+    const col  = fs.collection(fs.db, SCHEMA_PATHS.pendingCol());
+    const q    = fs.query(
+        col,
+        fs.where('initiatedBy', '==', teacherId),
+        fs.orderBy('createdAt', 'desc'),
+    );
+    const snap = await fs.getDocs(q);
     return snap.docs.map(d => ({ reqId: d.id, ...d.data() }));
 }
 
@@ -505,7 +703,9 @@ export async function appendLog(entry) {
     return { logId: ref.id, ...entry };
 }
 
-export async function listLogs({ limit: lim = 200, since = null } = {}) {
+// Stage 1（§5.4）：日誌預設筆數從 200 降到 50——操作日誌本就是低頻查閱的稽核輔助資訊，
+// 且已改為「進入日誌頁才一次性讀取」（見 v2-app.js renderLogsTab），不再於 bootstrap 常駐訂閱。
+export async function listLogs({ limit: lim = DEFAULT_PAGE_SIZE, since = null } = {}) {
     const fs  = await getV2Firestore();
     const col = fs.collection(fs.db, SCHEMA_PATHS.logsCol());
     const constraints = [fs.orderBy('timestamp', 'desc'), fs.limit(lim)];
@@ -517,21 +717,37 @@ export async function listLogs({ limit: lim = 200, since = null } = {}) {
 
 /* ===== 即時訂閱（onSnapshot） ===== */
 
+// Stage 1（§5.4）：只監聽「仍在途」的請求（見 OPEN_REQUEST_STATUSES），不再整集合無界監聽。
+// 已核准／已拒絕的請求不影響「有沒有新待辦」，且此訂閱只餵 _v2PendingCache（供衝堂檢查用，
+// v2CheckExistingRecord 本來就只認 pending_swap_consent/pending_approval 兩種狀態）——
+// 對這個用途而言，過濾掉的文件本來就從未被邏輯用到，屬零行為風險的收斂。
+// 「我的申請」需要的已核准／已拒絕歷史改由 listPendingRequestsByInitiator() 按需查詢（見上）。
 export async function subscribePendingRequests(callback, onError) {
     const fs  = await getV2Firestore();
     const col = fs.collection(fs.db, SCHEMA_PATHS.pendingCol());
-    const q   = fs.query(col, fs.orderBy('createdAt', 'desc'));
+    const q   = fs.query(
+        col,
+        fs.where('status', 'in', OPEN_REQUEST_STATUSES),
+        fs.orderBy('createdAt', 'desc'),
+    );
     return fs.onSnapshot(q, (snap) => {
         callback(snap.docs.map(d => ({ reqId: d.id, ...d.data() })));
     }, onError);
 }
 
-export async function subscribeSubstituteRecords(callback, onError) {
+// Stage 1（§5.4）：整集合無界監聽改為 orderBy createdAt desc + limit（預設 50，報告未給
+// 明確數字時的預設值）。更早的歷史紀錄改由 listSubstituteRecordsPage()（頁籤「載入更多」）
+// 或 queryRecordsByDateRange()（月結算／日期篩選）按需查詢，見 v2-app.js。
+// 驗收修復（輕 #10）：callback 第二參數帶上這批快照的最後一筆 QueryDocumentSnapshot
+// （lastDoc），供呼叫端把「載入更多」分頁的起點接在即時視窗尾端時當作原生 cursor 用
+// （見 v2-app.js loadMoreRecordsTabPage），不用值游標。
+export async function subscribeSubstituteRecords(callback, onError, { limit: lim = DEFAULT_PAGE_SIZE } = {}) {
     const fs  = await getV2Firestore();
     const col = fs.collection(fs.db, SCHEMA_PATHS.substituteCol());
-    const q   = fs.query(col, fs.orderBy('createdAt', 'desc'));
+    const q   = fs.query(col, fs.orderBy('createdAt', 'desc'), fs.limit(lim));
     return fs.onSnapshot(q, (snap) => {
-        callback(snap.docs.map(d => ({ recordId: d.id, ...d.data() })));
+        const lastDoc = snap.docs.length ? snap.docs[snap.docs.length - 1] : null;
+        callback(snap.docs.map(d => ({ recordId: d.id, ...d.data() })), { lastDoc });
     }, onError);
 }
 
@@ -545,7 +761,10 @@ export async function subscribeSchedule(callback, onError) {
     }, onError);
 }
 
-export async function subscribeOperationLogs(callback, { limit: lim = 200 } = {}, onError) {
+// Stage 1（§5.4）：此函式起 bootstrap 已不再呼叫（v2-app.js 改為進入「操作日誌」頁籤才用
+// 既有的 listLogs() 一次性讀取，見 renderLogsTab）——常駐 onSnapshot 對低頻查閱的稽核資訊
+// 不划算。保留此函式（未來若真的需要日誌頁即時推播可重新啟用），預設 limit 同步降到 50。
+export async function subscribeOperationLogs(callback, { limit: lim = DEFAULT_PAGE_SIZE } = {}, onError) {
     const fs  = await getV2Firestore();
     const col = fs.collection(fs.db, SCHEMA_PATHS.logsCol());
     const q   = fs.query(col, fs.orderBy('timestamp', 'desc'), fs.limit(lim));

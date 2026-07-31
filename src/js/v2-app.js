@@ -20,7 +20,7 @@ import * as legacyMigration     from './modules/v2/legacyMigrationService.js';
 import { LOG_ACTIONS, LOG_TARGET_TYPES, ROLES, REQUEST_STATUS, REQUEST_TYPES } from './modules/v2/schemaConstants.js';
 import * as authMod from './modules/authService.js';
 import * as cloudSyncSvc from './modules/cloudSyncService.js';
-import { notify, notifyError, setSyncStatus } from './modules/v2/uiFeedback.js';
+import { notify, notifyError, setSyncStatus, resetSyncStatus } from './modules/v2/uiFeedback.js';
 
 /* ===== 樣式注入 ===== */
 
@@ -158,10 +158,25 @@ function fmtDate(iso) {
 }
 
 /** 待辦清單頁籤上的紅點數量徽章：待我同意 + 待我審核 加總。 */
+/**
+ * @param {number|null} count - 待辦數量；驗收修復（中 #A）：傳 null 表示「讀取失敗、數量未知」，
+ *   顯示「!」而不是悄悄當成 0 筆消失——0 筆代表「已知確實沒有待辦」，未知不能用同一種
+ *   視覺（無徽章）表示，否則使用者無從分辨兩者。
+ */
 function updatePendingNavBadge(count) {
     const btn = document.querySelector('.tab-btn[data-tab="v2-pending"]');
     if (!btn) return;
     let badge = btn.querySelector('.v2-tab-badge');
+    if (count === null) {
+        if (!badge) {
+            badge = document.createElement('span');
+            badge.className = 'v2-badge v2-tab-badge';
+            btn.appendChild(badge);
+        }
+        badge.textContent = '!';
+        badge.title = '待辦數量讀取失敗，請點開頁籤查看';
+        return;
+    }
     if (count > 0) {
         if (!badge) {
             badge = document.createElement('span');
@@ -169,9 +184,26 @@ function updatePendingNavBadge(count) {
             btn.appendChild(badge);
         }
         badge.textContent = String(count);
+        badge.removeAttribute('title');
     } else if (badge) {
         badge.remove();
     }
+}
+
+/**
+ * 驗收修復（中 #A）：「待我同意/待我審核」錯誤卡片的重試鈕呼叫這支——重新打一次
+ * listOpenPendingRequests()，成功就清掉 _v2PendingSourceError、更新 _v2PendingCache，
+ * 失敗則維持錯誤狀態並提示。無論成功失敗都重繪，讓使用者立刻看到結果。
+ */
+async function retryPendingSource() {
+    try {
+        _v2PendingCache = (await dataSvc.listOpenPendingRequests()).map(requestSvc.normalizeLegacyRequest);
+        _v2PendingSourceError = null;
+    } catch (err) {
+        _v2PendingSourceError = err;
+        notifyError(err, '重新讀取待辦清單');
+    }
+    await renderPendingTab();
 }
 
 /**
@@ -190,12 +222,38 @@ async function renderPendingTab() {
     const me = roleSvc.getCurrentIdentity();
     if (!me) { host.innerHTML = '<p>尚未登入。</p>'; return; }
 
-    const rawAll = await dataSvc.listPendingRequests();
-    // 舊 alpha 期 status=pending 文件一律映射為「調課雙簽、對方尚未同意」（不寫回資料庫）
-    const all = rawAll.map(r => requestSvc.normalizeLegacyRequest(r));
+    // Stage 1（讀取成本止血，§5.4）：「待我同意」「待我審核」改直接讀 _v2PendingCache——
+    // 即時訂閱已只監聽仍在途的請求（見 schoolDataService.subscribePendingRequests），內容與
+    // 這裡原本自行 fetch 的全量結果對這兩個區塊而言完全等價（已核准／已拒絕的請求本來就
+    // 不會出現在這兩個區塊），改用快取等於省下一次全校規模的重複讀取。
+    // 「我的申請」需要包含已核准／已拒絕的個人歷史，這段快取沒有，改一次性按需查詢——
+    // 範圍限定到「單一教師」，天然有界，不是全校規模的無界讀取。
+    const openAll = _v2PendingCache;
+    // 驗收修復（阻斷 #3）：這支查詢需要一個複合索引（initiatedBy+createdAt，見
+    // firestore.indexes.json）；索引缺失或任何其他讀取失敗都只能讓「我的申請」這個區塊
+    // 降級顯示錯誤卡片，不能讓例外冒泡出這個函式——renderPendingTab 會被 bootstrap 的
+    // 初次渲染、身份切換、以及多個訂閱 callback 在沒有外層 try/catch 保護的情況下呼叫
+    // （例如 subscribePendingRequests 的 callback 是 fire-and-forget 呼叫 renderPendingTab()，
+    // 不 await 也沒包 try），一旦這裡拋錯，輕則整個待辦頁籤卡在「載入中…」，重則被 bootstrap
+    // 外層的致命 catch 接住、把整個 app 判定成登入失敗並永久鎖死（實測即是如此）。
+    let mine = [];
+    let mineLoadError = null;
+    try {
+        const mineRaw = await dataSvc.listPendingRequestsByInitiator(me.teacherId);
+        mine = mineRaw.map(r => requestSvc.normalizeLegacyRequest(r));
+    } catch (err) {
+        console.error('[v2] 讀取「我的申請」歷史失敗（已降級，不影響其他區塊）:', err);
+        mineLoadError = err;
+    }
+
+    // 驗收修復（中 #A）：pendingRequests 的即時訂閱與 prefill 若同時失敗，_v2PendingCache
+    // 會停在 `[]`——這個 openAll 是空陣列不代表「真的沒有待辦」，是「不知道」。pendingSourceError
+    // 非 null 時，下面「待我同意/待我審核」改顯示錯誤卡片，不能顯示 renderList 的空狀態文字
+    // （那句文字明確斷言「目前沒有」，在資料來源已知失敗時是假訊息）。
+    const pendingSourceError = _v2PendingSourceError;
 
     // 1. 待我同意：我在 pendingConsentTeacherIds（或舊 requiredApproverId）名單中，且仍在同意階段
-    const consentMine = all.filter(r =>
+    const consentMine = openAll.filter(r =>
         r.status === REQUEST_STATUS.PENDING_SWAP_CONSENT && roleSvc.canConsentRequest(r)
     );
     const consentSwap      = consentMine.filter(r => r.requestType !== REQUEST_TYPES.MULTI_SWAP);
@@ -203,12 +261,9 @@ async function renderPendingTab() {
 
     // 2. 待我審核：僅 approver（director / section_chief）可見
     const isApprover    = roleSvc.isApprover();
-    const approvalQueue = isApprover ? all.filter(r => r.status === REQUEST_STATUS.PENDING_APPROVAL) : [];
+    const approvalQueue = isApprover ? openAll.filter(r => r.status === REQUEST_STATUS.PENDING_APPROVAL) : [];
 
-    // 3. 我的申請：發起人為自己（含全部狀態）
-    const mine = all.filter(r => r.initiatedBy === me.teacherId);
-
-    updatePendingNavBadge(consentMine.length + approvalQueue.length);
+    updatePendingNavBadge(pendingSourceError ? null : (consentMine.length + approvalQueue.length));
 
     const stageLabel = (r) => {
         switch (r.status) {
@@ -272,24 +327,39 @@ async function renderPendingTab() {
         return r.requiredApproverName ? ` ・ 對象：${r.requiredApproverName}` : '';
     };
 
+    // 驗收修復（中 #A）：pendingSourceError 非 null 時，「待我同意/待我審核」三個區塊統一
+    // 顯示這張卡片，取代 renderList 的空狀態文字——避免使用者把「讀取失敗」誤讀成「沒有待辦」。
+    const pendingErrorCard = (label) => `
+        <div class="v2-logs-failed-banner">⚠ ${label}目前讀取失敗，無法確認是否有待辦事項，不代表「沒有」。
+            <button class="btn btn-secondary btn-sm v2-refresh-pending-source-btn" style="margin-left:0.5rem;">重新整理</button></div>`;
+
     if (isStaleRender(_gen)) return;   // 期間身份已切換 → 放棄回填，保持 reset 清空的狀態
     host.innerHTML = `
         <div class="v2-section-header"><h3>待我同意・調課</h3></div>
-        ${renderList(consentSwap, 'incoming', '目前沒有等待您同意的調課請求', consentActions)}
+        ${pendingSourceError ? pendingErrorCard('待我同意') : renderList(consentSwap, 'incoming', '目前沒有等待您同意的調課請求', consentActions)}
 
         <div class="v2-section-header" style="margin-top:2rem;"><h3>待我同意・多重調課</h3></div>
-        ${renderList(consentMultiSwap, 'incoming', '目前沒有等待您同意的多重調課請求', consentActions, consentRemainMeta)}
+        ${pendingSourceError ? pendingErrorCard('待我同意') : renderList(consentMultiSwap, 'incoming', '目前沒有等待您同意的多重調課請求', consentActions, consentRemainMeta)}
 
         ${isApprover ? `
         <div class="v2-section-header" style="margin-top:2rem;">
-            <h3>待我審核 ${approvalQueue.length ? `<span class="v2-badge">${approvalQueue.length}</span>` : ''}</h3>
+            <h3>待我審核 ${!pendingSourceError && approvalQueue.length ? `<span class="v2-badge">${approvalQueue.length}</span>` : ''}</h3>
         </div>
-        ${renderList(approvalQueue, 'incoming', '目前沒有待核准的申請', approvalActions)}
+        ${pendingSourceError ? pendingErrorCard('待我審核') : renderList(approvalQueue, 'incoming', '目前沒有待核准的申請', approvalActions)}
         ` : ''}
 
         <div class="v2-section-header" style="margin-top:2rem;"><h3>我的申請</h3></div>
-        ${renderList(mine, 'outgoing', '目前沒有您發起中的請求', mineActions, mineMeta)}
+        ${mineLoadError
+            ? `<div class="v2-logs-failed-banner">⚠ 讀取「我的申請」歷史失敗，不影響上方待辦事項。
+                <button class="btn btn-secondary btn-sm" id="v2-refresh-pending-mine" style="margin-left:0.5rem;">重新整理</button></div>`
+            : renderList(mine, 'outgoing', '目前沒有您發起中的請求', mineActions, mineMeta)}
     `;
+
+    document.getElementById('v2-refresh-pending-mine')?.addEventListener('click', renderPendingTab);
+    // 驗收修復（中 #A）：這顆鈕不能只是重繪（_v2PendingCache/_v2PendingSourceError 不會自己
+    // 變好）——實際重打 listOpenPendingRequests() 嘗試恢復，見 retryPendingSource()。
+    host.querySelectorAll('.v2-refresh-pending-source-btn').forEach(btn =>
+        btn.addEventListener('click', retryPendingSource));
 
     host.querySelectorAll('.v2-consent-btn').forEach(btn =>
         btn.addEventListener('click', async () => {
@@ -1036,7 +1106,10 @@ async function renderLogsTab() {
 
     const _gen = _v2IdentityGen;
     host.innerHTML = '<p>載入中…</p>';
-    const all = await logger.fetchLogs({ limit: 300 });
+    // Stage 1（讀取成本止血，§5.4）：300 → 50。這是低頻查閱的稽核輔助資訊，不需要一次撈這麼
+    // 多；此頁籤本來就是一次性 getDocs（非 onSnapshot），每次打開／按「重新整理」都會重讀，
+    // 不會因為調降筆數而看不到「最新」的日誌。
+    const all = await logger.fetchLogs({ limit: V2_RECORDS_PAGE_SIZE });
     const visible = roleSvc.filterLogsForCurrent(all);
     const failedCount = logger.getFailedLogCount();
 
@@ -1116,7 +1189,44 @@ async function renderRecordsTab() {
         original.appendChild(host);
     }
     const _gen = _v2IdentityGen;
-    const all       = await dataSvc.listSubstituteRecords();
+
+    // Stage 1（讀取成本止血，§5.4/§5.6）：不再對整個 substituteRecords 集合做無界一次性讀取。
+    //   - 無日期篩選：資料來源是即時訂閱視窗（_v2RecordsCache，最近 V2_RECORDS_PAGE_SIZE 筆）
+    //     ＋使用者按過的「載入更多」分頁（_v2RecordsTabExtra），依 recordId 去重後依 createdAt
+    //     新到舊排序。
+    //   - 有日期篩選：篩選範圍可能落在即時視窗之外（視窗按 createdAt 排序，不是按 date），
+    //     改一次性下推查詢 Firestore（v2GetRecordsInRange，見該函式註解）。
+    const hasDateFilter = Boolean(_v2RecordsFilterStart || _v2RecordsFilterEnd);
+    let all;
+    let recordsTabHasMore = false;
+    // 驗收修復（中 #B）：兩個日期輸入框都有值時，使用者可能直接把起訖填反（起始晚於結束）。
+    // 這種情況同步就能判斷（不需要打 Firestore 才發現查回 0 筆），先在這裡短路並顯示提示，
+    // 不要讓使用者誤以為「查無紀錄」代表真的沒有資料。
+    const dateRangeInvalid = hasDateFilter
+        && !dataSvc.resolveDateRangeBounds({ startDate: _v2RecordsFilterStart || null, endDate: _v2RecordsFilterEnd || null }).valid;
+    if (dateRangeInvalid) {
+        all = [];
+    } else if (hasDateFilter) {
+        all = await v2GetRecordsInRange(_v2RecordsFilterStart, _v2RecordsFilterEnd);
+    } else {
+        // 驗收修復（中 #7）：合併順序改為「舊分頁在前、即時視窗在後」——Map.set 同 key 後寫
+        // 蓋前寫，若同一筆 recordId 剛好同時出現在兩邊（即時視窗更新到某筆、而該筆先前也
+        // 被「載入更多」抓過），要讓即時視窗（較新鮮）蓋掉載入更多當時的舊快照，不能反過來。
+        const merged = new Map();
+        [..._v2RecordsTabExtra, ..._v2RecordsCache].forEach(r => { if (r.recordId) merged.set(r.recordId, r); });
+        all = [...merged.values()].sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+        // 驗收修復（中 #6）：改用 _v2RecordsTabHasMore !== null 判斷「是否已經真的查過一次」，
+        // 不能用 _v2RecordsTabExtra.length > 0——當總筆數剛好是 V2_RECORDS_PAGE_SIZE 的倍數時，
+        // 某次「載入更多」查回 0 筆新資料，_v2RecordsTabExtra 長度不會變化（concat 空陣列），
+        // 若沿用 length>0 當守門條件就會被誤判成「還沒查過」，又退回用
+        // `_v2RecordsCache.length >= V2_RECORDS_PAGE_SIZE` 這個樂觀猜測（剛好又是 true），
+        // 導致按鈕永遠不消失、每次點擊都查到 0 筆。null 表示「使用者從未點過載入更多」，
+        // 一旦點過就一律信任上一次查詢實際回傳的 hasMore（可能是 true 也可能是 false）。
+        recordsTabHasMore = _v2RecordsTabHasMore !== null
+            ? _v2RecordsTabHasMore
+            : _v2RecordsCache.length >= V2_RECORDS_PAGE_SIZE;
+    }
+
     const visible   = roleSvc.filterRecordsForCurrent(all);
     const isApprover = roleSvc.isApprover();
     const APPROVER_ROLES_FOR_BADGE = ['admin', 'director', 'section_chief'];
@@ -1126,16 +1236,18 @@ async function renderRecordsTab() {
         : _v2RecordsLegacyFilter === 'new' ? visible.filter(r => !r.isLegacy)
         : visible;
 
-    // Stage 5（F1 方式補篩選）：教師 select 選項取自 visible 本身出現過的姓名（不另外打 listTeachers，
-    // 維持本函式原本只讀一次 listSubstituteRecords 的資料存取範圍）。
+    // Stage 5（F1 方式補篩選）：教師 select 選項取自 visible 本身出現過的姓名。
+    // Stage 1 取捨：visible 現在只涵蓋「目前已載入」的範圍（即時視窗＋載入更多的分頁，或
+    // 日期篩選查詢結果），不再是全校歷史——教師下拉選單只會列出目前已載入範圍內出現過的
+    // 姓名，可能比改造前少（尚未載入的較舊紀錄若有其他教師姓名不會出現）。維持這個取捨而不
+    // 改成另外呼叫 listTeachers()：避免每次重繪都額外多打一次 Firestore 換取一個純顯示層的
+    // 下拉選單完整度，且教師名字本來就能用「輸入日期篩選」間接查到。
     const teacherNames = Array.from(new Set(
         visible.flatMap(r => [r.originalTeacher, r.substituteTeacher, r.swapTeacher]).filter(Boolean)
     )).sort((a, b) => a.localeCompare(b, 'zh-TW'));
 
-    // 起訖日／教師純前端過濾，只作用在「已過濾過權限的 visible 集合」之上。
+    // 起訖日已在資料來源層處理（v2GetRecordsInRange），這裡只再做教師姓名的純前端過濾。
     const displayed = legacyFiltered
-        .filter(r => !_v2RecordsFilterStart || (r.date || '') >= _v2RecordsFilterStart)
-        .filter(r => !_v2RecordsFilterEnd || (r.date || '') <= _v2RecordsFilterEnd)
         .filter(r => !_v2RecordsFilterTeacher ||
             [r.originalTeacher, r.substituteTeacher, r.swapTeacher].includes(_v2RecordsFilterTeacher));
 
@@ -1173,6 +1285,15 @@ async function renderRecordsTab() {
                 <button class="btn btn-secondary btn-sm v2-approver-only" id="v2-print-weekly-summary-btn" title="以週為單位彙整本週所有調代課，產生 1 份 PDF 精簡列印">📄 列印本週彙整</button>
             </div>
         </div>
+        ${dateRangeInvalid ? `
+        <p class="muted" style="margin:0.5rem 0;color:#b45309;">
+            起訖日期範圍無效（起始日期晚於結束日期），請重新選擇。
+        </p>` : ''}
+        ${!isApprover && !hasDateFilter && !dateRangeInvalid && displayed.length === 0 ? `
+        <p class="muted" style="margin:0.5rem 0;">
+            這裡預設只顯示全校最近 ${V2_RECORDS_PAGE_SIZE} 筆紀錄中「與您相關」的部分，若您的紀錄較舊、不在這批最新資料內就不會顯示。
+            請用上方「起始／結束」日期篩選查詢您的紀錄。
+        </p>` : ''}
         <div class="table-wrap">
         <table class="data-table data-table-compact data-table-cards">
             <thead><tr>
@@ -1197,7 +1318,27 @@ async function renderRecordsTab() {
             </tbody>
         </table>
         </div>
+        ${!hasDateFilter && recordsTabHasMore ? `
+        <div style="text-align:center;margin-top:1rem;">
+            <button class="btn btn-secondary btn-sm" id="v2-records-load-more-btn">載入更多（目前已載入 ${all.length} 筆）</button>
+        </div>` : ''}
+        ${hasDateFilter && !dateRangeInvalid ? `
+        <p class="muted" style="margin-top:0.75rem;font-size:0.8rem;">已依日期範圍查詢，非分頁列表；如需查看更多歷史請調整起訖日期。</p>` : ''}
     `;
+
+    document.getElementById('v2-records-load-more-btn')?.addEventListener('click', async (e) => {
+        const btn = e.currentTarget;
+        btn.disabled = true;
+        btn.textContent = '載入中…';
+        try {
+            await loadMoreRecordsTabPage();
+            await renderRecordsTab();
+        } catch (err) {
+            notifyError(err, '載入更多紀錄');
+            btn.disabled = false;
+            btn.textContent = '載入更多';
+        }
+    });
 
     document.getElementById('v2-records-legacy-filter')?.addEventListener('change', (e) => {
         _v2RecordsLegacyFilter = e.target.value;
@@ -1237,7 +1378,15 @@ async function renderRecordsTab() {
                     title: '刪除紀錄', message: '確定刪除此紀錄？此操作會寫入 log。', confirmText: '刪除', danger: true,
                 });
                 if (!ok) return;
-                try { await requestSvc.adminDeleteRecord(btn.dataset.id); await renderRecordsTab(); }
+                try {
+                    await requestSvc.adminDeleteRecord(btn.dataset.id);
+                    // 驗收修復（中 #4）：刪除的紀錄若不在即時訂閱視窗內（例如較舊、透過日期
+                    // 篩選查到的一筆），subscribeSubstituteRecords 的 onSnapshot 不會被觸發，
+                    // _v2DateRangeQueryCache 裡快取的日期範圍查詢結果會繼續回傳「已刪除但快取
+                    // 仍在」的舊資料，直接清空最保險。
+                    _v2DateRangeQueryCache.clear();
+                    await renderRecordsTab();
+                }
                 catch (e) { notifyError(e, '刪除紀錄'); }
             }));
     }
@@ -1268,7 +1417,9 @@ function isStaleRender(gen) { return gen !== _v2IdentityGen; }
 let _v2RecordsLegacyFilter = 'all';
 
 // Stage 5（F1 方式補篩選）：起訖日／教師純前端顯示過濾，跨 renderRecordsTab 重繪保留選擇。
-// 只過濾「該函式內已過濾過權限的 visible 集合」，不動 dataSvc.listSubstituteRecords() 的資料層。
+// Stage 1 起：教師純前端過濾（同 Phase 5）；起訖日改為下推到 Firestore 查詢
+// （v2GetRecordsInRange，見 renderRecordsTab），不再是純前端過濾——資料來源已改用有界的
+// 即時訂閱視窗，前端手上不再有「全部歷史」可以純過濾。
 let _v2RecordsFilterStart   = '';
 let _v2RecordsFilterEnd     = '';
 let _v2RecordsFilterTeacher = '';
@@ -1315,6 +1466,15 @@ function resetV2ViewState() {
     _v2PendingCache = [];
     _v2RecordDetailCache.clear();
     _v2RecordsCacheGen++;   // 讓前一身份任何仍在飛行中的 hydrateRecordsWithDetail 事後失效，不得回填
+    // Stage 1：分頁狀態與日期範圍查詢快取同屬「含個資的畫面狀態」，身份切換必須一併清空，
+    // 否則前一身份載入的較舊紀錄／範圍查詢結果會殘留給下一個登入者看到。
+    _v2RecordsTabExtra    = [];
+    _v2RecordsTabCursor   = null;
+    _v2RecordsTabHasMore  = null;
+    _v2RecordsLiveLastDoc = null;
+    _v2DateRangeQueryCache.clear();
+    _v2PendingSourceError = null; // 驗收修復（中 #A）：不帶前一身份的錯誤狀態到下一個登入者
+    resetSyncStatus();
     forceActivateTab('substitute');
 }
 
@@ -1643,8 +1803,41 @@ async function writeV2Record(record) {
 let _swallowPdfSummaryToast = false;
 
 // 同步 cache：由 onSnapshot 更新，供 checkExistingRecord 同步查詢。
+// Stage 1（讀取成本止血）起，_v2RecordsCache 不再是「全校全部歷史紀錄」，而是即時訂閱視窗
+// （最近 V2_RECORDS_PAGE_SIZE 筆，見 schoolDataService.subscribeSubstituteRecords）。
 let _v2RecordsCache = [];
 let _v2PendingCache = [];
+// 驗收修復（中 #A）：subscribePendingRequests 的即時訂閱與 bootstrap 的 prefill
+// （listOpenPendingRequests）是「待我同意/待我審核」唯二的資料來源；若兩者同時失敗，
+// _v2PendingCache 會停在初始值 `[]`，renderPendingTab 若只看陣列長度會誤判成「真的沒有
+// 待辦」而顯示「目前沒有…」——這是假陰性，不是「目前沒有」。這個旗標記錄「目前是否已知
+// 讀取失敗」：非 null（存的是 Error）時，renderPendingTab 改顯示錯誤卡片，不顯示空狀態文字。
+// 任一資料源成功回來即清為 null。身份切換/登出時一併歸零（見 resetV2ViewState／登出分支）。
+let _v2PendingSourceError = null;
+
+// Stage 1（RESEARCH-multitenancy-semester.md §5.4）：即時訂閱與分頁讀取的頁面大小，
+// 報告未給明確數字時的預設值。與 schoolDataService.js 的 DEFAULT_PAGE_SIZE 保持一致
+// （兩處各自定義是刻意的：schoolDataService 不該依賴呼叫端的模組層常數，這裡的值只要
+// 「與訂閱視窗一致」即可，用來判斷「目前視窗是否已滿」）。
+const V2_RECORDS_PAGE_SIZE = 50;
+
+// Stage 1：紀錄頁「載入更多」分頁狀態——使用者按過的較舊分頁（記憶體，不落地，身份切換
+// 或登出時清空，見 resetV2ViewState／登出分支）。
+let _v2RecordsTabExtra    = [];   // 額外載入的較舊紀錄（已補過 detail）
+// 驗收修復（輕 #10）：cursor 改存原生 QueryDocumentSnapshot（不是值），避免 createdAt
+// 完全相同（同毫秒建立）時純值游標漏掉/重複同值的其中一筆。
+let _v2RecordsTabCursor   = null; // 下一頁的 cursor（QueryDocumentSnapshot 或 null）
+let _v2RecordsTabHasMore  = null; // null＝尚未按過「載入更多」，依 _v2RecordsCache 是否滿頁推算
+// 即時訂閱最新一次快照的最後一筆 QueryDocumentSnapshot，供「載入更多」第一次點擊時當作
+// 銜接視窗尾端的原生 cursor（見 loadMoreRecordsTabPage）。由 subscribeSubstituteRecords
+// 的 callback 第二參數持續更新，身份切換/登出時一併歸零。
+let _v2RecordsLiveLastDoc = null;
+
+// Stage 1（§5.6）：月結算／週彙整 PDF／紀錄頁日期篩選這類「明確帶日期範圍」的查詢結果
+// 記憶體快取，key 為 `${startDate}|${endDate}`。範圍查詢一律「按需一次性 getDocs」，不猜測
+// 即時訂閱視窗是否已涵蓋整段範圍（視窗按 createdAt 排序，無法用「視窗內最舊日期」可靠推算
+// 涵蓋範圍，寧可多查一次 Firestore 也不要讓月結算這種金額計算漏資料）。
+const _v2DateRangeQueryCache = new Map();
 
 // Phase 6：private/detail（leaveType/leaveTypeName/reason）快取，recordId → detail
 // （讀不到或不存在記為 {}，避免對同一批無權讀的紀錄重複發請求）。身份切換時必須清空
@@ -1697,6 +1890,40 @@ async function hydrateRecordsWithDetail(records) {
     });
 }
 
+/**
+ * Stage 1（讀取成本止血，§5.6）：依日期範圍向 Firestore 做一次性查詢，供月結算／週彙整
+ * PDF／紀錄頁日期篩選使用。查詢結果以 `${startDate}|${endDate}` 快取在記憶體，同一 session
+ * 內對同一範圍重複呼叫（例如使用者切換「僅顯示有變動」勾選框，或重新點一次同一個月份）不會
+ * 重打 Firestore。快取在身份切換／登出時清空（見 resetV2ViewState）。
+ * @returns {Promise<Array>} 已補齊 private/detail 的紀錄陣列
+ */
+async function v2GetRecordsInRange(startDate, endDate) {
+    const key = `${startDate || ''}|${endDate || ''}`;
+    if (_v2DateRangeQueryCache.has(key)) return _v2DateRangeQueryCache.get(key);
+    const raw = await dataSvc.queryRecordsByDateRange({ startDate: startDate || null, endDate: endDate || null });
+    const hydrated = await hydrateRecordsWithDetail(raw);
+    _v2DateRangeQueryCache.set(key, hydrated);
+    return hydrated;
+}
+
+/**
+ * Stage 1：紀錄頁「載入更多」——從目前已載入資料的尾端（即時視窗或上一次載入更多的
+ * 最後一筆）接續讀下一頁。呼叫端（renderRecordsTab）負責在「無日期篩選」狀態下才顯示
+ * 對應按鈕；有日期篩選時走 v2GetRecordsInRange()，不需要分頁。
+ */
+async function loadMoreRecordsTabPage() {
+    // 驗收修復（輕 #10）：優先用上一次「載入更多」留下的原生 cursor；第一次點擊時退而
+    // 用即時訂閱最新快照的 lastDoc（_v2RecordsLiveLastDoc，同樣是原生 QueryDocumentSnapshot，
+    // 不是從 _v2RecordsCache 陣列裡萃取欄位值組出來的值游標）。
+    const cursor = _v2RecordsTabCursor ?? _v2RecordsLiveLastDoc ?? null;
+    const { records: nextPage, nextCursor, hasMore } =
+        await dataSvc.listSubstituteRecordsPage({ pageSize: V2_RECORDS_PAGE_SIZE, afterCursor: cursor });
+    const hydrated = await hydrateRecordsWithDetail(nextPage);
+    _v2RecordsTabExtra   = _v2RecordsTabExtra.concat(hydrated);
+    _v2RecordsTabCursor  = nextCursor;
+    _v2RecordsTabHasMore = hasMore;
+}
+
 function conflictMatches(item, date, period, className, originalTeacher) {
     return item
         && item.date === date
@@ -1709,20 +1936,36 @@ function conflictMatches(item, date, period, className, originalTeacher) {
  * V2 下的衝堂檢查：合併 substituteRecords（已成立）與 pendingRequests（尚待同意/尚待核准）。
  * pending 也視為衝突：若已送出請求未處理，就不該再送第二筆同樣時段。
  * Phase 3：狀態值從單一 'pending' 拆成 pending_swap_consent / pending_approval 兩種在途狀態，
- * 兩者都仍算「尚未定案、應擋下重複申請」；只有 approved（已轉入 substituteRecords，
- * 由 _v2RecordsCache 涵蓋）與 rejected（已無效）才不算衝突。
+ * 兩者都仍算「尚未定案、應擋下重複申請」；只有 approved（已轉入 substituteRecords）與
+ * rejected（已無效）才不算衝突。
  * 回傳與 dataManager.checkExistingRecord 相容的紀錄物件，或 null。
+ *
+ * 驗收修復（阻斷 #1）：改為 async 按需查詢，不再只看 _v2RecordsCache（即時訂閱視窗，
+ * 最近 V2_RECORDS_PAGE_SIZE 筆）。原本的實作只要一筆衝突紀錄是「2 週前建立」（因而落在
+ * 視窗外），就會完全漏檢——使用者可以對同一節課重複建檔，月結算也會重複計費，是正確性
+ * bug，不是效能取捨。改用 queryRecordsByExactDate(date) 對「目標日期」單欄位相等查詢
+ * （自動索引，不需複合索引），period/className/originalTeacher 交給呼叫端在記憶體比對
+ * （單日筆數天生有界，成本可忽略）。pendingRequests 同法：雖然 _v2PendingCache 本身已是
+ * 「只含仍在途請求、無筆數上限」的訂閱（理論上不受視窗截斷影響），但改成顯式按日期查詢
+ * 一方面與 substituteRecords 檢查邏輯一致，一方面不依賴「_v2PendingCache 未來也不會被加上
+ * limit」這個隱性假設——這個假設一旦被日後的改動打破，衝堂檢查會用同樣的方式悄悄壞掉。
  */
-function v2CheckExistingRecord(date, period, className, originalTeacher) {
+async function v2CheckExistingRecord(date, period, className, originalTeacher) {
+    if (!date) return null;
     const args = [date, period, className, originalTeacher];
-    const r = _v2RecordsCache.find(x => conflictMatches(x, ...args));
+    const [dayRecords, dayPending] = await Promise.all([
+        dataSvc.queryRecordsByExactDate(date),
+        dataSvc.queryPendingRequestsByExactDate(date),
+    ]);
+    const r = dayRecords.find(x => conflictMatches(x, ...args));
     if (r) return r;
-    // _v2PendingCache 寫入點已統一過 normalizeLegacyRequest，這裡直接看 status 即可
-    const p = _v2PendingCache.find(x => {
-        if (!conflictMatches(x, ...args)) return false;
-        const status = x.status || REQUEST_STATUS.PENDING_SWAP_CONSENT;
-        return status === REQUEST_STATUS.PENDING_SWAP_CONSENT || status === REQUEST_STATUS.PENDING_APPROVAL;
-    });
+    const p = dayPending
+        .map(requestSvc.normalizeLegacyRequest)
+        .find(x => {
+            if (!conflictMatches(x, ...args)) return false;
+            const status = x.status || REQUEST_STATUS.PENDING_SWAP_CONSENT;
+            return status === REQUEST_STATUS.PENDING_SWAP_CONSENT || status === REQUEST_STATUS.PENDING_APPROVAL;
+        });
     if (p) return { ...p, type: p.type || '代課', __v2Pending: true };
     return null;
 }
@@ -1837,6 +2080,9 @@ function patchDataManager() {
             if (record.__v2NeedsApproval) _swallowPdfSummaryToast = true;
             writeV2Record(record)
                 .then(async () => {
+                    // 驗收修復（中 #4）：同上（adminDeleteRecord），寫入的紀錄不論是直接成立
+                    // 或先進 pendingRequests，都可能讓已快取的日期範圍查詢結果過期。
+                    _v2DateRangeQueryCache.clear();
                     await renderPendingTab();
                     await renderRecordsTab();
                 })
@@ -1849,10 +2095,13 @@ function patchDataManager() {
         return origAdd(record);
     };
 
-    // 衝堂檢查：V2 下改查 Firestore cache（含 substituteRecords 與 pendingRequests）。
+    // 衝堂檢查：V2 下改按需查 Firestore（見 v2CheckExistingRecord 註解，阻斷 #1）。
+    // 驗收修復（阻斷 #1）：v2CheckExistingRecord 已改 async，這裡的 patch 隨之 async 化；
+    // origCheck（V1 離線模式）維持同步不動——`await 同步值` 在 JS 中會直接被包成已解決的
+    // Promise，呼叫端一律 `await dm.checkExistingRecord(...)` 對兩種模式都正確。
     const origCheck = typeof dm.checkExistingRecord === 'function'
         ? dm.checkExistingRecord.bind(dm) : null;
-    dm.checkExistingRecord = function(date, period, className, originalTeacher) {
+    dm.checkExistingRecord = async function(date, period, className, originalTeacher) {
         if (roleSvc.isSignedIn()) {
             return v2CheckExistingRecord(date, period, className, originalTeacher);
         }
@@ -1873,8 +2122,9 @@ function patchDataManager() {
      *      任何登入教師用 DevTools 都能直接讀到完整集合，這裡過濾不提供任何實質保護，純粹是
      *      前端體驗層——不是安全邊界，未來請勿誤當成安全漏洞「修」回去。
      *   3. 真正需要「僅顯示與自己相關」的顯示層——調代課紀錄頁籤（renderRecordsTab，見本檔案
-     *      下方）——並未透過這個方法取資料，而是自行呼叫 dataSvc.listSubstituteRecords() 後
-     *      再套 roleSvc.filterRecordsForCurrent()，不受這裡影響，過濾行為仍然存在。
+     *      下方）——並未透過這個方法取資料，而是自行組合 _v2RecordsCache／載入更多分頁／日期
+     *      範圍查詢後再套 roleSvc.filterRecordsForCurrent()（Stage 1 起，見該函式），不受這裡
+     *      影響，過濾行為仍然存在。
      *   4. 月結算頁籤已於 commit 5ec4561 加上 .v2-approver-only，一般教師連分頁都進不去，不會
      *      經由 generateSettlement() / exportSettlementExcel() 間接看到全校結算。
      * 回傳的是**複本**而非 _v2RecordsCache 本身：該陣列同時是衝堂檢查（v2CheckExistingRecord）
@@ -1884,6 +2134,14 @@ function patchDataManager() {
      * (startDate, endDate, teacherFilter) 三個篩選參數比照原實作套用，排序也比照原實作
      * 「日期新到舊」——dataManager.getMonthlyRecords() 內部就是帶日期參數呼叫本方法，
      * 若在此靜默忽略參數，那條路徑會拿到全部紀錄而完全沒有錯誤訊號。
+     *
+     * ⚠️ Stage 1（讀取成本止血）起，_v2RecordsCache 只是即時訂閱視窗（最近
+     * V2_RECORDS_PAGE_SIZE 筆，見 schoolDataService.subscribeSubstituteRecords），不再是全校
+     * 全部歷史紀錄。這支方法維持同步（V1 呼叫慣例、大量既有呼叫端不宜整批改 async），故
+     * startDate/endDate 若落在視窗之外只會靜默回傳「視窗內符合條件」的子集，不是完整結果。
+     * 目前實際呼叫端只有 showRecommendations()（app.js，不帶日期，只需要「近期」資料，視窗
+     * 內即可正確運作）。月結算／週彙整 PDF 這類「明確帶日期範圍、且範圍可能是任意過去月份」
+     * 的呼叫端，一律改用下方新增的 dm.getSubstituteRecordsAsync()，不要用這支傳日期範圍。
      */
     const origGet = dm.getSubstituteRecords.bind(dm);
     dm.getSubstituteRecords = function(startDate = '', endDate = '', teacherFilter = '') {
@@ -1905,6 +2163,35 @@ function patchDataManager() {
                 r.originalTeacher === teacherFilter || r.substituteTeacher === teacherFilter);
         }
         records.sort((a, b) => new Date(b.date) - new Date(a.date));
+        return records;
+    };
+
+    /**
+     * Stage 1（讀取成本止血，§5.6）：getSubstituteRecords() 的非同步版本，供月結算／
+     * 週彙整 PDF 這類「明確帶日期範圍、範圍可能落在即時訂閱視窗之外」的呼叫端使用。
+     * 無日期範圍時直接複用同步版本（等同讀 _v2RecordsCache 視窗，不必多打 Firestore）；
+     * 有日期範圍時一律透過 v2GetRecordsInRange() 按需查詢（內建記憶體快取，同一範圍
+     * 不會重複打 Firestore），teacherFilter／排序邏輯與同步版本一致。
+     */
+    // 驗收修復（輕 #11）：startDate/endDate 這裡不經 dm.normalizeDate() 正規化——
+    // v2GetRecordsInRange() 直接把這兩個值原樣送進 Firestore 的 where('date', '>='/'<=' , ...)
+    // range query 做字典序比對，比對對象是 Firestore 裡的 `date` 欄位本身（一律已是
+    // YYYY-MM-DD）。呼叫端必須確保傳入值也是 YYYY-MM-DD（settlementCalculator.getMonthDateRange()
+    // 與 pdfGenerator.getWeekRange() 皆已是此格式），傳入其他格式（例如 MM/DD/YYYY）會讓字典序
+    // 比對得出錯誤結果且不會拋錯，需呼叫端自行保證，這裡不做防禦性轉換。
+    dm.getSubstituteRecordsAsync = async function(startDate = '', endDate = '', teacherFilter = '') {
+        if (!roleSvc.isSignedIn()) {
+            return origGet(startDate, endDate, teacherFilter);
+        }
+        if (!startDate && !endDate) {
+            return dm.getSubstituteRecords(startDate, endDate, teacherFilter);
+        }
+        let records = await v2GetRecordsInRange(startDate, endDate);
+        if (teacherFilter) {
+            records = records.filter(r =>
+                r.originalTeacher === teacherFilter || r.substituteTeacher === teacherFilter);
+        }
+        records = [...records].sort((a, b) => new Date(b.date) - new Date(a.date));
         return records;
     };
 
@@ -2409,6 +2696,29 @@ function openAuthModal(mode = 'signin') {
 
 /* ===== 主啟動流程 ===== */
 
+/**
+ * 驗收修復（阻斷 #3）：bootstrap 的 onAuthStateChange 回呼裡，`resolveIdentity()` 之後的
+ * 每一步（初次渲染各頁籤、建立即時訂閱、prefill cache）都被同一個外層 try/catch 包住——
+ * 外層 catch 的原始設計意圖是「身份解析本身失敗」時鎖住整個 app（_v2GateError +
+ * lockV2App()），但同一個 catch 也會接住「身份已經解析成功、只是某個非必要的渲染或查詢
+ * 失敗」（例如 listPendingRequestsByInitiator 需要的複合索引還沒部署），結果是把「一個
+ * 頁籤的一個區塊讀取失敗」升級成「全站鎖死」。實測已證實會發生。
+ *
+ * 這個 wrapper 讓身份解析「之後」的每一步各自獨立失敗、降級，不冒泡到外層致命 catch：
+ * 失敗只記錄 console + notifyError 提示，回傳 null，讓 bootstrap 繼續往下跑其他步驟。
+ * 身份解析本身（authGuard.resolveIdentity 那一段）刻意不套這支 wrapper，維持原本「解析
+ * 失敗就鎖住」的行為——那是這個外層 catch 唯一還該負責的事。
+ */
+async function safeBootstrapStep(label, fn) {
+    try {
+        return await fn();
+    } catch (err) {
+        console.error(`[v2] bootstrap 步驟「${label}」失敗（已降級，不影響其他功能）:`, err);
+        notifyError(err, label);
+        return null;
+    }
+}
+
 async function bootstrap() {
     if (!isV2Enabled()) return;
 
@@ -2456,6 +2766,14 @@ async function bootstrap() {
             _v2PendingCache = [];
             _v2RecordDetailCache.clear();
             _v2RecordsCacheGen++;   // 同上：作廢登出前任何仍在飛行中的補讀
+            // Stage 1：同上，分頁狀態與日期範圍查詢快取一併清空（見 resetV2ViewState 註解）。
+            _v2RecordsTabExtra    = [];
+            _v2RecordsTabCursor   = null;
+            _v2RecordsTabHasMore  = null;
+            _v2RecordsLiveLastDoc = null;
+            _v2DateRangeQueryCache.clear();
+            _v2PendingSourceError = null; // 驗收修復（中 #A）：同上
+            resetSyncStatus();
             // 登出即鎖定整個 app：遮罩 + .app-container inert 阻擋所有互動（含鍵盤跳至月結算下載）。
             // 不再 clearAll()——那只清記憶體不清 localStorage，反而會讓再登入資料看似遺失並有覆蓋風險。
             lockV2App();
@@ -2499,29 +2817,50 @@ async function bootstrap() {
             }
 
             // 初次渲染
-            await renderPendingTab();
-            await renderRecordsTab();
+            // 驗收修復（阻斷 #3）：以下每一步都不是「身份解析」本身的一部分——身份已經在上面
+            // resolveIdentity() 成功解析了。任何一步失敗都只應該讓該功能自己降級，不能讓整個
+            // app 被下面的外層 catch 判定成登入失敗而永久鎖死（見 safeBootstrapStep 檔頭註解）。
+            await safeBootstrapStep('待辦清單', renderPendingTab);
+            await safeBootstrapStep('全校紀錄', renderRecordsTab);
             if (roleSvc.canManageRoster()) {
-                await renderTeachersAdminTab();
+                await safeBootstrapStep('教師管理', renderTeachersAdminTab);
             }
-            if (roleSvc.isApprover()) {
-                await renderLogsTab();
-            }
-            // 初次渲染皆完成才解鎖，避免半渲染的可操作畫面外露；render 若丟錯則走 catch 維持鎖定。
+            // Stage 1（讀取成本止血，§5.4）：操作日誌不再於 bootstrap 就讀（原本這裡對每個
+            // approver 登入都無條件打一次 fetchLogs，即使這次登入完全不會打開日誌頁）。
+            // 改為真的進入「操作日誌」頁籤才讀，見 bindV2TabSwitches 的
+            // `if (tab === 'v2-logs') await renderLogsTab();`；該函式本身已有「載入中…」
+            // 過場畫面，使用者體感只多一次頁籤切換的短暫等待，換來未開日誌頁的 approver
+            // 完全不產生這筆讀取。
+            // 初次渲染皆完成才解鎖——上面每一步都已各自降級不拋錯，這裡一定會執行到。
             unlockV2App();
 
             // 即時同步：更新同步 cache + 重新渲染（cache 供 checkExistingRecord 使用）。
             // pending cache 一律先過 normalizeLegacyRequest（舊 status='pending' 文件
             // 映射為 pending_swap_consent），下游（衝堂檢查等）不必再逐項 normalize。
-            // 每個訂閱皆傳入 onError：斷線/權限被撤時翻成人話提示 + 亮右上角同步中斷徽章；
-            // onNext 成功回資料時解除徽章（代表連線已恢復）。
-            const onSyncError = (err) => { notifyError(err, '即時同步'); setSyncStatus(false, err?.code); };
-            unsubs.push(await dataSvc.subscribePendingRequests((items) => {
+            // 每個訂閱皆傳入各自來源的 onError：斷線/權限被撤時翻成人話提示 + 亮右上角同步
+            // 中斷徽章；onNext 成功回資料時解除該來源的異常狀態（見 uiFeedback.setSyncStatus
+            // 的「中 #A」修復：徽章現在是「任一來源壞掉」就顯示，不是單一布林值，某條訂閱
+            // 恢復不會把其他仍然壞掉的來源一併洗成「已同步」）。
+            const makeSyncErrorHandler = (source) => (err) => {
+                notifyError(err, '即時同步');
+                setSyncStatus(source, false, err?.code);
+                if (source === 'pending') {
+                    // 驗收修復（中 #A）：pendingRequests 訂閱本身失敗時，「待我同意/待我審核」
+                    // 不能繼續顯示 _v2PendingCache 目前殘留的（可能是過期或空的）內容當作正常
+                    // 空狀態——標記來源異常並立刻重繪，讓 renderPendingTab 改顯示錯誤卡片。
+                    _v2PendingSourceError = err;
+                    renderPendingTab();
+                }
+            };
+            const pendingUnsub = await safeBootstrapStep('待辦即時同步', () => dataSvc.subscribePendingRequests((items) => {
                 _v2PendingCache = (Array.isArray(items) ? items : []).map(requestSvc.normalizeLegacyRequest);
+                _v2PendingSourceError = null; // 驗收修復（中 #A）：訂閱恢復正常，清除來源異常旗標
                 renderPendingTab();
-                setSyncStatus(true);
-            }, onSyncError));
-            unsubs.push(await dataSvc.subscribeSubstituteRecords(async (items) => {
+                setSyncStatus('pending', true);
+            }, makeSyncErrorHandler('pending')));
+            if (pendingUnsub) unsubs.push(pendingUnsub);
+
+            const recordsUnsub = await safeBootstrapStep('全校紀錄即時同步', () => dataSvc.subscribeSubstituteRecords(async (items, meta) => {
                 // Phase 6：父文件已不含 leaveType/reason，即時同步進來的紀錄要先補 detail
                 // 才能餵給月結算（見 hydrateRecordsWithDetail 檔頭註解）。gen 守門避免較舊的
                 // 一輪補讀在較新一輪之後才完成、把新資料覆蓋回舊的。
@@ -2529,32 +2868,79 @@ async function bootstrap() {
                 const hydrated = await hydrateRecordsWithDetail(Array.isArray(items) ? items : []);
                 if (gen !== _v2RecordsCacheGen) return;
                 _v2RecordsCache = hydrated;
+                _v2RecordsLiveLastDoc = meta?.lastDoc ?? null; // 輕 #10：更新「載入更多」的原生 cursor 起點
+                // 驗收修復（中 #4）：即時視窗有變動（新增/更新/刪除都會觸發這個 callback），
+                // 已快取的日期範圍查詢結果可能已經過期，直接清空最保險（成本極低，Map.clear()）。
+                _v2DateRangeQueryCache.clear();
                 renderRecordsTab();
-                setSyncStatus(true);
-            }, onSyncError));
+                setSyncStatus('records', true);
+            }, makeSyncErrorHandler('records'), { limit: V2_RECORDS_PAGE_SIZE }));
+            if (recordsUnsub) unsubs.push(recordsUnsub);
+
             // P2：訂閱全校課表——首次即回傳目前值（教師端載入 approver 上傳的課表），
             // 之後任何 approver 上傳/編輯都即時套用到本機並重繪。
-            unsubs.push(await dataSvc.subscribeSchedule((sched) => {
+            const scheduleUnsub = await safeBootstrapStep('課表即時同步', () => dataSvc.subscribeSchedule((sched) => {
                 if (sched) applyRemoteSchedule(sched);
-                setSyncStatus(true);
-            }, onSyncError));
-            if (roleSvc.isApprover()) {
-                unsubs.push(await dataSvc.subscribeOperationLogs(() => {
-                    renderLogsTab();
-                    setSyncStatus(true);
-                }, {}, onSyncError));
-            }
+                setSyncStatus('schedule', true);
+            }, makeSyncErrorHandler('schedule')));
+            if (scheduleUnsub) unsubs.push(scheduleUnsub);
+            // Stage 1（讀取成本止血，§5.4）：操作日誌不再於 bootstrap 常駐訂閱（原本 limit 200
+            // 的 onSnapshot，approver 一登入就長期占用一條監聽，即使從未打開日誌頁）。改為進入
+            // 「操作日誌」頁籤才讀（renderLogsTab 本來就是一次性 getDocs，見該函式），離開頁籤
+            // 不需額外取消訂閱——因為根本沒有建立訂閱。
 
             // 首次塞 cache（onSnapshot 首次觸發前）— 讓即刻的衝堂檢查可用；同樣需要補 detail，
             // 否則身份確認後、onSnapshot 首次回呼前這段期間讀到的月結算會漏掉 leaveType。
             // 沿用同一支 gen 計數器：若 onSnapshot 已搶先在這段 await 期間完成過一輪，這裡就不再
             // 用（可能較舊的）結果覆蓋回去。
-            {
+            // Stage 1：改用有界的分頁/篩選讀取（listSubstituteRecordsPage／listOpenPendingRequests），
+            // 不再用 listSubstituteRecords()／listPendingRequests() 整集合無界讀取——這兩支一次性
+            // 讀取原本只是「onSnapshot 首次快照前的臨時填充」，用途上本來就只需要與訂閱視窗一致
+            // 的資料量，改用有界版本沒有任何行為損失。
+            // 這段 prefill 本身就是一次真實讀取（有界），「初次渲染」（上方 renderRecordsTab()/
+            // renderPendingTab()）發生在這段之前、快取都還是空的，所以會先畫出空列表；這裡 prefill
+            // 完成後主動再 render 一次，讓使用者不必等 onSnapshot 首次快照才看到資料——不多打一次
+            // Firestore，只是用同一筆已經讀到的資料多渲染一次。
+            // 驗收修復（阻斷 #3）：兩段 prefill 各自 wrap，其中 listOpenPendingRequests 需要一個
+            // 複合索引（status+createdAt，見 firestore.indexes.json）——索引缺失時的
+            // failed-precondition 不能讓整個 bootstrap 中止，只讓這段 prefill 略過即可，
+            // renderPendingTab 本身仍會照常運作（它讀 _v2PendingCache，缺 prefill 只是稍晚
+            // 才有資料，等 subscribePendingRequests 的首次快照到來即補上）。
+            // 驗收修復（輕 #F）：這支 prefill 本身也回傳 nextCursor（跟 subscribeSubstituteRecords
+            // 的 meta.lastDoc 是同一種原生 cursor），順手存進 _v2RecordsLiveLastDoc——若即時訂閱
+            // 遲遲沒有首次快照、甚至訂閱本身失敗（見 makeSyncErrorHandler('records')），
+            // _v2RecordsLiveLastDoc 原本會一直是 null，使用者點「載入更多」時
+            // loadMoreRecordsTabPage() 的 cursor 退回 null，等於用 afterCursor:null 重查
+            // 第一頁，把 prefill 剛載入的這 50 筆整批重抓一次（多花一次有界讀取，且「載入更多」
+            // 疊出來的列表會出現同一批紀錄的重複，靠 recordId 去重才沒有顯示出來，但白白多打
+            // 一次 Firestore）。有 prefill 的 cursor 可用時先頂著用，訂閱首快照回來後
+            // （見上方 subscribeSubstituteRecords 的 callback）自然會覆蓋成更新的值。
+            await safeBootstrapStep('紀錄清單預讀', async () => {
                 const initGen = ++_v2RecordsCacheGen;
-                const initialRecords = await hydrateRecordsWithDetail(await dataSvc.listSubstituteRecords());
-                if (initGen === _v2RecordsCacheGen) _v2RecordsCache = initialRecords;
-            }
-            _v2PendingCache = (await dataSvc.listPendingRequests()).map(requestSvc.normalizeLegacyRequest);
+                const { records: initialPage, nextCursor } = await dataSvc.listSubstituteRecordsPage({ pageSize: V2_RECORDS_PAGE_SIZE });
+                const initialRecords = await hydrateRecordsWithDetail(initialPage);
+                if (initGen === _v2RecordsCacheGen) {
+                    _v2RecordsCache = initialRecords;
+                    if (!_v2RecordsLiveLastDoc) _v2RecordsLiveLastDoc = nextCursor;
+                    renderRecordsTab();
+                }
+            });
+            // 驗收修復（中 #A）：這段 prefill 與上面的 subscribePendingRequests 是「待我同意/
+            // 待我審核」唯二的資料來源，兩者都失敗時必須讓 renderPendingTab 知道（見
+            // _v2PendingSourceError 宣告處註解），不能只是 safeBootstrapStep 記錄一下就算了——
+            // 內層 try/catch 負責標記旗標＋重繪，再 rethrow 讓 safeBootstrapStep 照常做
+            // console.error + notifyError（單一集中處，不重複記錄）。
+            await safeBootstrapStep('待辦清單預讀', async () => {
+                try {
+                    _v2PendingCache = (await dataSvc.listOpenPendingRequests()).map(requestSvc.normalizeLegacyRequest);
+                    _v2PendingSourceError = null;
+                } catch (err) {
+                    _v2PendingSourceError = err;
+                    throw err;
+                } finally {
+                    renderPendingTab();
+                }
+            });
         } catch (e) {
             console.error('[v2] resolveIdentity 失敗:', e);
             // 維持鎖定並在遮罩顯示錯誤+重試入口，避免授權者被永久卡在誤導的「請登入」畫面。
