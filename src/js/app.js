@@ -78,6 +78,20 @@ class SubstituteTeacherApp {
         // 供單例機制使用（重複呼叫時，前一個尚未關閉的 confirm 先以 resolve(false) 關閉）
         this._confirmDialogResolve = null;
 
+        // Stage 1 修復（阻斷 #2）：showRecommendations() 改 async 按需查詢後，快速切換課程/
+        // 日期可能讓較舊一輪的查詢在較新一輪之後才回來、把新結果覆蓋回舊的。世代計數器守門。
+        this._recommendationsGen = 0;
+        // 輕 #12：updateWeeklySummaryPreview() 改 async 後同理，快速切換週次也需要世代守門。
+        this._weeklySummaryPreviewGen = 0;
+        // 驗收修復（輕 #C）：checkAndShowExistingRecordWarning() 改 async 後，單選模式下
+        // 快速切換課程可能讓較舊一輪的衝堂檢查在較新一輪之後才回來、顯示錯的警告。世代守門。
+        this._courseSelectionGen = 0;
+        // 驗收修復（輕 #C）：handleMultiCourseSelection() 改 async 後，多選模式允許同時有多個
+        // 選取在途（這是多選模式本身的正常行為，不能用單一世代計數器整批作廢），改用
+        // 「正在檢查中的課程 key」集合去重——同一格在前一次 await 還沒回來前被重複點擊，
+        // 直接忽略，不重入。
+        this._inFlightMultiCourseKeys = new Set();
+
         // 課表編輯器相關
         this.editorCurrentTeacher = null;  // 目前編輯的教師
         this.editorEditingCell = null;     // 目前編輯的時段 { weekday, period }
@@ -1939,10 +1953,20 @@ class SubstituteTeacherApp {
 
     /**
      * 處理多選模式的課程選擇
+     *
+     * Stage 1 修復（阻斷 #1）：checkExistingRecord 已改 async 按需查詢，本函式隨之 async 化。
+     * 呼叫端 onCourseSelected() 是 click 事件處理常式，不 await 呼叫是既有慣例。
+     *
+     * 驗收修復（輕 #C）：多選模式允許同時有多格課程各自在做衝堂檢查（這是正常操作，不能
+     * 用單一世代計數器整批作廢），改用 this._inFlightMultiCourseKeys 這個 Set 擋「同一格
+     * 在前一次 await 還沒回來前又被點一次」——這種情況兩輪呼叫會並行讀 this.selectedCourses
+     * 判斷 existingIndex，可能都讀到「尚未選中」而各自 push 一次，選中同一格兩次。
      */
-    handleMultiCourseSelection(cell, courseInfo, date) {
+    async handleMultiCourseSelection(cell, courseInfo, date) {
         // 檢查課程是否已被選中
         const courseKey = `${courseInfo.weekday}_${courseInfo.period}_${courseInfo.className}`;
+        if (this._inFlightMultiCourseKeys.has(courseKey)) return; // 同一格的衝堂檢查還在跑，忽略這次重複點擊
+
         const existingIndex = this.selectedCourses.findIndex(c =>
             `${c.weekday}_${c.period}_${c.className}` === courseKey
         );
@@ -1954,12 +1978,18 @@ class SubstituteTeacherApp {
         } else {
             // 未選中，檢查衝堂後加入
             if (typeof this.dataManager?.checkExistingRecord === 'function') {
-                const existingRecord = this.dataManager.checkExistingRecord(
-                    date,
-                    courseInfo.period,
-                    courseInfo.className,
-                    courseInfo.originalTeacher
-                );
+                this._inFlightMultiCourseKeys.add(courseKey);
+                let existingRecord;
+                try {
+                    existingRecord = await this.dataManager.checkExistingRecord(
+                        date,
+                        courseInfo.period,
+                        courseInfo.className,
+                        courseInfo.originalTeacher
+                    );
+                } finally {
+                    this._inFlightMultiCourseKeys.delete(courseKey);
+                }
                 if (existingRecord) {
                     this.showToast(`此課堂（${courseInfo.period} ${courseInfo.className}）已有調代課紀錄，無法選擇`, 'error');
                     return;
@@ -2150,8 +2180,18 @@ class SubstituteTeacherApp {
      * 檢查並顯示已存在調代課紀錄的警告
      * @param {string} date - 選擇的日期
      * @param {Object} course - 選擇的課程
+     *
+     * Stage 1 修復（阻斷 #1）：checkExistingRecord 已改 async 按需查詢，本函式隨之 async 化。
+     * 唯一呼叫端 handleSingleCourseSelection() 不 await（既有慣例，fire-and-forget 的 UI 更新）。
+     *
+     * 驗收修復（輕 #C）：單選模式下，使用者可能在上一次選課的衝堂檢查還沒回來前就改選了
+     * 另一堂課——this.selectedCourse 已同步被 handleSingleCourseSelection 換成新的，但這裡
+     * 的 await 還在跑舊的那一輪，若不設守門，舊一輪較晚回來時會用舊課程的檢查結果覆蓋掉
+     * 新課程應該顯示的警告狀態（或反過來把新課程的警告誤植成舊課程的）。加世代計數器，
+     * 比照 _recommendationsGen 的做法：await 前遞增取號，await 後比對，號碼對不上就放棄
+     * 這一輪的 DOM 寫入（含 this.hasExistingRecord 賦值）。
      */
-    checkAndShowExistingRecordWarning(date, course) {
+    async checkAndShowExistingRecordWarning(date, course) {
         // 移除先前的警告訊息
         const existingWarning = document.getElementById('existing-record-warning');
         if (existingWarning) {
@@ -2171,12 +2211,14 @@ class SubstituteTeacherApp {
         }
 
         // 檢查是否已有紀錄
-        const existingRecord = this.dataManager.checkExistingRecord(
+        const gen = ++this._courseSelectionGen;
+        const existingRecord = await this.dataManager.checkExistingRecord(
             date,
             course.period,
             course.className,
             course.originalTeacher
         );
+        if (gen !== this._courseSelectionGen) return; // 期間使用者已改選其他課程，放棄本輪結果
 
         if (existingRecord) {
             // 建立警告訊息
@@ -2228,13 +2270,20 @@ class SubstituteTeacherApp {
 
     /**
      * 顯示推薦代課教師列表
+     *
+     * Stage 1 修復（阻斷 #2）：改用 getSubstituteRecordsAsync(date, date) 對「選定日期」
+     * 單日按需查詢，不再用同步版 getSubstituteRecords()（V2 模式下讀即時訂閱視窗，最近
+     * N 筆）——候選教師名單若漏看視窗外、但落在同一天的既有代課安排，會把已經被排課的
+     * 教師重複推薦出去（正確性 bug，不只是效能問題）。
      */
-    showRecommendations() {
+    async showRecommendations() {
         const date = document.getElementById('sub-date').value;
         // 使用「有效課表」：九年級已畢業時排除其課程，避免已畢業班級擋住可代課老師
         const scheduleData = this.dataManager.getActiveScheduleData();
         const teachers = this.dataManager.getTeachers();
-        const substituteRecords = this.dataManager.getSubstituteRecords();
+        const gen = ++this._recommendationsGen;
+        const substituteRecords = await this.dataManager.getSubstituteRecordsAsync(date, date);
+        if (gen !== this._recommendationsGen) return; // 期間使用者已改選其他課程/日期，放棄本輪結果
 
         console.log('===== 代課教師推薦 =====');
         console.log('選擇的課程:', this.selectedCourse);
@@ -2391,9 +2440,11 @@ class SubstituteTeacherApp {
         }
 
         // 檢查該課堂是否已有調代課紀錄（衝堂檢查）
+        // Stage 1 修復（阻斷 #1）：checkExistingRecord 已改 async 按需查詢；confirmSubstitute()
+        // 本身已是 async（見上方 await this.confirmMultiCourseSubstitute），直接 await。
         let existingRecord = null;
         if (typeof this.dataManager?.checkExistingRecord === 'function') {
-            existingRecord = this.dataManager.checkExistingRecord(
+            existingRecord = await this.dataManager.checkExistingRecord(
                 date,
                 this.selectedCourse.period,
                 this.selectedCourse.className,
@@ -3400,8 +3451,16 @@ class SubstituteTeacherApp {
 
     /**
      * 即時更新「本週共 X 筆 → 預估 Y 頁」預覽
+     *
+     * Stage 1（讀取成本止血）：改用 getSubstituteRecordsAsync()——V2 已登入模式下，
+     * 即時訂閱只保留最近 N 筆（見 v2-app.js V2_RECORDS_PAGE_SIZE），使用者選的週次若是
+     * 較舊的一週，同步版 getSubstituteRecords() 只會在視窗內找，找不到就漏算。
+     * 本函式改為 async；呼叫端是 change 事件監聽（見 bindRecordEvents），
+     * 事件處理常式呼叫 async 函式而不 await 是既有慣例，不影響其他呼叫端。
+     * 輕 #12：async 化後若使用者快速切換週次，較舊一輪的查詢可能在較新一輪之後才回來、
+     * 把新結果覆蓋回舊的（後發先至）。用 this._weeklySummaryPreviewGen 世代計數器守門。
      */
-    updateWeeklySummaryPreview() {
+    async updateWeeklySummaryPreview() {
         const dateInput = document.getElementById('weekly-summary-date');
         const hint = document.getElementById('weekly-summary-range-hint');
         const preview = document.getElementById('weekly-summary-preview');
@@ -3415,9 +3474,11 @@ class SubstituteTeacherApp {
             return;
         }
 
+        const gen = ++this._weeklySummaryPreviewGen;
         const weekStart = this.pdfGenerator.getWeekStart(selected);
         const weekRange = this.pdfGenerator.getWeekRange(weekStart);
-        const records = this.dataManager.getSubstituteRecords(weekRange.start, weekRange.end);
+        const records = await this.dataManager.getSubstituteRecordsAsync(weekRange.start, weekRange.end);
+        if (gen !== this._weeklySummaryPreviewGen) return; // 期間使用者已切換週次，放棄本輪結果
 
         hint.textContent = `週次：${this.pdfGenerator.formatWeekLabel(weekRange.start)} ~ ${this.pdfGenerator.formatWeekLabel(weekRange.end)}`;
 
@@ -3455,7 +3516,8 @@ class SubstituteTeacherApp {
 
         const weekStart = this.pdfGenerator.getWeekStart(selected);
         const weekRange = this.pdfGenerator.getWeekRange(weekStart);
-        const records = this.dataManager.getSubstituteRecords(weekRange.start, weekRange.end);
+        // Stage 1：同上，改用 getSubstituteRecordsAsync（見 updateWeeklySummaryPreview 註解）。
+        const records = await this.dataManager.getSubstituteRecordsAsync(weekRange.start, weekRange.end);
         if (records.length === 0) {
             this.showToast('本週無調代課紀錄，無法產生彙整單', 'warning');
             return;
@@ -3483,6 +3545,15 @@ class SubstituteTeacherApp {
 
     /**
      * 查詢調課紀錄
+     *
+     * 輕 #13（驗收修復，未動邏輯，僅加註警告）：這裡仍呼叫同步版 getSubstituteRecords()，
+     * V2 模式下只讀即時訂閱視窗（最近 N 筆），日期範圍若落在視窗外會漏算——理論上與
+     * confirmSubstitute() 等其他呼叫點同一個問題（阻斷 #1/#2 已修）。本函式目前刻意不修：
+     * 唯一渲染對象 #records-content 在 V2 啟用時已被 CSS 強制隱藏（`body.v2-active
+     * #records-content { display: none !important; }`，見 src/css/base.css），此表格與
+     * #search-records-btn 在 V2 模式下不可觸達，只有 V1 離線模式會走到這裡——而 V1 模式的
+     * getSubstituteRecords() 本來就是讀本機完整陣列，沒有視窗截斷問題。若日後 V1 records-tab
+     * 又重新對 V2 使用者開放，必須連同這裡一併改 getSubstituteRecordsAsync()。
      */
     searchRecords() {
         const startDate = document.getElementById('record-start-date').value;
@@ -3716,27 +3787,45 @@ class SubstituteTeacherApp {
 
     /**
      * 產生月結算報表
+     *
+     * Stage 1（讀取成本止血）：改用 getSubstituteRecordsAsync() 帶明確日期範圍，取代原本
+     * 「getSubstituteRecords() 撈全部 → settlementCalculator 內部用 startsWith 篩月份」的寫法。
+     * 月結算的年份下拉選項可選到當前學年度 +1 ~ -2（populateSettlementYearOptions），使用者
+     * 常態性查詢過去月份，遠超即時訂閱視窗（最近 N 筆）能涵蓋的範圍，若不下推查詢會
+     * 靜默算出錯誤（偏低）的鐘點時數——金額計算，正確性優先於少打一次 Firestore。
      */
-    generateSettlement() {
+    async generateSettlement() {
         const year = document.getElementById('settle-year').value;
         const month = document.getElementById('settle-month').value;
+        const btn = document.getElementById('generate-settlement-btn');
 
-        const settlementData = this.settlementCalculator.calculate(
-            year,
-            month,
-            this.dataManager.getScheduleData(),
-            this.dataManager.getSubstituteRecords(),
-            this.dataManager.getTeachers()
-        );
+        try {
+            if (btn) btn.disabled = true;
+            const { startDate, endDate } = this.settlementCalculator.getMonthDateRange(year, month);
+            const records = await this.dataManager.getSubstituteRecordsAsync(startDate, endDate);
 
-        // 儲存結算資料供篩選使用
-        this.currentSettlementData = settlementData;
+            const settlementData = this.settlementCalculator.calculate(
+                year,
+                month,
+                this.dataManager.getScheduleData(),
+                records,
+                this.dataManager.getTeachers()
+            );
 
-        // 重置勾選框
-        document.getElementById('show-changed-only').checked = false;
+            // 儲存結算資料供篩選使用
+            this.currentSettlementData = settlementData;
 
-        this.renderSettlementTable(settlementData);
-        document.getElementById('settlement-result').classList.remove('hidden');
+            // 重置勾選框
+            document.getElementById('show-changed-only').checked = false;
+
+            this.renderSettlementTable(settlementData);
+            document.getElementById('settlement-result').classList.remove('hidden');
+        } catch (err) {
+            console.error('產生月結算失敗:', err);
+            this.showToast('讀取月結算資料失敗，請查看 console', 'error', 5000);
+        } finally {
+            if (btn) btn.disabled = false;
+        }
     }
 
     /**
@@ -3800,20 +3889,34 @@ class SubstituteTeacherApp {
 
     /**
      * 匯出結算表 Excel
+     *
+     * Stage 1：與 generateSettlement() 相同理由，改用 getSubstituteRecordsAsync() 帶明確日期範圍。
      */
-    exportSettlementExcel() {
+    async exportSettlementExcel() {
         const year = document.getElementById('settle-year').value;
         const month = document.getElementById('settle-month').value;
+        const btn = document.getElementById('export-settlement-btn');
 
-        const settlementData = this.settlementCalculator.calculate(
-            year,
-            month,
-            this.dataManager.getScheduleData(),
-            this.dataManager.getSubstituteRecords(),
-            this.dataManager.getTeachers()
-        );
+        try {
+            if (btn) btn.disabled = true;
+            const { startDate, endDate } = this.settlementCalculator.getMonthDateRange(year, month);
+            const records = await this.dataManager.getSubstituteRecordsAsync(startDate, endDate);
 
-        this.settlementCalculator.exportToExcel(settlementData, year, month);
+            const settlementData = this.settlementCalculator.calculate(
+                year,
+                month,
+                this.dataManager.getScheduleData(),
+                records,
+                this.dataManager.getTeachers()
+            );
+
+            this.settlementCalculator.exportToExcel(settlementData, year, month);
+        } catch (err) {
+            console.error('匯出月結算 Excel 失敗:', err);
+            this.showToast('讀取月結算資料失敗，請查看 console', 'error', 5000);
+        } finally {
+            if (btn) btn.disabled = false;
+        }
     }
 
     /**

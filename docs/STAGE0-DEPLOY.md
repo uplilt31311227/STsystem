@@ -142,6 +142,10 @@ git push preview feature/permission-system:main
 
 **部署完成後，進入相容性矩陣的組合④（目標穩定態），時間窗結束。**
 
+**部署 client 後，公告使用者做一次硬重新整理（Ctrl+Shift+R）**：GitHub Pages 靜態資源快取 `max-age=600`，push 後約 10 分鐘內的回訪可能拿到新版 `v2-app.js`＋瀏覽器快取住的舊版子模組（例如本輪 `uiFeedback.js` 新增了具名匯出 `resetSyncStatus`，若回訪使用者的瀏覽器快取還是舊版 `uiFeedback.js`，新版 `v2-app.js` 的 `import { ..., resetSyncStatus } from './modules/v2/uiFeedback.js'` 會找不到這個具名匯出而整個模組載入失敗）。後果是 V2 權限系統靜默不啟動、頁面退回 V1 介面——**不是資安問題**（Firestore rules 仍在伺服器端把關，退回 V1 介面不會讓人讀到不該讀的資料），純粹是功能不可用，使用者體感是「怎麼跟公告的不一樣」。硬重新整理會強制略過瀏覽器快取、拿到成套的新版模組，立即恢復；就算沒公告，10 分鐘快取窗過後所有人自然也會自癒。
+
+**取捨與治本方向**：不要在 import 路徑加 `?v=` 這類 cache-busting 參數（例如 `import ... from './modules/v2/uiFeedback.js?v=2'`）試圖繞開這個問題——ES module 的模組身份是以完整 specifier（含查詢字串）判斷同一份模組，同一支 `uiFeedback.js` 若同時被 `v2-app.js`（新版，帶 `?v=2`）與其他尚未跟進改 specifier 的呼叫端（舊版，不帶參數）載入，瀏覽器會建立**兩個獨立的模組實例**，`uiFeedback.js` 內的模組級狀態（例如 `_syncSourceStatus` Map，見本文件「Stage 1」附註的中 #A 修復）會分裂成兩份互不同步的複本——比原本的「10 分鐘快取窗、硬重整即解」還嚴重，且不會自己恢復。目前只有 `index.html` 的兩個直接 `<script>` 標籤（`app.js`／`v2-app.js`）有版本號，透過 import 語句載入的所有子模組完全沒有 cache-busting 機制，這是既有架構的既知限制，本次不處理；長期治本方向是為整個 V2 模組樹統一導入版本化機制（例如建置期在所有內部 import 路徑注入同一個版本號，或改走有雜湊檔名的打包流程），列為後續工作，不在本輪範圍。
+
 ### 4. 驗證清單（client 部署完成後立即執行）
 
 | # | 情境 | 操作 | 預期結果 |
@@ -197,3 +201,53 @@ node scripts/firestore-deploy-rules.js
 - 部署前現行線上 ruleset release：見 `docs/DEPLOYMENT.md` 部署環境總覽區塊「現行線上 release」欄位（每次部署後應更新該欄位，含 ruleset 名稱與日期）。
 - 本次改動不涉及 `schools/{schoolId}` 的寫入規則、`substituteRecords`/`pendingRequests` 的 create/update 規則、`userMappings` 的自建防提權邏輯——這些維持不變，Stage 0 只收緊「讀取」與 `operationLogs`/`emailIndex`/`joinAttempts` 的守門條件。
 - Stage 0 完成後，下一步是 §8 路線圖的 Stage 1（讀取成本止血），與本次改動彼此獨立，可分開排程。
+
+## 附註：Stage 1（讀取成本止血）新增的複合索引部署
+
+Stage 1 對 `pendingRequests` 新增兩條查詢（`schoolDataService.js` 的 `subscribePendingRequests` /
+`listOpenPendingRequests` 用 `where('status','in',[...]).orderBy('createdAt','desc')`；
+`listPendingRequestsByInitiator` 用 `where('initiatedBy','==',teacherId).orderBy('createdAt','desc')`），
+兩者的欄位（where 欄位≠orderBy 欄位）都需要複合索引，已宣告在 `firestore.indexes.json`（**本次未執行部署，未建立 `firebase.json`**）。
+
+驗收另外新增的兩條衝堂檢查查詢（`queryRecordsByExactDate`／`queryPendingRequestsByExactDate`，皆為單一 `where('date','==',...)`）與 `substituteRecords` 的原有新查詢（`listSubstituteRecordsPage` 的
+`orderBy('createdAt')+limit`、`queryRecordsByDateRange` 的 `where('date',...)+orderBy('date')`）
+range/where/orderBy 皆同欄位或單欄位相等，屬 Firestore 自動建立的單欄位索引，**不需額外複合索引、不需部署任何東西**。**全部需要複合索引的查詢只有上述 `pendingRequests` 那兩條。**
+
+### ⚠️ 索引必須先於 client 上線——硬性順序，不是建議
+
+**依驗收實測結果，這是本文件唯一被明確訂正為「硬性規則」的一節**：`listPendingRequestsByInitiator`／`listOpenPendingRequests` 缺索引時，`getDocs()` 會直接 `reject`（`failed-precondition`）。**驗收在索引未部署的狀態下實測，發現的不是「待辦清單的『我的申請』區塊讀不到資料」這種局部失敗，而是整個 app 判定登入失敗、`_v2GateError=true`、永久 `lockV2App()`——所有使用者、所有頁籤全部被鎖死、無法使用，唯一恢復方式是重新整理後祈禱網路時序剛好不同（不可靠），或回退程式碼。**
+
+根因是 bootstrap 的 `onAuthStateChange` 把「身份解析」與「身份解析成功後的所有渲染/訂閱/預讀」包在同一個 try/catch 裡：任何一步失敗都被外層 catch 判定成「登入失敗」。這個根因已在程式碼修復（`v2-app.js` 的 `safeBootstrapStep()`：身份解析之後的每一步各自獨立降級，不再冒泡到外層致命 catch）。**修復後不再有全站鎖死，但降級的具體範圍要看缺的是哪一條索引——兩條索引各自對應不同功能，不能混為一談**：
+
+- **`pendingRequests (initiatedBy ASC, createdAt DESC)` 缺席**：只影響 `listPendingRequestsByInitiator`（待辦頁籤「我的申請」區塊唯一資料來源）。該查詢已包區塊級 try/catch，失敗時「我的申請」顯示錯誤卡片＋重新整理鈕；「待我同意/待我審核」讀的是 `_v2PendingCache`，跟這條索引無關，維持正常；全校紀錄、課表、寫入功能同樣不受影響。
+- **`pendingRequests (status ASC, createdAt DESC)` 缺席**：影響 `subscribePendingRequests`（即時訂閱）與 `listOpenPendingRequests`（bootstrap prefill）——這兩者才是「待我同意/待我審核」的資料來源，缺這條索引時兩者都會失敗。**驗收另外指出（中 #A）**：這種情況原本會讓 `_v2PendingCache` 停在初始空陣列、「待我同意/待我審核」誤顯示「目前沒有…」這種看似正常的空狀態文字（假陰性，比顯性錯誤更危險——沒有人會去回報「一切正常」的畫面），且同步中斷徽章可能被其他訂閱（例如課表訂閱成功）洗成「已同步」而掩蓋問題。已修復：新增 `_v2PendingSourceError` 旗標（訂閱 onError 與 prefill 失敗時設定），「待我同意/待我審核」改顯示錯誤卡片＋重試鈕；`uiFeedback.setSyncStatus()` 改為逐一記錄每條訂閱（`pending`/`records`/`schedule`）各自的健康狀態，只要還有任一條是壞的就不移除徽章，不再被其他成功的訂閱覆蓋掉。修復後「我的申請」、全校紀錄、課表、寫入功能不受影響，但**「待我同意/待我審核」本身仍然是壞的（只是從假陰性變成顯性的錯誤卡片，不再是全站鎖死）**。
+
+兩種情況合起來看：**索引缺席永遠會讓對應的那部分功能真的壞掉，程式碼修復只解決「壞掉的方式」（從全站鎖死或假陰性，變成局部的、可見的錯誤卡片），不能讓功能本身變好——索引還是得部署。**
+
+即便如此，**「索引必須先於 client 上線」仍然是硬性順序，不能因為程式碼有降級保護就跳過**：
+
+1. 降級保護只覆蓋「目前已知會用到這兩條查詢的路徑」，日後任何新增的查詢若忘記包保護，一樣可能重現全站鎖死；把索引部署當成事後補救的安全網，而不是可以取代先部署索引的替代方案。
+2. 即使降級成功，**每一個受影響的使用者仍然看到一個功能是壞的**（依缺的是哪條索引，可能是「我的申請」讀不到，也可能是「待我同意/待我審核」整段讀不到），這對正式上線是不可接受的使用者體驗，不是「反正不會當機就沒關係」。
+3. **本專案的部署模型放大了這個風險**：`preview` 站（`https://uplilt31311227.github.io/STsystem-preview/`）用 `git push preview feature/permission-system:main` 部署，GitHub Pages 收到 push 後**自動建置、無 CI 閘門、無人工核准步驟**，通常 1-3 分鐘內就對外生效（見本文件「上線順序」步驟 3 的既有描述）。這代表**一旦把用到新查詢的程式碼 push 到 preview，若索引還沒建好，最快 1-3 分鐘後就會有真實使用者（測試教師帳號、甚至正式教師）撞上**——沒有 staging 環境、沒有 feature flag、沒有逐步放量，push 即上線。
+
+**正確順序（與 Stage 0 的「回填 → rules → client」同一精神，索引比照回填、必須排在 client 部署之前）**：
+
+```
+1. 部署 firestore.indexes.json 的兩條複合索引（見下方三選一）
+2. 到 Firebase Console 確認兩條索引狀態皆為「已啟用」（Enabled，不是 Building）
+3. 才執行 git push preview feature/permission-system:main
+```
+
+索引建置時間依集合大小通常數分鐘內完成（`pendingRequests` 目前正式庫規模很小），但**建置中的索引查詢一樣會 `failed-precondition`**，跳過步驟 2 直接部署 client 等於沒做這件事。
+
+**部署前必讀**：本專案沒有 `firebase.json`／Firebase CLI 工作流程（規則走 `scripts/firestore-deploy-rules.js` 這支自製 REST 腳本，不是 `firebase deploy`），目前也沒有對應的索引部署腳本。索引部署三選一（依可靠度排序，**不建議依賴選項 3**）：
+
+1. **建立 `firebase.json`＋改用 Firebase CLI**：新增
+   ```json
+   { "firestore": { "rules": "firestore.rules", "indexes": "firestore.indexes.json" } }
+   ```
+   再跑 `firebase deploy --only firestore:indexes`（需先 `firebase login` 且專案 ID 為 `stsystem-9d5fe`，與 `firestore-deploy-rules.js` 的 `PROJECT` 常數一致）。這個路徑會讓規則部署也可以改用標準 CLI，但目前規則腳本已穩定運作，是否一併遷移留待另行評估，不在本次範圍。
+2. **手動在 Firebase Console 建立**：Firestore Database → 索引 → 複合索引，依 `firestore.indexes.json` 列的欄位與排序方向逐一新增（`pendingRequests`：`status` ASC + `createdAt` DESC；`pendingRequests`：`initiatedBy` ASC + `createdAt` DESC）。部署量小（2 條），這是目前最務實的路徑。
+3. **（不建議依賴，僅供本機/測試環境驗證）讓錯誤觸發自動建立**：這兩條查詢若在索引未建立前執行，Firestore 會回傳 `failed-precondition` 並在錯誤訊息附上一個可直接點擊建立該索引的 Console 連結；但在**正式環境**這代表「先讓真實使用者撞到錯誤，才能取得建索引的連結」——即使有本輪的降級保護把衝擊縮小到「我的申請」單一區塊，這仍然是使用者親身踩雷才觸發修復，不應該是正式上線的部署手段。
+
+索引建立後有短暫的「建置中」狀態（依資料量通常數分鐘內完成），建置完成前對應查詢會持續 `failed-precondition`；建議與 Stage 0 相同的節奏，在低峰時段部署並在 Console 確認索引狀態為「已啟用」後再視為上線完成。

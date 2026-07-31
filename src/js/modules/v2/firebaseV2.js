@@ -25,6 +25,9 @@ async function loadExtraFirestore() {
         where:            mod.where,
         orderBy:          mod.orderBy,
         limit:            mod.limit,
+        // Stage 1（讀取成本止血）：紀錄頁「載入更多」分頁用值游標（createdAt 值），
+        // 不用 offset——offset 跳過的文件一樣計費讀取，見 RESEARCH-multitenancy-semester.md §5.4。
+        startAfter:       mod.startAfter,
         serverTimestamp:  mod.serverTimestamp,
         writeBatch:       mod.writeBatch,
         runTransaction:   mod.runTransaction,

@@ -21,7 +21,13 @@ const VALID_TYPES    = new Set(['info', 'success', 'warning', 'error']);
 const ERROR_CODE_MESSAGES = {
     'permission-denied':   '權限不足或身份已變更，請重新登入後再試',
     'unavailable':         '目前無法連線，恢復網路後會自動同步',
-    'failed-precondition': '目前無法連線，恢復網路後會自動同步',
+    // 驗收修復（輕 #E）：failed-precondition 原本與 unavailable 共用「無法連線，恢復網路後
+    // 會自動同步」——這句話對 failed-precondition 是誤導。這個錯誤碼在本專案的實際觸發情境
+    // 幾乎都是「查詢需要的複合索引還沒建好」（見 firestore.indexes.json、
+    // docs/STAGE0-DEPLOY.md「索引必須先於 client 上線」一節），跟網路無關，恢復網路也不會
+    // 自動好——網路正常時再查一百次一樣是這個錯，只有等索引建好或換一種不需要該索引的查詢
+    // 方式才會恢復。原訊息會讓使用者誤以為「等等就會自己好」而不會通報，問題永遠不會被發現。
+    'failed-precondition': '查詢所需的資料庫索引尚未建立，請聯絡管理者',
     'unauthenticated':     '登入已過期，請重新登入',
     'not-found':           '找不到資料，可能已被刪除或搬移',
     'already-exists':      '資料已存在，請重新整理頁面後再試',
@@ -94,12 +100,33 @@ export function notifyError(err, context = '') {
     }
 }
 
-/** 顯示/隱藏右上角「即時同步中斷」徽章。reason（如 err.code）只放進 title 提示，不直接顯示原始代碼。 */
-export function setSyncStatus(ok, reason) {
+// 驗收修復（中 #A）：頁面同時掛了 pendingRequests／substituteRecords／schedule 三條即時訂閱，
+// 原本共用同一個 ok/false 布林值——任何一條恢復（ok=true）都會把徽章整個移除，即使另外
+// 兩條當下還是壞的，使用者會看到「已同步」而其實有一部分資料根本沒在同步。改為記錄每個
+// 訂閱來源（source 字串，如 'pending'/'records'/'schedule'）各自的健康狀態，只有全部來源
+// 都是 ok 才能移除徽章；只要還有任何一個 source 是壞的，徽章繼續顯示，title 列出是哪些。
+const _syncSourceStatus = new Map(); // source -> { ok: boolean, reason: string|null }
+
+/**
+ * 更新某個即時同步來源的健康狀態，並依「所有來源」的整體狀態決定右上角徽章顯隱。
+ * @param {string} source - 訂閱來源識別字串（例如 'pending'/'records'/'schedule'），呼叫端
+ *   必須提供，同一來源前後呼叫視為同一條訂閱的狀態更新。
+ * @param {boolean} ok - 這個來源目前是否正常。
+ * @param {string} [reason] - 錯誤代碼等除錯資訊，只放進 title，不直接顯示在徽章本體。
+ */
+export function setSyncStatus(source, ok, reason) {
     try {
         if (typeof document === 'undefined' || !document.body) return;
+        if (!source) {
+            console.warn('[uiFeedback] setSyncStatus() 缺少 source 參數，此次呼叫被忽略——每條即時訂閱都必須帶各自的來源識別字串，見函式註解。');
+            return;
+        }
+        _syncSourceStatus.set(source, { ok: Boolean(ok), reason: reason || null });
+
+        const badSources = [..._syncSourceStatus.entries()].filter(([, s]) => !s.ok);
         const existing = document.getElementById(SYNC_BADGE_ID);
-        if (ok) { existing?.remove(); return; }
+        if (badSources.length === 0) { existing?.remove(); return; }
+
         const badge = existing || document.createElement('div');
         if (!existing) {
             badge.id = SYNC_BADGE_ID;
@@ -110,8 +137,20 @@ export function setSyncStatus(ok, reason) {
             mount.appendChild(badge);
         }
         badge.textContent = '⚠ 即時同步中斷';
-        if (reason) badge.title = `代碼：${reason}`;
-        else badge.removeAttribute('title');
+        badge.title = badSources.map(([src, s]) => `${src}${s.reason ? `：${s.reason}` : ''}`).join('；');
+    } catch (_) {
+        // 防禦
+    }
+}
+
+/**
+ * 清空所有來源的健康狀態並移除徽章。身份切換／登出時呼叫，避免前一個登入者殘留的
+ * 訂閱失敗狀態被誤植到下一個登入者（新的一輪訂閱尚未回報任何狀態前，不該顯示舊徽章）。
+ */
+export function resetSyncStatus() {
+    try {
+        _syncSourceStatus.clear();
+        if (typeof document !== 'undefined') document.getElementById(SYNC_BADGE_ID)?.remove();
     } catch (_) {
         // 防禦
     }

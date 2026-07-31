@@ -1,6 +1,6 @@
 ---
 created: 2026-03-12
-updated: 2026-07-30
+updated: 2026-07-31
 tags:
   - changelog
 ---
@@ -8,6 +8,80 @@ tags:
 # 版本紀錄
 
 ---
+
+## [2026-07-31]（feature/permission-system）多租戶研究 Stage 1：讀取成本止血（含兩輪 opus 驗收修復）
+
+依 `docs/RESEARCH-multitenancy-semester.md` §5.4/§5.6/§8 Stage 1。動機：§7.3 推算現行整集合訂閱模式下，`inhu` 單校已用掉 Spark 每日免費讀取額度約 78%，累積約 700 筆紀錄即撞頂——是現行系統的存續問題。核心改動：把「頁面載入」的讀取量從隨紀錄數線性成長改為有界。第一輪 opus 驗收不通過（3 阻斷/5 中/5 輕），修復後第二輪瀏覽器實測確認阻斷與多數項目已修好，另揪出 A-G 共 7 項（1 中偽陰性、1 中夾界方向錯、5 輕）。本條目已含兩輪全部修復。獨立驗證、尚未 commit。
+
+### 新增（有界訂閱與分頁，`schoolDataService.js`）
+- `subscribeSubstituteRecords` 加 `limit`（預設 50，callback 第二參數帶原生 `lastDoc` 供分頁 cursor 用）；`subscribePendingRequests` 改為只監聽「仍在途」狀態（`where status in [pending, pending_swap_consent, pending_approval]`），已核准／已拒絕的歷史不再即時監聽
+- 新增 `listSubstituteRecordsPage()`（**原生 QueryDocumentSnapshot 游標**分頁，供紀錄頁「載入更多」）、`queryRecordsByDateRange()`（月結算／日期篩選按需查詢，**任一端缺席時以有給的一端往缺席方向推一年**（`resolveDateRangeBounds()`），起訖顛倒時短路並提示，不再退化成整表 scan，見下方 [中B]）、`listOpenPendingRequests()`、`listPendingRequestsByInitiator()`（單一教師的請求歷史，天然有界）
+- 新增 `queryRecordsByExactDate(date)`／`queryPendingRequestsByExactDate(date)`：單欄位相等查詢（`date`），供衝堂檢查按日期一次性查詢用，不需複合索引
+- `subscribeOperationLogs`／`listLogs` 預設筆數 200 → 50
+
+### 修復（阻斷，opus 驗收）
+- **[阻斷1] 衝堂檢查漏檢**：`v2CheckExistingRecord` 原本只看即時訂閱視窗（最近 50 筆 `createdAt`），提前 2 週以上建立的紀錄會漏檢，可能同節課重複建檔、月結算重複計費。改為 async，用 `queryRecordsByExactDate`/`queryPendingRequestsByExactDate` 按目標日期一次性查詢；`app.js` 三個呼叫點（`handleMultiCourseSelection`／`checkAndShowExistingRecordWarning`／`confirmSubstitute`）與 `dm.checkExistingRecord` patch 一併改 async
+- **[阻斷2] 代課推薦資料來源有界截斷**：`showRecommendations` 改 `await getSubstituteRecordsAsync(date, date)` 單日按需查詢，不再用同步版讀即時訂閱視窗；函式改 async，加 `_recommendationsGen` 世代守門避免快速切課競態覆蓋
+- **[阻斷3] 缺索引導致全站鎖死**：`renderPendingTab` 內 `listPendingRequestsByInitiator` 缺複合索引時會 `failed-precondition`，原本會冒泡到 bootstrap 外層致命 catch、`_v2GateError=true` 永久鎖死整個 app（驗收實測全站不可用）。修復：(a) 該查詢包區塊級 try/catch，失敗只讓「我的申請」顯示錯誤卡片＋重新整理鈕；(b) 新增 `safeBootstrapStep()`，bootstrap 內「身份解析成功之後」的所有渲染／訂閱／預讀步驟一律各自降級、不冒泡到外層致命 catch，只有 `resolveIdentity()` 本身失敗才維持鎖定；(c) `docs/STAGE0-DEPLOY.md` 改寫為「索引必須先於 client 上線」硬性順序，並補充 GitHub Pages push 即上線（無 CI 閘門）放大此風險的說明
+
+### 修復（中，opus 驗收）
+- **[中4] 日期範圍查詢快取無失效機制**：`_v2DateRangeQueryCache` 在 `subscribeSubstituteRecords` onSnapshot、`adminDeleteRecord`、`writeV2Record` 成功後皆 `clear()`，避免月結算／週彙整/篩選讀到過期快取
+- **[中5] 單邊日期等於整表 scan**：`queryRecordsByDateRange` 任一端缺席時自動以「當前學年度起日」／「今天」夾住
+- **[中6] 「載入更多」按鈕在總筆數為 50 倍數時永不消失**：改用 `_v2RecordsTabHasMore !== null` 判斷是否已真的查過一次，不再用 `_v2RecordsTabExtra.length > 0`（查回 0 筆新資料時該長度不變，會誤判成「還沒查過」而退回錯誤的樂觀猜測）
+- **[中7] 合併顯示順序覆蓋新資料**：`[..._v2RecordsCache, ..._v2RecordsTabExtra]` 對調為 `[..._v2RecordsTabExtra, ..._v2RecordsCache]`，確保同一筆 recordId 同時存在時，即時視窗（較新）蓋掉載入更多當時的舊快照
+- **[中8] 見上方阻斷3的 (c)**
+
+### 修復（輕，opus 驗收）
+- **[輕9]** 紀錄頁「無日期篩選＋查無紀錄＋非 approver」時顯示提示，說明可能是紀錄較舊、不在最近 50 筆全校視窗內，建議改用日期篩選；已知限制：尚未實作「一般教師預設查詢個人歷史」（`initiatedBy`/`affectedTeacherIds` 天然有界的替代查詢），評估後認為需要新複合索引＋新分頁邏輯，非小改動，暫列已知限制
+- **[輕10]** `listSubstituteRecordsPage` 游標從值游標（`createdAt`）改為原生 `QueryDocumentSnapshot`，避免同毫秒建立的紀錄用值游標分頁時漏掉或重複跳過同值的一筆
+- **[輕11]** `dm.getSubstituteRecordsAsync` 刪除死碼 `const norm`，補上「date 需為 YYYY-MM-DD、不做防禦性正規化」的註解
+- **[輕12]** `updateWeeklySummaryPreview` async 化後加 `_weeklySummaryPreviewGen` 世代守門，避免快速切換週次時後發先至
+- **[輕13]** `searchRecords`（V1 UI，`body.v2-active` 下 CSS 隱藏不可觸達）與 `dataManager.getMonthlyRecords`（全專案無呼叫端）維持同步視窗版，各加註警告說明限制與未來若要接上該怎麼改
+
+### 修復（第二輪瀏覽器實測 A-G）
+- **[中A] 待辦佇列假陰性**：`subscribePendingRequests` 與 bootstrap prefill（`listOpenPendingRequests`）兩個資料來源同時失敗時，`_v2PendingCache` 停在初始空陣列，「待我同意/待我審核」原本會誤顯示「目前沒有…」這種看似正常的空狀態文字（假陰性，比顯性錯誤更危險），且同步中斷徽章可能被其他訂閱（如課表）成功時洗成「已同步」。修復：新增 `_v2PendingSourceError` 旗標（訂閱 onError 與 prefill 失敗時設定，任一來源成功即清除），兩區塊改顯示錯誤卡片＋重試鈕（`retryPendingSource()`）；`uiFeedback.setSyncStatus(source, ok, reason)` 改為逐一記錄每條訂閱（`pending`/`records`/`schedule`）各自的健康狀態並新增 `resetSyncStatus()`，只要還有任一來源是壞的就不移除徽章；`updatePendingNavBadge` 支援 `count===null`（顯示「!」而非悄悄變 0）；訂正 `docs/STAGE0-DEPLOY.md` 原本「待我同意/待我審核正常」的描述——分開說明兩條複合索引各自缺席時的實際影響範圍
+- **[中B] `queryRecordsByDateRange` 夾界方向錯**：原本「缺席端固定夾今天/當前學年度起日」的方向會產生兩種錯誤——只填起日時把缺席的迄日夾成「今天」，未來日期的紀錄（調代課本來就可能預先排定）查不到；只填迄日且該日期早於當前學年度起日時，會產生 `effectiveStart > effectiveEnd` 的恆 0 筆查詢且無任何提示。改為 `schoolDataService.js` 新增 `resolveDateRangeBounds()`：以使用者有給的那一端為基準往缺席方向推一年（缺迄日→起日+1年；缺起日→迄日−1年），並回傳 `valid`（`effectiveStart<=effectiveEnd`）；`queryRecordsByDateRange` 內部改用此函式、`valid===false` 時短路回傳空陣列不發查詢；`renderRecordsTab` 在兩個日期篩選欄位都有值但顛倒時，同步呼叫 `resolveDateRangeBounds` 提前判斷並顯示「起訖日期範圍無效」提示，不必先送一次注定 0 筆的查詢
+- **[輕C]** `checkAndShowExistingRecordWarning`（單選模式）加 `this._courseSelectionGen` 世代守門，比照 `_recommendationsGen`；`handleMultiCourseSelection`（多選模式，允許同時多格在途、不適用單一世代計數器）改用 `this._inFlightMultiCourseKeys` Set，擋同一格課程在前一次 `await checkExistingRecord()` 還沒回來前被重複點擊而並行處理
+- **[輕D]** 紀錄頁空狀態提示文字移除內部驗收編號「（輕 #9…見 CHANGELOG）」，只留對使用者有意義的說明
+- **[輕E]** `uiFeedback.js` 的 `failed-precondition` 原本與 `unavailable` 共用「無法連線，恢復網路後會自動同步」——這句話對 `failed-precondition` 是誤導（本專案的實際觸發情境幾乎都是複合索引未建立，跟網路無關，恢復網路不會自動好）。改為獨立訊息：「查詢所需的資料庫索引尚未建立，請聯絡管理者」
+- **[輕F]** bootstrap 的「紀錄清單預讀」（`listSubstituteRecordsPage`）回傳的 `nextCursor` 順手存進 `_v2RecordsLiveLastDoc`（`_v2RecordsLiveLastDoc` 為空時才寫入，訂閱首快照回來後會自然覆蓋成更新值）——原本只有 `subscribeSubstituteRecords` 的 `meta.lastDoc` 會寫入這個變數，若訂閱遲遲沒有首次快照或訂閱本身失敗，`_v2RecordsLiveLastDoc` 會一直是 `null`，使用者點「載入更多」時 cursor 退回 `null`，等於重查第一頁、把 prefill 剛載入的 50 筆整批重抓一次
+- **[輕G]** 見下方「驗證」——CHANGELOG 先前的懸空引用（「見本次修復後的最終結果，下方『驗收回報』」，該段落實際不存在）改為兩輪修復後重新實測的實際數字
+
+### 變更（`v2-app.js`）
+- 全校紀錄頁籤（`renderRecordsTab`）不再每次重繪都整集合 `getDocs`：無日期篩選時讀即時訂閱視窗＋「載入更多」分頁；有日期篩選時改一次性下推查詢 Firestore（記憶體快取）
+- 待辦頁籤（`renderPendingTab`）「待我同意／待我審核」改直接讀已有界的即時訂閱快取（零額外讀取）；「我的申請」（含歷史）改按發起人一次性查詢，不再整集合讀，且已包降級保護（見阻斷3）
+- 操作日誌不再於 bootstrap 常駐 `onSnapshot`，且不再於「初次渲染」無條件預讀——改為真正進入日誌頁籤才讀（該頁籤本來就是一次性 `getDocs`）
+- bootstrap 的「首次塞 cache」（onSnapshot 首快照前的暫時填充）改用有界查詢，並在填充完成後主動補一次 render，避免使用者看到空白列表閃爍；兩段 prefill 皆已包降級保護
+- 新增 `dm.getSubstituteRecordsAsync()`（`dataManager.js` 定義預設、V2 模式覆寫）：有日期範圍時按需查 Firestore，不再假設「快取裡就是全部歷史」；`app.js` 的月結算（`generateSettlement`/`exportSettlementExcel`）與週彙整 PDF（`updateWeeklySummaryPreview`/`generateWeeklySummaryPDF`）改用此方法，避免查詢較舊月份/週次時因訂閱視窗有界而漏算金額
+
+### 新增（`firestore.indexes.json`，未部署）
+- `pendingRequests`：`(status ASC, createdAt DESC)`、`(initiatedBy ASC, createdAt DESC)` 兩條複合索引，供 `subscribePendingRequests`/`listOpenPendingRequests`/`listPendingRequestsByInitiator` 使用；**這是本輪唯一需要複合索引的查詢**——`substituteRecords` 的所有查詢（含衝堂檢查新增的 `queryRecordsByExactDate`）與 `queryPendingRequestsByExactDate` 皆為 range/where/orderBy 同欄位或單一相等條件，屬自動單欄位索引，不需額外部署
+- `docs/STAGE0-DEPLOY.md` 改寫「Stage 1 索引部署」附註為硬性順序（索引部署＋Console 確認已啟用 → 才能 push client），並補充實測發現的「缺索引=全站鎖死」根因、修復後的降級行為、與 GitHub Pages 部署模型放大風險的說明
+
+### 已知取捨
+- 教師管理頁與紀錄頁的教師下拉選單，選項現在只反映「目前已載入範圍」內出現過的姓名，可能比改造前少（不另外呼叫 `listTeachers()` 換取下拉選單完整度）
+- 一般教師的紀錄頁預設視圖（無日期篩選時）仍是「全校最近 50 筆中與自己相關的部分」，不是「自己的完整歷史」——見輕 #9
+- 訂閱首快照與 bootstrap 「首次塞 cache」的重複讀取（同一批資料被讀兩次）為 Stage 1 之前既有的架構模式，本輪僅將其縮小到有界範圍（50 筆），未消除重複本身，列為已知殘留
+- `legacyMigrationService.js`（一次性遷移）與 `scripts/firestore-backup.js`（離線備份）等低頻管理操作維持整集合讀取，不受本輪影響（合理，非頁面載入路徑）
+
+### 驗證
+- 兩輪修復後重新實測：`npm run check` 29/29 通過、`npm test` 65/65 通過（18+12+11+24）
+- `index.html`：`src/js/app.js?v=1.13.5→1.13.6`、`src/js/v2-app.js?v=0.1.5→0.1.6`
+
+## [2026-07-31]（feature/permission-system）多租戶研究 Stage 0：成員資格隔離規則（isMember）
+
+依 `docs/RESEARCH-multitenancy-semester.md` §3.3/§3.4/§8 Stage 0（commit `2aa88a2`，補記 changelog）。動機：現行 `teachers`／課表／`substituteRecords`／`pendingRequests` 的讀取規則只驗 `isSignedIn()`，任何登入者知道別校 `schoolId` 即可直讀他校資料；開放註冊前必須先補上這個破口。
+
+### 新增
+- `firestore.rules`：R1–R7 讀取守門由裸 `isSignedIn()` 收緊為 `isMember(schoolId)`（`exists(userMappings/{uid})`）；新增 `emailIndex/{email}`（首登 email→teacherId 配對，只開放 `get` 自己一份，不開放 `list`）與 `joinAttempts/{uid}`（`login_denied` 改道，doc id 綁 uid 防灌爆）match block
+- `authGuardV2.js`：首登流程改讀 `emailIndex` 配對（缺條目時以既有 `userMappings` 後備）
+- `schoolDataService.js`：`teachers` 與 `emailIndex` 用 `writeBatch` 原子同步；新增 emailIndex／joinAttempts 的 CRUD
+- 操作日誌頁新增「登入遭拒」區塊（僅 approver 可讀）
+- `scripts/firestore-backfill-emailindex.js`（回填腳本）、`docs/STAGE0-DEPLOY.md`（部署 runbook：唯一可行順序「回填→部署規則→部署 client」、相容性矩陣、時間窗風險）
+
+### 驗證
+- 兩輪獨立驗收（含 17 項缺陷收斂）後定案；`--dry-run` 對正式庫唯讀實測（30 位教師、5 筆待建、0 衝突）
+- 規則尚未部署，需依 `docs/STAGE0-DEPLOY.md` 順序執行（回填 → 部署 rules → 部署 client）
 
 ## [2026-07-30]（feature/permission-system）「清除所有資料」V2 重寫：根因修復＋兩輪驗收缺陷收斂
 
