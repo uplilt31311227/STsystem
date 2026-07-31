@@ -990,6 +990,14 @@ class SubstituteTeacherApp {
             return true;
         }
 
+        // V2 專屬頁籤（v2- 開頭）不受此「需先匯入課表」閘門擋下。
+        // 這取代了原本 v2-app.js bootstrap() 裡對 window.app.canSwitchToTab 的 monkey-patch——
+        // 該 patch 執行時 window.app 尚未建立，從未生效；改在原生方法內判斷以消除時序依賴。
+        // V1 模式沒有 v2- 開頭的頁籤，此檢查無害。
+        if (tabId.startsWith('v2-')) {
+            return true;
+        }
+
         const schoolName = this.dataManager.getSchoolName();
         const hasSchedule = this.dataManager.getScheduleData().length > 0;
 
