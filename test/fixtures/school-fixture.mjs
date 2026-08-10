@@ -330,6 +330,18 @@ function buildPendingRequests({ preset, teachers, parsedRows, semesterId, year, 
     const date   = nthWeekdayOfMonth(year, month, '週三', 4);
     const idOf   = (n) => nameToId.get(n);
 
+    // 下面固定取用 pool[0]～pool[5] 六堂課。每班每週有一節空堂（配額 34 < 35 個時段），
+    // 班級數少的學校（beta 只有 6 班）剛好卡在下限——若某次排課把某班的空堂排在這一格，
+    // pool[5] 會是 undefined，錯誤會以 `Cannot read properties of undefined` 的形式炸在
+    // seedAll() 裡、落在任何測試案例之外。這裡先擋下並說清楚原因。
+    const NEEDED = 6;
+    if (pool.length < NEEDED) {
+        throw new Error(
+            `建立待審請求需要「週三第三節」至少 ${NEEDED} 堂課，${preset.schoolId} 只有 ${pool.length} 堂。` +
+            `原因是該時段有班級排到空堂。請調整 preset.seed 或 SUBJECT_PLAN 的配額後重試。`
+        );
+    }
+
     const base = (course, extra) => ({
         type: extra.type || '代課',
         date,

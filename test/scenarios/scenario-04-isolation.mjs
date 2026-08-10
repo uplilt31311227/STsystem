@@ -6,9 +6,19 @@
  */
 
 import {
-    createDoc, updateDoc, getDoc, deleteDoc, listDocs, createTestUser,
+    createDoc, updateDoc, getDoc, deleteDoc, listDocs, createTestUser, signIn,
 } from '../emulator/emu-client.mjs';
-import { Suite, allowed, denied, eq, ok } from './harness.mjs';
+import { Suite, allowed, denied, ok } from './harness.mjs';
+
+/** 取得（必要時建立）一個 email 未驗證的帳號；已存在時改用登入取得 token。 */
+async function getOrCreateUnverifiedUser(email) {
+    try {
+        return await createTestUser(email, { emailVerified: false });
+    } catch (err) {
+        if (!/EMAIL_EXISTS/i.test(err.message)) throw err;
+        return await signIn(email);
+    }
+}
 
 export async function run(ctx) {
     const suite = new Suite('情境 4：多學期與多校隔離');
@@ -83,7 +93,9 @@ export async function run(ctx) {
     });
 
     await suite.case('未驗證 email 的帳號不可建立學校歸屬', async () => {
-        const unverified = await createTestUser('unverified@nowhere.test', { emailVerified: false });
+        // 帳號可能已存在（單獨重跑本情境、或 clearAuth 未生效）——那時 signUp 會回
+        // EMAIL_EXISTS 並丟出例外，案例會被記成 error、真正的權限檢查反而看不到。
+        const unverified = await getOrCreateUnverifiedUser('unverified@nowhere.test');
         denied(await createDoc('userDirectory', unverified.localId, {
             schoolId: aId, createdAt: '2026-09-01T00:00:00.000Z',
         }, { idToken: unverified.idToken }), '未驗證 email 建立歸屬');
@@ -130,19 +142,28 @@ export async function run(ctx) {
     });
 
     await suite.case('只有主任能改目前學期設定', async () => {
-        denied(await updateDoc(`schools/${aId}/config/main`, {
-            currentSemester: '115-2',
-        }, { idToken: aT1.idToken }), '教師改學期');
-        denied(await updateDoc(`schools/${aId}/config/main`, {
-            currentSemester: '115-2',
-        }, { idToken: A.sectionChief.idToken }), '組長改學期');
-        allowed(await updateDoc(`schools/${aId}/config/main`, {
-            currentSemester: '115-2', updatedAt: '2026-09-30T00:00:00.000Z',
-        }, { idToken: A.director.idToken }), '主任改學期');
-        // 改回來，避免影響後面的案例
-        await updateDoc(`schools/${aId}/config/main`, {
-            currentSemester: curSem, updatedAt: '2026-09-30T00:01:00.000Z',
-        }, { idToken: A.director.idToken });
+        // 還原一定要放在 finally：任一斷言失敗就跳過還原的話，這所學校會停在錯誤的
+        // 目前學期，後面每個依賴 curSem/prevSem 的案例都會在一個顛倒的世界裡評斷，
+        // 連帶報出一串假失敗。
+        try {
+            denied(await updateDoc(`schools/${aId}/config/main`, {
+                currentSemester: '115-2',
+            }, { idToken: aT1.idToken }), '教師改學期');
+            denied(await updateDoc(`schools/${aId}/config/main`, {
+                currentSemester: '115-2',
+            }, { idToken: A.sectionChief.idToken }), '組長改學期');
+            allowed(await updateDoc(`schools/${aId}/config/main`, {
+                currentSemester: '115-2', updatedAt: '2026-09-30T00:00:00.000Z',
+            }, { idToken: A.director.idToken }), '主任改學期');
+        } finally {
+            const restored = await updateDoc(`schools/${aId}/config/main`, {
+                currentSemester: curSem, updatedAt: '2026-09-30T00:01:00.000Z',
+            }, { idToken: A.director.idToken });
+            if (!restored.ok) {
+                throw new Error(`還原 currentSemester 失敗（HTTP ${restored.status}），` +
+                    `後續案例的結果都不可信，請重新種資料再跑一次`);
+            }
+        }
     });
 
     await suite.case('主任可刪歷史學期課表，但不可刪目前學期課表', async () => {

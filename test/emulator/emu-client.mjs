@@ -4,8 +4,13 @@
  * ⚠ 安全設計（2026-07-30 事故的直接對策，見 docs/ISSUES_LOG.md「驗證過程意外對正式
  * Firestore 寫入 16 筆測試文件」）：本模組**沒有任何**可以指向正式 Firestore 的路徑——
  * host 寫死為 127.0.0.1、專案寫死為 demo- 前綴，且每次連線前先呼叫 assertEmulator()
- * 實際驗證對端是 emulator（打 /emulator/v1/... 這個只有 emulator 才有的端點）。
+ * 對 Firestore 與 Auth 兩個 host 各做一次探測，確認回應形狀符合 emulator 的特徵。
  * 驗證失敗一律中止，不 fallback、不重試、不讀任何憑證檔。
+ *
+ * 探測方式的實際強度（如實描述，不誇大）：Firestore 探根路徑回應 "Ok"、Auth 探
+ * /emulator/v1/projects 這個 emulator 專屬端點。真正的防線是「host 與專案 ID 寫死」——
+ * 探測只是確保「本機這個埠上跑的確實是 emulator 而不是別的服務」，避免把測試資料寫進
+ * 某個剛好佔用 8080 埠的無關程式。
  *
  * 兩種寫入身分：
  *   admin*  不帶 Authorization → emulator 視為 owner，繞過 Security Rules，供建立種子資料。
@@ -51,10 +56,28 @@ export async function assertEmulator() {
     }
     if (!res.ok || !/^ok$/i.test(body)) {
         throw new Error(
-            `127.0.0.1:${FIRESTORE_HOST.split(':')[1]} 上跑的不是 Firestore Emulator ` +
+            `${FIRESTORE_HOST} 上跑的不是 Firestore Emulator ` +
             `（回應 ${res.status}：${body.slice(0, 80)}），拒絕執行`
         );
     }
+
+    // Auth host 也要探——createTestUser()/clearAuth() 寫的是這一個，只驗 Firestore
+    // 等於有一半的寫入目標從未被確認過。/emulator/v1/projects 是 Auth Emulator 專屬端點。
+    let authRes;
+    try {
+        authRes = await fetch(`http://${AUTH_HOST}/emulator/v1/projects/${PROJECT_ID}/config`, {
+            headers: { Authorization: 'Bearer owner' },
+        });
+    } catch (err) {
+        throw new Error(
+            `連不上 Auth Emulator（${AUTH_HOST}）：${err.message}\n` +
+            `請確認啟動時有帶 --only auth,firestore`
+        );
+    }
+    if (!authRes.ok) {
+        throw new Error(`${AUTH_HOST} 上跑的不是 Firebase Auth Emulator（回應 ${authRes.status}），拒絕執行`);
+    }
+
     verified = true;
 }
 

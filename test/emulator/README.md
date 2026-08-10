@@ -28,6 +28,13 @@ npm run seed
 
 需求：Java（Firestore Emulator 依賴）與 `npm install` 安裝的 `firebase-tools`。
 
+### 關於 `firebase.json`
+
+專案根目錄的 `firebase.json` **只供本機 emulator 使用，不用於部署**。正式環境的規則部署
+一律走 `scripts/firestore-deploy-rules.js`（REST + 明確確認），與該檔無關。專案也刻意不建立
+`.firebaserc`，避免 Firebase CLI 綁定到正式專案；啟動一律帶 `--project demo-stsystem`
+（`demo-` 前綴會讓 CLI 進入離線 demo 模式，任何情況下都不會連到真實的 Firebase 專案）。
+
 ## 測了什麼
 
 | 情境 | 案例數 | 需要 emulator | 內容 |

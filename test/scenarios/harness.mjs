@@ -74,6 +74,9 @@ export class Suite {
                 ms: Date.now() - started,
                 message: err.message,
                 stack: err instanceof AssertionError ? null : err.stack,
+                // 失敗時也要保留 knownGap：一個「已記錄的既有行為」案例失敗，正代表那個
+                // 行為變了——這時候最需要看到它原本被記錄成什麼，不該從報告中消失。
+                knownGap: opts.knownGap,
             });
         }
     }
