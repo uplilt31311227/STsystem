@@ -110,8 +110,10 @@ async function loadFirebaseSDK() {
             onSnapshot,
             enableIndexedDbPersistence
         };
-        // 也暴露 FIREBASE_CONFIG 給 authService 建立 secondary app（用於主任建教師帳號）
-        window.firebaseModules.__config = FIREBASE_CONFIG;
+        // 也暴露 config 給 authService 建立 secondary app（用於主任建教師帳號）。
+        // Emulator 模式下必須連同 projectId 一起換掉，否則 secondary app 會用正式
+        // projectId 去建帳號（見 EMULATOR_PROJECT_ID 的說明）。
+        window.firebaseModules.__config = getActiveFirebaseConfig();
 
         isLoaded = true;
         console.log('Firebase SDK 載入完成');
@@ -133,6 +135,24 @@ async function loadFirebaseSDK() {
  *
  * 對應的 emulator 埠與 test/emulator/emu-client.mjs、firebase.json 一致。
  */
+/**
+ * Emulator 模式專用的專案 ID，必須與 test/emulator/emu-client.mjs 的 PROJECT_ID 一致。
+ *
+ * ⚠ 這個覆寫是必要的，不是可有可無的整潔：Firestore Emulator 依 projectId 分隔資料庫
+ * 命名空間，若沿用正式的 projectId，前端讀到的會是一個「與種子資料完全不同」的空命名空間
+ * ——現象是所有查詢都回「文件不存在」（不是權限錯誤），登入後會被誤判成「尚未綁定任何學校」。
+ * firebase.json 的 singleProjectMode 只讓 Auth Emulator 放行跨專案請求（所以帳號登得進去、
+ * uid 也對得上），並不會合併 Firestore 的命名空間。
+ */
+const EMULATOR_PROJECT_ID = 'demo-stsystem';
+
+/** 實際要送進 initializeApp() 的設定：emulator 模式下換掉 projectId，其餘不變。 */
+function getActiveFirebaseConfig() {
+    return shouldUseEmulator()
+        ? { ...FIREBASE_CONFIG, projectId: EMULATOR_PROJECT_ID }
+        : FIREBASE_CONFIG;
+}
+
 function shouldUseEmulator() {
     try {
         const host    = window.location.hostname;
@@ -161,7 +181,7 @@ async function initializeFirebase() {
         const { initializeApp, getAuth, getFirestore, enableIndexedDbPersistence } = window.firebaseModules;
 
         // 初始化 Firebase App
-        firebaseApp = initializeApp(FIREBASE_CONFIG);
+        firebaseApp = initializeApp(getActiveFirebaseConfig());
 
         // Stage 4：App Check（classic reCAPTCHA v3）。必須排在其他 SDK 初始化之前——
         // Auth/Firestore 一旦開始送出請求，越早掛上 App Check 的 token provider 越好
