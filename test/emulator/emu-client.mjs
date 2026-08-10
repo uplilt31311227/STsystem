@@ -99,9 +99,19 @@ export function fromFirestoreFields(fields) {
 
 /* ===================== 低階請求 ===================== */
 
-function authHeaders(idToken) {
+/**
+ * 三種身分，對應三種 Authorization：
+ *   idToken 指定       → Bearer <idToken>，完整套用 Security Rules（權限測試用）
+ *   anonymous: true    → 完全不帶 header，等同未登入的匿名請求（request.auth == null）
+ *   兩者都沒有（預設）  → Bearer owner，emulator 視為管理者、繞過規則（建立種子資料用）
+ *
+ * ⚠ 「不帶 header 就是 owner」是錯的——不帶 header 會被當成未登入使用者並套用規則，
+ * 種子資料會被規則擋下。必須明確送出 `Bearer owner`。
+ */
+function authHeaders({ idToken, anonymous }) {
     const h = { 'Content-Type': 'application/json' };
     if (idToken) h.Authorization = `Bearer ${idToken}`;
+    else if (!anonymous) h.Authorization = 'Bearer owner';
     return h;
 }
 
@@ -109,11 +119,11 @@ function authHeaders(idToken) {
  * 統一回傳 { ok, status, data, error }，永遠不 throw——權限測試需要把 403 當成
  * 正常結果來斷言，用例外表達會讓每個案例都要包 try/catch。
  */
-async function request(method, url, { body, idToken } = {}) {
+async function request(method, url, { body, idToken, anonymous } = {}) {
     await assertEmulator();
     const res = await fetch(url, {
         method,
-        headers: authHeaders(idToken),
+        headers: authHeaders({ idToken, anonymous }),
         body: body ? JSON.stringify(body) : undefined,
     });
     let json = null;
@@ -131,40 +141,47 @@ async function request(method, url, { body, idToken } = {}) {
 /* ===================== 文件操作 ===================== */
 
 /** setDoc 語意（不存在則建立、存在則合併指定欄位）。 */
-export function setDoc(path, data, { idToken } = {}) {
-    return request('PATCH', `${DOCS_ROOT}/${path}`, { body: { fields: toFirestoreFields(data) }, idToken });
+export function setDoc(path, data, opts = {}) {
+    return request('PATCH', `${DOCS_ROOT}/${path}`, { ...opts, body: { fields: toFirestoreFields(data) } });
+}
+
+/** 種子專用：寫入失敗立刻中止。靜默失敗會讓後續所有測試在一個空資料庫上跑，結論全部無效。 */
+export async function mustSetDoc(path, data, opts = {}) {
+    const res = await setDoc(path, data, opts);
+    if (!res.ok) throw new Error(`寫入失敗 ${path}：HTTP ${res.status} ${res.error}`);
+    return res;
 }
 
 /**
  * 明確的 create 語意：文件已存在會回 409。規則會以 create 條件判定，
  * 這是測 `allow create` 規則時唯一正確的方法（PATCH 對既有文件會被判為 update）。
  */
-export function createDoc(collectionPath, docId, data, { idToken } = {}) {
+export function createDoc(collectionPath, docId, data, opts = {}) {
     const url = `${DOCS_ROOT}/${collectionPath}?documentId=${encodeURIComponent(docId)}`;
-    return request('POST', url, { body: { fields: toFirestoreFields(data) }, idToken });
+    return request('POST', url, { ...opts, body: { fields: toFirestoreFields(data) } });
 }
 
 /**
  * 明確的 update 語意：只更新列出的欄位，文件不存在時會失敗。
  * updateMask 是必要的——不帶時 PATCH 對不存在的文件會變成 create。
  */
-export function updateDoc(path, data, { idToken } = {}) {
+export function updateDoc(path, data, opts = {}) {
     const mask = Object.keys(data).map(k => `updateMask.fieldPaths=${encodeURIComponent(k)}`).join('&');
     const url  = `${DOCS_ROOT}/${path}?${mask}&currentDocument.exists=true`;
-    return request('PATCH', url, { body: { fields: toFirestoreFields(data) }, idToken });
+    return request('PATCH', url, { ...opts, body: { fields: toFirestoreFields(data) } });
 }
 
-export function getDoc(path, { idToken } = {}) {
-    return request('GET', `${DOCS_ROOT}/${path}`, { idToken });
+export function getDoc(path, opts = {}) {
+    return request('GET', `${DOCS_ROOT}/${path}`, opts);
 }
 
-export function deleteDoc(path, { idToken } = {}) {
-    return request('DELETE', `${DOCS_ROOT}/${path}`, { idToken });
+export function deleteDoc(path, opts = {}) {
+    return request('DELETE', `${DOCS_ROOT}/${path}`, opts);
 }
 
 /** 列出集合內文件（受規則的 list 權限約束）。 */
-export async function listDocs(collectionPath, { idToken, pageSize = 300 } = {}) {
-    const res = await request('GET', `${DOCS_ROOT}/${collectionPath}?pageSize=${pageSize}`, { idToken });
+export async function listDocs(collectionPath, { pageSize = 300, ...opts } = {}) {
+    const res = await request('GET', `${DOCS_ROOT}/${collectionPath}?pageSize=${pageSize}`, opts);
     if (!res.ok) return res;
     const docs = (res.raw?.documents || []).map(d => ({
         id: d.name.split('/').pop(),
