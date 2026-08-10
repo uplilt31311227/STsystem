@@ -5,6 +5,7 @@
   },
   "devDependencies": {
     "firebase-tools": "^15.26.0",
+    "papaparse": "^5.5.4",
     "playwright": "^1.58.2"
   }
 }
