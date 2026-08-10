@@ -493,13 +493,16 @@ function buildOperationLogs({ preset, teachers, semesterId, records }) {
     const director = teachers.find(t => t.role === 'director');
     const approver = teachers.find(t => t.role === 'section_chief');
     const logs = [];
+    // 欄位形狀必須對齊 firestore.rules 的 operationLogs create 白名單
+    // （action / actor / timestamp / targetType / targetId / details / semesterId），
+    // actor 是 map——種子雖然以 admin 身分繞過規則寫入，形狀寫錯的話後續權限測試會
+    // 測到一份現實中不可能存在的資料。
     const push = (i, action, targetType, targetId, actor, details) => {
         logs.push({
             logId: `log_${preset.schoolId}_${semesterId}_${String(i).padStart(3, '0')}`,
             data: {
                 action, targetType, targetId,
-                actorTeacherId: actor.teacherId,
-                actorName: actor.name,
+                actor: { teacherId: actor.teacherId, name: actor.name },
                 timestamp: `2026-09-0${(i % 9) + 1}T03:00:00.000Z`,
                 semesterId,
                 details: details || {},

@@ -12,7 +12,7 @@ import { pathToFileURL } from 'node:url';
 import { ALPHA, BETA, buildSchoolFixture } from '../fixtures/school-fixture.mjs';
 import {
     assertEmulator, clearFirestore, clearAuth, createTestUser,
-    setDoc, EMULATOR_INFO,
+    mustSetDoc, EMULATOR_INFO,
 } from './emu-client.mjs';
 
 /** 平台管理者（跨校信任錨點，正式環境只能離線寫入，emulator 直接建立）。 */
@@ -25,26 +25,26 @@ async function seedSchool(fixture, log) {
     const accounts = new Map();   // teacherId -> { idToken, localId, email }
 
     // 1) config
-    await setDoc(`schools/${schoolId}/config/main`, config);
+    await mustSetDoc(`schools/${schoolId}/config/main`, config);
 
     // 2) 教師名冊 + emailIndex + Auth 帳號 + userMappings + userDirectory
     for (const t of teachers) {
         const { teacherId, subjectKey, ...doc } = t;
-        await setDoc(`schools/${schoolId}/teachers/${teacherId}`, doc);
+        await mustSetDoc(`schools/${schoolId}/teachers/${teacherId}`, doc);
 
         if (!t.email) continue;
-        await setDoc(`schools/${schoolId}/emailIndex/${t.email}`, { teacherId });
+        await mustSetDoc(`schools/${schoolId}/emailIndex/${t.email}`, { teacherId });
 
         const user = await createTestUser(t.email);
         accounts.set(teacherId, { ...user, teacherId, name: t.name, role: t.role });
 
-        await setDoc(`schools/${schoolId}/userMappings/${user.localId}`, {
+        await mustSetDoc(`schools/${schoolId}/userMappings/${user.localId}`, {
             linkedTeacherId: teacherId,
             email: t.email,
             googleName: t.name,
             lastLoginAt: '2026-08-01T00:00:00.000Z',
         });
-        await setDoc(`userDirectory/${user.localId}`, {
+        await mustSetDoc(`userDirectory/${user.localId}`, {
             schoolId,
             createdAt: '2026-08-01T00:00:00.000Z',
         });
@@ -52,7 +52,7 @@ async function seedSchool(fixture, log) {
 
     // 3) 兩個學期的課表
     for (const [semesterId, sched] of Object.entries(fixture.schedules)) {
-        await setDoc(`schools/${schoolId}/schedules/${semesterId}`, {
+        await mustSetDoc(`schools/${schoolId}/schedules/${semesterId}`, {
             scheduleData: sched.parsed,
             teachers: teachers.filter(t => t.subjectKey).map(t => ({
                 name: t.name, domains: t.domains, homeroomClass: t.homeroomClass,
@@ -73,27 +73,27 @@ async function seedSchool(fixture, log) {
     // 4) 已成立紀錄（目前學期 + 歷史學期）與其私有明細
     const allRecords = [...fixture.substituteRecords, ...fixture.previousSemesterRecords];
     for (const r of allRecords) {
-        await setDoc(`schools/${schoolId}/substituteRecords/${r.recordId}`, r.public);
+        await mustSetDoc(`schools/${schoolId}/substituteRecords/${r.recordId}`, r.public);
         if (r.private) {
-            await setDoc(`schools/${schoolId}/substituteRecords/${r.recordId}/private/detail`, r.private);
+            await mustSetDoc(`schools/${schoolId}/substituteRecords/${r.recordId}/private/detail`, r.private);
         }
     }
 
     // 5) 待審請求與其私有明細
     for (const req of fixture.pendingRequests) {
-        await setDoc(`schools/${schoolId}/pendingRequests/${req.reqId}`, req.public);
+        await mustSetDoc(`schools/${schoolId}/pendingRequests/${req.reqId}`, req.public);
         if (req.private) {
-            await setDoc(`schools/${schoolId}/pendingRequests/${req.reqId}/private/detail`, req.private);
+            await mustSetDoc(`schools/${schoolId}/pendingRequests/${req.reqId}/private/detail`, req.private);
         }
     }
 
     // 6) 操作日誌
     for (const l of fixture.operationLogs) {
-        await setDoc(`schools/${schoolId}/operationLogs/${l.logId}`, l.data);
+        await mustSetDoc(`schools/${schoolId}/operationLogs/${l.logId}`, l.data);
     }
 
     // 7) 公開學校名錄
-    await setDoc(`schoolDirectory/${schoolId}`, {
+    await mustSetDoc(`schoolDirectory/${schoolId}`, {
         schoolName: config.schoolName,
         createdAt: config.createdAt,
     });
@@ -127,7 +127,7 @@ export async function seedAll({ quiet = false } = {}) {
 
     // 平台管理者：platformAdmins 在正式環境是 client 完全不可寫的信任錨點
     const platformAdmin = await createTestUser(PLATFORM_ADMIN_EMAIL);
-    await setDoc(`platformAdmins/${platformAdmin.localId}`, {
+    await mustSetDoc(`platformAdmins/${platformAdmin.localId}`, {
         email: PLATFORM_ADMIN_EMAIL,
         createdAt: '2026-08-01T00:00:00.000Z',
         note: '測試用平台管理者',
@@ -169,7 +169,8 @@ export async function seedAll({ quiet = false } = {}) {
 // 直接執行時：種完就結束，方便手動用 Emulator UI（http://127.0.0.1:4000）檢視資料。
 // 用 pathToFileURL 比對——Windows 的絕對路徑轉成 URL 是 file:///C:/...（三條斜線），
 // 手動拼 `file://${argv[1]}` 永遠比不中。
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+// （process.argv[1] 在 `node -e` 下是 undefined，故先檢查存在）
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
     seedAll()
         .then(() => {
             console.log('\n✅ 種子資料完成，可在 http://127.0.0.1:4000/firestore 檢視');
