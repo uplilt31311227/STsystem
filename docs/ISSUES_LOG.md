@@ -1,12 +1,48 @@
 ---
 created: 2026-04-10
-updated: 2026-07-31
+updated: 2026-08-11
 tags:
   - issues
   - troubleshooting
 ---
 
 # 問題追蹤：國中調代課自動化系統
+
+## 情境測試確認的系統既有行為（2026-08-11）
+
+以下 5 項由 `npm run test:scenarios` 的 90 個案例實際測出，**都不是測試失敗**——測試已針對這些行為寫下斷言，是系統目前確實如此。列於此供判斷是否需要處理。
+
+### 課表匯入完全不做衝堂偵測 🟡 已知，未處理
+
+- **描述**: 同一位教師在同一時段被排到兩個班，`ScheduleParser` 會照單全收，兩列都進入課表。匯入階段沒有任何一處檢查。錯誤的來源課表會被靜默接受，直到有人用到那個時段才會發現。
+- **影響**: 代課推薦會把「其實有課」的教師列為可代課人選；月結算的每週節數也會多算。
+- **相關**: `test/scenarios/scenario-01-schedule-import.mjs` 的 `teacher-conflict` 案例
+
+### 同名教師在課表階段會被合併成一位 🟡 已知，未處理
+
+- **描述**: `ScheduleParser.processRawData()` 以「教師姓名」為 Map 的鍵彙整教師，兩位不同的同名教師會被併成一筆，任教領域也被合併。
+- **影響**: 領域統計、代課推薦、月結算全部會錯；且錯得不明顯（不會報錯）。學校規模越大越可能踩到。
+- **相關**: `scenario-01` 的 `duplicate-teacher-names` 案例
+
+### 週六／週日的課程不會被擋下 🟢 影響有限
+
+- **描述**: `normalizeWeekday()` 對未知值原樣保留（設計上是為了不丟資料），因此匯出檔若含週末列，會原樣進入課表。
+- **影響**: 課表 UI 只渲染週一至週五，這些列不會顯示，但仍存在於資料中並計入教師每週節數。
+- **相關**: `scenario-01` 的 `unknown-weekday` 案例
+
+### 假別明細（private/detail）未合併回父文件時，月結算會誤扣時數 🟠 需注意
+
+- **描述**: Phase 6 把 `leaveType`/`leaveTypeName`/`reason` 搬到 `private/detail` 子文件後，父文件不再有 `leaveType`。`SettlementCalculator.countSubstitutedHours()` 讀的是 `record.leaveType`——讀取端若沒有把私有明細合併回來，公假／長期病假／喪假會被當成一般假別**扣 1 節**。
+- **測試佐證**: 同一筆紀錄，帶假別時 `substitutedHours=0`，不帶時 `=1`。
+- **影響**: 結算結果直接錯誤，且方向是「少算教師時數」。凡是新增讀取紀錄的路徑，都必須確認有合併 private/detail。
+- **相關**: `test/scenarios/scenario-03-settlement.mjs` 的「假別明細遺失時…」案例
+
+### 任何已驗證 email 的帳號都能把自己的 userDirectory 指向任一存在的學校 🟢 不構成越權
+
+- **描述**: `userDirectory` 的自寫規則只驗證「本人 + email 已驗證 + schoolId 對應的學校存在」，不驗證申請者與該校有任何關係。
+- **實測結論**: 寫入成功後，該帳號**仍然讀不到**該校的任何資料（config、紀錄皆 403）——成員資格由 `userMappings` 把關，`userDirectory` 只是「該去哪所學校找資料」的路標。
+- **殘留影響**: 外部帳號可在他校留下一筆歸屬文件（雜訊），且下次登入會被導向該校的申請流程。
+- **相關**: `test/scenarios/scenario-04-isolation.mjs` 的「外部人士可宣告自己屬於某校…」案例
 
 ## Stage 3（SCHOOL_ID 動態化）opus 重驗發現，另案記錄（2026-07-31）
 
