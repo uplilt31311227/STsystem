@@ -1,6 +1,6 @@
 {
   "scripts": {
-    "test": "node test/test-grade9.mjs && node test/test-subject-domain.mjs && node test/test-grade9-refresh.mjs && node test/test-teacher-dedup.mjs && node test/test-semester-utils.mjs",
+    "test": "node test/test-grade9.mjs && node test/test-subject-domain.mjs && node test/test-grade9-refresh.mjs && node test/test-teacher-dedup.mjs && node test/test-semester-utils.mjs && node test/scenarios/run-all.mjs --offline",
     "check": "node scripts/check-syntax.js",
     "emu": "firebase emulators:start --project demo-stsystem --only auth,firestore",
     "seed": "node test/emulator/seed.mjs",

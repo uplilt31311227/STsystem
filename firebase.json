@@ -1,11 +1,4 @@
 {
-  "_comment": [
-    "本檔僅供本機 Firebase Emulator 測試使用，不用於部署。",
-    "正式環境的規則部署一律走 scripts/firestore-deploy-rules.js（REST + 明確確認），",
-    "與本檔無關；本專案刻意不建立 .firebaserc，避免 firebase CLI 綁定到正式專案。",
-    "啟動方式一律帶 --project demo-stsystem（demo- 前綴會讓 CLI 進入離線 demo 模式，",
-    "任何情況下都不會連到真實的 Firebase 專案），見 test/emulator/README.md。"
-  ],
   "firestore": {
     "rules": "firestore.rules",
     "indexes": "firestore.indexes.json"

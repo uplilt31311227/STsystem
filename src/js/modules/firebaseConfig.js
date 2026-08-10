@@ -75,8 +75,9 @@ async function loadFirebaseSDK() {
             { initializeApp, deleteApp },
             { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged,
               signInWithEmailAndPassword, createUserWithEmailAndPassword, sendPasswordResetEmail,
-              sendEmailVerification },
-            { getFirestore, collection, doc, setDoc, getDoc, getDocs, deleteDoc, onSnapshot, enableIndexedDbPersistence }
+              sendEmailVerification, connectAuthEmulator },
+            { getFirestore, collection, doc, setDoc, getDoc, getDocs, deleteDoc, onSnapshot, enableIndexedDbPersistence,
+              connectFirestoreEmulator }
         ] = await Promise.all([
             import('https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js'),
             import('https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js'),
@@ -97,6 +98,8 @@ async function loadFirebaseSDK() {
             sendPasswordResetEmail,
             // Stage 4：Email/密碼登入者的「請先驗證 email」流程用（authService.sendVerificationEmail）。
             sendEmailVerification,
+            connectAuthEmulator,
+            connectFirestoreEmulator,
             getFirestore,
             collection,
             doc,
@@ -116,6 +119,28 @@ async function loadFirebaseSDK() {
         console.error('Firebase SDK 載入失敗:', error);
         isLoading = false;
         throw error;
+    }
+}
+
+/**
+ * 是否連本機 Firebase Emulator（供 test/e2e 全流程操作測試使用）。
+ *
+ * ⚠ 兩個條件必須同時成立才會啟用，缺一不可：
+ *   1. hostname 是 localhost / 127.0.0.1——正式站（uplilt31311227.github.io）永遠不成立；
+ *   2. 網址明確帶 `?emu=1`——本機開發時的一般瀏覽（不帶參數）也不會誤連 emulator。
+ * 這個雙重條件是刻意的：任何一邊單獨成立都不夠。正式環境不存在能命中的路徑，
+ * 且啟用時會在 console 印出明顯警告，不可能在不知情的狀況下連到 emulator。
+ *
+ * 對應的 emulator 埠與 test/emulator/emu-client.mjs、firebase.json 一致。
+ */
+function shouldUseEmulator() {
+    try {
+        const host    = window.location.hostname;
+        const isLocal = host === 'localhost' || host === '127.0.0.1';
+        const flagged = new URLSearchParams(window.location.search).get('emu') === '1';
+        return isLocal && flagged;
+    } catch {
+        return false;
     }
 }
 
@@ -143,7 +168,11 @@ async function initializeFirebase() {
         // （雖然本次不開 enforcement，SDK 仍會盡早開始產生/快取 token，為未來開啟
         // enforcement 時降低第一批請求被拒的機率）。RECAPTCHA_V3_SITE_KEY 為空時完全跳過，
         // 不影響任何現有登入/資料流程——見該常數定義處的完整說明。
-        if (RECAPTCHA_V3_SITE_KEY) {
+        const useEmulator = shouldUseEmulator();
+
+        // Emulator 模式跳過 App Check：reCAPTCHA v3 對 localhost 無意義，且 emulator
+        // 本來就不驗證 App Check token，掛上去只會產生一堆失敗請求的雜訊。
+        if (RECAPTCHA_V3_SITE_KEY && !useEmulator) {
             try {
                 const { initializeAppCheck, ReCaptchaV3Provider } =
                     await import('https://www.gstatic.com/firebasejs/10.7.1/firebase-app-check.js');
@@ -157,6 +186,8 @@ async function initializeFirebase() {
                 // 核心功能——寧可讓使用者能繼續使用系統，也不要因為 App Check 掛掉而全站鎖死。
                 console.error('App Check 初始化失敗（不阻擋登入，但代表本次 session 未受 App Check 保護）：', err);
             }
+        } else if (useEmulator) {
+            console.info('[App Check] Emulator 模式，跳過初始化（emulator 不驗證 App Check token）。');
         } else {
             console.info('[App Check] RECAPTCHA_V3_SITE_KEY 尚未設定，跳過初始化。啟用步驟見 docs/STAGE4-DEPLOY.md。');
         }
@@ -166,6 +197,19 @@ async function initializeFirebase() {
 
         // 初始化 Firestore
         db = getFirestore(firebaseApp);
+
+        if (useEmulator) {
+            const { connectAuthEmulator, connectFirestoreEmulator } = window.firebaseModules;
+            connectAuthEmulator(auth, 'http://127.0.0.1:9099', { disableWarnings: true });
+            connectFirestoreEmulator(db, '127.0.0.1', 8080);
+            console.warn(
+                '%c[EMULATOR] 本頁連線到本機 Firebase Emulator，不是正式資料庫。',
+                'background:#b91c1c;color:#fff;padding:2px 6px;border-radius:3px;font-weight:bold'
+            );
+            // Emulator 模式不啟用離線持久化——IndexedDB 快取會跨測試殘留，讓「重新種資料後
+            // 頁面仍顯示舊資料」這種假象很難追查。回傳前直接結束。
+            return { app: firebaseApp, auth, db };
+        }
 
         // 啟用離線持久化
         try {

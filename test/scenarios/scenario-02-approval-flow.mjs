@@ -148,11 +148,11 @@ export async function run(ctx) {
     /* ============ 同意與核准 ============ */
 
     await suite.case('被邀請的教師可同意調課（移出同意名單並轉待核准）', async () => {
-        await createDoc(P.pending, 'zz_case_consent', baseReq({
+        allowed(await createDoc(P.pending, 'zz_case_consent', baseReq({
             type: '調課', requestType: 'swap', status: 'pending_swap_consent',
             pendingConsentTeacherIds: [t2.teacherId],
             swapTeacherId: t2.teacherId, swapTeacher: t2.name,
-        }), { idToken: t1.idToken });
+        }), { idToken: t1.idToken }), '前置：建立待同意的調課申請');
 
         allowed(await updateDoc(`${P.pending}/zz_case_consent`, {
             status: 'pending_approval',
@@ -163,10 +163,12 @@ export async function run(ctx) {
     });
 
     await suite.case('不在同意名單內的教師嘗試同意被拒', async () => {
-        await createDoc(P.pending, 'zz_case_consent2', baseReq({
+        // 前置寫入必須斷言成功：對「不存在的文件」送 update 同樣會回 403，
+        // 前置若靜默失敗，下面的 denied() 會因為錯誤的理由通過（假綠燈）。
+        allowed(await createDoc(P.pending, 'zz_case_consent2', baseReq({
             type: '調課', requestType: 'swap', status: 'pending_swap_consent',
             pendingConsentTeacherIds: [t2.teacherId],
-        }), { idToken: t1.idToken });
+        }), { idToken: t1.idToken }), '前置：建立待同意的調課申請');
 
         denied(await updateDoc(`${P.pending}/zz_case_consent2`, {
             status: 'pending_approval',
@@ -185,7 +187,9 @@ export async function run(ctx) {
     });
 
     await suite.case('一般教師核准他人申請被拒', async () => {
-        await createDoc(P.pending, 'zz_case_approve_by_teacher', baseReq(), { idToken: t1.idToken });
+        // 同上，且這份文件還被下一個案例（組長竄改內容）沿用，前置失敗會讓兩個案例都空洞地通過
+        allowed(await createDoc(P.pending, 'zz_case_approve_by_teacher', baseReq(), { idToken: t1.idToken }),
+            '前置：建立待核准的代課申請');
         denied(await updateDoc(`${P.pending}/zz_case_approve_by_teacher`, {
             status: 'approved',
             approvedBy: t3.teacherId,
@@ -195,7 +199,11 @@ export async function run(ctx) {
     });
 
     await suite.case('組長竄改申請內容（日期）被拒', async () => {
-        denied(await updateDoc(`${P.pending}/zz_case_approve_by_teacher`, {
+        // 自己建立自己的前置文件，不依賴上一個案例的殘留——上一個案例若失敗，
+        // 這裡對不存在的文件送 update 也會拿到 403，變成空洞地通過。
+        allowed(await createDoc(P.pending, 'zz_case_tamper', baseReq(), { idToken: t1.idToken }),
+            '前置：建立待核准的代課申請');
+        denied(await updateDoc(`${P.pending}/zz_case_tamper`, {
             date: '2026-09-30',
         }, { idToken: chief.idToken }), '核准者改動申請內容');
     });
