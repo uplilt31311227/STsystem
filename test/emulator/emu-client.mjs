@@ -163,9 +163,25 @@ async function request(method, url, { body, idToken, anonymous } = {}) {
 
 /* ===================== 文件操作 ===================== */
 
-/** setDoc 語意（不存在則建立、存在則合併指定欄位）。 */
+/**
+ * setDoc 語意：不存在則建立、**存在則整份覆寫**（等同 Firebase SDK 的 setDoc(ref, data)
+ * 不帶 merge）。
+ *
+ * ⚠ 這不是 merge。Firestore REST 的 PATCH 不帶 updateMask 時會覆蓋整份文件，未提供的
+ * 欄位會被刪除——曾經用它「只改 updatedAt」，結果把整份課表的 scheduleData 清空。
+ * 要做部分更新請用 mergeDoc()／updateDoc()。
+ */
 export function setDoc(path, data, opts = {}) {
     return request('PATCH', `${DOCS_ROOT}/${path}`, { ...opts, body: { fields: toFirestoreFields(data) } });
+}
+
+/**
+ * 合併寫入：只更新列出的欄位，其餘保留（等同 setDoc(..., { merge: true })）。
+ * 文件不存在時會以這些欄位建立。
+ */
+export function mergeDoc(path, data, opts = {}) {
+    const mask = Object.keys(data).map(k => `updateMask.fieldPaths=${encodeURIComponent(k)}`).join('&');
+    return request('PATCH', `${DOCS_ROOT}/${path}?${mask}`, { ...opts, body: { fields: toFirestoreFields(data) } });
 }
 
 /** 種子專用：寫入失敗立刻中止。靜默失敗會讓後續所有測試在一個空資料庫上跑，結論全部無效。 */

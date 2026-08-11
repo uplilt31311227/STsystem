@@ -16,6 +16,18 @@ let currentUser = null;
 const authStateCallbacks = [];
 
 /**
+ * Firebase 的 onAuthStateChanged 是否已掛上。
+ *
+ * initAuthService() 有兩個呼叫端——app.js 的啟動流程與 v2-app.js 的 bootstrap，兩者都會執行
+ * （V2 模式下是「都會」，不是「擇一」）。沒有這道防護時，每次呼叫都會再掛一個 Firebase 監聽器，
+ * 而每個監聽器都會遍歷 authStateCallbacks 呼叫**全部**回呼——結果是每個註冊者的回呼被觸發
+ * 兩次。V2 的回呼是整段 bootstrap（解析身份、渲染各頁籤、建立即時訂閱），跑兩次會彼此
+ * 干擾：後進的一輪 clearSubs() 掉前一輪的訂閱，兩輪同時渲染同一個頁籤，實測會卡在「全校紀錄」
+ * 永不完成，於是 unlockV2App() 永遠不會被執行——登入成功但畫面停在登入遮罩，且沒有任何錯誤訊息。
+ */
+let authListenerAttached = false;
+
+/**
  * 初始化認證服務
  * @returns {Promise<Object|null>} 當前使用者或 null
  */
@@ -25,6 +37,11 @@ async function initAuthService() {
         console.log('Firebase 未設定，認證服務無法啟動');
         return null;
     }
+
+    // 已掛過就不再掛第二個監聽器（見 authListenerAttached 的說明）。
+    // 回呼註冊本身走 onAuthStateChange()，不受影響。
+    if (authListenerAttached) return currentUser;
+    authListenerAttached = true;
 
     const { onAuthStateChanged } = window.firebaseModules;
     const auth = firebase.auth;
