@@ -44,6 +44,8 @@ const RECAPTCHA_V3_SITE_KEY = '6LfE9m4tAAAAAOhI27cN7sx38AbEm7MEF5BaYK9t';
 let firebaseApp = null;
 let auth = null;
 let db = null;
+/** 初始化進行中的 promise，供併發呼叫共用（見 initializeFirebase 的併發保護說明）。 */
+let initPromise = null;
 
 // 載入狀態
 let isLoading = false;
@@ -76,8 +78,8 @@ async function loadFirebaseSDK() {
             { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged,
               signInWithEmailAndPassword, createUserWithEmailAndPassword, sendPasswordResetEmail,
               sendEmailVerification, connectAuthEmulator },
-            { getFirestore, collection, doc, setDoc, getDoc, getDocs, deleteDoc, onSnapshot, enableIndexedDbPersistence,
-              connectFirestoreEmulator }
+            { getFirestore, initializeFirestore, collection, doc, setDoc, getDoc, getDocs, deleteDoc, onSnapshot,
+              enableIndexedDbPersistence, connectFirestoreEmulator }
         ] = await Promise.all([
             import('https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js'),
             import('https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js'),
@@ -101,6 +103,7 @@ async function loadFirebaseSDK() {
             connectAuthEmulator,
             connectFirestoreEmulator,
             getFirestore,
+            initializeFirestore,
             collection,
             doc,
             setDoc,
@@ -173,7 +176,23 @@ async function initializeFirebase() {
     if (firebaseApp && auth && db) {
         return { app: firebaseApp, auth, db };
     }
+    // 併發保護：app.js 與 v2-app.js 幾乎同時呼叫本函式，兩者都會在 db 尚未賦值前
+    // 通過上面的檢查，導致整段初始化跑兩次（實測 console 會出現兩次初始化訊息）。
+    // 第二次對同一個 Firestore 單例重複呼叫 connectFirestoreEmulator() 是有風險的
+    // （SDK 要求必須在該實例被使用前設定），也會重複掛上 App Check。
+    // 用 in-flight promise 讓並發呼叫共用同一次初始化。
+    if (initPromise) return initPromise;
 
+    initPromise = doInitializeFirebase();
+    try {
+        return await initPromise;
+    } catch (err) {
+        initPromise = null;   // 失敗不快取，讓呼叫端能重試
+        throw err;
+    }
+}
+
+async function doInitializeFirebase() {
     try {
         // 確保 SDK 已載入
         await loadFirebaseSDK();
