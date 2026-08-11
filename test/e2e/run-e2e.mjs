@@ -12,13 +12,16 @@ import { run as runStability }  from './e2e-00-login-stability.mjs';
 import { run as runAuth }       from './e2e-01-auth.mjs';
 import { run as runSubstitute } from './e2e-02-substitute-flow.mjs';
 import { run as runAdmin }      from './e2e-03-admin-flows.mjs';
+import { run as runPdfClear }   from './e2e-04-pdf-and-clear.mjs';
 
 const SUITES = [
     { name: '登入穩定度', run: runStability },
     { name: '登入與角色可見範圍', run: runAuth },
     { name: '代課申請與審核', run: runSubstitute },
-    // 放最後：課表匯入會覆寫全校課表，跑完資料就不是種子的原樣了
+    // 以下兩組會改動資料，排在最後；順序不可調換：
+    //   03 會覆寫全校課表，04 最後一案會把紀錄與待審請求整個清空。
     { name: '課表匯入／月結算／學期切換', run: runAdmin },
+    { name: 'PDF 輸出／清除所有資料', run: runPdfClear },
 ];
 
 async function main() {
