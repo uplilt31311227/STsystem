@@ -8,14 +8,17 @@
 import { assertEnvironment, launchBrowser } from './helpers.mjs';
 import { seedAll } from '../emulator/seed.mjs';
 
-import { run as runStability } from './e2e-00-login-stability.mjs';
-import { run as runAuth }      from './e2e-01-auth.mjs';
+import { run as runStability }  from './e2e-00-login-stability.mjs';
+import { run as runAuth }       from './e2e-01-auth.mjs';
 import { run as runSubstitute } from './e2e-02-substitute-flow.mjs';
+import { run as runAdmin }      from './e2e-03-admin-flows.mjs';
 
 const SUITES = [
     { name: '登入穩定度', run: runStability },
     { name: '登入與角色可見範圍', run: runAuth },
     { name: '代課申請與審核', run: runSubstitute },
+    // 放最後：課表匯入會覆寫全校課表，跑完資料就不是種子的原樣了
+    { name: '課表匯入／月結算／學期切換', run: runAdmin },
 ];
 
 async function main() {
