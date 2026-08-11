@@ -11,6 +11,15 @@ export const APP_URL   = 'http://localhost:8000/?v2=1&emu=1';
 export const PASSWORD  = 'test-password-1234';
 export const SHOT_DIR  = 'test/e2e-screenshots';
 
+/**
+ * 單次登入的等待上限。
+ * 本機 emulator 的 Firestore 查詢極慢（實測 bootstrap 8～75 秒、課表 41～61 秒），
+ * 這個值必須遠大於正式環境的直覺值，否則會把「還在跑」誤判成「卡住」。
+ */
+export const LOGIN_TIMEOUT_MS    = 100000;
+/** 等課表由即時訂閱送達的上限（實測最久約 61 秒）。 */
+export const SCHEDULE_TIMEOUT_MS = 100000;
+
 /** seed 產生的帳號：t01=主任、t02=教學組長、其餘為一般教師（t11/t14/t20 刻意無帳號）。 */
 export const ACCOUNTS = {
     director:     't01@alpha.demo.test',
@@ -98,8 +107,13 @@ export async function login(page, email, password = PASSWORD) {
     await page.fill('#v2-modal-pwd', password);
     await page.click('#v2-modal-submit');
 
-    // 四種可能結局：進入系統、被導向「加入/申請學校」、modal 顯示錯誤、卡在遮罩
-    const deadline = Date.now() + 22000;
+    // 四種可能結局：進入系統、被導向「加入/申請學校」、modal 顯示錯誤、真的卡住
+    //
+    // ⚠ 這個等待必須夠長。在本機 emulator 環境下，Firestore 查詢慢得離譜——實測整段
+    // bootstrap 要 8～75 秒才跑完、課表要 41～61 秒才送達（正式環境不是這個量級）。
+    // 先前用 22 秒等待，等於把「還在跑」大量誤判成「卡住」，才會得出「登入成功率只有兩成」
+    // 這個錯誤結論。
+    const deadline = Date.now() + LOGIN_TIMEOUT_MS;
     let authedAt = null;
     while (Date.now() < deadline) {
         await page.waitForTimeout(400);
@@ -122,11 +136,11 @@ export async function login(page, email, password = PASSWORD) {
             gateKey: document.getElementById('v2-auth-gate')?.getAttribute('data-render-key') ?? null,
         })).catch(() => ({ authed: false, gateKey: null }));
         if (st.authed && !authedAt) authedAt = Date.now();
-        if (authedAt && Date.now() - authedAt > 9000 && st.gateKey === 'default') {
+        if (authedAt && Date.now() - authedAt > LOGIN_TIMEOUT_MS - 5000 && st.gateKey === 'default') {
             return { state: 'stuck', message: 'Firebase 認證成功，但畫面停在登入遮罩（bootstrap 未完成）' };
         }
     }
-    return { state: 'timeout', message: '登入後 22 秒內沒有進入任何已知狀態' };
+    return { state: 'timeout', message: `登入後 ${LOGIN_TIMEOUT_MS / 1000} 秒內沒有進入任何已知狀態` };
 }
 
 /**
@@ -189,7 +203,7 @@ export function loadedScheduleCount(page) {
  * 這個重試是為了讓「操作測試」能問到它真正想問的問題，不是把問題掩蓋掉——登入穩定度本身
  * 由 e2e-00-login-stability 專門量測並回報。
  */
-export async function loginStable(browser, email, { attempts = 15, needSchedule = false } = {}) {
+export async function loginStable(browser, email, { attempts = 3, needSchedule = false } = {}) {
     let last = null;
     let page = null;
     for (let i = 1; i <= attempts; i++) {
@@ -202,12 +216,13 @@ export async function loginStable(browser, email, { attempts = 15, needSchedule 
         if (last.state === 'signed-in') {
             const forced = await ensureModalClosed(page);
             if (!needSchedule) return { page, result: { ...last, attempts: i, modalForcedClosed: forced } };
-            // 課表由即時訂閱送達，可能比登入完成明顯晚（同一個不穩定問題）
-            for (let w = 0; w < 30; w++) {
+            // 課表由即時訂閱送達，實測比登入完成晚很多（同一個「查詢極慢」的成因）
+            const scheduleDeadline = Date.now() + SCHEDULE_TIMEOUT_MS;
+            while (Date.now() < scheduleDeadline) {
                 if (await loadedScheduleCount(page) > 0) {
                     return { page, result: { ...last, attempts: i, modalForcedClosed: forced } };
                 }
-                await page.waitForTimeout(500);
+                await page.waitForTimeout(1000);
             }
         } else if (last.state === 'error') {
             return { page, result: { ...last, attempts: i } };   // 帳密本身的問題，重試沒有意義
