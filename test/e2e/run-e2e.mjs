@@ -55,7 +55,8 @@ async function main() {
         }
     }
 
-    console.log('\n⚠ 這組測試目前受限於登入不穩定，未必每次都能完整跑完；詳見 test/e2e/README.md。');
+    console.log('\nℹ 本機 emulator 的 Firestore 查詢很慢（bootstrap 8～75 秒），整組耗時偏長是正常的；'
+              + '成因與實測數字見 test/e2e/README.md。');
     process.exit(passed === total ? 0 : 1);
 }
 
