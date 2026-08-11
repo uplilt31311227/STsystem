@@ -53,16 +53,19 @@ export function realErrors(page) {
  * @returns {'signed-in'|'needs-school'|'error'} 登入後落在哪個狀態
  */
 export async function login(page, email, password = PASSWORD) {
-    await page.goto(APP_URL, { waitUntil: 'networkidle' });
-    await page.waitForSelector('#v2-gate-email', { timeout: 15000 });
+    // ⚠ 不可用 waitUntil:'networkidle'——Firestore 的即時訂閱是長連線，網路永遠不會 idle，
+    // goto 會固定等到 30 秒逾時。改等 DOM 就緒，再明確等待要操作的元素出現。
+    await page.goto(APP_URL, { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('#v2-gate-email', { timeout: 20000 });
     await page.click('#v2-gate-email');
     await page.waitForSelector('#v2-modal-email', { timeout: 10000 });
     await page.fill('#v2-modal-email', email);
     await page.fill('#v2-modal-pwd', password);
     await page.click('#v2-modal-submit');
 
-    // 三種可能結局：進入系統、被導向「加入/申請學校」、modal 顯示錯誤訊息
-    const deadline = Date.now() + 20000;
+    // 四種可能結局：進入系統、被導向「加入/申請學校」、modal 顯示錯誤、卡在遮罩
+    const deadline = Date.now() + 22000;
+    let authedAt = null;
     while (Date.now() < deadline) {
         await page.waitForTimeout(400);
 
@@ -76,14 +79,78 @@ export async function login(page, email, password = PASSWORD) {
             return { state: 'needs-school', message: bodyText.slice(0, 200) };
         }
         if (await isSignedIn(page)) return { state: 'signed-in', message: '' };
+
+        // Firebase 已經認證成功、但畫面還停在原始登入遮罩（data-render-key 仍是 default）
+        // ＝ bootstrap 卡住了。不必等滿 22 秒，早點回報讓上層重試。
+        const st = await page.evaluate(() => ({
+            authed: !!(window.firebaseModules?.getAuth?.()?.currentUser),
+            gateKey: document.getElementById('v2-auth-gate')?.getAttribute('data-render-key') ?? null,
+        })).catch(() => ({ authed: false, gateKey: null }));
+        if (st.authed && !authedAt) authedAt = Date.now();
+        if (authedAt && Date.now() - authedAt > 9000 && st.gateKey === 'default') {
+            return { state: 'stuck', message: 'Firebase 認證成功，但畫面停在登入遮罩（bootstrap 未完成）' };
+        }
     }
-    return { state: 'timeout', message: '登入後 20 秒內沒有進入任何已知狀態' };
+    return { state: 'timeout', message: '登入後 22 秒內沒有進入任何已知狀態' };
 }
 
-/** 以「主要頁籤是否可見」判定已進入系統。 */
+/**
+ * 判定「真的進入系統了」。
+ *
+ * ⚠ 不能只看頁籤是否可見——登入遮罩 #v2-auth-gate 是覆蓋在上層的元素（z-index 1100），
+ * 底下的頁籤在 Playwright 眼中仍然是 visible。只看頁籤會把「卡在遮罩」誤判成登入成功，
+ * 後續每個操作都會因為點不到而失敗，卻看不出真正原因。
+ */
 export async function isSignedIn(page) {
-    const tab = await page.$('[data-tab="substitute"]');
-    return !!(tab && await tab.isVisible());
+    return page.evaluate(() => {
+        const gate = document.getElementById('v2-auth-gate');
+        const gateShown = gate ? getComputedStyle(gate).display !== 'none' : false;
+        const tab = document.querySelector('[data-tab="substitute"]');
+        const tabShown = tab ? tab.offsetParent !== null : false;
+        return !gateShown && tabShown;
+    });
+}
+
+/** 課表是否已載入（部分操作需要課表才有意義）。 */
+export function loadedScheduleCount(page) {
+    return page.evaluate(() => window.app?.dataManager?.scheduleData?.length ?? 0);
+}
+
+/**
+ * 預期會成功的登入：失敗就整頁重來。
+ *
+ * 為什麼需要重試：在本機 emulator 環境下，Firestore 的一次性查詢（getDocs）會偶發永不回應
+ * ——不逾時、不拋錯，於是 bootstrap 停在某一步、unlockV2App() never 執行，畫面卡在登入遮罩。
+ * 根因尚未定位（已排除資料、projectId、重複 bootstrap、連線耗盡等），實測成功率約兩成。
+ * 這個重試是為了讓「操作測試」能問到它真正想問的問題，不是把問題掩蓋掉——登入穩定度本身
+ * 由 e2e-00-login-stability 專門量測並回報。
+ */
+export async function loginStable(browser, email, { attempts = 8, needSchedule = false } = {}) {
+    let last = null;
+    let page = null;
+    for (let i = 1; i <= attempts; i++) {
+        // 每次重試都用全新的 page：上一輪若已通過 Firebase 認證，session 會留在該 page 的
+        // 儲存空間裡，重新 goto 會直接是已登入狀態，連登入按鈕都找不到。
+        if (page) await page.close();
+        page = await newPage(browser);
+
+        last = await login(page, email);
+        if (last.state === 'signed-in') {
+            if (!needSchedule) return { page, result: { ...last, attempts: i } };
+            // 課表由即時訂閱送達，可能比登入完成稍晚
+            for (let w = 0; w < 20; w++) {
+                if (await loadedScheduleCount(page) > 0) return { page, result: { ...last, attempts: i } };
+                await page.waitForTimeout(400);
+            }
+        } else if (last.state === 'error') {
+            return { page, result: { ...last, attempts: i } };   // 帳密本身的問題，重試沒有意義
+        }
+    }
+    if (page) await page.close();
+    throw new Error(
+        `登入 ${email} 重試 ${attempts} 次仍未就緒（最後狀態：${last?.state}）。` +
+        `請確認 emulator 與種子資料正常；這通常是本機 Firestore 查詢無回應的已知不穩定問題。`
+    );
 }
 
 /** 目前可見的頁籤 data-tab 清單。 */
