@@ -4,7 +4,8 @@
     "check": "node scripts/check-syntax.js",
     "emu": "firebase emulators:start --project demo-stsystem --only auth,firestore",
     "seed": "node test/emulator/seed.mjs",
-    "test:scenarios": "node test/scenarios/run-all.mjs"
+    "test:scenarios": "node test/scenarios/run-all.mjs",
+    "test:e2e": "node test/e2e/run-e2e.mjs"
   },
   "devDependencies": {
     "firebase-tools": "^15.26.0",

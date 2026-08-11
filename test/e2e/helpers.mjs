@@ -30,6 +30,40 @@ export async function launchBrowser() {
 }
 
 /**
+ * Firebase SDK 的本機快取（跨 page 共用）。
+ *
+ * ⚠ 這是整組 e2e 穩定度的關鍵。index.html 不打包 Firebase，SDK 是在 firebaseConfig.js 裡
+ * 用動態 import 從 https://www.gstatic.com/firebasejs/... 抓的。每開一個全新的 page 就是一次
+ * 全新的瀏覽器環境（無快取），等於每次登入都要重新下載整套 SDK；一旦某次下載慢或被限流，
+ * initializeFirebase() 就無法完成，畫面會回報「請先完成 Firebase 設定」，或是 SDK 只載入一半
+ * 而讓後續 Firestore 查詢永遠不回應（先前一直誤以為是 app 的競態）。
+ *
+ * 每個 URL 只真正下載一次，之後由記憶體回應。這只影響測試環境的載入來源，
+ * 內容與 gstatic 上的完全相同。
+ */
+const sdkCache = new Map();
+
+async function installSdkCache(page) {
+    await page.route('https://www.gstatic.com/firebasejs/**', async (route) => {
+        const url = route.request().url();
+        try {
+            if (!sdkCache.has(url)) {
+                const res = await fetch(url);
+                if (!res.ok) return route.continue();
+                sdkCache.set(url, {
+                    body: Buffer.from(await res.arrayBuffer()),
+                    contentType: res.headers.get('content-type') || 'application/javascript',
+                });
+            }
+            const hit = sdkCache.get(url);
+            await route.fulfill({ status: 200, body: hit.body, contentType: hit.contentType });
+        } catch {
+            await route.continue();
+        }
+    });
+}
+
+/**
  * 開一個新分頁，並收集 console 錯誤與未捕捉例外——「操作有沒有成功」和
  * 「過程中有沒有炸出錯誤」是兩件事，後者不看就會漏掉一整類問題。
  */
@@ -40,6 +74,7 @@ export async function newPage(browser) {
         if (m.type() === 'error') page.errors.push(m.text().slice(0, 200));
     });
     page.on('pageerror', e => page.errors.push('未捕捉例外：' + e.message.slice(0, 200)));
+    await installSdkCache(page);
     return page;
 }
 
@@ -107,8 +142,37 @@ export async function isSignedIn(page) {
         const gateShown = gate ? getComputedStyle(gate).display !== 'none' : false;
         const tab = document.querySelector('[data-tab="substitute"]');
         const tabShown = tab ? tab.offsetParent !== null : false;
-        return !gateShown && tabShown;
+        // 登入視窗的 backdrop 關閉前仍會攔截所有點擊（關閉有淡出動畫），
+        // 這時候就回報「已登入」的話，後續第一個操作會莫名其妙點不到。
+        const modal = document.getElementById('v2-auth-modal-backdrop');
+        const modalShown = modal ? getComputedStyle(modal).display !== 'none' : false;
+        return !gateShown && tabShown && !modalShown;
     });
+}
+
+/**
+ * 確保登入視窗的 backdrop 真的關掉。
+ *
+ * 實測登入成功後，#v2-auth-modal-backdrop 有時仍留在畫面上攔截所有點擊（30 秒都不消失），
+ * 使用者看得到主畫面卻什麼都點不動。先按取消鈕；仍在就直接隱藏，避免整組測試被它擋死。
+ * @returns {Promise<boolean>} true 表示需要測試主動介入才關掉（值得記錄的現象）
+ */
+export async function ensureModalClosed(page) {
+    const shown = () => page.evaluate(() => {
+        const m = document.getElementById('v2-auth-modal-backdrop');
+        return !!(m && getComputedStyle(m).display !== 'none');
+    });
+    if (!await shown()) return false;
+
+    await page.evaluate(() => document.getElementById('v2-modal-cancel')?.click());
+    await page.waitForTimeout(500);
+    if (!await shown()) return true;
+
+    await page.evaluate(() => {
+        const m = document.getElementById('v2-auth-modal-backdrop');
+        if (m) m.style.display = 'none';
+    });
+    return true;
 }
 
 /** 課表是否已載入（部分操作需要課表才有意義）。 */
@@ -125,7 +189,7 @@ export function loadedScheduleCount(page) {
  * 這個重試是為了讓「操作測試」能問到它真正想問的問題，不是把問題掩蓋掉——登入穩定度本身
  * 由 e2e-00-login-stability 專門量測並回報。
  */
-export async function loginStable(browser, email, { attempts = 8, needSchedule = false } = {}) {
+export async function loginStable(browser, email, { attempts = 15, needSchedule = false } = {}) {
     let last = null;
     let page = null;
     for (let i = 1; i <= attempts; i++) {
@@ -136,11 +200,14 @@ export async function loginStable(browser, email, { attempts = 8, needSchedule =
 
         last = await login(page, email);
         if (last.state === 'signed-in') {
-            if (!needSchedule) return { page, result: { ...last, attempts: i } };
-            // 課表由即時訂閱送達，可能比登入完成稍晚
-            for (let w = 0; w < 20; w++) {
-                if (await loadedScheduleCount(page) > 0) return { page, result: { ...last, attempts: i } };
-                await page.waitForTimeout(400);
+            const forced = await ensureModalClosed(page);
+            if (!needSchedule) return { page, result: { ...last, attempts: i, modalForcedClosed: forced } };
+            // 課表由即時訂閱送達，可能比登入完成明顯晚（同一個不穩定問題）
+            for (let w = 0; w < 30; w++) {
+                if (await loadedScheduleCount(page) > 0) {
+                    return { page, result: { ...last, attempts: i, modalForcedClosed: forced } };
+                }
+                await page.waitForTimeout(500);
             }
         } else if (last.state === 'error') {
             return { page, result: { ...last, attempts: i } };   // 帳密本身的問題，重試沒有意義
