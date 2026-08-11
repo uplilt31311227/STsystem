@@ -9,6 +9,20 @@ tags:
 
 ---
 
+## [2026-08-11] 全流程操作測試（e2e）：真實瀏覽器操作，12 案通過
+
+在 90 案的資料層／規則層測試之上，新增「真的開瀏覽器、真的點畫面」的操作測試。前端連本機 Emulator 靠網址參數 `?v2=1&emu=1`——`firebaseConfig.js` 的 `shouldUseEmulator()` 要求 hostname 是 localhost/127.0.0.1 **且**帶 `emu=1`，正式站無法命中，啟用時 console 印紅底警告並跳過 App Check 與離線持久化。
+
+**涵蓋**：登入穩定度量測（刻意不重試）、三種角色的可見範圍、密碼錯誤、名冊外帳號被導向申請流程、跨校資料隔離、代課教師推薦的正確性（排除該時段有課者、標示同領域）、公假未填字號擋下送出、未選課程不可送出，以及**完整流程**：教師選課→選假別→挑代課教師→送出 → 組長在待辦看到 → 核准 → 進入調代課紀錄。12/12 通過。
+
+**過程中修掉的生產缺陷**：(1) `initAuthService()` 被 app.js 與 v2-app.js 各呼叫一次，每次都再掛一個 Firebase `onAuthStateChanged`，而每個監聽器都會遍歷 `authStateCallbacks` 呼叫全部回呼——V2 的整段 bootstrap 因此跑兩次並互相干擾（實測每個步驟都印兩次），已加防重；(2) `initializeFirebase()` 缺併發保護，兩個呼叫端都在 `db` 賦值前通過「已初始化」檢查，整段初始化跑兩次，已改用 in-flight promise。兩者都與 emulator 無關，只是在本機的毫秒級回應下較容易顯現。
+
+**測出的 UI 落差（非資料風險，規則層都有擋）**：一般教師的「原任課教師」下拉未鎖定為本人（可選全校 20 位）；「教師管理」頁籤對教學組長也可見。兩者的越權寫入都由 `firestore.rules` 擋下（情境 2/4 已驗證回 403），屬體驗問題。
+
+**已知限制**：e2e 環境（headless Chromium ＋ 本機 Emulator）下登入成功率僅約兩到四成——Firebase 認證成功但 bootstrap 的某個 Firestore 一次性查詢永不回應，畫面停在登入遮罩。已排除種子資料、projectId 命名空間、上述兩個並發缺陷、long-polling、重啟 emulator、每次全新瀏覽器、快取 Firebase SDK 等原因，根因仍未定位；**無法判定正式環境是否受影響**，不會拿正式站驗證。操作測試以重試繞過，穩定度本身由 `e2e-00-login-stability` 專門量測並如實回報。詳見 `test/e2e/README.md`。
+
+新增指令 `npm run test:e2e`（需先 `npm run emu`、`python start-server.py`、`npm run seed`）。
+
 ## [2026-08-11] 完整假資料情境測試（Firebase Emulator，90 案全通過）
 
 建立一套在本機 Firebase Emulator 上跑的情境測試，用固定 seed 產生的完整假資料涵蓋四類情境，**全程不觸及正式 Firestore**。動機是這套系統上線後，課表解析、三種審核流程狀態機、月結算的假別扣減、多租戶隔離與學期唯讀鎖都只靠人工點擊驗證過，缺乏可重複執行的回歸網；而唯一既有的規則測試 `test/v2-rules-matrix.mjs` 是直接打正式庫的（2026-07-30 事故來源）。
