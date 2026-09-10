@@ -12,10 +12,11 @@
  *   --dry-run:  restore 專用，即使帶了 --yes 也強制只印計畫、不寫入（測試用）。
  *
  * 備份內容（schools/{schoolId} 底下）：
- *   - data/schedule                         單一 doc，全校課表
+ *   - schedules                             per-semester 課表（Stage 2 起的現行路徑）
+ *   - data/schedule                         單一 doc，Stage 2 之前的舊課表路徑（保留備查）
  *   - substituteRecords（含子文件 private/detail） 調代課紀錄
  *   - pendingRequests（含子文件 private/detail）    待審請求
- *   - teachers / userMappings / config / operationLogs  完整快照（低成本，一併備份）
+ *   - teachers / userMappings / config / operationLogs / archives / emailIndex / joinAttempts  完整快照
  *
  * 備份格式：直接存 Firestore REST 的原始 document 物件（{name, fields, createTime, updateTime}），
  * 不 unwrap 成一般 JS 值。這樣 restore 時可以把同一份 fields 原樣 PATCH 回去，無損還原
@@ -39,7 +40,14 @@ const BACKUP_ROOT = path.join(__dirname, '..', 'backups', 'firestore');
 const SUBCOMMAND = process.argv[2];
 
 // 會一併備份、但清除功能不會動到的集合（低成本，一併存成完整快照）
-const PLAIN_COLLECTIONS = ['teachers', 'userMappings', 'config', 'operationLogs'];
+//
+// schedules 是 Stage 2（2026-07-31）之後真正在用的課表路徑（schools/{id}/schedules/{semesterId}）。
+// 下面單獨備份的 data/schedule 是 Stage 2 之前的舊路徑，schemaConstants.js:58 已註明
+// 「不再被任何寫入路徑使用」，只留作 per-semester 文件尚未建立時的一次性讀取 fallback。
+// 先前漏掉 schedules，等於備份保護不到現行課表——課表被匯入覆寫後無法還原。
+// archives / emailIndex / joinAttempts 同為 Stage 0-5 新增、原本未納入備份的集合。
+const PLAIN_COLLECTIONS = ['teachers', 'userMappings', 'config', 'operationLogs',
+                           'schedules', 'archives', 'emailIndex', 'joinAttempts'];
 // 清除功能會動到的集合，且每筆 doc 下還有 private/detail 子文件要一併備份
 const PRIVATE_DETAIL_COLLECTIONS = ['substituteRecords', 'pendingRequests'];
 
