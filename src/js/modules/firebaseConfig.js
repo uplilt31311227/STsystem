@@ -44,6 +44,8 @@ const RECAPTCHA_V3_SITE_KEY = '6LfE9m4tAAAAAOhI27cN7sx38AbEm7MEF5BaYK9t';
 let firebaseApp = null;
 let auth = null;
 let db = null;
+/** 初始化進行中的 promise，供併發呼叫共用（見 initializeFirebase 的併發保護說明）。 */
+let initPromise = null;
 
 // 載入狀態
 let isLoading = false;
@@ -75,8 +77,9 @@ async function loadFirebaseSDK() {
             { initializeApp, deleteApp },
             { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged,
               signInWithEmailAndPassword, createUserWithEmailAndPassword, sendPasswordResetEmail,
-              sendEmailVerification },
-            { getFirestore, collection, doc, setDoc, getDoc, getDocs, deleteDoc, onSnapshot, enableIndexedDbPersistence }
+              sendEmailVerification, connectAuthEmulator },
+            { getFirestore, initializeFirestore, collection, doc, setDoc, getDoc, getDocs, deleteDoc, onSnapshot,
+              enableIndexedDbPersistence, connectFirestoreEmulator }
         ] = await Promise.all([
             import('https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js'),
             import('https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js'),
@@ -97,7 +100,10 @@ async function loadFirebaseSDK() {
             sendPasswordResetEmail,
             // Stage 4：Email/密碼登入者的「請先驗證 email」流程用（authService.sendVerificationEmail）。
             sendEmailVerification,
+            connectAuthEmulator,
+            connectFirestoreEmulator,
             getFirestore,
+            initializeFirestore,
             collection,
             doc,
             setDoc,
@@ -107,8 +113,10 @@ async function loadFirebaseSDK() {
             onSnapshot,
             enableIndexedDbPersistence
         };
-        // 也暴露 FIREBASE_CONFIG 給 authService 建立 secondary app（用於主任建教師帳號）
-        window.firebaseModules.__config = FIREBASE_CONFIG;
+        // 也暴露 config 給 authService 建立 secondary app（用於主任建教師帳號）。
+        // Emulator 模式下必須連同 projectId 一起換掉，否則 secondary app 會用正式
+        // projectId 去建帳號（見 EMULATOR_PROJECT_ID 的說明）。
+        window.firebaseModules.__config = getActiveFirebaseConfig();
 
         isLoaded = true;
         console.log('Firebase SDK 載入完成');
@@ -116,6 +124,46 @@ async function loadFirebaseSDK() {
         console.error('Firebase SDK 載入失敗:', error);
         isLoading = false;
         throw error;
+    }
+}
+
+/**
+ * 是否連本機 Firebase Emulator（供 test/e2e 全流程操作測試使用）。
+ *
+ * ⚠ 兩個條件必須同時成立才會啟用，缺一不可：
+ *   1. hostname 是 localhost / 127.0.0.1——正式站（uplilt31311227.github.io）永遠不成立；
+ *   2. 網址明確帶 `?emu=1`——本機開發時的一般瀏覽（不帶參數）也不會誤連 emulator。
+ * 這個雙重條件是刻意的：任何一邊單獨成立都不夠。正式環境不存在能命中的路徑，
+ * 且啟用時會在 console 印出明顯警告，不可能在不知情的狀況下連到 emulator。
+ *
+ * 對應的 emulator 埠與 test/emulator/emu-client.mjs、firebase.json 一致。
+ */
+/**
+ * Emulator 模式專用的專案 ID，必須與 test/emulator/emu-client.mjs 的 PROJECT_ID 一致。
+ *
+ * ⚠ 這個覆寫是必要的，不是可有可無的整潔：Firestore Emulator 依 projectId 分隔資料庫
+ * 命名空間，若沿用正式的 projectId，前端讀到的會是一個「與種子資料完全不同」的空命名空間
+ * ——現象是所有查詢都回「文件不存在」（不是權限錯誤），登入後會被誤判成「尚未綁定任何學校」。
+ * firebase.json 的 singleProjectMode 只讓 Auth Emulator 放行跨專案請求（所以帳號登得進去、
+ * uid 也對得上），並不會合併 Firestore 的命名空間。
+ */
+const EMULATOR_PROJECT_ID = 'demo-stsystem';
+
+/** 實際要送進 initializeApp() 的設定：emulator 模式下換掉 projectId，其餘不變。 */
+function getActiveFirebaseConfig() {
+    return shouldUseEmulator()
+        ? { ...FIREBASE_CONFIG, projectId: EMULATOR_PROJECT_ID }
+        : FIREBASE_CONFIG;
+}
+
+function shouldUseEmulator() {
+    try {
+        const host    = window.location.hostname;
+        const isLocal = host === 'localhost' || host === '127.0.0.1';
+        const flagged = new URLSearchParams(window.location.search).get('emu') === '1';
+        return isLocal && flagged;
+    } catch {
+        return false;
     }
 }
 
@@ -128,7 +176,23 @@ async function initializeFirebase() {
     if (firebaseApp && auth && db) {
         return { app: firebaseApp, auth, db };
     }
+    // 併發保護：app.js 與 v2-app.js 幾乎同時呼叫本函式，兩者都會在 db 尚未賦值前
+    // 通過上面的檢查，導致整段初始化跑兩次（實測 console 會出現兩次初始化訊息）。
+    // 第二次對同一個 Firestore 單例重複呼叫 connectFirestoreEmulator() 是有風險的
+    // （SDK 要求必須在該實例被使用前設定），也會重複掛上 App Check。
+    // 用 in-flight promise 讓並發呼叫共用同一次初始化。
+    if (initPromise) return initPromise;
 
+    initPromise = doInitializeFirebase();
+    try {
+        return await initPromise;
+    } catch (err) {
+        initPromise = null;   // 失敗不快取，讓呼叫端能重試
+        throw err;
+    }
+}
+
+async function doInitializeFirebase() {
     try {
         // 確保 SDK 已載入
         await loadFirebaseSDK();
@@ -136,14 +200,18 @@ async function initializeFirebase() {
         const { initializeApp, getAuth, getFirestore, enableIndexedDbPersistence } = window.firebaseModules;
 
         // 初始化 Firebase App
-        firebaseApp = initializeApp(FIREBASE_CONFIG);
+        firebaseApp = initializeApp(getActiveFirebaseConfig());
 
         // Stage 4：App Check（classic reCAPTCHA v3）。必須排在其他 SDK 初始化之前——
         // Auth/Firestore 一旦開始送出請求，越早掛上 App Check 的 token provider 越好
         // （雖然本次不開 enforcement，SDK 仍會盡早開始產生/快取 token，為未來開啟
         // enforcement 時降低第一批請求被拒的機率）。RECAPTCHA_V3_SITE_KEY 為空時完全跳過，
         // 不影響任何現有登入/資料流程——見該常數定義處的完整說明。
-        if (RECAPTCHA_V3_SITE_KEY) {
+        const useEmulator = shouldUseEmulator();
+
+        // Emulator 模式跳過 App Check：reCAPTCHA v3 對 localhost 無意義，且 emulator
+        // 本來就不驗證 App Check token，掛上去只會產生一堆失敗請求的雜訊。
+        if (RECAPTCHA_V3_SITE_KEY && !useEmulator) {
             try {
                 const { initializeAppCheck, ReCaptchaV3Provider } =
                     await import('https://www.gstatic.com/firebasejs/10.7.1/firebase-app-check.js');
@@ -157,6 +225,8 @@ async function initializeFirebase() {
                 // 核心功能——寧可讓使用者能繼續使用系統，也不要因為 App Check 掛掉而全站鎖死。
                 console.error('App Check 初始化失敗（不阻擋登入，但代表本次 session 未受 App Check 保護）：', err);
             }
+        } else if (useEmulator) {
+            console.info('[App Check] Emulator 模式，跳過初始化（emulator 不驗證 App Check token）。');
         } else {
             console.info('[App Check] RECAPTCHA_V3_SITE_KEY 尚未設定，跳過初始化。啟用步驟見 docs/STAGE4-DEPLOY.md。');
         }
@@ -166,6 +236,19 @@ async function initializeFirebase() {
 
         // 初始化 Firestore
         db = getFirestore(firebaseApp);
+
+        if (useEmulator) {
+            const { connectAuthEmulator, connectFirestoreEmulator } = window.firebaseModules;
+            connectAuthEmulator(auth, 'http://127.0.0.1:9099', { disableWarnings: true });
+            connectFirestoreEmulator(db, '127.0.0.1', 8080);
+            console.warn(
+                '%c[EMULATOR] 本頁連線到本機 Firebase Emulator，不是正式資料庫。',
+                'background:#b91c1c;color:#fff;padding:2px 6px;border-radius:3px;font-weight:bold'
+            );
+            // Emulator 模式不啟用離線持久化——IndexedDB 快取會跨測試殘留，讓「重新種資料後
+            // 頁面仍顯示舊資料」這種假象很難追查。回傳前直接結束。
+            return { app: firebaseApp, auth, db };
+        }
 
         // 啟用離線持久化
         try {

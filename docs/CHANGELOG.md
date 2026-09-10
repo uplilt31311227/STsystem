@@ -1,6 +1,6 @@
 ---
 created: 2026-03-12
-updated: 2026-07-31
+updated: 2026-09-10
 tags:
   - changelog
 ---
@@ -8,6 +8,77 @@ tags:
 # 版本紀錄
 
 ---
+
+## [2026-09-10] Preview（V2）站同步至最新支線
+
+`STsystem-preview` 這個獨立 repo 與其 GitHub Pages 站（https://uplilt31311227.github.io/STsystem-preview/）**先前就已建立並啟用**，只是 `main` 停在 2026-07-30 的 `963eb69`，落後 `feature/permission-system` 30 個 commit。本次以 `git push preview feature/permission-system:main` 快進到 `52e004c`（無需 force，舊 main 是新支線的祖先）。
+
+**推上去的內容**：Stage 0-5 多租戶與學期資料生命週期、登入初始化競態與 `initAuthService()` 重複掛監聽器兩項生產缺陷修復、Emulator 情境測試 90 案、瀏覽器 e2e 28 案、LICENSE 與範例課表。
+
+**回朔點**：`963eb69`（分支 `backup-pre-preview-update-20260910`，已推至 preview remote）；一鍵回朔 `git push preview backup-pre-preview-update-20260910:main -f`。
+
+**firestore.rules 未部署，也不需要**：本次 diff 相對 7/30 的 preview 快照確實有 +700/-60，但那些變更早在 2026-07-31 Stage 0-5 上線時就已發布到 Firebase。查證方式：`node scripts/firestore-deploy-rules.js --list` 顯示目前 release 指向 `08bbfa7d-ad35-4285-b82e-8acff8463449`（建立於 2026-07-31T14:19Z），而 `firestore.rules` 最後一次 commit 也在 2026-07-31。註：此為時間戳與 commit 日期吻合的推論，未取回線上 ruleset 內容做位元比對（部署腳本無此參數）。`docs/DEPLOYMENT.md` 原記載的「現行線上 release `618f5d1e`」已過期，一併更正。
+
+**驗證**：Pages `builds/latest` 狀態 `built`、commit `52e004c`、無錯誤；curl 確認 `LICENSE`、`semesterUtils.js`、`schoolApplicationService.js` 三個新增檔皆回 200，`v2-app.js` 大小 291KB（新版）。靜態資源 `Cache-Control: max-age=600`，舊訪客最多 10 分鐘內仍可能吃到快取的舊 `v2-app.js`（其 `?v=0.1.11` cache-busting 參數未隨內容更動）。
+
+**未做**：`master`（正式站）未動，兩項登入修復仍未上線正式站。
+
+---
+
+## [2026-08-12] 全流程操作測試補完：課表匯入、月結算、學期切換
+
+新增 `test/e2e/e2e-03-admin-flows.mjs`（11 案，全數通過），補上先前缺的三塊操作情境：
+
+- **月結算**：產生 115 學年度 9 月報表並確認列出教師與時數；暑假月份（8 月，上課週數 0）不會出現負數或 NaN；匯出 Excel 入口存在。
+- **學期切換**：確認顯示目前作用中學期並帶出下一學期預設值；**目前學期仍有在途申請時按下「開新學期」會被擋下**，且擋下後 `config.currentSemester` 確實沒有被改動（直接讀 Firestore 驗證，不只看畫面提示）。
+- **課表匯入**：缺少必要欄位的檔案被拒、只有標題列的空檔案被拒，兩者都確認**既有課表未被更動**；正常檔案匯入後班級數與節數正確更新，且新課表已同步到雲端（其他人也會看到）。
+- **角色差異**：教學組長看不到「學期管理」與「清除所有資料」兩個主任專用區塊。
+
+三組共用同一次主任登入（本機 emulator 的 bootstrap 要 8～75 秒，每案各登入一次不可行），順序刻意是「不改資料的先做」：月結算 → 學期切換（只驗證被擋，不真的切換）→ 課表匯入（會覆寫全校課表，放最後）；整組 runner 也把這個 suite 排在最後。
+
+實作上兩個測試層的注意點：CSV 以 buffer 餵給 `<input type="file">`，不落地成實體檔案；驗證匯入結果改看 `dataManager` 的實際狀態而非畫面統計數字——上傳後畫面會切到匯入結果視圖，`#class-count` 那組元素會整個從 DOM 移除，讀畫面會得到假的失敗（畫面統計本身的正確性另有一案在初始狀態驗證）。
+
+## [2026-08-11] 登入「卡住」的根因追查：兩個獨立問題，都已處理
+
+先前 e2e 觀察到「登入成功率只有兩成、畫面卡在登入遮罩」，逐步追查後確認是**兩個互不相關的問題**，先前把它們混為一談才會得出「根因未定位」的結論。
+
+**問題 1：Firebase 初始化競態（真實缺陷，已修）**。SDK 是啟動時才從 CDN 動態 import 的，初始化為非同步。`authService` 的六個對外操作（Google 登入／Email 登入／註冊／密碼重置／驗證信／建教師帳號）原本都是「沒初始化就丟 `請先完成 Firebase 設定`」——這是給開發者看的訊息，對使用者毫無意義（他們沒有任何「設定」可以完成），而且**該操作根本不會送出任何請求**（實測 Auth Emulator 完全沒收到登入請求），畫面只停在登入視窗。以瀏覽器在頁面載入後立刻登入，實測連續 6 次、6 次都是這個錯誤；網路慢時真實使用者同樣會踩到。修法：統一改為先 `await ensureFirebaseReady()`（`initializeFirebase()` 本身已有 in-flight promise 保護，重複呼叫共用同一次初始化），真的失敗才提示「系統尚未完成啟動，請稍候再試一次」。
+
+**問題 2：本機 emulator 的 Firestore 查詢極慢（環境特性，非 app 缺陷）**。實測單一文件讀取只要 20～70ms，但集合查詢要數秒（實測 6.2s）；bootstrap 串行跑多個集合查詢，整段要 8～75 秒才完成，課表由即時訂閱送達要 41～61 秒。先前 e2e 只等 9～22 秒就判定「卡住」——**它不是卡死，只是還在跑**。把等待上限提高到 100 秒後，登入成功率由 2/6 變成 4/4（耗時 72s、7s、9s、36s），整組 e2e 12/12 通過。正式站連的是 Google 的 Firestore 而非本機 Java emulator，這裡的數字不構成正式環境的證據；也不宣稱正式環境一定沒有類似情形（不會拿正式站做這種驗證）。
+
+追查過程中排除的方向：種子資料不完整、`projectId` 命名空間不符、`initAuthService()` 重複掛監聽器、`initializeFirebase()` 缺併發保護（前四項都是真的問題，已分別修正）、Firestore 改用 long-polling、重啟 emulator、每次全新瀏覽器、快取 Firebase SDK 避免重複下載（後四項試過，對症狀沒有影響）。
+
+`test/e2e/README.md` 已改寫為完整的根因說明與實測數字；`docs/ISSUES_LOG.md` 原本「根因未定位」的條目已更正。
+
+## [2026-08-11] 全流程操作測試（e2e）：真實瀏覽器操作，12 案通過
+
+在 90 案的資料層／規則層測試之上，新增「真的開瀏覽器、真的點畫面」的操作測試。前端連本機 Emulator 靠網址參數 `?v2=1&emu=1`——`firebaseConfig.js` 的 `shouldUseEmulator()` 要求 hostname 是 localhost/127.0.0.1 **且**帶 `emu=1`，正式站無法命中，啟用時 console 印紅底警告並跳過 App Check 與離線持久化。
+
+**涵蓋**：登入穩定度量測（刻意不重試）、三種角色的可見範圍、密碼錯誤、名冊外帳號被導向申請流程、跨校資料隔離、代課教師推薦的正確性（排除該時段有課者、標示同領域）、公假未填字號擋下送出、未選課程不可送出，以及**完整流程**：教師選課→選假別→挑代課教師→送出 → 組長在待辦看到 → 核准 → 進入調代課紀錄。12/12 通過。
+
+**過程中修掉的生產缺陷**：(1) `initAuthService()` 被 app.js 與 v2-app.js 各呼叫一次，每次都再掛一個 Firebase `onAuthStateChanged`，而每個監聽器都會遍歷 `authStateCallbacks` 呼叫全部回呼——V2 的整段 bootstrap 因此跑兩次並互相干擾（實測每個步驟都印兩次），已加防重；(2) `initializeFirebase()` 缺併發保護，兩個呼叫端都在 `db` 賦值前通過「已初始化」檢查，整段初始化跑兩次，已改用 in-flight promise。兩者都與 emulator 無關，只是在本機的毫秒級回應下較容易顯現。
+
+**測出的 UI 落差（非資料風險，規則層都有擋）**：一般教師的「原任課教師」下拉未鎖定為本人（可選全校 20 位）；「教師管理」頁籤對教學組長也可見。兩者的越權寫入都由 `firestore.rules` 擋下（情境 2/4 已驗證回 403），屬體驗問題。
+
+**已知限制**：e2e 環境（headless Chromium ＋ 本機 Emulator）下登入成功率僅約兩到四成——Firebase 認證成功但 bootstrap 的某個 Firestore 一次性查詢永不回應，畫面停在登入遮罩。已排除種子資料、projectId 命名空間、上述兩個並發缺陷、long-polling、重啟 emulator、每次全新瀏覽器、快取 Firebase SDK 等原因，根因仍未定位；**無法判定正式環境是否受影響**，不會拿正式站驗證。操作測試以重試繞過，穩定度本身由 `e2e-00-login-stability` 專門量測並如實回報。詳見 `test/e2e/README.md`。
+
+新增指令 `npm run test:e2e`（需先 `npm run emu`、`python start-server.py`、`npm run seed`）。
+
+## [2026-08-11] 完整假資料情境測試（Firebase Emulator，90 案全通過）
+
+建立一套在本機 Firebase Emulator 上跑的情境測試，用固定 seed 產生的完整假資料涵蓋四類情境，**全程不觸及正式 Firestore**。動機是這套系統上線後，課表解析、三種審核流程狀態機、月結算的假別扣減、多租戶隔離與學期唯讀鎖都只靠人工點擊驗證過，缺乏可重複執行的回歸網；而唯一既有的規則測試 `test/v2-rules-matrix.mjs` 是直接打正式庫的（2026-07-30 事故來源）。
+
+**安全設計（針對 2026-07-30 事故的結構性對策）**：`test/emulator/emu-client.mjs` 的 host 寫死 `127.0.0.1`、專案寫死 `demo-stsystem`（`demo-` 前綴使 Firebase CLI 進入離線模式，不可能連上真實專案），每次連線前先探測對端確實是 Emulator，失敗即中止，不 fallback、不讀任何憑證檔——沒有任何程式路徑可以指向正式庫。
+
+**假資料**（`test/fixtures/`，全部固定 seed、日期寫死，可重現）：兩所學校（`demo-alpha` 9 班／`demo-beta` 6 班），各 22 位教師（主任／教學組長／一般教師／3 位未綁定 email／2 位不任課行政）、兩個學期的完整課表（排課器採 most-constrained-first 貪婪，產出後實際驗證無教師衝堂、無班級重複排課）、22 筆已成立紀錄（8 種假別，中英文代碼混用＋一般調課／自行調課）、6 筆待審請求（代課單簽／調課雙簽待同意／待核准／多重調課部分同意／已駁回／alpha 期舊格式）、操作日誌（欄位形狀對齊規則白名單）。另建平台管理者與「不屬於任何學校」的外部帳號。
+
+**四類情境共 90 案，全數通過**：情境 1 課表匯入與解析 18 案（15 種 CSV 變體打真實 `ScheduleParser`：欄位別名、值別名、BOM、CRLF、缺必要欄、缺值、只有標題列、未知週次、衝堂、同名教師、校訂課程名稱優先、排除領域、前後空白、班級數值排序）；情境 2 調課／代課全流程 28 案（打真實 `firestore.rules`：三種申請類型狀態機、同意與核准、私有明細 ACL、偽造已核准／冒名發起／自我同意／灌代課鐘點／假冒自我調課等越權嘗試、學期唯讀鎖、稽核軌跡不可竄改）；情境 3 月結算與調代課單 19 案（民國學年換算、寒暑假週數、16 種假別代碼逐一驗證扣減與否、完整課表的結算不變量、週次推算與版面組裝）；情境 4 多學期與多校隔離 25 案（跨校讀寫全面阻斷、email 索引與學校歸屬自我限定、歷史學期唯讀與刪除權、平台管理者與開校申請的權限邊界）。
+
+**測試骨架**：`harness.mjs` 的 deny 斷言強制要求 HTTP 403——被 400/404 等其他原因擋下不算通過，避免「測試綠燈但擋住它的其實不是權限規則」這種假保證。
+
+**開發過程中修正的兩個會讓結論失效的問題**：(1) Firestore Emulator 要繞過 Security Rules 必須明確帶 `Authorization: Bearer owner`，不帶 header 是被當成「未登入使用者」並套用規則——原本的種子寫入因此全被規則擋下，第一版測試等於在空資料庫上跑，卻有 17/28 顯示通過（deny 案例在空庫上自然成立）；(2) 種子改用 `mustSetDoc()`，任何寫入失敗立刻中止，不再靜默略過。另訂正 fixture 的 `operationLogs.actor` 欄位形狀以對齊規則白名單。
+
+新增指令：`npm run emu`（啟動 emulator）、`npm run seed`（只種資料，供 Emulator UI 手動檢視）、`npm run test:scenarios`（跑全部情境）。`firebase-tools` 與 `papaparse` 加為 devDependency（原全域 firebase-tools 安裝已損壞）。使用說明見 `test/emulator/README.md`。測試過程確認的 5 項系統既有行為（非測試失敗）記於 `docs/ISSUES_LOG.md`。
 
 ## [2026-07-31] hotfix：v2- 頁籤點擊無反應（P1，上線後即時修復）
 
