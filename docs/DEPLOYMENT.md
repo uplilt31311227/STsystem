@@ -21,8 +21,9 @@ tags:
 > **回朔（rollback）**：每次更新 preview 前先把舊 main 存成備份分支。
 > 2026-06-25 部署 Phase 1 前的備份點 = `90db3b4`（分支 `backup-pre-phase1-20260625`）。
 > 2026-07-10 部署 Phase 3 前的備份點 = `614e4ff`（分支 `backup-pre-phase3-20260710`）；
+> 2026-09-10 更新前的備份點 = `963eb69`（分支 `backup-pre-preview-update-20260910`，已推至 preview remote）。
 > 同日 firestore.rules 已發布 release → ruleset `0ad89275-0df4-46c6-99c8-825a6cc94889`
-> **現行線上 release：`618f5d1e-d350-4e8e-950e-b551eab97490`**（2026-07-29 重新部署，內容與 `0ad89275` 及本地 `firestore.rules` 經位元級比對完全相同，規則本身未變更）
+> **現行線上 release：`08bbfa7d-ad35-4285-b82e-8acff8463449`**（2026-07-31 Stage 0-5 上線時發布；2026-09-10 以 `firestore-deploy-rules.js --list` 查證仍為目前 release，且 `firestore.rules` 最後一次變動亦在 2026-07-31，故本地與線上一致。前一版 `bd1a6f7a-d662-48cf-8d6d-d2f87c055aab`，2026-07-29 發布）
 > （前一版 ruleset = `05f9b203-10fb-4df0-bef3-ecfec905fe16`，rules 回朔可用 Firebase Console 或 PATCH release 指回）。
 > 一鍵回朔：`git push preview 90db3b4:main -f`（或 `git push preview backup-pre-phase1-20260625:main -f`）。
 > ⚠️ Google 登入需 `uplilt31311227.github.io` 在 Firebase Console → Authentication → Settings → Authorized domains 內（preview 站既有，通常已授權）。
@@ -95,3 +96,4 @@ node scripts/firestore-deploy-rules.js --dry    # 只建立 ruleset 不發布
 | 2026-07-10 | v2.0.0 Phase 3 | Preview 部署三種審核流程分支（代課單簽／調課雙簽／多重調課全員同意）+ firestore.rules 資安收緊；回朔點 `614e4ff`（分支 `backup-pre-phase3-20260710`）；同日 rules 發布 release → ruleset `0ad89275-0df4-46c6-99c8-825a6cc94889`（前一版 `05f9b203-10fb-4df0-bef3-ecfec905fe16`） |
 | 2026-07-29 | v2.0.0（開發中，基準線查核） | 商用上線前基準線：查證 Firebase Email/Password provider 已啟用（`signIn.email.enabled=true`）；production `schools/inhu` 資料現況盤點（teachers 29 筆、pendingRequests 0、substituteRecords 1 等）；feature 分支再次合併 master（commit `12f8bb4`），不再落後；preview 回朔點沿用 `614e4ff` |
 | 2026-07-30 | v2.0.0（開發中） | Preview 部署教師管理表合併（V1 教師屬性表與 V2 帳號管理表併為單一表、全欄位即時自動儲存、欄位級權限分層）+ 新增教師防重與同名帳號檔刪除保護；回朔點 `f6a37a7`（分支 `backup-pre-teachers-merge-20260730`）、`717bb2c`（分支 `backup-pre-preview-update-20260730`）；firestore.rules 未變更，線上 ruleset 沿用 `bd1a6f7a-d662-48cf-8d6d-d2f87c055aab` |
+| 2026-09-10 | v2.0.0（開發中） | Preview 站同步至 `52e004c`（先前停在 2026-07-30 的 `963eb69`，落後 30 個 commit）。本次內容：Stage 0-5 多租戶與學期生命週期、登入初始化競態與重複監聽器兩項修復、Emulator 情境測試 90 案與瀏覽器 e2e 28 案、LICENSE 與範例課表。回朔點 `963eb69`（分支 `backup-pre-preview-update-20260910`）；firestore.rules 自 2026-07-31 未再變動，線上 ruleset 沿用 `08bbfa7d-ad35-4285-b82e-8acff8463449`，本次無 rules 部署動作。Pages 建置狀態 `built`（commit `52e004c`），已 curl 驗證新增檔上線 |
