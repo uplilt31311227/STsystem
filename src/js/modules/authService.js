@@ -16,6 +16,37 @@ let currentUser = null;
 const authStateCallbacks = [];
 
 /**
+ * Firebase 的 onAuthStateChanged 是否已掛上。
+ *
+ * initAuthService() 有兩個呼叫端——app.js 的啟動流程與 v2-app.js 的 bootstrap，兩者都會執行
+ * （V2 模式下是「都會」，不是「擇一」）。沒有這道防護時，每次呼叫都會再掛一個 Firebase 監聽器，
+ * 而每個監聽器都會遍歷 authStateCallbacks 呼叫**全部**回呼——結果是每個註冊者的回呼被觸發
+ * 兩次。V2 的回呼是整段 bootstrap（解析身份、渲染各頁籤、建立即時訂閱），跑兩次會彼此
+ * 干擾：後進的一輪 clearSubs() 掉前一輪的訂閱，兩輪同時渲染同一個頁籤，實測會卡在「全校紀錄」
+ * 永不完成，於是 unlockV2App() 永遠不會被執行——登入成功但畫面停在登入遮罩，且沒有任何錯誤訊息。
+ */
+let authListenerAttached = false;
+
+/**
+ * 確保 Firebase 已初始化完成，未完成就等它完成。
+ *
+ * 每個對外的認證操作（登入／註冊／寄信）都會先經過這裡。原本各函式是
+ * 「沒初始化就丟 `請先完成 Firebase 設定`」——那是給開發者看的訊息，對使用者毫無意義
+ * （他們沒有任何「設定」可以完成），而且該操作根本不會送出，畫面只會停在原地。
+ *
+ * 這個競態在真實環境確實會發生：SDK 是啟動時才從 CDN 動態載入的，網路慢的時候
+ * 初始化要好幾秒，而使用者在那之前就打完帳密按下登入是完全正常的操作。
+ * initializeFirebase() 本身有 in-flight promise 保護，重複呼叫只會共用同一次初始化。
+ */
+async function ensureFirebaseReady() {
+    if (isFirebaseInitialized()) return;
+    await initializeFirebase();
+    if (!isFirebaseInitialized()) {
+        throw new Error('系統尚未完成啟動，請稍候再試一次');
+    }
+}
+
+/**
  * 初始化認證服務
  * @returns {Promise<Object|null>} 當前使用者或 null
  */
@@ -25,6 +56,11 @@ async function initAuthService() {
         console.log('Firebase 未設定，認證服務無法啟動');
         return null;
     }
+
+    // 已掛過就不再掛第二個監聽器（見 authListenerAttached 的說明）。
+    // 回呼註冊本身走 onAuthStateChange()，不受影響。
+    if (authListenerAttached) return currentUser;
+    authListenerAttached = true;
 
     const { onAuthStateChanged } = window.firebaseModules;
     const auth = firebase.auth;
@@ -52,9 +88,7 @@ async function initAuthService() {
  * @returns {Promise<Object>} 使用者資訊
  */
 async function signInWithGoogle() {
-    if (!isFirebaseInitialized()) {
-        throw new Error('請先完成 Firebase 設定');
-    }
+    await ensureFirebaseReady();
 
     const { GoogleAuthProvider, signInWithPopup } = window.firebaseModules;
     const auth = getAuthInstance();
@@ -209,9 +243,11 @@ function waitForAuthState(timeout = 5000) {
  * 配合 Google 登入並存：兩者都最終取得 user.email 後由 authGuardV2 配對 teachers 白名單。
  */
 async function signInWithEmail(email, password) {
-    if (!isFirebaseInitialized()) {
-        throw new Error('請先完成 Firebase 設定');
-    }
+    // Firebase 初始化是非同步的（要先從 CDN 動態載入 SDK）。使用者在啟動完成前就送出登入
+    // 是完全合理的操作——尤其網路慢的時候——原本直接拋「請先完成 Firebase 設定」，
+    // 對使用者毫無意義（他們沒有任何「設定」可以完成），而且登入請求根本沒送出去，
+    // 畫面只會停在登入視窗。改為等初始化完成再繼續。
+    await ensureFirebaseReady();
     const { signInWithEmailAndPassword } = window.firebaseModules;
     const auth = getAuthInstance();
     try {
@@ -235,9 +271,7 @@ async function signInWithEmail(email, password) {
  * 教師端的「忘記密碼？」與主任端的「📧 寄密碼重置信」共用此 API。
  */
 async function sendPasswordReset(email) {
-    if (!isFirebaseInitialized()) {
-        throw new Error('請先完成 Firebase 設定');
-    }
+    await ensureFirebaseReady();
     const { sendPasswordResetEmail } = window.firebaseModules;
     const auth = getAuthInstance();
     await sendPasswordResetEmail(auth, email.toLowerCase().trim());
@@ -250,9 +284,7 @@ async function sendPasswordReset(email) {
  * 不在白名單會被 authGuardV2 擋下並登出。
  */
 async function registerWithEmail(email, password) {
-    if (!isFirebaseInitialized()) {
-        throw new Error('請先完成 Firebase 設定');
-    }
+    await ensureFirebaseReady();
     const { createUserWithEmailAndPassword } = window.firebaseModules;
     const auth = getAuthInstance();
     try {
@@ -280,9 +312,7 @@ async function registerWithEmail(email, password) {
  * 是否要先檢查 currentUser.emailVerified 再顯示按鈕（v2-app.js 的申請頁即如此）。
  */
 async function sendVerificationEmail() {
-    if (!isFirebaseInitialized()) {
-        throw new Error('請先完成 Firebase 設定');
-    }
+    await ensureFirebaseReady();
     const { sendEmailVerification } = window.firebaseModules;
     const auth = getAuthInstance();
     if (!auth?.currentUser) {
@@ -299,9 +329,7 @@ async function sendVerificationEmail() {
  * 寄信本身用主 auth 即可。
  */
 async function createTeacherAuthAndSendReset(email) {
-    if (!isFirebaseInitialized()) {
-        throw new Error('請先完成 Firebase 設定');
-    }
+    await ensureFirebaseReady();
     const normalized = email.toLowerCase().trim();
     const { initializeApp, deleteApp, getAuth, createUserWithEmailAndPassword, sendPasswordResetEmail, __config }
         = window.firebaseModules;

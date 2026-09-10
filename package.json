@@ -1,9 +1,15 @@
 {
   "scripts": {
-    "test": "node test/test-grade9.mjs && node test/test-subject-domain.mjs && node test/test-grade9-refresh.mjs && node test/test-teacher-dedup.mjs && node test/test-semester-utils.mjs",
-    "check": "node scripts/check-syntax.js"
+    "test": "node test/test-grade9.mjs && node test/test-subject-domain.mjs && node test/test-grade9-refresh.mjs && node test/test-teacher-dedup.mjs && node test/test-semester-utils.mjs && node test/scenarios/run-all.mjs --offline",
+    "check": "node scripts/check-syntax.js",
+    "emu": "firebase emulators:start --project demo-stsystem --only auth,firestore",
+    "seed": "node test/emulator/seed.mjs",
+    "test:scenarios": "node test/scenarios/run-all.mjs",
+    "test:e2e": "node test/e2e/run-e2e.mjs"
   },
   "devDependencies": {
+    "firebase-tools": "^15.26.0",
+    "papaparse": "^5.5.4",
     "playwright": "^1.58.2"
   }
 }
