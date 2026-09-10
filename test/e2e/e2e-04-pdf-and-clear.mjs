@@ -129,11 +129,16 @@ export async function run(browser) {
             await clickDialog(page, 'confirm');   // 第一道
             await clickDialog(page, 'confirm');   // 第二道
 
-            // 清除會逐批刪除並在完成後 reload 頁面，需要一段時間
+            // 清除是逐批刪除（每筆紀錄還要連同 private/detail 子文件一起刪），完成後才 reload。
+            // 固定等一段時間不夠可靠——筆數與當下 emulator 的負載都會影響耗時，實測在整組
+            // 連續跑時明顯比單獨跑慢。改成輪詢到真的清空為止。
             await waitForText(page, /清除|完成|已清除/, 15000).catch(() => {});
-            await page.waitForTimeout(12000);
-
-            const after = await cloudCounts();
+            let after = await cloudCounts();
+            const deadline = Date.now() + 120000;
+            while (Date.now() < deadline && (after.records > 0 || after.pending > 0)) {
+                await page.waitForTimeout(5000);
+                after = await cloudCounts();
+            }
             eq(after.records, 0, `調代課紀錄應被清空（實際 ${after.records}）`);
             eq(after.pending, 0, `待審請求應被清空（實際 ${after.pending}）`);
             console.log(`      ↳ 清除前 ${JSON.stringify(before)} → 清除後 ${JSON.stringify(after)}`);
