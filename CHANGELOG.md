@@ -1,5 +1,21 @@
 # 版本紀錄 (Changelog)
 
+## [2026-09-10] Preview（V2）站同步至最新支線
+
+`STsystem-preview` 這個獨立 repo 與其 GitHub Pages 站（https://uplilt31311227.github.io/STsystem-preview/）**先前就已建立並啟用**，只是 `main` 停在 2026-07-30 的 `963eb69`，落後 `feature/permission-system` 30 個 commit。本次以 `git push preview feature/permission-system:main` 快進到 `52e004c`（無需 force，舊 main 是新支線的祖先）。
+
+**推上去的內容**：Stage 0-5 多租戶與學期資料生命週期、登入初始化競態與 `initAuthService()` 重複掛監聽器兩項生產缺陷修復、Emulator 情境測試 90 案、瀏覽器 e2e 28 案、LICENSE 與範例課表。
+
+**回朔點**：`963eb69`（分支 `backup-pre-preview-update-20260910`，已推至 preview remote）；一鍵回朔 `git push preview backup-pre-preview-update-20260910:main -f`。
+
+**firestore.rules 未部署，也不需要**：本次 diff 相對 7/30 的 preview 快照確實有 +700/-60，但那些變更早在 2026-07-31 Stage 0-5 上線時就已發布到 Firebase。查證方式：`node scripts/firestore-deploy-rules.js --list` 顯示目前 release 指向 `08bbfa7d-ad35-4285-b82e-8acff8463449`（建立於 2026-07-31T14:19Z），而 `firestore.rules` 最後一次 commit 也在 2026-07-31。註：此為時間戳與 commit 日期吻合的推論，未取回線上 ruleset 內容做位元比對（部署腳本無此參數）。`docs/DEPLOYMENT.md` 原記載的「現行線上 release `618f5d1e`」已過期，一併更正。
+
+**驗證**：Pages `builds/latest` 狀態 `built`、commit `52e004c`、無錯誤；curl 確認 `LICENSE`、`semesterUtils.js`、`schoolApplicationService.js` 三個新增檔皆回 200，`v2-app.js` 大小 291KB（新版）。靜態資源 `Cache-Control: max-age=600`，舊訪客最多 10 分鐘內仍可能吃到快取的舊 `v2-app.js`（其 `?v=0.1.11` cache-busting 參數未隨內容更動）。
+
+**未做**：`master`（正式站）未動，兩項登入修復仍未上線正式站。
+
+---
+
 ## [2026-08-12] 全流程操作測試補完：課表匯入、月結算、學期切換
 
 新增 `test/e2e/e2e-03-admin-flows.mjs`（11 案，全數通過），補上先前缺的三塊操作情境：
