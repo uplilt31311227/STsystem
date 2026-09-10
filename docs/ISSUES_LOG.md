@@ -1,12 +1,37 @@
 ---
 created: 2026-04-10
-updated: 2026-08-11
+updated: 2026-09-10
 tags:
   - issues
   - troubleshooting
 ---
 
 # 問題追蹤：國中調代課自動化系統
+
+## 2026-09-10 查核發現
+
+### 正式庫的雲端課表是空的，`currentSemester` 還停在 114-2 🔴 待處理（開學作業）
+
+備份 `schools/inhu/schedules/114-2` 取回的內容：`scheduleData` 0 筆、`classes` 0、`teachers` 0，`meta.lastAction` 為 `cleared`、`updatedAt` 2026-07-30T18:13——就是那次「清除所有資料」驗證清掉之後沒再填回。`config.currentSemester` 仍是 `114-2`（`createdAt`/`updatedAt` 都停在 2026-05-29）。
+
+影響：V2 的課表是全校共享、以雲端為真相來源，因此**任何教師登入 V2 都會看到「請先匯入課表」**。正式站 V1 畫面上看得到的 12 班／27 教師／349 課程，是使用者該台瀏覽器 localStorage 的本機資料，不在雲端。
+
+處置：開學匯入課表時，先開 115-1 學期再匯入（使用者 2026-09-10 決定）。
+
+### `firestore-backup.js` 漏備份現行課表路徑 ✅ 已修（2026-09-10，commit `993f8dd`）
+
+備份腳本只抓 `schools/{id}/data/schedule`，那是 Stage 2（2026-07-31）之前的舊路徑，`schemaConstants.js:58` 已註明「不再被任何寫入路徑使用」。現行課表在 `schools/{id}/schedules/{semesterId}`，**從未被備份過**——意即「跑過備份」並不能保護課表，被匯入覆寫後無法還原。
+
+一併補上同樣未納入的 `archives`、`emailIndex`、`joinAttempts`（Stage 0-5 新增）。四者都是普通集合，加進 `PLAIN_COLLECTIONS` 後 restore 計畫自動涵蓋。修復後實跑：`schedules 1 筆、emailIndex 5 筆、archives 0、joinAttempts 0`。
+
+### e2e-02「應能取得目前登入教師姓名」在整組跑時偶發失敗 🟡 已知，測試層 flaky
+
+`npm run test:e2e` 整組跑時該案失敗（27/28），失敗訊息顯示 `#user-name` 的 innerText 讀到的是一整份教師名單而非登入者姓名。單獨重跑該 suite **連續兩輪都 5/5 通過**，因此判定為 flaky 而非產品缺陷：整組跑到第三個 suite 時前面已累積多次登入，emulator 更慢，`gotoTab` 後固定等 1200ms 不足以讓身份區渲染完成。
+
+未修。要修的話應把該處改成輪詢等待 `#user-name` 出現單一姓名，而不是固定等待。
+
+---
+
 
 ## 全流程操作測試（e2e）確認的行為（2026-08-11）
 

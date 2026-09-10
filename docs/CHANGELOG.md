@@ -9,6 +9,24 @@ tags:
 
 ---
 
+## [2026-09-10] 用正式站的真實課表驗證 V2，並修好備份的致命缺口
+
+以正式站 V1 目前的真實課表（349 節／27 位教師／12 班）在本機 emulator 上驗證 V2，全程不碰正式 Firestore。
+
+**課表怎麼來的**：正式站的課表只存在使用者瀏覽器的 localStorage（雲端是空的，見下），且不是原始匯出檔。從 `substituteSystemData.scheduleData` 反向組回人力資源網 2.0 格式 CSV（`週次,節次,年級,班級,教師姓名,身分證字號或居留證號,類別,領域,科目,語言別/校訂課程名稱,上課頻率,起始週`），用 `ScheduleParser` 驗證可解析 349 筆、欄位正確。註：重建檔沒有原始匯出檔的身分證欄位內容（留空），其餘欄位與 V1 內部資料一致。
+
+**V2 × 真實課表：5/5 通過**。匯入前種子課表 9 班／20 教師／306 節 → 匯入後 12 班／27 教師／349 節，雲端 `schedules/115-1` 同步 349 筆；抽驗盧玉燕個人課表 15 節與來源檔一致；對「蕭淳憶 週一第一節 7年1班（語文領域）」申請代課，推薦 15 位、同領域標示正確（陳品瑄／高家涵／李美琦／藍奕麟 皆標語文領域），該時段有課的教師沒有任何一位出現在推薦清單。月結算那一案只驗證了頁面可開啟且有內容，**沒有驗證報表數字正確性**。
+
+**開新學期 → 匯入：5/5 通過（這條路徑首次被實測）**。既有 e2e 只驗證過「有在途申請時被擋下」，從沒真的切換過。先清掉 emulator 的 6 筆在途申請以對齊線上狀態（線上 `pendingRequests` 為 0），再實跑：`currentSemester` 115-1 → 115-2 切換成功；新學期課表為空（等待匯入）；**舊學期 115-1 的 306 節完整保留**；349 筆匯入落在 `schedules/115-2`，舊學期未被覆寫。
+
+**`npm run test:e2e` 整組 27/28**。失敗的是 e2e-02「應能取得目前登入教師姓名」——`#user-name` 讀到整份教師名單而非登入者。單獨重跑該 suite 連續兩輪皆 5/5，判定為 flaky（整組跑到第三個 suite 時 emulator 已明顯變慢，`gotoTab` 後固定等 1200ms 不足），非產品缺陷，未修，已記入 `docs/ISSUES_LOG.md`。
+
+**修好備份的致命缺口**（`993f8dd`）：`firestore-backup.js` 只備份 `schools/{id}/data/schedule`——Stage 2（2026-07-31）之前的舊路徑，`schemaConstants.js:58` 已註明不再被任何寫入路徑使用。現行課表在 `schools/{id}/schedules/{semesterId}`，**從未被備份過**，意即「跑過備份」並不能保護課表。一併補上 `archives`、`emailIndex`、`joinAttempts`。修復後實跑正式備份：`backups/firestore/20260910-195714/`（teachers 30／userMappings 6／config 1／operationLogs 64／schedules 1／emailIndex 5）。
+
+**備份查出的正式庫現況**（見 `docs/ISSUES_LOG.md`）：`schools/inhu/schedules/114-2` 是空的（`meta.lastAction: cleared`，2026-07-30），`config.currentSemester` 仍為 `114-2`。正式站畫面上的課表是使用者該台瀏覽器的 localStorage 本機資料，雲端沒有——V2 對其他教師而言等於還沒有課表。開學匯入課表尚未執行。
+
+---
+
 ## [2026-09-10] 正式站（master）取得登入穩定性兩項修復
 
 `feature/permission-system` 整條合併進 `master`（merge commit `59647c7`），正式站 https://uplilt31311227.github.io/STsystem/ 因此取得兩項生產缺陷修復：
