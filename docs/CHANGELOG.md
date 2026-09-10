@@ -9,6 +9,25 @@ tags:
 
 ---
 
+## [2026-09-10] 正式站（master）取得登入穩定性兩項修復
+
+`feature/permission-system` 整條合併進 `master`（merge commit `59647c7`），正式站 https://uplilt31311227.github.io/STsystem/ 因此取得兩項生產缺陷修復：
+
+- **登入不再因 Firebase 尚未初始化完成而直接失敗**（`5dae6cf`）。Firebase SDK 是啟動時才從 CDN 動態 import，網路慢時使用者按下登入會拿到「請先完成 Firebase 設定」，而且該操作**根本不會送出任何請求**。六個對外操作改為先 `await ensureFirebaseReady()`。
+- **`initAuthService()` 重複掛載監聽器**（`18121a6`）。app.js 與 v2-app.js 各呼叫一次，每次都再掛一個 `onAuthStateChanged`，導致 V2 bootstrap 跑兩次並互相干擾；同時補上 `initializeFirebase()` 的 in-flight promise 併發保護。
+
+**為何整條合併而非只挑那兩個 commit**：實測 cherry-pick `18121a6` 會在 `firebaseConfig.js` 衝突（它依賴前兩個 emulator 相關 commit），且它同時改了 master 上不存在的 `test/emulator/emu-client.mjs`。硬挑要手工解衝突並產出 master 專屬變體，與支線永久分岔。整條合併也符合此專案既有慣例（master 上既有的 5 個 commit 全是 merge 此支線）。
+
+**帶進 master 的其餘 12 個 commit 全在 `test/` 與 `docs/`**，不影響正式站行為。唯一動到正式站會載入的檔案是 `authService.js` 與 `firebaseConfig.js`；後者的 emulator 分支對正式站是 dead code（`shouldUseEmulator()` 要求 hostname 為 localhost 或 127.0.0.1 **且**帶 `emu=1`）。`index.html` 與 `firestore.rules` 未被動到，線上 ruleset 沿用 `08bbfa7d`，無 rules 部署動作。
+
+**順帶修好 CI**（`464e69c`）：情境測試併入 `npm test` 鏈之後會 `import papaparse`，但 `.github/workflows/test.yml` 從未安裝依賴——本機因為有 `node_modules` 所以一直沒發現，推上去才在 CI 露餡（`ERR_MODULE_NOT_FOUND`）。`package-lock.json` 未進版控，故用 `npm install --no-audit --no-fund --ignore-scripts`（`--ignore-scripts` 避免 playwright 在 CI 下載瀏覽器，E2E 本來就不在此 workflow 跑）。修復後 `Test` 轉綠。
+
+**驗證**：本機 `npm run check` 39/39、`npm test` 全鏈通過（情境 1 與 3 共 37/37）；CI `Test` success；Pages deploy job success；線上 `authService.js` 的 `ensureFirebaseReady` 出現次數與本機一致（7）；瀏覽器實開正式站，V1 畫面正常、`Firebase 初始化成功`、console 無錯誤、無 V2 遮罩。
+
+**未做**：`npm run test:e2e` 未重跑（需 emulator + 本機 server + seed）。
+
+---
+
 ## [2026-09-10] Preview（V2）站同步至最新支線
 
 `STsystem-preview` 這個獨立 repo 與其 GitHub Pages 站（https://uplilt31311227.github.io/STsystem-preview/）**先前就已建立並啟用**，只是 `main` 停在 2026-07-30 的 `963eb69`，落後 `feature/permission-system` 30 個 commit。本次以 `git push preview feature/permission-system:main` 快進到 `52e004c`（無需 force，舊 main 是新支線的祖先）。
