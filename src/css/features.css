@@ -356,9 +356,12 @@
 .recommendation-reason { font-size: var(--fs-xs); color: var(--color-text-muted); }
 .recommendation-item.selected .recommendation-reason { color: rgba(255, 255, 255, 0.8); }
 .recommendation-badge { padding: var(--sp-1) var(--sp-2); border-radius: var(--r-xs); font-size: var(--fs-xs); font-weight: var(--fw-semibold); }
-.badge-same-domain { background-color: var(--c-primary-100); color: var(--c-primary-700); }
+.recommendation-badges { display: flex; flex-wrap: wrap; gap: var(--sp-1); justify-content: flex-end; }
+.badge-same-subject { background-color: var(--c-primary-100); color: var(--c-primary-700); }
 .badge-homeroom { background-color: var(--c-warning-100); color: var(--c-warning-600); }
+.badge-same-class { background-color: var(--c-info-50); color: var(--c-info-600); }
 .badge-free { background-color: var(--c-success-100); color: var(--c-success-600); }
+.badge-part-time { background-color: var(--c-n-100); color: var(--c-n-600); }
 .recommendation-item.selected .recommendation-badge { background-color: rgba(255, 255, 255, 0.2); color: var(--color-text-invert); }
 
 .course-details {
@@ -870,3 +873,7 @@ body.v2-locked #v2-auth-gate {
     background: var(--c-warning-800); color: var(--color-text-invert); font-size: var(--fs-xs); font-weight: var(--fw-semibold);
     padding: 4px var(--sp-3); border-radius: var(--r-pill); box-shadow: var(--sh-2);
 }
+
+/* 教師表「兼課」勾選：避免 .teacher-input 的 width:100% 把勾選框撐開、與文字錯位 */
+.parttime-label { display: inline-flex; align-items: center; gap: var(--sp-1); white-space: nowrap; cursor: pointer; }
+.parttime-label input[type="checkbox"] { width: auto; margin: 0; }

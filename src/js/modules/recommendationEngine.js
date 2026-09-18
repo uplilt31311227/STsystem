@@ -2,30 +2,29 @@
  * 智慧推薦引擎模組
  *
  * 代課教師推薦邏輯：
- * 1. 首先篩選出該時段有空堂的教師
- * 2. 依照以下優先順序排序：
- *    - 優先度 1：同領域教師（例如：數學課優先找數學領域老師）
- *    - 優先度 2：該班級導師
- *    - 優先度 3：其他空堂教師
+ * 1. 候選名單 = 教師名單 ∪ 課表上出現的所有教師（只存在於課表、尚未加入名單者也會列出）
+ * 2. 排除該時段有課、當日該節已被指派代/調課者，以及原任課教師 → 全部可代課教師
+ * 3. 依以下優先順序排序（全部列出，不截斷）：
+ *    - 優先度 1：同科目教師（課表上也教這一科，或任教領域欄填了這一科）
+ *    - 優先度 2：該班導師
+ *    - 優先度 3：同任課班級教師（課表上也有教這個班）
+ *    - 優先度 4：其他空堂教師
+ *    - 優先度 5：兼課教師（teacher.partTime === true，不論是否符合上述條件一律排最後）
  *
- * 演算法思維：
- * 1. 取得目標課程的資訊（班級、節次、領域）
- * 2. 從課表中找出該時段有課的教師（busy teachers）
- * 3. 從全部教師中排除 busy teachers 和原任課教師，得到空堂教師
- * 4. 對空堂教師進行評分：
- *    - 同領域：+100 分
- *    - 班導師：+50 分
- *    - 基礎分：10 分
- * 5. 依分數降序排列
+ * 同一優先度內，符合的條件越多越前面；再以「同領域」微調，最後依姓名排序以保持穩定。
  */
 
 export class RecommendationEngine {
     constructor() {
-        // 評分權重設定
+        // 評分權重：各層相差夠大，確保高優先條件永遠壓過低優先條件的組合
+        // （同科目 1000 > 班導師 300 + 同任課班級 100 + 同領域 5）
         this.weights = {
-            sameDomain: 100,   // 同領域教師權重
-            homeroom: 50,      // 班導師權重
-            base: 10           // 基礎分數（空堂）
+            sameSubject: 1000,  // 同科目教師
+            homeroom: 300,      // 該班導師
+            sameClass: 100,     // 同任課班級教師
+            sameDomain: 5,      // 同領域（僅作同層微調）
+            base: 10,           // 基礎分數（空堂）
+            partTime: -10000    // 兼課教師：整批排到最後
         };
     }
 
@@ -36,10 +35,11 @@ export class RecommendationEngine {
      * @param {Array} teachers - 全部教師資料
      * @param {string} date - 調課日期（用於判斷星期）
      * @param {Array} [substituteRecords=[]] - 已存在的調代課紀錄（用於排除已被指派的教師）
-     * @returns {Array} 推薦教師列表（已排序）
+     * @returns {Array} 推薦教師列表（已排序）：{ teacher, score, reason, reasonText, tags }
      */
     getRecommendations(targetCourse, scheduleData, teachers, date, substituteRecords = []) {
         const { weekday, period, className, domain, originalTeacher } = targetCourse;
+        scheduleData = scheduleData || [];
 
         console.log('===== 智慧推薦引擎開始運算 =====');
         console.log('目標課程:', { weekday, period, className, domain, originalTeacher });
@@ -50,29 +50,33 @@ export class RecommendationEngine {
         // 步驟 1.5：找出該日該節已被指派為代課/調課的教師（避免重複指派造成衝堂）
         const assignedBusy = this.getAssignedTeachers(substituteRecords, date, period);
 
-        const busyTeachers = [...new Set([...scheduledBusy, ...assignedBusy])];
-        console.log('有課教師（含已派代/調課）:', busyTeachers);
+        const busyTeachers = new Set([...scheduledBusy, ...assignedBusy].map(n => this.normalizeName(n)));
+        console.log('有課教師（含已派代/調課）:', [...busyTeachers]);
 
         // 步驟 2：篩選出空堂教師（排除有課者和原任課教師）
-        const freeTeachers = teachers.filter(teacher =>
-            !busyTeachers.includes(teacher.name) &&
-            teacher.name !== originalTeacher
-        );
+        const original = this.normalizeName(originalTeacher);
+        const freeTeachers = this.getCandidateTeachers(teachers, scheduleData).filter(teacher => {
+            const name = this.normalizeName(teacher.name);
+            return name && !busyTeachers.has(name) && name !== original;
+        });
         console.log('空堂教師:', freeTeachers.map(t => t.name));
 
         // 步驟 3：計算每位空堂教師的推薦分數
+        const teachingIndex = this.buildTeachingIndex(scheduleData);
         const scoredTeachers = freeTeachers.map(teacher => {
-            const score = this.calculateScore(teacher, targetCourse);
+            const score = this.calculateScore(teacher, targetCourse, teachingIndex);
             return {
                 teacher,
                 score: score.total,
                 reason: score.primaryReason,
-                reasonText: score.reasonText
+                reasonText: score.reasonText,
+                tags: score.reasons
             };
         });
 
-        // 步驟 4：依分數降序排列
-        scoredTeachers.sort((a, b) => b.score - a.score);
+        // 步驟 4：依分數降序排列，同分依姓名排序
+        scoredTeachers.sort((a, b) =>
+            (b.score - a.score) || String(a.teacher.name).localeCompare(String(b.teacher.name), 'zh-Hant'));
 
         console.log('推薦結果:', scoredTeachers.map(r =>
             `${r.teacher.name}: ${r.score}分 (${r.reasonText})`
@@ -80,6 +84,53 @@ export class RecommendationEngine {
         console.log('===== 推薦引擎運算完成 =====');
 
         return scoredTeachers;
+    }
+
+    /**
+     * 候選教師 = 教師名單 ∪ 課表上出現的教師（依姓名去重，名單內的資料優先）
+     *
+     * Why: 教師名單可能漏人（課表編輯後新增的教師、V2 尚未補入名單者），
+     * 只從名單挑會讓這些其實有空堂的老師從推薦中消失。
+     *
+     * @param {Array} teachers - 教師名單
+     * @param {Array} scheduleData - 課表資料
+     * @returns {Array} 教師資料陣列
+     */
+    getCandidateTeachers(teachers, scheduleData) {
+        const byName = new Map();
+        (teachers || []).forEach(t => {
+            const name = this.normalizeName(t && t.name);
+            if (name && !byName.has(name)) byName.set(name, t);
+        });
+        (scheduleData || []).forEach(course => {
+            const name = this.normalizeName(course.teacher);
+            if (name && !byName.has(name)) {
+                byName.set(name, { name, domains: [], homeroomClass: '' });
+            }
+        });
+        return [...byName.values()];
+    }
+
+    /**
+     * 由課表建立「教師 → 任教科目／任教班級」索引
+     * @param {Array} scheduleData - 課表資料
+     * @returns {Map<string, {subjects: Set<string>, classes: Set<string>}>}
+     */
+    buildTeachingIndex(scheduleData) {
+        const index = new Map();
+        (scheduleData || []).forEach(course => {
+            const name = this.normalizeName(course.teacher);
+            if (!name) return;
+            if (!index.has(name)) index.set(name, { subjects: new Set(), classes: new Set() });
+            const entry = index.get(name);
+            [course.subject, course.rawSubject].forEach(s => {
+                const n = this.normalizeSubject(s);
+                if (n) entry.subjects.add(n);
+            });
+            const cls = this.normalizeClassName(course.className);
+            if (cls) entry.classes.add(cls);
+        });
+        return index;
     }
 
     /**
@@ -124,37 +175,50 @@ export class RecommendationEngine {
      * 計算教師推薦分數
      * @param {Object} teacher - 教師資料
      * @param {Object} targetCourse - 目標課程資訊
-     * @returns {Object} 分數詳情
+     * @param {Map} [teachingIndex] - buildTeachingIndex() 的結果；未提供時只看教師資料本身
+     * @returns {Object} 分數詳情：{ total, primaryReason, reasonText, reasons }
      */
-    calculateScore(teacher, targetCourse) {
-        let total = this.weights.base;
-        let primaryReason = 'free';
-        let reasonText = '該時段空堂';
+    calculateScore(teacher, targetCourse, teachingIndex = new Map()) {
+        const w = this.weights;
+        const teaching = teachingIndex.get(this.normalizeName(teacher.name));
+        let total = w.base;
         const reasons = [];
+        const texts = [];
 
-        // 檢查是否為同領域教師
-        if (this.isSameDomain(teacher, targetCourse.domain)) {
-            total += this.weights.sameDomain;
+        if (this.isSameSubject(teacher, targetCourse, teaching)) {
+            total += w.sameSubject;
+            reasons.push('same_subject');
+            texts.push(`同科目（${targetCourse.subject}）`);
+        } else if (this.isSameDomain(teacher, targetCourse.domain)) {
+            // 同領域不在五層順序中，只作同層內微調與說明
+            total += w.sameDomain;
             reasons.push('same_domain');
+            texts.push(`同領域（${teacher.domains.join('、')}）`);
         }
 
-        // 檢查是否為該班導師
         if (this.isHomeroomTeacher(teacher, targetCourse.className)) {
-            total += this.weights.homeroom;
+            total += w.homeroom;
             reasons.push('homeroom');
+            texts.push(`該班導師（${teacher.homeroomClass}）`);
         }
 
-        // 決定主要推薦理由
-        if (reasons.includes('same_domain') && reasons.includes('homeroom')) {
-            primaryReason = 'same_domain';
-            reasonText = `同領域教師（${teacher.domains.join('、')}）且為該班導師`;
-        } else if (reasons.includes('same_domain')) {
-            primaryReason = 'same_domain';
-            reasonText = `同領域教師（${teacher.domains.join('、')}）`;
-        } else if (reasons.includes('homeroom')) {
-            primaryReason = 'homeroom';
-            reasonText = `該班導師（${teacher.homeroomClass}）`;
+        if (teaching && teaching.classes.has(this.normalizeClassName(targetCourse.className))) {
+            total += w.sameClass;
+            reasons.push('same_class');
+            texts.push(`同任課班級（也有教 ${targetCourse.className}）`);
         }
+
+        if (teacher.partTime) {
+            total += w.partTime;
+            reasons.push('part_time');
+            texts.push('兼課教師');
+        }
+
+        // 主要推薦理由：依五層順序取第一個符合者（same_domain 不算一層，歸在空堂）
+        const primaryReason = ['same_subject', 'homeroom', 'same_class', 'part_time'].find(r => reasons.includes(r))
+            || 'free';
+        const onlyFree = !reasons.some(r => r !== 'part_time' && r !== 'same_domain');
+        const reasonText = onlyFree ? [...texts, '該時段空堂'].join('、') : texts.join('、');
 
         return {
             total,
@@ -162,6 +226,44 @@ export class RecommendationEngine {
             reasonText,
             reasons
         };
+    }
+
+    /**
+     * 檢查教師是否教同科目
+     * 判準：課表上該教師也教這一科，或教師「任教領域」欄手動填了這一科（例如「國文」）
+     * @param {Object} teacher - 教師資料
+     * @param {Object} targetCourse - 目標課程（使用 subject / rawSubject）
+     * @param {Object} [teaching] - 該教師的課表索引 { subjects, classes }
+     * @returns {boolean}
+     */
+    isSameSubject(teacher, targetCourse, teaching) {
+        const targets = [targetCourse.subject, targetCourse.rawSubject]
+            .map(s => this.normalizeSubject(s))
+            .filter(Boolean);
+        if (targets.length === 0) return false;
+        if (teaching && targets.some(t => teaching.subjects.has(t))) return true;
+        return (teacher.domains || []).some(d => targets.includes(this.normalizeSubject(d)));
+    }
+
+    /**
+     * 標準化科目名稱（去空白、統一常見同義寫法）
+     * @param {string} subject - 科目名稱
+     * @returns {string}
+     */
+    normalizeSubject(subject) {
+        if (!subject) return '';
+        const s = String(subject).replace(/\s+/g, '');
+        const aliases = { '國語': '國文', '英文': '英語', '美術': '視覺藝術' };
+        return aliases[s] || s;
+    }
+
+    /**
+     * 標準化教師姓名（去除前後空白）
+     * @param {string} name - 教師姓名
+     * @returns {string}
+     */
+    normalizeName(name) {
+        return name == null ? '' : String(name).trim();
     }
 
     /**
