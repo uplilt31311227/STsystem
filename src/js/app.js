@@ -51,6 +51,18 @@ function esc(value) {
 }
 
 /**
+ * 代課推薦標記（順序即推薦優先順序；tag 對應 recommendationEngine 回傳的 tags）
+ * 'free' 為虛擬標記：三項優先條件皆不符時才顯示。
+ */
+const RECOMMENDATION_BADGES = [
+    { tag: 'same_subject', cls: 'badge-same-subject', text: '同科目' },
+    { tag: 'homeroom',     cls: 'badge-homeroom',     text: '班導師' },
+    { tag: 'same_class',   cls: 'badge-same-class',   text: '同任課班級' },
+    { tag: 'free',         cls: 'badge-free',         text: '空堂' },
+    { tag: 'part_time',    cls: 'badge-part-time',    text: '兼課' }
+];
+
+/**
  * 主應用程式類別
  */
 class SubstituteTeacherApp {
@@ -795,6 +807,12 @@ class SubstituteTeacherApp {
             if (parseResult.success) {
                 // 儲存解析後的資料到 DataManager
                 this.dataManager.setScheduleData(parseResult.scheduleData);
+                // 課表檔不含「兼課」資訊，依姓名從匯入前的教師資料帶回，避免重新匯入就被清掉
+                const partTimeNames = new Set(this.dataManager.getTeachers()
+                    .filter(t => t.partTime).map(t => String(t.name).trim()));
+                parseResult.teachers.forEach(t => {
+                    if (partTimeNames.has(String(t.name).trim())) t.partTime = true;
+                });
                 this.dataManager.setTeachers(parseResult.teachers);
                 this.dataManager.setClasses(parseResult.classes);
 
@@ -1142,6 +1160,13 @@ class SubstituteTeacherApp {
             ).join('')}
                     </select>
                 </td>
+                <td data-label="兼課">
+                    <label class="parttime-label" title="兼課教師在代課推薦中排在最後">
+                        <input type="checkbox" data-index="${index}" data-field="partTime"
+                               class="teacher-input" ${teacher.partTime ? 'checked' : ''}>
+                        兼課教師
+                    </label>
+                </td>
                 <td class="cell-actions">
                     <button class="btn btn-sm btn-danger delete-teacher-btn" data-index="${index}">刪除</button>
                 </td>
@@ -1175,6 +1200,8 @@ class SubstituteTeacherApp {
 
         if (field === 'domains') {
             value = value.split(/[,，]/).map(d => d.trim()).filter(d => d);
+        } else if (field === 'partTime') {
+            value = e.target.checked;
         }
 
         this.dataManager.updateTeacher(index, field, value);
@@ -2324,23 +2351,20 @@ class SubstituteTeacherApp {
             item.className = 'recommendation-item';
             item.dataset.index = index;
 
-            let badgeClass = 'badge-free';
-            let badgeText = '空堂';
-
-            if (rec.reason === 'same_domain') {
-                badgeClass = 'badge-same-domain';
-                badgeText = '同領域';
-            } else if (rec.reason === 'homeroom') {
-                badgeClass = 'badge-homeroom';
-                badgeText = '班導師';
-            }
+            // 依推薦順序列出所有符合的標記；三項優先條件皆不符時標「空堂」
+            const tags = rec.tags || [];
+            const hasPriority = ['same_subject', 'homeroom', 'same_class'].some(t => tags.includes(t));
+            const badges = RECOMMENDATION_BADGES.filter(b =>
+                b.tag === 'free' ? !hasPriority : tags.includes(b.tag));
 
             item.innerHTML = `
                 <div class="recommendation-info">
                     <span class="recommendation-name">${esc(rec.teacher.name)}</span>
                     <span class="recommendation-reason">${esc(rec.reasonText)}</span>
                 </div>
-                <span class="recommendation-badge ${esc(badgeClass)}">${esc(badgeText)}</span>
+                <span class="recommendation-badges">
+                    ${badges.map(b => `<span class="recommendation-badge ${esc(b.cls)}">${esc(b.text)}</span>`).join('')}
+                </span>
             `;
 
             item.addEventListener('click', () => this.onSubstituteSelected(index, recommendations));

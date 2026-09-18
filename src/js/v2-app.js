@@ -826,6 +826,12 @@ function legacyTeacherIndex(name) {
     return list.findIndex(t => t.name === name);
 }
 
+/** 教師是否標記為兼課：以 V1 dataManager（推薦引擎實際讀取者）為準，找不到才看 V2 副本。 */
+function isPartTime(v2Teacher) {
+    const legacy = window.app?.dataManager?.getTeacherByName?.(v2Teacher.name);
+    return legacy ? !!legacy.partTime : !!v2Teacher.partTime;
+}
+
 /**
  * 把教師的「課表屬性」（任教領域／導師班級）寫入 V1 dataManager。
  *
@@ -1022,7 +1028,7 @@ async function renderTeachersAdminTab() {
         <table class="data-table data-table-compact data-table-cards">
             <thead><tr>
                 <th>姓名</th><th>Email（登入帳號）</th><th>角色</th>
-                <th>任教領域</th><th>導師班級</th>${canRoster ? '<th>操作</th>' : ''}
+                <th>任教領域</th><th>導師班級</th><th title="兼課教師在代課推薦中排在最後">兼課</th>${canRoster ? '<th>操作</th>' : ''}
             </tr></thead>
             <tbody>
             ${teachers.map(t => {
@@ -1061,6 +1067,13 @@ async function renderTeachersAdminTab() {
                                 `<option value="${escapeHtml(c)}" ${homeroom === c ? 'selected' : ''}>${escapeHtml(c)}</option>`
                             ).join('')}
                         </select>
+                    </td>
+                    <td data-label="兼課">
+                        <label class="parttime-label" title="兼課教師在代課推薦中排在最後">
+                            <input type="checkbox" class="v2-parttime-input" ${isPartTime(t) ? 'checked' : ''}
+                                   ${legacyTeacherIndex(t.name) === -1 ? 'disabled title="此教師尚未出現在課表中，匯入課表後才能設定"' : ''}>
+                            兼課教師
+                        </label>
                     </td>
                     ${canRoster ? `
                     <td class="cell-actions">
@@ -1125,6 +1138,30 @@ async function renderTeachersAdminTab() {
             const inLegacy = saveLegacyTeacherAttr(tr.dataset.name, 'homeroomClass', sel.value);
             await dataSvc.updateTeacher(tr.dataset.id, { homeroomClass: sel.value });
             warnIfNotInSchedule(inLegacy, tr.dataset.name);
+        });
+    });
+
+    /* ---- 兼課：勾選即存，同上兩處寫入。checkbox 的狀態在 checked 而非 value，
+            bindAutoSaveField 的失敗還原不適用，故自行處理。
+            與領域／導師班級不同：兼課不會從 V2 副本回填 V1，因此尚未進課表的教師
+            在 render 時就停用勾選（見上），避免設定只存在 V2 而永遠不生效。
+            先寫 V2（可能失敗）、成功後才寫 V1——失敗時 V1 與全校課表 doc 都未被動到，
+            只需還原勾選框，畫面與推薦引擎不會不一致。 ---- */
+    host.querySelectorAll('.v2-parttime-input').forEach(box => {
+        const tr = box.closest('tr');
+        box.addEventListener('change', async () => {
+            const checked = box.checked;
+            box.classList.remove('v2-field-error');
+            try {
+                await dataSvc.updateTeacher(tr.dataset.id, { partTime: checked });
+                saveLegacyTeacherAttr(tr.dataset.name, 'partTime', checked);
+                box.classList.add('v2-field-saved');
+                setTimeout(() => box.classList.remove('v2-field-saved'), 1400);
+            } catch (e) {
+                box.checked = !checked;
+                box.classList.add('v2-field-error');
+                notifyError(e, '儲存教師資料');
+            }
         });
     });
 
