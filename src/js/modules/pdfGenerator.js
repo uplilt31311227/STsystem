@@ -114,6 +114,8 @@ export class PDFGenerator {
 
     /**
      * 生成多節課代課單 PDF
+     * 原任課教師聯／代課教師聯／教學組聯列出全部節次；班級聯依班級拆開，每班一張只列該班節次。
+     * 每頁左右各一聯，頁數 = ceil((3 + 班級數) / 2)。
      * @param {Array} records - 多節課紀錄陣列
      * @param {Array} courses - 排序後的課程陣列
      * @param {Array} scheduleData - 課表資料
@@ -125,54 +127,41 @@ export class PDFGenerator {
 
         // 取得第一筆紀錄的基本資訊（共用）
         const baseRecord = records[0];
+        const teacher = baseRecord.originalTeacher;
 
-        // 四聯配置
+        // 聯單配置：原任課教師聯、代課教師聯、教學組聯列出全部節次；
+        // 班級聯依班級拆開，每班一張、只列該班的節次（交給各班，不應看到他班異動）
         const sheets = [
-            { label: '原任課教師聯', labelBg: '#6b7280', teacher: baseRecord.originalTeacher },
-            { label: '代（調）課教師聯', labelBg: '#6b7280', teacher: baseRecord.substituteTeacher },
-            { label: '班級聯', labelBg: '#6b7280', teacher: baseRecord.originalTeacher },
-            { label: '教學組聯', labelBg: '#6b7280', teacher: baseRecord.originalTeacher }
+            { label: '原任課教師聯', teacher, records, courses },
+            { label: '代（調）課教師聯', teacher: baseRecord.substituteTeacher, records, courses },
+            ...this.getMultiCourseClassSheets(records, courses, teacher),
+            { label: '教學組聯', teacher, records, courses }
         ];
+        sheets.forEach(s => { s.totalSheets = sheets.length; });
 
         // 建立隱藏的 HTML 容器
         const container = document.createElement('div');
         container.style.cssText = 'position: absolute; left: -9999px; top: 0;';
+        container.style.width = '1123px';
         document.body.appendChild(container);
 
         try {
-            // 第一頁：原任課教師聯 + 代課教師聯
-            const page1HTML = this.createMultiCoursePageHTML(records, courses, sheets[0], sheets[1], scheduleData);
-            container.innerHTML = page1HTML;
-            container.style.width = '1123px';
+            // 每頁左右各一聯；聯數為奇數時最後一頁右半留白
+            for (let i = 0; i < sheets.length; i += 2) {
+                if (i > 0) doc.addPage();
+                container.innerHTML = this.createMultiCoursePageHTML(sheets[i], sheets[i + 1] || null, scheduleData);
 
-            await new Promise(resolve => setTimeout(resolve, 150));
+                await new Promise(resolve => setTimeout(resolve, 150));
 
-            const canvas1 = await html2canvas(container, {
-                scale: 2,
-                useCORS: true,
-                logging: false,
-                backgroundColor: '#ffffff'
-            });
+                const canvas = await html2canvas(container, {
+                    scale: 2,
+                    useCORS: true,
+                    logging: false,
+                    backgroundColor: '#ffffff'
+                });
 
-            const imgData1 = canvas1.toDataURL('image/jpeg', 0.95);
-            doc.addImage(imgData1, 'JPEG', 0, 0, 297, 210);
-
-            // 第二頁：班級聯 + 教學組聯
-            doc.addPage();
-            const page2HTML = this.createMultiCoursePageHTML(records, courses, sheets[2], sheets[3], scheduleData);
-            container.innerHTML = page2HTML;
-
-            await new Promise(resolve => setTimeout(resolve, 150));
-
-            const canvas2 = await html2canvas(container, {
-                scale: 2,
-                useCORS: true,
-                logging: false,
-                backgroundColor: '#ffffff'
-            });
-
-            const imgData2 = canvas2.toDataURL('image/jpeg', 0.95);
-            doc.addImage(imgData2, 'JPEG', 0, 0, 297, 210);
+                doc.addImage(canvas.toDataURL('image/jpeg', 0.95), 'JPEG', 0, 0, 297, 210);
+            }
 
             // 下載 PDF
             const periodsText = courses.length > 3
@@ -187,11 +176,45 @@ export class PDFGenerator {
     }
 
     /**
-     * 建立多節課單頁 HTML（左右兩聯）
+     * 依班級拆出班級聯：每班一張，只含該班的紀錄與課程（班級順序依節次先後首次出現）
+     * @param {Array} records - 多節課紀錄（已依節次排序）
+     * @param {Array} courses - 對應課程（已依節次排序）
+     * @param {string} teacher - 原任課教師（班級聯的課表以其週課表為底）
+     * @returns {Array} 聯單設定陣列
      */
-    createMultiCoursePageHTML(records, courses, leftSheet, rightSheet, scheduleData) {
-        const leftHTML = this.createMultiCourseSheetHTML(records, courses, leftSheet, scheduleData);
-        const rightHTML = this.createMultiCourseSheetHTML(records, courses, rightSheet, scheduleData);
+    getMultiCourseClassSheets(records, courses, teacher) {
+        const classNames = [...new Set(records.map(r => r.className))];
+        return classNames.map(className => ({
+            label: '班級聯',
+            className,
+            teacher,
+            records: records.filter(r => r.className === className),
+            courses: courses.filter(c => c.className === className)
+        }));
+    }
+
+    /**
+     * 聯數轉中文（「一式四聯」用），超出 1–20 以阿拉伯數字表示
+     * @param {number} n
+     * @returns {string}
+     */
+    toChineseCount(n) {
+        const digits = ['', '一', '二', '三', '四', '五', '六', '七', '八', '九'];
+        if (n >= 1 && n <= 9) return digits[n];
+        if (n === 10) return '十';
+        if (n > 10 && n < 20) return '十' + digits[n - 10];
+        if (n === 20) return '二十';
+        return String(n);
+    }
+
+    /**
+     * 建立多節課單頁 HTML（左右兩聯；rightSheet 為 null 時右半留白）
+     */
+    createMultiCoursePageHTML(leftSheet, rightSheet, scheduleData) {
+        const leftHTML = this.createMultiCourseSheetHTML(leftSheet.records, leftSheet.courses, leftSheet, scheduleData);
+        const rightHTML = rightSheet
+            ? this.createMultiCourseSheetHTML(rightSheet.records, rightSheet.courses, rightSheet, scheduleData)
+            : '';
 
         return `
         <div style="
@@ -313,7 +336,7 @@ export class PDFGenerator {
                     font-size: 12px;
                     font-weight: bold;
                     border-radius: 4px;
-                ">${sheet.label}</div>
+                ">${sheet.className ? `${sheet.className} ` : ''}${sheet.label}</div>
             </div>
 
             <!-- 基本資訊表格 -->
@@ -327,7 +350,7 @@ export class PDFGenerator {
             <!-- 底部簽章區 -->
             <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-top: 15px; font-size: 11px;">
                 <div>
-                    列印日期：${printDate} (此單一式四聯，請依聯單執存)
+                    列印日期：${printDate} (此單一式${this.toChineseCount(sheet.totalSheets || 4)}聯，請依聯單執存)
                 </div>
                 <div style="display: flex; gap: 30px;">
                     <div>申請人：__________</div>
