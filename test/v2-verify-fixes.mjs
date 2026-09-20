@@ -337,6 +337,9 @@ async function clickCourseCell(page, weekday, period) {
         }
     });
 
+    // 一般教師的「原任課教師」已被 UI 鎖定為本人並停用（v2-app.js applyOwnTeacherLock）；
+    // selectOption 對停用中的欄位會等到逾時，故先解除停用再選（選的仍是本人，語意不變）。
+    await teacherA.evaluate(() => { const s = document.getElementById('sub-teacher'); if (s) s.disabled = false; });
     await teacherA.selectOption('#sub-teacher', { value: ACCOUNTS.teacherA.name });
     await teacherA.fill('#sub-date', DATES.swapA);
     await teacherA.waitForTimeout(300);

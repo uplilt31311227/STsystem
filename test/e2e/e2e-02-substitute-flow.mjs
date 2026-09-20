@@ -6,7 +6,7 @@
  */
 
 import {
-    ACCOUNTS, loginStable, gotoTab, shot, bodyText, waitForText, realErrors,
+    ACCOUNTS, loginStable, gotoTab, shot, bodyText, waitForText, realErrors, waitForIdentityName,
 } from './helpers.mjs';
 import { Suite, eq, ok, includes } from '../scenarios/harness.mjs';
 
@@ -115,28 +115,24 @@ export async function run(browser) {
 
     /* ===== 一般教師的可操作範圍 ===== */
 
-    await suite.case('一般教師的「原任課教師」欄位未鎖定，可選到其他教師（由規則層擋下）', async () => {
+    await suite.case('一般教師的「原任課教師」欄位鎖定為本人', async () => {
         const { page } = await loginStable(browser, ACCOUNTS.teacherA, { needSchedule: true });
         try {
             await gotoTab(page, 'substitute', 1500);
+            const me = await waitForIdentityName(page);
             const info = await page.evaluate(() => {
                 const sel = document.getElementById('sub-teacher');
                 return {
                     disabled: sel?.disabled ?? null,
-                    options: [...(sel?.options || [])].map(o => o.text).filter(t => t && !/請選擇/.test(t)),
+                    value: sel?.value ?? null,
+                    options: [...(sel?.options || [])].map(o => o.text),
                 };
             });
-            // 如實記錄目前行為：UI 沒有限制，可選全校教師。
-            // 真正的防線在 firestore.rules（「教師代他人發起申請被拒」已於情境 2 驗證為 403），
-            // 所以這不是可被利用的越權，但使用者可以一路填到送出才被拒絕。
-            ok(info.options.length > 0, '應列得出教師選項');
-            eq(info.disabled, false, '目前實作沒有停用這個欄位');
+            eq(info.disabled, true, '欄位應停用');
+            eq(info.value, me, '應鎖定為登入者本人');
+            eq(info.options, [me], '選單只應剩本人一項');
             await shot(page, '02-teacher-selector');
         } finally { await page.close(); }
-    }, {
-        knownGap: '一般教師登入時，「原任課教師」下拉仍可選到全校任何一位教師（實測 20 位），'
-                + 'UI 層沒有鎖定為本人。越權寫入由 firestore.rules 擋下（情境 2 已驗證回 403），'
-                + '因此不構成資料風險，但教師可能一路填完才在送出時被拒，體驗上不理想。',
     });
 
     /* ===== 完整流程：申請 → 待辦 → 核准 ===== */
@@ -145,10 +141,10 @@ export async function run(browser) {
         const { page: tPage } = await loginStable(browser, ACCOUNTS.teacherA, { needSchedule: true });
         let cPage = null;
         try {
-            // 目前登入者的姓名取自畫面右上角的身份區（sub-teacher 的預設值可能是「請選擇教師」）
+            // 目前登入者的姓名取自畫面右上角的身份區（sub-teacher 的預設值可能是「請選擇教師」）。
+            // 用輪詢等待而非固定等待——emulator 變慢時身份區可能還沒渲染完（見 helpers 的說明）。
             await gotoTab(tPage, 'substitute', 1200);
-            const me = await tPage.evaluate(() =>
-                (document.getElementById('user-name')?.innerText || '').replace(/\s+/g, ' ').trim().split(' ')[0]);
+            const me = await waitForIdentityName(tPage);
             ok(me && !/請選擇/.test(me), `應能取得目前登入教師姓名（實際：${me}）`);
 
             const slot = await tPage.evaluate((name) => {
