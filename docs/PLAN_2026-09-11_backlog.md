@@ -10,7 +10,7 @@
 | B | 取得正式站 V1 的 115 課表（localStorage）並重建為人力資源網 2.0 格式 CSV | ✅ 349 節／12 班／27 教師，指紋與 localStorage 逐格相同 |
 | C | 在本機 emulator 以該 CSV 實跑「開 115-1 學期 → 匯入 → 驗證」 | ✅ 2026-09-10 已實跑 5/5（含舊學期未被覆寫） |
 | D | 正式站實作：開 115-1 學期 → 匯入課表 → 驗證雲端 `schools/inhu/schedules/115-1` | ⏸ 仍未執行（2026-09-20 覆核）。等使用者在瀏覽器完成 Google 登入 |
-| E | 小修集合：e2e-02 flaky、原任課教師下拉鎖定本人、教師管理頁籤依角色隱藏 | ✅ 三項完成並 commit（`5883fcf`/`1e5954b`，2026-09-20）。**新出一案未修**：e2e-02「推薦清單標示同領域」斷言因 `3a39f80` 改標籤文字而過時，修法已寫在 `ISSUES_LOG.md` |
+| E | 小修集合：e2e-02 flaky、原任課教師下拉鎖定本人、教師管理頁籤依角色隱藏 | ✅ 三項完成並 commit（`5883fcf`/`1e5954b`，2026-09-20）。e2e-02「推薦清單標示同領域」斷言過時一案亦已修（2026-09-20，實跑 5/5） |
 | F | UI 重規劃 Stage 6（清理：Tier C 死碼、Tier A alias、inline style 收 utility class） | 🔄 Tier A alias 已清（`776e68c`）。**未做**：Tier C 死碼、inline style（`index.html` 51 處，目標個位數） |
 | G | App Check enforcement 決策文件 ＋ 全校硬重整公告文稿 | ✅ 文件完成。**enforcement 本身仍未開啟**，等使用者決策 |
 
