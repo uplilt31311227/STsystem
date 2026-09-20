@@ -256,6 +256,24 @@ export async function gotoTab(page, tabId, settle = 1200) {
     await page.waitForTimeout(settle);
 }
 
+/**
+ * 等到右上角身份區真的渲染出「單一姓名」為止，回傳該姓名。
+ *
+ * V2 身份解析完成時會把 `#user-name` 寫成「姓名 + 角色標籤（.v2-role-tag）」，在那之前該元素
+ * 可能是空的、或殘留 V1 階段的內容。原本用 `gotoTab()` 後固定等 1200ms 再讀，整組跑到第三個
+ * suite 時 emulator 已明顯變慢，固定等待不足以讓身份區渲染完成，讀到的內容不是登入者姓名
+ * （偶發失敗詳見 docs/ISSUES_LOG.md）。改為輪詢等待，等到渲染完成才讀。
+ */
+export async function waitForIdentityName(page, timeout = 30000) {
+    await page.waitForFunction(() => {
+        const el = document.getElementById('user-name');
+        if (!el || !el.querySelector('.v2-role-tag')) return false;
+        const name = (el.childNodes[0]?.textContent || '').trim();
+        return !!name && !/\s/.test(name) && !/請選擇/.test(name);
+    }, null, { timeout });
+    return page.evaluate(() => (document.getElementById('user-name').childNodes[0].textContent || '').trim());
+}
+
 /** 目前登入者顯示的姓名與角色。 */
 export async function whoAmI(page) {
     const el = await page.$('.user-info, #v2-identity, #user-name');

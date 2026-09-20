@@ -3127,6 +3127,91 @@ function interceptSubmitButton() {
     });
 }
 
+/* ===== 一般教師：「原任課教師」鎖定為本人 ===== */
+
+/** 目前鎖定的教師姓名；非鎖定狀態（未登入 / admin）為 null。 */
+let _v2LockedTeacherName = null;
+
+/**
+ * 一般教師登入時，把「原任課教師」下拉收斂成只剩本人並停用。
+ *
+ * 這不是安全邊界——送出時的權限閘門在 interceptSubmitButton()，越權寫入另有 firestore.rules
+ * 擋下（情境 2 的「教師代他人發起申請被拒」實測回 403）。但少了這道 UI 鎖定，教師可以選到
+ * 全校任何一位教師、一路填完四個步驟，才在按下送出時被拒且不知道原因（docs/ISSUES_LOG.md
+ * 2026-08-11 記錄的體驗問題）。
+ *
+ * 呼叫時機：身份解析完成後一次，以及每次 V1 重填教師下拉之後（見 patchOwnTeacherLock()）。
+ * 課表尚未載入時教師清單是空的，此時不動作，等下一次重填再鎖。
+ */
+function applyOwnTeacherLock() {
+    const sel = document.getElementById('sub-teacher');
+    if (!sel) return;
+
+    if (!roleSvc.isSignedIn() || roleSvc.isAdmin()) {
+        // admin 可代任一教師發起；登出／換人時也要能還原成完整清單（選項本身由 V1 重填）
+        _v2LockedTeacherName = null;
+        sel.disabled = false;
+        sel.removeAttribute('title');
+        return;
+    }
+
+    const name = roleSvc.getCurrentIdentity()?.name;
+    if (!name) return;
+    if (!Array.from(sel.options).some(o => o.value === name)) return;
+
+    Array.from(sel.options).forEach((o) => { if (o.value !== name) o.remove(); });
+    sel.value = name;
+    sel.disabled = true;
+    sel.title = '一般教師只能發起自己的課務，本欄位已鎖定為您本人';
+    _v2LockedTeacherName = name;
+}
+
+/**
+ * 鎖定狀態下把選擇還原為本人。
+ *
+ * `resetSubstituteFlow()`（app.js）送出成功後會把 `#sub-teacher` 設為 ''——鎖定後選單裡沒有
+ * 空值選項，這一設會讓 select 變成「沒有任何選中項」，接著就沒有 UI 可以選回來（欄位已停用），
+ * 使用者等於送完一張表單就不能再送第二張。因此重置後補設回本人，並補送 change 事件讓課表
+ * 重新載入（V1 的課表渲染綁在這個事件上）。
+ */
+function restoreOwnTeacherSelection() {
+    if (!_v2LockedTeacherName) return;
+    const sel = document.getElementById('sub-teacher');
+    if (!sel || sel.value === _v2LockedTeacherName) return;
+    sel.value = _v2LockedTeacherName;
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+/**
+ * 掛上兩個 V1 方法的後置鉤子：教師下拉每次重填後重新套用鎖定、表單完全重置後把本人選回來。
+ *
+ * 必須在 `window.app` 已存在時才呼叫（身份解析成功的區塊已滿足這個前提——同一段更早的
+ * `window.app?.loadSavedData?.()` 就依賴它）。歷史教訓見 v0.1.11 的 canSwitchToTab hotfix：
+ * bootstrap 前段對 window.app 掛 patch 時它還沒被 app.js 建立，patch 整段被靜默跳過。
+ */
+function patchOwnTeacherLock() {
+    const app = window.app;
+    if (!app || app._v2TeacherLockPatched) return;
+    app._v2TeacherLockPatched = true;
+
+    if (typeof app.populateTeacherDropdowns === 'function') {
+        const orig = app.populateTeacherDropdowns.bind(app);
+        app.populateTeacherDropdowns = function (...args) {
+            const r = orig(...args);
+            try { applyOwnTeacherLock(); } catch (e) { console.warn('[V2] 鎖定原任課教師欄位失敗:', e); }
+            return r;
+        };
+    }
+    if (typeof app.resetSubstituteFlow === 'function') {
+        const orig = app.resetSubstituteFlow.bind(app);
+        app.resetSubstituteFlow = function (...args) {
+            const r = orig(...args);
+            try { restoreOwnTeacherSelection(); } catch (e) { console.warn('[V2] 還原原任課教師選擇失敗:', e); }
+            return r;
+        };
+    }
+}
+
 /* ===== dataManager patch：V2 模式下改走 V2 寫入 ===== */
 
 async function resolveApproverInfo(record, teachers = null) {
@@ -4628,6 +4713,12 @@ async function bootstrap() {
             } else {
                 document.body.classList.add('v2-teacher');
             }
+
+            // 一般教師把「原任課教師」鎖定為本人（UI 對齊 interceptSubmitButton 的權限閘門）。
+            // 放在這裡而不是 bootstrap 尾端：此時 window.app 必定已存在（上面的 loadSavedData()
+            // 依賴同一前提），且 roleSvc 身份已解析完成，applyOwnTeacherLock() 才判斷得出角色。
+            patchOwnTeacherLock();
+            applyOwnTeacherLock();
 
             const roleLabelMap = { director: '教務主任', section_chief: '教學組長', teacher: '教師' };
             const nameSpan = document.getElementById('user-name');

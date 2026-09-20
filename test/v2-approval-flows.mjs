@@ -244,10 +244,28 @@ async function toastText(page) {
     } catch { return '(無 toast 或已消失)'; }
 }
 
+/**
+ * 設定「原任課教師」。
+ *
+ * 一般教師登入時該欄位已被 UI 鎖定為本人並停用（v2-app.js applyOwnTeacherLock），playwright
+ * 的 selectOption 對停用中的欄位會一直等到逾時，所以這裡先解除停用、必要時補回選項再選。
+ * 對測試的意義：選「非本人」的案例等於在模擬「使用者自己改了 DOM 繞過 UI」，正好驗證真正的
+ * 閘門（interceptSubmitButton + firestore.rules）在 UI 鎖定之外仍然擋得住。
+ */
+async function setOriginalTeacher(page, teacherName) {
+    await page.evaluate((name) => {
+        const sel = document.getElementById('sub-teacher');
+        if (!sel) return;
+        sel.disabled = false;
+        if (![...sel.options].some(o => o.value === name)) sel.add(new Option(name, name));
+    }, teacherName);
+    await page.selectOption('#sub-teacher', { value: teacherName });
+}
+
 /** 選課程用的原任課教師/日期兩步驟（每個流程共用）。 */
 async function pickTeacherAndDate(page, teacherName, dateStr) {
     await clickTab(page, 'substitute');
-    await page.selectOption('#sub-teacher', { value: teacherName });
+    await setOriginalTeacher(page, teacherName);
     await page.fill('#sub-date', dateStr);
     await page.waitForTimeout(300);
 }
@@ -700,7 +718,7 @@ async function submitAndMaybeSkipConsentModal(page, extraConsentName = null) {
     // 點擊後應被 capture 階段擋下（toast 提示 + 不建立任何 pendingRequests 文件）。
     log('\n--- 步驟3d：非本人身分點 #add-to-batch-btn 應被攔截 ---');
     await clickTab(teacherA, 'substitute');
-    await teacherA.selectOption('#sub-teacher', { value: ACCOUNTS.teacherB.name }); // 教師甲冒充選了「乙」
+    await setOriginalTeacher(teacherA, ACCOUNTS.teacherB.name); // 教師甲冒充選了「乙」（刻意繞過 UI 鎖定）
     await teacherA.fill('#sub-date', DATES.flow2A); // 週二，教師乙在週二第二節有課
     await teacherA.waitForTimeout(300);
     await teacherA.click('input[name="change-type-radio"][value="multi-swap"] + .change-type-card');
@@ -727,7 +745,7 @@ async function submitAndMaybeSkipConsentModal(page, extraConsentName = null) {
 
     // 還原：切回代課、選回自己，不留污染狀態
     await teacherA.click('input[name="change-type-radio"][value="substitute"] + .change-type-card');
-    await teacherA.selectOption('#sub-teacher', { value: ACCOUNTS.teacherA.name });
+    await setOriginalTeacher(teacherA, ACCOUNTS.teacherA.name);
 
     // ---------------------------------------------------------------------
     // 收尾：寫入 .last-test-docs.json、最終快照

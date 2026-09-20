@@ -39,13 +39,12 @@ export async function run(browser) {
             for (const t of ['substitute', 'v2-pending', 'records', 'schedule', 'settlement', 'v2-logs']) {
                 ok(tabs.includes(t), `組長應看得到頁籤 ${t}（實際：${tabs.join(', ')}）`);
             }
+            // 教師名單的增刪改在規則層限定 director（情境 2 已驗證），頁籤也應該一併隱藏，
+            // 否則組長進得去卻什麼都改不動。
+            ok(!tabs.includes('teachers'), `組長不應看到頁籤 teachers（實際：${tabs.join(', ')}）`);
             await shot(page, '01-chief-home');
             eq(realErrors(page), [], '登入過程不應有 console 錯誤');
         } finally { await page.close(); }
-    }, {
-        knownGap: '「教師管理」頁籤對教學組長也可見（與教務主任相同）。'
-                + '實際的增刪改由 firestore.rules 限定 director，組長改不動（規則層已由情境 2 驗證），'
-                + '但 UI 沒有依角色隱藏這個入口。',
     });
 
     await suite.case('一般教師登入後看不到審核／課表管理／教師管理／操作日誌', async () => {
