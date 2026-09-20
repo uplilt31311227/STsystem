@@ -273,7 +273,7 @@ function renderApplyGateContent(state) {
             </div>
             <span class="hint" id="v2-join-school-hint"></span>
         </div>
-        <p style="text-align:center;color:var(--text-muted,#888);margin:0.6rem 0;">－ 或 －</p>
+        <p style="text-align:center;color:var(--color-text-muted,#888);margin:0.6rem 0;">－ 或 －</p>
     `;
 
     if (app?.status === 'pending') {

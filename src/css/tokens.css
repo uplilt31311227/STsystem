@@ -52,21 +52,6 @@
   /* z-index 層 */
   --z-sticky:100; --z-veil:200; --z-dropdown:300;
   --z-modal:1000; --z-authgate:1100; --z-authmodal:1200; --z-toast:1300;
-
-  /* ==== 相容別名：舊變數全部指向新 token（Stage 0 零視覺變動的關鍵） ====
-     核對結果（對照 style.css 舊版 :root，2026-07-29）：primary/primary-hover/
-     secondary/background/card-background/text/text-muted/border 8 個舊值與新
-     token 完全等值，可直接別名。success/warning/danger 3 色與 shadow/shadow-lg
-     2 個陰影新舊值有可辨差異（舊為 500 階實色與純黑陰影，新 token 為 600 階、
-     slate 色陰影且 shadow-lg 模糊半徑加倍），故以下 5 項改為沿用舊字面值，
-     確保 Stage 0 零視覺變動；新 600 階色票本身仍保留供後續階段使用。 */
-  --primary-color:var(--c-primary-600); --primary-hover:var(--c-primary-700);
-  --secondary-color:var(--c-n-500); --success-color:#22c55e;
-  --warning-color:#f59e0b; --danger-color:#ef4444;
-  --background-color:var(--color-bg); --card-background:var(--color-surface);
-  --text-color:var(--color-text); --text-muted:var(--color-text-muted);
-  --border-color:var(--color-border);
-  --shadow:0 1px 3px rgba(0, 0, 0, 0.1); --shadow-lg:0 4px 6px rgba(0, 0, 0, 0.1);
 }
 /* 斷點宣告（CSS 變數不能用在 media query，統一在此備查）：
    640px = 手機→平板（卡片轉表格、單日轉週課表）
