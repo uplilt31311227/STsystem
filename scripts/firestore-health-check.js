@@ -8,9 +8,10 @@
  * 角色與狀態機合法值一律從 src/js/modules/v2/schemaConstants.js 動態 import，
  * 不在本檔另外寫死一份，未來 schema 異動只需要改那一處（見 loadSchemaConstants）。
  *
- * 用法：node scripts/firestore-health-check.js [--verbose] [--school=<id>]
+ * 用法：node scripts/firestore-health-check.js [--verbose] [--school=<id>] [--project=<id>]
  *   --school:  指定 schoolId，預設 inhu（正式資料所在）。
  *              --school=default 可查看 2026-04 alpha 期的舊備份。
+ *   --project: 目標 Firebase 專案，預設正式專案 stsystem-9d5fe；測試站專案傳 --project=<測試專案 id>。
  *   --verbose: 額外印出每項通過的檢查，以及測試資料被降級的 INFO 明細。
  *
  * 檢查項：
@@ -37,7 +38,14 @@ const fsSync            = require('node:fs');
 const path              = require('node:path');
 const { pathToFileURL } = require('node:url');
 
-const PROJECT   = 'stsystem-9d5fe';
+/** 正式專案；測試站用 --project= 覆寫，避免把動作做錯邊。 */
+const DEFAULT_PROJECT = 'stsystem-9d5fe';
+const PROJECT = process.argv.find(a => a.startsWith('--project='))?.split('=')[1] || DEFAULT_PROJECT;
+
+// 目標專案一律先印出來，免得動作做錯邊才發現。
+console.log(PROJECT === DEFAULT_PROJECT
+    ? `🎯 目標專案：${PROJECT}（正式）`
+    : `🎯 目標專案：${PROJECT}（非正式專案）`);
 const SCHOOL_ID = process.argv.find(a => a.startsWith('--school='))?.split('=')[1] || 'inhu';
 const BASE      = `https://firestore.googleapis.com/v1/projects/${PROJECT}/databases/(default)/documents`;
 const VERBOSE   = process.argv.includes('--verbose');

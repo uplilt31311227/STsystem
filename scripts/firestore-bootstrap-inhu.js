@@ -7,6 +7,8 @@
  *   node scripts/firestore-bootstrap-inhu.js --add-teacher          # 新增 / 更新一名教師
  *      --name "姓名" --email a@b.com --role section_chief
  *      [--domains 國文,英文] [--homeroom 801]
+ *   --project=<id>  目標 Firebase 專案，預設正式專案 stsystem-9d5fe；
+ *                   測試站專案傳 --project=<測試專案 id>（可放在任意位置）。
  *
  * 設計原則 (idempotent)：
  *   - config/main 已存在則保留 initialAdminEmails 與 schoolName，僅補入缺漏欄位
@@ -18,7 +20,14 @@
  */
 const { execSync } = require('child_process');
 
-const PROJECT   = 'stsystem-9d5fe';
+/** 正式專案；測試站用 --project= 覆寫，避免把動作做錯邊。 */
+const DEFAULT_PROJECT = 'stsystem-9d5fe';
+const PROJECT = process.argv.find(a => a.startsWith('--project='))?.split('=')[1] || DEFAULT_PROJECT;
+
+// 目標專案一律先印出來，免得動作做錯邊才發現。
+console.log(PROJECT === DEFAULT_PROJECT
+    ? `🎯 目標專案：${PROJECT}（正式）`
+    : `🎯 目標專案：${PROJECT}（非正式專案）`);
 const SCHOOL_ID = 'inhu';
 const BASE      = `https://firestore.googleapis.com/v1/projects/${PROJECT}/databases/(default)/documents`;
 

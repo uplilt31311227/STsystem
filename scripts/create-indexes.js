@@ -2,9 +2,10 @@
 /**
  * Firestore 複合索引建立（依 firestore.indexes.json）
  *
- * 用法：node scripts/create-indexes.js [--dry-run] [--wait] [--school=<id>]
+ * 用法：node scripts/create-indexes.js [--dry-run] [--wait] [--school=<id>] [--project=<id>]
  *   --dry-run : 只列出「現有 vs 待建立」的比對計畫，不建立（預設不帶時才會實際建立）
  *   --wait    : 建立後輪詢直到全部索引狀態為 READY（每 15 秒查一次，最多 20 分鐘）
+ *   --project : 目標 Firebase 專案，預設正式專案 stsystem-9d5fe；測試站專案傳 --project=<測試專案 id>。
  *
  * 認證與 API 慣例比照 scripts/firestore-health-check.js：
  *   gcloud 個人帳號 token + Firestore Admin REST API。
@@ -19,7 +20,14 @@ const { execSync } = require('child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const PROJECT = 'stsystem-9d5fe';
+/** 正式專案；測試站用 --project= 覆寫，避免把動作做錯邊。 */
+const DEFAULT_PROJECT = 'stsystem-9d5fe';
+const PROJECT = process.argv.find(a => a.startsWith('--project='))?.split('=')[1] || DEFAULT_PROJECT;
+
+// 目標專案一律先印出來，免得動作做錯邊才發現。
+console.log(PROJECT === DEFAULT_PROJECT
+    ? `🎯 目標專案：${PROJECT}（正式）`
+    : `🎯 目標專案：${PROJECT}（非正式專案）`);
 const BASE = `https://firestore.googleapis.com/v1/projects/${PROJECT}/databases/(default)`;
 const DRY_RUN = process.argv.includes('--dry-run');
 const WAIT = process.argv.includes('--wait');
