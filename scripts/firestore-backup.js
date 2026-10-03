@@ -3,10 +3,11 @@
  * Firestore V2 完整備份 / 還原
  *
  * 用法：
- *   node scripts/firestore-backup.js backup [--school=<id>]
+ *   node scripts/firestore-backup.js backup [--school=<id>] [--project=<id>]
  *   node scripts/firestore-backup.js restore --dir=<備份資料夾> [--yes] [--dry-run]
  *
  *   --school:   指定 schoolId，預設 inhu（正式資料所在）。
+ *   --project:  目標 Firebase 專案，預設正式專案 stsystem-9d5fe；測試站專案傳 --project=<測試專案 id>。
  *   --dir:      restore 專用，指定要還原的備份資料夾（backup 產生的那個時間戳目錄）。
  *   --yes:      restore 專用，實際執行寫入。不帶此旗標只印還原計畫，不寫入任何資料。
  *   --dry-run:  restore 專用，即使帶了 --yes 也強制只印計畫、不寫入（測試用）。
@@ -24,6 +25,7 @@
  * 不適合拿來做還原用途，所以本檔另外存一份原始格式）。
  *
  * 輸出位置：backups/firestore/<yyyymmdd-HHMMss>/，一個集合一個 JSON 檔，schedule doc 單獨一檔。
+ *   非正式專案改存 backups/firestore-<專案 id>/<yyyymmdd-HHMMss>/，避免正式與測試備份混在一起被誤還原。
  *
  * exit code：0 = 成功（含 restore 的 dry-run / 未帶 --yes 情況）；2 = 執行中斷（取不到 token、
  * 引數錯誤、API 失敗等）。
@@ -32,12 +34,26 @@ const { execSync } = require('child_process');
 const fs            = require('node:fs');
 const path          = require('node:path');
 
-const PROJECT     = 'stsystem-9d5fe';
+/** 正式專案；測試站用 --project= 覆寫，避免把動作做錯邊。 */
+const DEFAULT_PROJECT = 'stsystem-9d5fe';
+const PROJECT     = process.argv.find(a => a.startsWith('--project='))?.split('=')[1] || DEFAULT_PROJECT;
+
+// PROJECT 會被組進備份輸出路徑（見 BACKUP_ROOT），所以先擋掉不合法的專案 ID——
+// Firebase 專案 ID 只會是小寫英數與連字號，不先擋就可能用 ../ 把備份寫到目錄外。
+if (!/^[a-z][a-z0-9-]{3,29}$/.test(PROJECT)) {
+    console.error(`❌ 專案 ID 格式不合法：${PROJECT}`);
+    process.exit(2);
+}
+
+// 目標專案一律先印出來，免得動作做錯邊才發現。
+console.log(PROJECT === DEFAULT_PROJECT
+    ? `🎯 目標專案：${PROJECT}（正式）`
+    : `🎯 目標專案：${PROJECT}（非正式專案）`);
 const SCHOOL_ID   = process.argv.find(a => a.startsWith('--school='))?.split('=')[1] || 'inhu';
 const BASE        = `https://firestore.googleapis.com/v1/projects/${PROJECT}/databases/(default)/documents`;
-const BACKUP_ROOT = path.join(__dirname, '..', 'backups', 'firestore');
+const BACKUP_ROOT = path.join(__dirname, '..', 'backups', PROJECT === DEFAULT_PROJECT ? 'firestore' : `firestore-${PROJECT}`);
 
-const SUBCOMMAND = process.argv[2];
+const SUBCOMMAND = process.argv.slice(2).filter(a => !a.startsWith('--project='))[0];
 
 // 會一併備份、但清除功能不會動到的集合（低成本，一併存成完整快照）
 //
@@ -274,7 +290,7 @@ async function doRestore() {
             process.exit(2);
         }
     } else {
-        console.error('用法：node scripts/firestore-backup.js backup [--school=<id>]');
+        console.error('用法：node scripts/firestore-backup.js backup [--school=<id>] [--project=<id>]');
         console.error('      node scripts/firestore-backup.js restore --dir=<備份資料夾> [--yes] [--dry-run]');
         process.exit(2);
     }

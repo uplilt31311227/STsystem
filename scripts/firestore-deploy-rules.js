@@ -7,6 +7,10 @@
  *   node scripts/firestore-deploy-rules.js --dry    # 只建立 ruleset，不發布
  *   node scripts/firestore-deploy-rules.js --list   # 列出最近 5 個 ruleset 與目前 release
  *
+ *   --project=<id>  目標 Firebase 專案，預設正式專案 stsystem-9d5fe。
+ *                   測試站專案（STsystem-preview）傳 --project=<測試專案 id>。
+ *                   同一份 firestore.rules 兩邊共用，規則不分站。
+ *
  * 流程：
  *   1. 讀本地 firestore.rules
  *   2. POST /rulesets 建立新 ruleset
@@ -20,7 +24,14 @@ const { execSync } = require('child_process');
 const fs           = require('fs');
 const path         = require('path');
 
-const PROJECT  = 'stsystem-9d5fe';
+/** 正式專案；測試站用 --project= 覆寫，避免把規則部署錯邊。 */
+const DEFAULT_PROJECT = 'stsystem-9d5fe';
+const PROJECT = process.argv.find(a => a.startsWith('--project='))?.split('=')[1] || DEFAULT_PROJECT;
+
+// 規則部署是會立刻生效的動作，目標專案一律先印出來，免得部署錯邊才發現。
+console.log(PROJECT === DEFAULT_PROJECT
+    ? `🎯 目標專案：${PROJECT}（正式）`
+    : `🎯 目標專案：${PROJECT}（非正式專案）`);
 const RULES_FILE = path.resolve(__dirname, '..', 'firestore.rules');
 const RULES_API  = `https://firebaserules.googleapis.com/v1/projects/${PROJECT}`;
 
@@ -88,7 +99,9 @@ function printUsage() {
 }
 
 async function main() {
-    const flag = process.argv[2] || '';
+    // --project=<id> 可放在任意位置，先濾掉再判斷子命令旗標；
+    // 打成 --project（漏了 =）會留在陣列裡，照下面的安全閘被當未知參數擋下。
+    const flag = process.argv.slice(2).filter(a => !a.startsWith('--project='))[0] || '';
 
     // 安全閘：未知旗標一律中止，不可退化成「不帶參數 = 正式部署」。
     // 2026-07-29 事故——有人對本腳本下 --help（當時不支援），腳本忽略未知旗標後
