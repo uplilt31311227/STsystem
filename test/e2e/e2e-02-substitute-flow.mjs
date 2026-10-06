@@ -33,16 +33,21 @@ async function fillUntilCourse(page, { teacher, date = DATE_MON, weekday = '週�
  */
 function recommendedTeachers(page) {
     return page.evaluate(() => {
+        // 推薦理由的五種開頭，對齊 recommendationEngine.calculateScore() 組出的 texts。
+        // 引擎改標籤文字時這裡必須同步，否則帶新標籤的教師會整個讀不到（2026-09-18 踩過）。
+        const HEAD = '同科目（|同領域（|該班導師（|同任課班級（|兼課教師|該時段空堂';
+        const full = new RegExp(`^([一-龥]{2,4})\\n(${HEAD})([^\\n]*)`);
+        const head = new RegExp(`^[一-龥]{2,4}\\n(${HEAD})`);
         const out = [];
         document.querySelectorAll('#substitute-tab *').forEach(el => {
             if (el.children.length > 3) return;
             const t = (el.innerText || '').trim();
-            const m = /^([一-龥]{2,4})\n(同領域教師（.*?）|該時段空堂)/.exec(t);
+            const m = full.exec(t);
             if (!m) return;
             // 取最深的那一層（父容器也會匹配到同樣的文字）
-            if ([...el.children].some(c => /^[一-龥]{2,4}\n(同領域教師（|該時段空堂)/.test((c.innerText || '').trim()))) return;
+            if ([...el.children].some(c => head.test((c.innerText || '').trim()))) return;
             el.setAttribute('data-e2e-rec', m[1]);
-            out.push({ name: m[1], tag: m[2] });
+            out.push({ name: m[1], tag: m[2] + m[3] });
         });
         const seen = new Set();
         return out.filter(x => (seen.has(x.name) ? false : seen.add(x.name)));
@@ -60,7 +65,7 @@ export async function run(browser) {
 
     /* ===== 推薦清單的正確性 ===== */
 
-    await suite.case('代課教師推薦清單排除該時段有課的教師，並標示同領域', async () => {
+    await suite.case('代課教師推薦清單排除該時段有課的教師，並標示同科目', async () => {
         const { page } = await loginStable(browser, ACCOUNTS.director, { needSchedule: true });
         try {
             await fillUntilCourse(page, { teacher: '林彥廷' });
@@ -75,9 +80,21 @@ export async function run(browser) {
             const wrong = recs.filter(r => busy.includes(r.name));
             eq(wrong.map(w => w.name), [], '推薦清單不應包含該時段有課的教師');
 
-            // 同領域（國語文＝語文領域）的教師應被標示出來
-            const sameDomain = recs.filter(r => r.tag.startsWith('同領域'));
-            ok(sameDomain.length > 0, `應有同領域教師標示（實際標籤：${recs.slice(0, 5).map(r => r.tag).join('、')}）`);
+            // 同科目（也教國語文）且該時段空堂的教師，應該全部被標示為「同科目」。
+            // 期望名單由課表現算、不寫死姓名，fixture 換 seed 重新排課後這條斷言仍然成立。
+            const expectSameSubject = await page.evaluate(({ weekday, period, teacher }) => {
+                const sd = window.app?.dataManager?.scheduleData || [];
+                const target = sd.find(r => r.teacher === teacher && r.weekday === weekday && r.period === period);
+                if (!target) return [];
+                const busyNow = new Set(sd.filter(r => r.weekday === weekday && r.period === period).map(r => r.teacher));
+                return [...new Set(sd.filter(r => r.subject === target.subject).map(r => r.teacher))]
+                    .filter(n => n !== teacher && !busyNow.has(n));
+            }, { weekday: '週一', period: '第四節', teacher: '林彥廷' });
+
+            ok(expectSameSubject.length > 0, '課表中應存在同科目且該時段空堂的教師，否則此案失去意義');
+            const tagged = recs.filter(r => r.tag.startsWith('同科目')).map(r => r.name).sort();
+            eq(tagged, [...expectSameSubject].sort(),
+                `同科目標示與課表不符（實際標籤：${recs.slice(0, 5).map(r => `${r.name}＝${r.tag}`).join('、')}）`);
             await shot(page, '02-recommend-list');
         } finally { await page.close(); }
     });
