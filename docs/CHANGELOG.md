@@ -1,11 +1,24 @@
 ---
 created: 2026-03-12
-updated: 2026-09-20
+updated: 2026-10-07
 tags:
   - changelog
 ---
 
 # 版本紀錄
+
+---
+
+## [2026-10-07] 正式站（master）上線：多節代課班級聯拆分、五層推薦加兼課
+
+從本分支挑出兩項功能 cherry-pick 進 `master`，其餘（原任課教師鎖定、教師管理頁籤 director 限定、CSS 收尾）仍只在本分支。
+
+- `5425a70`（取自 `ce801cf`）：多節代課的班級聯改為每班獨立一張。
+- `416e331`（取自 `3a39f80`）：代課推薦改為同科目→班導師→同任課班級→空堂→兼課五層順序。
+- `03b8cc4`：e2e-02 推薦標籤斷言修正（取自 `6ef7115` 的測試部分）。
+- 衝突僅在 CHANGELOG 與 `package.json` 的 test 指令，只保留已上線項目。上線前 master 備份分支：`backup-pre-prod-class-sheets-20261007`、`backup-pre-prod-five-tier-20261007`（皆已推上 origin）。
+
+**驗證**：master 上 `npm test` 全過、`npm run check` 39/39；emulator 實跑 `npm run test:e2e` **28/28 通過**；GitHub Actions Test 與 Pages 部署成功，正式站檔案已確認為新版。**V2 教師管理表的兼課勾選仍未在登入狀態下點擊實測**（本機記憶體不足，emulator 被系統停掉），僅以程式碼確認寫入路徑：`schoolDataService.updateTeacher` 不過濾欄位，`firestore.rules` 的 teachers 與 schedules 皆無欄位白名單，director／approver 可寫入 `partTime`。
 
 ---
 

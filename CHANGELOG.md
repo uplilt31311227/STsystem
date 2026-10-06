@@ -1,5 +1,18 @@
 # 版本紀錄 (Changelog)
 
+## [2026-10-07] 正式站（master）上線：多節代課班級聯拆分、五層推薦加兼課
+
+從本分支挑出兩項功能 cherry-pick 進 `master`，其餘（原任課教師鎖定、教師管理頁籤 director 限定、CSS 收尾）仍只在本分支。
+
+- `5425a70`（取自 `ce801cf`）：多節代課的班級聯改為每班獨立一張。
+- `416e331`（取自 `3a39f80`）：代課推薦改為同科目→班導師→同任課班級→空堂→兼課五層順序。
+- `03b8cc4`：e2e-02 推薦標籤斷言修正（取自 `6ef7115` 的測試部分）。
+- 衝突僅在 CHANGELOG 與 `package.json` 的 test 指令，只保留已上線項目。上線前 master 備份分支：`backup-pre-prod-class-sheets-20261007`、`backup-pre-prod-five-tier-20261007`（皆已推上 origin）。
+
+**驗證**：master 上 `npm test` 全過、`npm run check` 39/39；emulator 實跑 `npm run test:e2e` **28/28 通過**；GitHub Actions Test 與 Pages 部署成功，正式站檔案已確認為新版。**V2 教師管理表的兼課勾選仍未在登入狀態下點擊實測**（本機記憶體不足，emulator 被系統停掉），僅以程式碼確認寫入路徑：`schoolDataService.updateTeacher` 不過濾欄位，`firestore.rules` 的 teachers 與 schedules 皆無欄位白名單，director／approver 可寫入 `partTime`。
+
+---
+
 ## [2026-09-20] 修正 e2e-02 的推薦標籤斷言（測試層，產品未動）
 
 `3a39f80`（推薦改五層順序）把推薦理由的標籤文字從「同領域教師（X）」改成「同科目（X）」「該班導師（X）」「同任課班級（X）」，但 `e2e-02` 的 `recommendedTeachers()` 正則只認舊字串——帶新標籤的教師整個沒被收進待驗清單，斷言必然失敗（`npm run test:e2e` 長期停在 27/28）。推薦引擎本身行為正確（`test-recommendation.mjs` 14 項全通過），這是測試過時。
