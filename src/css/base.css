@@ -30,21 +30,6 @@ body {
     margin-bottom: var(--sp-4);
 }
 
-.guide-section h4 {
-    color: var(--color-accent);
-    margin-bottom: var(--sp-3);
-    font-size: var(--fs-lg);
-}
-
-.guide-section a {
-    color: var(--color-accent);
-    text-decoration: none;
-}
-
-.guide-section a:hover {
-    text-decoration: underline;
-}
-
 /* ===== Utility ===== */
 .hidden {
     display: none !important;
@@ -64,12 +49,6 @@ body {
     color: var(--color-text-muted);
     font-size: var(--fs-sm);
     margin-bottom: var(--sp-2);
-}
-
-.description {
-    color: var(--color-text-muted);
-    margin-bottom: var(--sp-4);
-    font-size: var(--fs-md);
 }
 
 /* 載入動畫（header 同步圖示 .sync-status.syncing .sync-icon 亦沿用同一 keyframe） */
@@ -312,24 +291,6 @@ body.v2-active #records-content { display: none !important; }
    注入版在 v2-app.js injectV2Styles()，兩者內容須保持一致。 */
 body.v2-active .v1-only {
     display: none;
-}
-
-/* 功能鎖定遮罩（尚未設定學校名稱時蓋住分頁內容） */
-.tab-locked {
-    position: relative;
-}
-
-.tab-locked::after {
-    content: '🔒 請先設定學校名稱';
-    position: absolute;
-    inset: 0;
-    background: rgba(255, 255, 255, 0.9);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: var(--fs-xl);
-    color: var(--c-n-500);
-    z-index: var(--z-veil);
 }
 
 /* ===== 底部資訊 ===== */

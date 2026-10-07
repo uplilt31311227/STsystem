@@ -364,16 +364,6 @@
 .badge-part-time { background-color: var(--c-n-100); color: var(--c-n-600); }
 .recommendation-item.selected .recommendation-badge { background-color: rgba(255, 255, 255, 0.2); color: var(--color-text-invert); }
 
-.course-details {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: var(--sp-2);
-    padding: var(--sp-4);
-    background-color: var(--color-bg);
-    border-radius: var(--r-sm);
-}
-.course-details p { margin: 0; }
-
 /* 調課預覽表（原 app.js inline style 表格，改用 .data-table class） */
 .swap-preview-table th,
 .swap-preview-table td { text-align: center; }
@@ -589,22 +579,11 @@
 .merge-summary-item:not(:last-child) { border-bottom: var(--bd); }
 .merge-icon { font-size: 1.25rem; }
 
-.guide-section { margin-bottom: var(--sp-6); padding-bottom: var(--sp-4); border-bottom: var(--bd); }
-.guide-section:last-of-type { border-bottom: none; }
-.guide-section ol { margin: 0; padding-left: var(--sp-6); }
-.guide-section ol li { margin-bottom: var(--sp-2); line-height: var(--lh-base); }
-.guide-section code { background-color: var(--color-bg); padding: 0.2rem 0.4rem; border-radius: 3px; font-family: monospace; font-size: 0.9em; }
-.guide-note { background-color: var(--c-warning-100); border-left: 4px solid var(--c-warning-600); padding: var(--sp-4); border-radius: 0 var(--r-sm) var(--r-sm) 0; margin-top: var(--sp-4); }
-.guide-note strong { color: var(--c-warning-800); }
-.guide-note ul { margin: var(--sp-2) 0 0 0; padding-left: var(--sp-6); }
-.guide-note ul li { margin-bottom: var(--sp-1); color: var(--c-warning-800); }
-
 .school-name-setting { margin-top: var(--sp-6); padding: var(--sp-4); background: var(--c-info-50); border: 1px solid var(--c-info-200); border-radius: var(--r-md); }
 .school-name-setting input[type="text"] { padding: var(--sp-2); border: var(--bd); border-radius: var(--r-xs); font-size: var(--fs-lg); }
 .school-name-setting input[type="text"]:focus { outline: none; border-color: var(--color-accent); box-shadow: var(--sh-focus); }
 .school-name-setting .hint { font-size: var(--fs-xs); color: var(--color-text-muted); margin-top: 4px; }
 .school-name-confirmed { background: var(--c-success-50); border-color: var(--c-success-200); }
-.school-name-confirmed .school-name-display { font-size: var(--fs-lg); font-weight: bold; color: var(--c-success-800); }
 .school-name-row { display: flex; gap: var(--sp-2); align-items: center; }
 .school-name-row input { flex: 1; min-width: 0; }
 .school-name-compact { margin-top: var(--sp-3); padding: var(--sp-3); }
@@ -674,9 +653,6 @@
 .import-stat-item .value { font-weight: var(--fw-semibold); color: var(--color-accent); }
 .import-actions { display: flex; gap: var(--sp-2); margin-top: var(--sp-4); flex-wrap: wrap; }
 
-.backup-restore-card { margin-top: var(--sp-3); }
-.backup-restore-row { display: flex; gap: var(--sp-2); margin-bottom: var(--sp-2); flex-wrap: wrap; }
-
 .import-preview-compact { margin-top: 0.6rem; padding: 0.6rem var(--sp-3); }
 .import-preview-compact h4 { font-size: var(--fs-sm); margin-bottom: var(--sp-2); }
 .import-stats-compact { grid-template-columns: 1fr; gap: 0.35rem; margin-bottom: 0.6rem; }
@@ -698,7 +674,6 @@
     .editor-schedule-header { flex-direction: row; justify-content: space-between; align-items: center; }
 }
 .editor-schedule-header h2 { margin: 0; }
-.editor-schedule-stats { color: var(--color-text-muted); font-size: var(--fs-lg); }
 
 /* 手機日切換器（Stage 4）：課表編輯器沒有「已選日期」上下文可判斷單日，改用這排按鈕
    讓使用者手動切換 .editorActiveDay。640+ 桌機恆顯示全週，不需要切換器。 */
