@@ -689,7 +689,7 @@
                 </div>
 
                 <!-- 月結算上課週數：逐月設定、可由公開 Google 行事曆帶入。
-                     V1 存 localStorage；V2 存 config/settlement，僅 director 可改（其他角色唯讀）。
+                     V1 存 localStorage；V2 存 config/settlement，director 與 section_chief 可讀可改（一般教師不讀取、唯讀）。
                      內容由 app.js renderSettlementWeeksCard() 填值。 -->
                 <div class="card v2-approver-only" id="settlement-weeks-card">
                     <h3>月結算上課週數</h3>
@@ -725,6 +725,7 @@
                     <div class="sw-actions">
                         <button type="button" class="btn btn-secondary btn-sm" id="sw-import-btn">從日曆帶入</button>
                         <button type="button" class="btn btn-primary btn-sm" id="sw-save-btn">儲存</button>
+                        <button type="button" class="btn btn-secondary btn-sm hidden" id="sw-retry-btn">重試讀取</button>
                     </div>
                     <p class="hint sw-message hidden" id="sw-message"></p>
                     <p class="hint sw-readonly-note hidden" id="sw-readonly-note"></p>
@@ -1013,8 +1014,8 @@
          Firebase <script> 標籤——比照既有 Auth/Firestore SDK 的載入方式，見該檔
          initializeFirebase()、RECAPTCHA_V3_SITE_KEY 常數與 docs/STAGE4-DEPLOY.md
          「App Check 啟用步驟」。 -->
-    <script type="module" src="src/js/app.js?v=1.14.0"></script>
+    <script type="module" src="src/js/app.js?v=1.14.1"></script>
     <!-- V2 權限系統（?v2=1 或預覽站才啟用；對穩定版無影響） -->
-    <script type="module" src="src/js/v2-app.js?v=0.1.13"></script>
+    <script type="module" src="src/js/v2-app.js?v=0.1.14"></script>
 </body>
 </html>
