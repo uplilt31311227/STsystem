@@ -2946,7 +2946,14 @@ function installSettlementConfigStore() {
     window.app.settlementConfigStore = {
         canEdit: () => roleSvc.isApprover(),
         readonlyReason: '僅教務主任與教學組長可編輯月結算上課週數；目前顯示的是已儲存的設定（唯讀）。',
-        load: () => dataSvc.getSettlementConfig(),
+        load: () => {
+            // L5：舊模組被快取時函式可能不存在，提示強制重新整理並中止（不丟 TypeError）
+            if (typeof dataSvc.getSettlementConfig !== 'function') {
+                window.app?.showToast?.('程式版本不一致，請按 Ctrl+F5 強制重新整理', 'warning', 6000);
+                return Promise.reject(Object.assign(new Error('getSettlementConfig 不存在（快取版本錯配）'), { name: 'StaleModuleError' }));
+            }
+            return dataSvc.getSettlementConfig();
+        },
         save: (cfg) => {
             if (!roleSvc.isApprover()) throw new Error('僅教務主任或教學組長可儲存');
             const who = roleSvc.getCurrentIdentity();

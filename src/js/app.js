@@ -3791,7 +3791,7 @@ class SubstituteTeacherApp {
 
     /* ===== 月結算上課週數設定（設定頁） =====
      * 儲存層可抽換：預設 V1 localStorage；V2 由 v2-app.js 換成 Firestore config/settlement
-     * （僅 director 可寫）。store 介面：{ canEdit(), readonlyReason, load(), save(cfg) }。
+     * （director 與 section_chief 可寫、僅此二者可讀）。store 介面：{ canEdit(), readonlyReason, load(), save(cfg) }。
      * cfg 形狀：{ calendarId, calendarApiKey, weeksByYear: { "115": { "8": 1, ... } } }。 */
 
     createLocalSettlementConfigStore() {
@@ -3818,8 +3818,29 @@ class SubstituteTeacherApp {
 
     /** 產生月結算前套用已存的週數覆寫；讀取失敗直接拋出（金額計算不可悄悄退回預設）。 */
     async applySettlementWeeksOverride(year) {
-        const cfg = await this.loadSettlementConfig();
+        // L5：模組快取版本錯配時 setWeeksOverride 可能不存在，提示強制重新整理並中止（不丟 TypeError）
+        if (typeof this.settlementCalculator?.setWeeksOverride !== 'function') {
+            this.showToast('程式版本不一致，請按 Ctrl+F5 強制重新整理', 'warning', 6000);
+            throw Object.assign(new Error('setWeeksOverride 不存在（快取版本錯配）'), { name: 'StaleModuleError' });
+        }
+        let cfg;
+        try {
+            cfg = await this.loadSettlementConfig();
+        } catch (err) {
+            if (err?.name === 'StaleModuleError') throw err;
+            throw Object.assign(new Error('讀不到月結算上課週數設定'), { name: 'SettlementConfigError', cause: err });
+        }
         this.settlementCalculator.setWeeksOverride(year, cfg.weeksByYear[String(year)] || {});
+    }
+
+    /** 月結算失敗提示：週數設定讀取失敗給專屬訊息；StaleModuleError 已在拋出處提示過 */
+    notifySettlementError(err) {
+        if (err?.name === 'StaleModuleError') return;
+        if (err?.name === 'SettlementConfigError') {
+            this.showToast('讀不到上課週數設定，未產生結算（為避免用預設週數算錯金額）。請檢查網路後重試', 'error', 6000);
+            return;
+        }
+        this.showToast('讀取月結算資料失敗，請查看 console', 'error', 5000);
     }
 
     bindSettlementWeeksEvents() {
@@ -3839,6 +3860,9 @@ class SubstituteTeacherApp {
         });
         document.getElementById('sw-import-btn').addEventListener('click', () => this.importSettlementWeeksFromCalendar());
         document.getElementById('sw-save-btn').addEventListener('click', () => this.saveSettlementWeeks());
+        document.getElementById('sw-retry-btn')?.addEventListener('click', () => this.refreshSettlementWeeksCard({ force: true }));
+        // L6：任何輸入（含從日曆帶入）都視為有未儲存修改，之後再點設定頁籤不重讀覆蓋
+        document.getElementById('settlement-weeks-card')?.addEventListener('input', () => { this._swDirty = true; });
         document.querySelector('.tab-btn[data-tab="settings"]')?.addEventListener('click', () => this.refreshSettlementWeeksCard());
         this.refreshSettlementWeeksCard();
     }
@@ -3868,28 +3892,51 @@ class SubstituteTeacherApp {
         });
     }
 
-    async refreshSettlementWeeksCard() {
+    async refreshSettlementWeeksCard({ force = false } = {}) {
         const card = document.getElementById('settlement-weeks-card');
         if (!card) return;
-        try {
-            this._settlementConfig = await this.loadSettlementConfig();
-        } catch (err) {
-            console.error('讀取月結算週數設定失敗:', err);
+        // L6：有未儲存修改時不重讀覆蓋（強制重試除外；讀取失敗狀態下沒有可保留的草稿）
+        if (this._swDirty && !force && !this._swLoadFailed) return;
+        if (!this.settlementConfigStore) this.settlementConfigStore = this.createLocalSettlementConfigStore();
+        const store = this.settlementConfigStore;
+        const editable = !!store.canEdit?.();
+        const note = document.getElementById('sw-readonly-note');
+        const retryBtn = document.getElementById('sw-retry-btn');
+        const setDisabled = (v) => card.querySelectorAll('.sw-week-input, #sw-calendar-id, #sw-api-key, #sw-import-btn, #sw-save-btn')
+            .forEach(el => { el.disabled = v; });
+
+        let loadFailed = false;
+        if (!editable) {
+            // M2：不可編輯者（一般教師）不讀 config/settlement（規則僅 approver 可讀，內含 API key）
             this._settlementConfig = { calendarId: '', calendarApiKey: '', weeksByYear: {} };
-            this.swMessage('讀取月結算週數設定失敗，請重新整理後再試');
+        } else {
+            try {
+                this._settlementConfig = await this.loadSettlementConfig();
+            } catch (err) {
+                console.error('讀取月結算週數設定失敗:', err);
+                this._settlementConfig = { calendarId: '', calendarApiKey: '', weeksByYear: {} };
+                loadFailed = true;
+            }
         }
+        this._swLoadFailed = loadFailed;
+        this._swDirty = false;
         this._settlementWeeksDraft = {};
         document.getElementById('sw-calendar-id').value = this._settlementConfig.calendarId;
         document.getElementById('sw-api-key').value = this._settlementConfig.calendarApiKey;
         this.renderSettlementWeekInputs();
 
-        const store = this.settlementConfigStore;
-        const editable = !!store?.canEdit?.();
-        card.querySelectorAll('.sw-week-input, #sw-calendar-id, #sw-api-key, #sw-import-btn, #sw-save-btn')
-            .forEach(el => { el.disabled = !editable; });
-        const note = document.getElementById('sw-readonly-note');
-        note.textContent = editable ? '' : (store?.readonlyReason || '目前身份不可編輯');
-        note.classList.toggle('hidden', editable);
+        // M1：讀取失敗時停用輸入格、帶入與儲存鈕，避免空白格被存回而清掉已存週數
+        setDisabled(!editable || loadFailed);
+        retryBtn?.classList.toggle('hidden', !loadFailed);
+        if (loadFailed) {
+            this.swMessage('讀不到週數設定，請重新整理');
+            note.textContent = '';
+            note.classList.add('hidden');
+        } else {
+            this.swMessage('');
+            note.textContent = editable ? '' : (store?.readonlyReason || '目前身份不可編輯');
+            note.classList.toggle('hidden', editable);
+        }
     }
 
     async importSettlementWeeksFromCalendar() {
@@ -3917,13 +3964,14 @@ class SubstituteTeacherApp {
             const order = [8, 9, 10, 11, 12, 1, 2, 3, 4, 5, 6, 7];
             const got = order.filter(m => m in r.weeks).map(m => `${m} 月 ${r.weeks[m]} 週`).join('、');
             const miss = r.missingMonths.map(m => `${m} 月`).join('、') || '無';
+            this._swDirty = true;
             this.swMessage(`已帶入：${got}\n日曆中找不到資料（維持原值）：${miss}\n尚未儲存，確認後請按「儲存」。`);
         } catch (err) {
             this.swMessage('');
             if (err?.name !== 'CalendarError') console.error('日曆帶入失敗:', err);
             this.showToast(calendarErrorMessage(err), 'error', 6000);
         } finally {
-            btn.disabled = !this.settlementConfigStore?.canEdit?.();
+            btn.disabled = !this.settlementConfigStore?.canEdit?.() || !!this._swLoadFailed;
         }
     }
 
@@ -3931,6 +3979,10 @@ class SubstituteTeacherApp {
         const store = this.settlementConfigStore;
         if (!store?.canEdit?.()) {
             this.showToast(store?.readonlyReason || '目前身份不可編輯', 'warning');
+            return;
+        }
+        if (this._swLoadFailed) {
+            this.showToast('讀不到週數設定，請先重試讀取成功後再儲存', 'warning');
             return;
         }
         this.stashSettlementWeekInputs(this._swShownYear);
@@ -3959,14 +4011,15 @@ class SubstituteTeacherApp {
                 calendarApiKey: document.getElementById('sw-api-key').value.trim(),
                 weeksByYear,
             });
-            await this.refreshSettlementWeeksCard();
+            this._swDirty = false;
+            await this.refreshSettlementWeeksCard({ force: true });
             this.swMessage('');
             this.showToast('月結算上課週數已儲存', 'success');
         } catch (err) {
             console.error('儲存月結算週數失敗:', err);
             this.showToast('儲存失敗：' + (err?.message || '請查看 console'), 'error', 5000);
         } finally {
-            btn.disabled = !store.canEdit?.();
+            btn.disabled = !store.canEdit?.() || !!this._swLoadFailed;
         }
     }
 
@@ -4039,7 +4092,7 @@ class SubstituteTeacherApp {
             document.getElementById('settlement-result').classList.remove('hidden');
         } catch (err) {
             console.error('產生月結算失敗:', err);
-            this.showToast('讀取月結算資料失敗，請查看 console', 'error', 5000);
+            this.notifySettlementError(err);
         } finally {
             if (btn) btn.disabled = false;
         }
@@ -4131,7 +4184,7 @@ class SubstituteTeacherApp {
             this.settlementCalculator.exportToExcel(settlementData, year, month);
         } catch (err) {
             console.error('匯出月結算 Excel 失敗:', err);
-            this.showToast('讀取月結算資料失敗，請查看 console', 'error', 5000);
+            this.notifySettlementError(err);
         } finally {
             if (btn) btn.disabled = false;
         }
