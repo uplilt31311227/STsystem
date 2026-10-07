@@ -691,7 +691,7 @@
                 <!-- 月結算上課週數：逐月設定、可由公開 Google 行事曆帶入。
                      僅 V2：存 config/settlement，director 與 section_chief 可讀可改（一般教師不讀取、唯讀）。
                      內容由 app.js renderSettlementWeeksCard() 填值。 -->
-                <div class="card v2-approver-only" id="settlement-weeks-card">
+                <div class="card v2-only v2-approver-only" id="settlement-weeks-card">
                     <h3>月結算上課週數</h3>
                     <p class="hint">月結算的「原定時數」與超鐘點門檻 = 每週節數（或 20）× 該月週數。未填的月份沿用系統預設（1 月 2、2 月 3、7／8 月 0、其餘 4）。可由公開的 Google 學校行事曆帶入後再手動調整，儲存後的值才是結算依據。</p>
                     <div class="form-group form-group-inline">
@@ -1014,7 +1014,7 @@
          Firebase <script> 標籤——比照既有 Auth/Firestore SDK 的載入方式，見該檔
          initializeFirebase()、RECAPTCHA_V3_SITE_KEY 常數與 docs/STAGE4-DEPLOY.md
          「App Check 啟用步驟」。 -->
-    <script type="module" src="src/js/app.js?v=1.14.2"></script>
+    <script type="module" src="src/js/app.js?v=1.14.3"></script>
     <!-- V2 權限系統（?v2=1 或預覽站才啟用；對穩定版無影響） -->
     <script type="module" src="src/js/v2-app.js?v=0.1.15"></script>
 </body>

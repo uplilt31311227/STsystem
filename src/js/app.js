@@ -3795,20 +3795,8 @@ class SubstituteTeacherApp {
      * （director 與 section_chief 可寫、僅此二者可讀）；V1 不顯示、不讀寫。store 介面：{ canEdit(), readonlyReason, load(), save(cfg) }。
      * cfg 形狀：{ calendarId, calendarApiKey, weeksByYear: { "115": { "8": 1, ... } } }。 */
 
-    createLocalSettlementConfigStore() {
-        const key = () => `${this.getLocalStorageKey()}_settlementConfig`;
-        return {
-            canEdit: () => true,
-            readonlyReason: '',
-            load: async () => {
-                try { return JSON.parse(localStorage.getItem(key()) || 'null'); } catch (e) { return null; }
-            },
-            save: async (cfg) => { localStorage.setItem(key(), JSON.stringify(cfg)); },
-        };
-    }
-
     async loadSettlementConfig() {
-        if (!this.settlementConfigStore) this.settlementConfigStore = this.createLocalSettlementConfigStore();
+        if (!this.settlementConfigStore) throw new Error('週數設定儲存層尚未就緒');
         const raw = await this.settlementConfigStore.load();
         return {
             calendarId: raw?.calendarId || '',
@@ -3819,6 +3807,7 @@ class SubstituteTeacherApp {
 
     /** 產生月結算前套用已存的週數覆寫；讀取失敗直接拋出（金額計算不可悄悄退回預設）。 */
     async applySettlementWeeksOverride(year) {
+        if (!isV2Enabled()) return; // V1：不套用週數覆寫，結算結果與原本完全相同
         // L5：模組快取版本錯配時 setWeeksOverride 可能不存在，提示強制重新整理並中止（不丟 TypeError）
         if (typeof this.settlementCalculator?.setWeeksOverride !== 'function') {
             this.showToast('程式版本不一致，請按 Ctrl+F5 強制重新整理', 'warning', 6000);
@@ -3846,7 +3835,7 @@ class SubstituteTeacherApp {
 
     bindSettlementWeeksEvents() {
         const yearSel = document.getElementById('sw-year');
-        if (!yearSel) return;
+        if (!yearSel || !isV2Enabled()) return; // 週數設定僅 V2
         this._settlementWeeksDraft = {};
         this._swTouched = {};
         const current = this.getCurrentAcademicYear();
@@ -3909,10 +3898,9 @@ class SubstituteTeacherApp {
 
     async refreshSettlementWeeksCard({ force = false } = {}) {
         const card = document.getElementById('settlement-weeks-card');
-        if (!card) return;
+        if (!card || !isV2Enabled()) return;
         // L6：有未儲存修改時不重讀覆蓋（強制重試除外；讀取失敗狀態下沒有可保留的草稿）
         if (this._swDirty && !force && !this._swLoadFailed) return;
-        if (!this.settlementConfigStore) this.settlementConfigStore = this.createLocalSettlementConfigStore();
         const store = this.settlementConfigStore;
         const editable = !!store?.canEdit?.();
         const note = document.getElementById('sw-readonly-note');
@@ -3922,7 +3910,7 @@ class SubstituteTeacherApp {
 
         // M1：讀取成功前一律停用（含 V2 尚未裝上 Firestore store 的空窗期，此時不可用 local store 的空值）
         setDisabled(true);
-        if (isV2Enabled() && !store.isRemote) {
+        if (!store?.isRemote) {
             this._swLoadFailed = false;
             this.swMessage('載入週數設定中…');
             return;
@@ -4004,7 +3992,7 @@ class SubstituteTeacherApp {
 
     async saveSettlementWeeks() {
         const store = this.settlementConfigStore;
-        if (!store?.canEdit?.()) {
+        if (!store?.isRemote || !store.canEdit?.()) {
             this.showToast(store?.readonlyReason || '目前身份不可編輯', 'warning');
             return;
         }
