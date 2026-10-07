@@ -16,6 +16,7 @@ import { run as runPdfClear }   from './e2e-04-pdf-and-clear.mjs';
 import { run as runPartTime }   from './e2e-05-parttime.mjs';
 import { run as runSettleNums } from './e2e-06-settlement-numbers.mjs';
 import { run as runSettleWeeks } from './e2e-07-settlement-weeks.mjs';
+import { run as runV1NoWeeks } from './e2e-08-v1-no-weeks.mjs';
 
 const SUITES = [
     { name: '登入穩定度', run: runStability },
@@ -31,6 +32,7 @@ const SUITES = [
     { name: '月結算畫面數字（手算）', run: runSettleNums },
     // 07 開頭自行 seed 並清除 config/settlement，不依賴 06 的狀態。
     { name: '月結算上課週數設定／日曆帶入', run: runSettleWeeks },
+    { name: 'V1 不顯示週數設定', run: runV1NoWeeks },
 ];
 
 async function main() {
