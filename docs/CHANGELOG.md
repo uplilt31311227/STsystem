@@ -9,6 +9,20 @@ tags:
 
 ---
 
+## [2026-10-07] 月結算上課週數改設定頁逐月設定＋公開學校行事曆帶入；Firestore 規則 v2.8 上線正式站
+
+**起因**：`settlementCalculator.getWeeksInMonth()` 把週數寫死（1 月 2、2 月 3、7/8 月 0、其餘 4），原定時數與超鐘點門檻不準，暑假有紀錄時還會算出負時數（[[ISSUES_LOG]] 2026-10-07）。
+
+- **設定頁「月結算上課週數」**（`#settlement-weeks-card`）：學年度 × 8–7 月 12 格，可「從日曆帶入」後手改，儲存值才是結算依據；沒存值的月份沿用舊預設（向後相容）。V2 存 `schools/{id}/config/settlement`（`calendarId`／`calendarApiKey`／`weeksByYear`／`updatedAt`／`updatedBy`），V1 存 localStorage `substituteSystemData_settlementConfig`。director 與 section_chief 可編輯，一般教師不讀取也看不到。
+- **日曆帶入**（新模組 `src/js/modules/schoolCalendar.js`）：Calendar API v3 + API key 讀公開學校行事曆。學期＝「正式上課」（優先）／「開學日」／「開學典禮」到「休業式／結業式」；放假＝標題含放假／補假／停課／颱風假（不含寒假／暑假）；補課＝補行上班／補課，僅學期內計入、與放假同日時放假優先；週一至週日為一週，有上課日即算 1 週，歸入該週第一個上課日的月份；沒有學期覆蓋的月份不覆寫。真實行事曆 115-1：8 月 1、9 月 4、10 月 4、11 月 5、12 月 4、1 月 3 週（21 週、96 上課日），fixture `test/fixtures/school-calendar-115-1.json`。
+- **防護**：讀取設定失敗時停用編輯與儲存（避免空白覆蓋既有週數）；草稿切頁不被重讀覆蓋；瀏覽器快取到舊模組時提示 Ctrl+F5 而非 TypeError。
+- **API key**：Google Cloud 專案 `stsystem-9d5fe` 新建「STsystem Calendar key」，只允許 Calendar API，網站限制 `https://uplilt31311227.github.io/*`、`http://localhost:8000/*`。key 不進 repo，由使用者在設定頁輸入。
+- **Firestore 規則 v2.8 已部署正式站**：ruleset `4d39928b-c4ba-4184-a1fd-86bd23bdab5f`（2026-10-07T11:07Z），回滾點 v2.7 `08bbfa7d-ad35-4285-b82e-8acff8463449`（部署前核對與本地 v2.7 位元相同）。差異只在 `config/{docId}`：settlement 僅 approver 可讀、可 create／update（欄位白名單＋必填＋型別／大小＋`updatedBy` 須為本人 uid 或 email〔不分大小寫〕），組長不可刪；director 寫其他 config 不變。唯一副作用：一般教師不能再 list 整個 config 集合（目前無任何 client 這樣呼叫）。部署後比對線上規則與 repo `firestore.rules` 一致。
+
+**驗證**：`npm test` 全過（school-calendar 14/14、settlement 16/16）、`npm run check` 40/40；emulator 規則測試 `npm run test:rules-settlement` 11/11，另兩輪獨立 opus 驗收以探針比對 v2.7／v2.8 對 config/main 的所有操作結果一致；e2e-07 10/10、e2e-01 6/6、e2e-06 6/6。**未做**：真實日曆以真實 key 帶入（需使用者在設定頁貼 key 實測）；client 端兩項已知缺陷修正中斷未完成（見 [[ISSUES_LOG]]）；正式站 client（master）尚未取得此功能。
+
+---
+
 ## [2026-10-07] UI 清理收尾、兼課勾選登入實測、月結算數字以手算黃金資料驗證（僅本分支）
 
 三件 V2 待辦一次收掉，產品行為不變。

@@ -63,7 +63,9 @@ tags:
 
 要追加管理員或更新學校名稱，可用 `scripts/firestore-bootstrap-inhu.js`、gcloud REST API 或 Firebase Console 修改。
 
-### 1b. Firestore 安全規則（v2.2，已部署）
+### 1b. Firestore 安全規則（現行 v2.8，已部署）
+
+> **2026-10-07 現況**：線上 release ruleset `4d39928b-c4ba-4184-a1fd-86bd23bdab5f`（v2.8，config/settlement 開放 approver），回滾點 v2.7 `08bbfa7d-ad35-4285-b82e-8acff8463449`。以下 v2.2 段落為歷史紀錄。
 規則檔：[`firestore.rules`](../firestore.rules)（保留原 master 的 users/{uid} 規則，收緊 schools/{schoolId} 為角色判讀）
 
 **已部署**：線上 release ruleset `0ad89275-0df4-46c6-99c8-825a6cc94889`（建立於 2026-07-09T16:46Z），對應本地 `firestore.rules` 檔頭標示的 v2.2 三層角色版本（前一版 ruleset `05f9b203-10fb-4df0-bef3-ecfec905fe16`）。
