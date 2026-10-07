@@ -13,6 +13,8 @@ import { run as runAuth }       from './e2e-01-auth.mjs';
 import { run as runSubstitute } from './e2e-02-substitute-flow.mjs';
 import { run as runAdmin }      from './e2e-03-admin-flows.mjs';
 import { run as runPdfClear }   from './e2e-04-pdf-and-clear.mjs';
+import { run as runPartTime }   from './e2e-05-parttime.mjs';
+import { run as runSettleNums } from './e2e-06-settlement-numbers.mjs';
 
 const SUITES = [
     { name: '登入穩定度', run: runStability },
@@ -22,6 +24,10 @@ const SUITES = [
     //   03 會覆寫全校課表，04 最後一案會把紀錄與待審請求整個清空。
     { name: '課表匯入／月結算／學期切換', run: runAdmin },
     { name: 'PDF 輸出／清除所有資料', run: runPdfClear },
+    // 05、06 開頭各自重新 seed（再覆寫成自己的資料），不依賴前面 suite 的狀態，所以排在 04 清空之後；
+    // 06 會把課表與紀錄換成手算黃金資料，必須在最後。
+    { name: '兼課教師勾選', run: runPartTime },
+    { name: '月結算畫面數字（手算）', run: runSettleNums },
 ];
 
 async function main() {
