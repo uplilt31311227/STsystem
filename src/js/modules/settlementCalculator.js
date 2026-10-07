@@ -27,6 +27,10 @@ export class SettlementCalculator {
         // 每月預設上課週數
         this.defaultWeeksPerMonth = 4;
 
+        // 每月上課週數覆寫：{ "115": { "8": 1, "9": 4 } }（學年度 → 月份 → 週數）。
+        // 有值的月份用覆寫，沒有的月份沿用 getWeeksInMonth() 內的寫死預設（向後相容）。
+        this.weeksOverride = {};
+
         // 不扣時數的假別（公付假別由學校支付，調課為互換）
         // 支援中文和英文代碼
         this.noDeductLeaveTypes = [
@@ -89,12 +93,34 @@ export class SettlementCalculator {
     }
 
     /**
+     * 設定某學年度的每月上課週數覆寫（整份取代該學年度的舊覆寫）。
+     * 只接受 0–6 的整數，其餘（空、NaN、超出範圍）視為未設定，該月沿用預設。
+     * @param {number|string} year - 學年度（民國）
+     * @param {Object} map - { 月份: 週數 }
+     */
+    setWeeksOverride(year, map) {
+        const clean = {};
+        for (const [m, v] of Object.entries(map || {})) {
+            const n = typeof v === 'string' ? (v.trim() === '' ? NaN : Number(v)) : v;
+            if (Number.isInteger(n) && n >= 0 && n <= 6) clean[String(Number(m))] = n;
+        }
+        if (Object.keys(clean).length) this.weeksOverride[String(year)] = clean;
+        else delete this.weeksOverride[String(year)];
+    }
+
+    /**
      * 取得該月的上課週數
      * @param {number} year - 年份
      * @param {number} month - 月份
      * @returns {number} 上課週數
      */
     getWeeksInMonth(year, month) {
+        const override = this.weeksOverride[String(year)];
+        const key = String(Number(month));
+        if (override && Object.prototype.hasOwnProperty.call(override, key)) {
+            return override[key];
+        }
+
         // 這裡使用簡化的計算方式
         // 實際應用中可以根據學校行事曆調整
 

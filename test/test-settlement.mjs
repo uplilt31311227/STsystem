@@ -140,5 +140,40 @@ await suite.case('getDetailedSettlement：A 在 10 月的分類（手算）', ()
     eq(d.substituteCount, 0, 'A 沒有代過別人的課（g05 調課不計）');
 });
 
+await suite.case('週數覆寫：10 月改 5 週時，原定時數與超鐘點門檻依覆寫計算（A 6 節/週、D 21 節/週）', () => {
+    const c = calc();
+    c.setWeeksOverride(115, { 10: 5 });
+    const res = c.calculate(115, 10, buildGoldenSchedule(), [], roster);
+    // 手算：A 6×5=30、D 21×5=105；基本門檻 20×5=100；D 超鐘點 5
+    eq([row(res, '林彥廷').originalHours, row(res, '林彥廷').baseMonthlyHours], [30, 100], 'A 原定與門檻');
+    eq([row(res, '黃志偉').originalHours, row(res, '黃志偉').overtimeHours], [105, 5], 'D 原定與超鐘點');
+    // 其他學年度、其他月份不受影響
+    eq(c.getWeeksInMonth(114, 10), 4, '114 學年度 10 月沿用預設 4');
+    eq(c.getWeeksInMonth(115, 11), 4, '115 學年度 11 月沿用預設 4');
+    eq(c.getWeeksInMonth('115', '10'), 5, '字串年月也能命中覆寫');
+});
+
+await suite.case('週數覆寫：暑假 8 月設 1 週後不再算負時數；非法值（空、7、小數）視為未設定', () => {
+    const c = calc();
+    c.setWeeksOverride(115, { 8: 1, 7: '', 9: 7, 10: 2.5, 11: 'abc', 12: '0' });
+    eq(c.getWeeksInMonth(115, 8), 1, '8 月 1 週');
+    eq(c.getWeeksInMonth(115, 7), 0, '空字串 → 預設（7 月 0）');
+    eq(c.getWeeksInMonth(115, 9), 4, '7 超出 0–6 → 預設');
+    eq(c.getWeeksInMonth(115, 10), 4, '小數 → 預設');
+    eq(c.getWeeksInMonth(115, 11), 4, '非數字 → 預設');
+    eq(c.getWeeksInMonth(115, 12), 0, '"0" 為合法 0 週');
+    c.setWeeksOverride(115, {});
+    eq(c.getWeeksInMonth(115, 8), 0, '清空覆寫後回到預設');
+});
+
+await suite.case('無覆寫時結果與預設完全相同（深比較）', () => {
+    const a = run(115, 10, buildGoldenSchedule(), goldenRecordsForCalculator());
+    const c = calc();
+    c.setWeeksOverride(115, {});
+    c.setWeeksOverride(114, { 10: 5 });   // 其他學年度的覆寫不得外溢
+    const b = c.calculate(115, 10, buildGoldenSchedule(), goldenRecordsForCalculator(), roster);
+    eq(b, a, '結果一致');
+});
+
 suite.print();
 process.exit(suite.failed ? 1 : 0);
