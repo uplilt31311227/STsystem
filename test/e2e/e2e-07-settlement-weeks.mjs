@@ -147,6 +147,47 @@ export async function run(browser) {
             eq(await page.inputValue('#sw-calendar-id'), CAL_ID, '日曆 ID');
         });
 
+        await suite.case('M1：讀取週數設定失敗 → 輸入格／帶入／儲存鈕停用、顯示重試，直接呼叫儲存也不會寫入；重試成功後恢復', async () => {
+            await gotoTab(page, 'settings', 1500);
+            const before = (await getDoc(CFG_PATH)).data;
+            const r = await page.evaluate(async () => {
+                const app = window.app;
+                const store = app.settlementConfigStore;
+                const origLoad = store.load, origSave = store.save;
+                let saveCalls = 0;
+                store.save = async (...a) => { saveCalls++; return origSave(...a); };
+                store.load = () => Promise.reject(new Error('simulated offline'));
+                await app.refreshSettlementWeeksCard({ force: true });
+                const disabled = [...document.querySelectorAll('.sw-week-input, #sw-calendar-id, #sw-api-key, #sw-import-btn, #sw-save-btn')].map(e => e.disabled);
+                const retryVisible = !document.getElementById('sw-retry-btn').classList.contains('hidden');
+                const msg = document.getElementById('sw-message').textContent;
+                await app.saveSettlementWeeks();
+                const savedWhileFailed = saveCalls;
+                store.load = origLoad;
+                document.getElementById('sw-retry-btn').click();
+                await new Promise(r2 => setTimeout(r2, 2500));
+                const after = [...document.querySelectorAll('.sw-week-input, #sw-save-btn')].map(e => e.disabled);
+                const retryHidden = document.getElementById('sw-retry-btn').classList.contains('hidden');
+                const ten = document.querySelector('.sw-week-input[data-month="10"]').value;
+                store.save = origSave;
+                return { disabled, retryVisible, msg, savedWhileFailed, afterEnabled: after.every(d => !d), retryHidden, ten };
+            });
+            eq(r.disabled.every(Boolean), true, '讀取失敗時全部停用');
+            eq(r.retryVisible, true, '顯示重試鈕');
+            ok(/讀不到週數設定/.test(r.msg), `訊息：${r.msg}`);
+            eq(r.savedWhileFailed, 0, '讀取失敗時呼叫儲存不會寫入');
+            eq([r.afterEnabled, r.retryHidden, r.ten], [true, true, '5'], '重試成功後恢復並帶回已存值');
+            eq((await getDoc(CFG_PATH)).data.weeksByYear, before.weeksByYear, 'Firestore 週數未被清掉');
+        });
+
+        await suite.case('L6：有未儲存修改時，再點設定頁籤不重讀覆蓋', async () => {
+            await page.fill('.sw-week-input[data-month="3"]', '3');
+            await gotoTab(page, 'settings', 2500);
+            eq(await page.inputValue('.sw-week-input[data-month="3"]'), '3', '草稿仍在');
+            await page.evaluate(() => window.app.refreshSettlementWeeksCard({ force: true }));
+            eq(await page.inputValue('.sw-week-input[data-month="3"]'), '', '強制重讀後回到已存值');
+        });
+
         await suite.case('月結算：10 月原定時數 = 每週節數 × 5（已存值）、9 月 × 4、8 月 × 1', async () => {
             for (const [month, weeks] of [[10, 5], [9, 4], [8, 1]]) {
                 const { rows, weekly } = await generateAndRead(page, 115, month);
@@ -187,10 +228,13 @@ export async function run(browser) {
                 disabled: [...document.querySelectorAll('.sw-week-input, #sw-calendar-id, #sw-api-key, #sw-import-btn, #sw-save-btn')].map(e => e.disabled),
                 note: document.getElementById('sw-readonly-note')?.textContent || '',
                 visible: !!document.getElementById('settlement-weeks-card')?.offsetParent,
+                apiKey: document.getElementById('sw-api-key')?.value || '',
             }));
             eq(st.disabled.length, 16, '12 格 + 日曆 ID + key + 2 按鈕');
             eq(st.disabled.every(Boolean), true, '全部停用');
             ok(/僅教務主任與教學組長/.test(st.note), `唯讀說明：${st.note}`);
+            eq(st.apiKey, '', '教師端不應拿到日曆 API key');
+            eq(realErrors(teacher.page), [], '教師端不應有 console 錯誤（含 permission-denied）');
         });
     } finally {
         await teacher.page.close();
