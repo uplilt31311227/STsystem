@@ -869,7 +869,7 @@ body.v2-locked #v2-auth-gate {
 .swap-preview h4 { margin: 0 0 10px 0; color: var(--c-info-600); }
 .swap-validation-error { color: var(--c-danger-600); padding: 10px; background: var(--c-danger-50); border-radius: var(--r-sm); margin-top: 10px; }
 
-.subject-domain-add-row { margin-top: var(--sp-2); display: flex; gap: 0.4rem; }
+.subject-domain-actions { margin-top: var(--sp-2); display: flex; gap: 0.4rem; }
 #clear-local-data-btn { margin-top: 0.4rem; }
 
 /* 週彙整 modal */
