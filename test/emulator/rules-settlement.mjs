@@ -81,6 +81,9 @@ await suite.case('L1：client 實際整份覆寫 payload（email 或 uid 作 upd
     allowed(await setDoc(CFG, payload('t02@alpha.demo.test'), { idToken: chief.idToken }), '組長 email');
     allowed(await setDoc(CFG, payload(chief.localId || chief.uid), { idToken: chief.idToken }), '組長 uid');
     allowed(await setDoc(CFG, payload('t01@alpha.demo.test'), { idToken: dir.idToken }), '主任 email');
+    // updatedBy 與 token email 比對不分大小寫（client 寫入 email.toLowerCase()，token 可能含大寫）
+    allowed(await setDoc(CFG, payload('T02@Alpha.Demo.Test'), { idToken: chief.idToken }), '組長 email 大小寫不同');
+    denied(await setDoc(CFG, payload('T01@ALPHA.DEMO.TEST'), { idToken: chief.idToken }), '組長冒名主任（大寫）');
     denied(await setDoc(CFG, valid({ calendarApiKey: 9 }), { idToken: dir.idToken }), '主任也不能寫錯型別');
 });
 await suite.case('director 寫 config/settlement → ALLOW', async () => {

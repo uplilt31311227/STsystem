@@ -407,7 +407,7 @@ service cloud.firestore {
           && request.resource.data.updatedBy is string
           && (request.resource.data.updatedBy == request.auth.uid
               || ('email' in request.auth.token
-                  && request.resource.data.updatedBy == request.auth.token.email));
+                  && request.resource.data.updatedBy.lower() == request.auth.token.email.lower()));
         // Stage 4（多租戶開通，§4.2-4.4）：platformAdmin 核准學校申請時，代為建立全新學校的
         // config/main（initialAdminEmails=[申請者 email]）。僅開放 create——Firestore 的
         // create 語意只在文件「尚不存在」時成立，這正是本設計依賴的 schoolId 衝突防線：
