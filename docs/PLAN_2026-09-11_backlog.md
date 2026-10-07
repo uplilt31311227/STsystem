@@ -11,7 +11,7 @@
 | C | 在本機 emulator 以該 CSV 實跑「開 115-1 學期 → 匯入 → 驗證」 | ✅ 2026-09-10 已實跑 5/5（含舊學期未被覆寫） |
 | D | 正式站實作：開 115-1 學期 → 匯入課表 → 驗證雲端 `schools/inhu/schedules/115-1` | ⏸ 仍未執行（2026-09-20 覆核）。等使用者在瀏覽器完成 Google 登入 |
 | E | 小修集合：e2e-02 flaky、原任課教師下拉鎖定本人、教師管理頁籤依角色隱藏 | ✅ 三項完成並 commit（`5883fcf`/`1e5954b`，2026-09-20）。e2e-02「推薦清單標示同領域」斷言過時一案亦已修（2026-09-20，實跑 5/5） |
-| F | UI 重規劃 Stage 6（清理：Tier C 死碼、Tier A alias、inline style 收 utility class） | 🔄 Tier A alias 已清（`776e68c`）。**未做**：Tier C 死碼、inline style（`index.html` 51 處，目標個位數） |
+| F | UI 重規劃 Stage 6（清理：Tier C 死碼、Tier A alias、inline style 收 utility class） | ✅ 2026-10-07 完成：Tier A alias（`776e68c`）、CSS Tier C 死碼刪除、`index.html` inline style 51→5（`fe2b9a1`…`730b7ee`）。JS 內 inline style 與疑似死函式未處理 |
 | G | App Check enforcement 決策文件 ＋ 全校硬重整公告文稿 | ✅ 文件完成。**enforcement 本身仍未開啟**，等使用者決策 |
 
 ## 覆核（2026-09-20）
