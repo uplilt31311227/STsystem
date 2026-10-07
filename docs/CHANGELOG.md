@@ -9,6 +9,18 @@ tags:
 
 ---
 
+## [2026-10-07] UI 清理收尾、兼課勾選登入實測、月結算數字以手算黃金資料驗證（僅本分支）
+
+三件 V2 待辦一次收掉，產品行為不變。
+
+- **UI Stage 6 清理**（`fe2b9a1`、`ccd3076`、`0146b13`、`730b7ee`）：刪除 CSS 零引用死碼（`.guide-section`／`.guide-note`／`.tab-locked`／`.description`／`.course-details`／`.backup-restore-*`／`.editor-schedule-stats` 等，以及 `.notice-card` 舊名 alias，HTML 改用 `.card-notice`）；`index.html` 的 inline style 由 51 處收斂為 5 處，剩下的全是 JS 會切換的 `display:none` 初始值。新增 utility（`.m-0 .mt-2 .mt-3 .mb-0 .mb-4 .flex-1 .w-full .hint-flush .required-mark .label-hint`，帶 `!important` 以維持原 inline 的優先權）與數個元件 class。CSS 快取版號升為 `2.6.1`。JS 內的 inline style 與疑似死函式本次未處理。
+- **兼課勾選登入實測**：新增 `test/e2e/e2e-05-parttime.mjs`，以 director 登入 emulator，實際點擊教師管理的兼課勾選，驗證 Firestore `partTime` 寫入／重整後保留／推薦清單排到最後一層並帶「兼課」標記／取消後回 false；另驗不在課表的教師勾選為停用、組長看不到教師管理頁籤。
+- **月結算數字驗證**：新增手算黃金資料 `test/fixtures/settlement-golden.mjs`（期望值為寫死字面值，檔頭附逐人算式）、單元測試 `test/test-settlement.mjs`（已加入 `npm test`），以及畫面層 `test/e2e/e2e-06`（從 `#settlement-tbody` 讀數字比對，產生報表前先清空表格，相鄰月份期望值互不相同，避免讀到舊表也通過）。V1 與 V2 共用同一個月結算頁籤與 `SettlementCalculator`。規則疑點見 [[ISSUES_LOG]] 2026-10-07。
+
+**驗證**：`npm run check` 39/39、`npm test` 全通過（含 test-settlement）；視覺回歸由獨立驗收以改動前的分支為基準，8 個頁籤 × 1280/375 × 一般與 `.hidden` 全開、加 6 個 modal，共 44 組截圖位元相同；`npm run test:e2e` 整組 40/40（修正測試缺陷前）；修正後 e2e-05 6/6、e2e-06 6/6 單跑通過，並以注入查詢失敗證明 e2e-06 會正確失敗。**未做**：修正後的 e2e-05 只成功跑過一次，未重複驗證穩定度（emulator 查詢慢，等待上限已放寬到 90 秒）。
+
+---
+
 ## [2026-10-07] 正式站（master）上線：多節代課班級聯拆分、五層推薦加兼課
 
 從本分支挑出兩項功能 cherry-pick 進 `master`，其餘（原任課教師鎖定、教師管理頁籤 director 限定、CSS 收尾）仍只在本分支。
