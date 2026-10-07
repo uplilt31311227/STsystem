@@ -79,6 +79,12 @@ export function eventDays(ev) {
  * 找出學期範圍。
  * @returns {{ semesters: Array<{start:string,end:string}>, unpairedStarts: string[] }}
  */
+function startTier(title) {
+    if (/正式上課/.test(title)) return 0;
+    if (/開學日/.test(title)) return 1;
+    return 2;   // 開學典禮
+}
+
 export function findSemesterRanges(events) {
     const starts = [];
     const ends = [];
@@ -86,19 +92,22 @@ export function findSemesterRanges(events) {
         const title = ev.summary || '';
         const days = eventDays(ev);
         if (!days.length) continue;
-        if (SEMESTER_START_RE.test(title)) starts.push(days[0]);
+        if (SEMESTER_START_RE.test(title)) starts.push({ day: days[0], tier: startTier(title) });
         if (SEMESTER_END_RE.test(title))   ends.push(days[days.length - 1]);
     }
-    starts.sort();
+    starts.sort((a, b) => a.day.localeCompare(b.day));
     ends.sort();
+    // 同一個結束標記對到多個開始標記時：優先序「正式上課」＞「開學日」＞「開學典禮」，
+    // 同優先序取最早。避免開學前一個工作日辦開學典禮時，學期被提早一天而多算一週。
     const byEnd = new Map();
     const unpairedStarts = [];
     for (const s of starts) {
-        const e = ends.find(x => x >= s);
-        if (!e) { unpairedStarts.push(s); continue; }
-        if (!byEnd.has(e) || s < byEnd.get(e)) byEnd.set(e, s);
+        const e = ends.find(x => x >= s.day);
+        if (!e) { unpairedStarts.push(s.day); continue; }
+        const cur = byEnd.get(e);
+        if (!cur || s.tier < cur.tier || (s.tier === cur.tier && s.day < cur.day)) byEnd.set(e, s);
     }
-    const semesters = [...byEnd.entries()].map(([end, start]) => ({ start, end })).sort((a, b) => a.start.localeCompare(b.start));
+    const semesters = [...byEnd.entries()].map(([end, s]) => ({ start: s.day, end })).sort((a, b) => a.start.localeCompare(b.start));
     return { semesters, unpairedStarts };
 }
 
@@ -128,7 +137,7 @@ export function computeWeeksByMonth(events, rocYear) {
 
     const { semesters, unpairedStarts } = findSemesterRanges(events);
     const holidays = collectDays(events, HOLIDAY_RE, NOT_HOLIDAY_RE);
-    const makeups  = collectDays(events, MAKEUP_RE);
+    const rawMakeups = collectDays(events, MAKEUP_RE);
 
     const covered = new Set();
     const schoolDays = new Set();
@@ -141,6 +150,10 @@ export function computeWeeksByMonth(events, rocYear) {
             if (dow >= 1 && dow <= 5 && !holidays.has(ymd)) schoolDays.add(ymd);
         }
     }
+    // 補課只在學期範圍內才算上課日（暑假等學期外的「補課」事件不計）；
+    // 與放假同一天（含標題同時含放假與補課，該日已列入 holidays）以放假優先。
+    const inSemester = (ymd) => semesters.some(sem => ymd >= sem.start && ymd <= sem.end);
+    const makeups = new Set([...rawMakeups].filter(ymd => !holidays.has(ymd) && inSemester(ymd)));
     for (const ymd of makeups) {
         if (!inWindow(ymd)) continue;
         schoolDays.add(ymd);
