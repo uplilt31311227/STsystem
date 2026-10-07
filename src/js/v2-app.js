@@ -2945,6 +2945,7 @@ function installSettlementConfigStore() {
     if (!window.app) return;
     window.app.settlementConfigStore = {
         canEdit: () => roleSvc.isApprover(),
+        isRemote: true,
         readonlyReason: '僅教務主任與教學組長可編輯月結算上課週數；目前顯示的是已儲存的設定（唯讀）。',
         load: () => {
             // L5：舊模組被快取時函式可能不存在，提示強制重新整理並中止（不丟 TypeError）
@@ -4804,7 +4805,7 @@ async function bootstrap() {
             if (roleSvc.canManageRoster()) {
                 await safeBootstrapStep('教師管理', renderTeachersAdminTab);
             }
-            await safeBootstrapStep('月結算週數設定', () => window.app?.refreshSettlementWeeksCard?.());
+            await safeBootstrapStep('月結算週數設定', () => window.app?.refreshSettlementWeeksCard?.({ force: true }));
             if (roleSvc.isDirector()) {
                 await safeBootstrapStep('學期管理', renderSemesterAdminTab);
                 await safeBootstrapStep('資料封存', renderArchiveAdminTab);

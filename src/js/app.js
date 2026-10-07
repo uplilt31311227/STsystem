@@ -15,6 +15,7 @@ import { RecommendationEngine } from './modules/recommendationEngine.js';
 import { PDFGenerator } from './modules/pdfGenerator.js';
 import { SettlementCalculator } from './modules/settlementCalculator.js';
 import { importWeeksFromCalendar, calendarErrorMessage } from './modules/schoolCalendar.js';
+import { isV2Enabled } from './modules/v2/envDetector.js';
 
 // 匯入 Firebase 相關模組
 import {
@@ -3790,8 +3791,8 @@ class SubstituteTeacherApp {
     }
 
     /* ===== 月結算上課週數設定（設定頁） =====
-     * 儲存層可抽換：預設 V1 localStorage；V2 由 v2-app.js 換成 Firestore config/settlement
-     * （director 與 section_chief 可寫、僅此二者可讀）。store 介面：{ canEdit(), readonlyReason, load(), save(cfg) }。
+     * 只在 V2 啟用：儲存層由 v2-app.js 裝上 Firestore config/settlement store
+     * （director 與 section_chief 可寫、僅此二者可讀）；V1 不顯示、不讀寫。store 介面：{ canEdit(), readonlyReason, load(), save(cfg) }。
      * cfg 形狀：{ calendarId, calendarApiKey, weeksByYear: { "115": { "8": 1, ... } } }。 */
 
     createLocalSettlementConfigStore() {
@@ -3847,6 +3848,7 @@ class SubstituteTeacherApp {
         const yearSel = document.getElementById('sw-year');
         if (!yearSel) return;
         this._settlementWeeksDraft = {};
+        this._swTouched = {};
         const current = this.getCurrentAcademicYear();
         yearSel.innerHTML = [current + 1, current, current - 1, current - 2]
             .map(y => `<option value="${y}"${y === current ? ' selected' : ''}>${y}</option>`).join('');
@@ -3862,7 +3864,12 @@ class SubstituteTeacherApp {
         document.getElementById('sw-save-btn').addEventListener('click', () => this.saveSettlementWeeks());
         document.getElementById('sw-retry-btn')?.addEventListener('click', () => this.refreshSettlementWeeksCard({ force: true }));
         // L6：任何輸入（含從日曆帶入）都視為有未儲存修改，之後再點設定頁籤不重讀覆蓋
-        document.getElementById('settlement-weeks-card')?.addEventListener('input', () => { this._swDirty = true; });
+        // L1：只記錄使用者實際動過的「學年度＋月份」，儲存時只覆寫這些月份
+        document.getElementById('settlement-weeks-card')?.addEventListener('input', (e) => {
+            this._swDirty = true;
+            const m = e.target?.dataset?.month;
+            if (e.target?.classList?.contains('sw-week-input') && m) this.markSettlementWeekTouched(this._swShownYear, m);
+        });
         document.querySelector('.tab-btn[data-tab="settings"]')?.addEventListener('click', () => this.refreshSettlementWeeksCard());
         this.refreshSettlementWeeksCard();
     }
@@ -3874,18 +3881,26 @@ class SubstituteTeacherApp {
         el.classList.toggle('hidden', !text);
     }
 
-    /** 把目前畫面上的 12 格暫存到草稿（切換學年度前呼叫，避免未儲存的修改被吃掉） */
+    markSettlementWeekTouched(year, month) {
+        const y = String(year);
+        (this._swTouched[y] ||= new Set()).add(String(month));
+    }
+
+    /** 把畫面上「使用者動過的月份」暫存到草稿（切換學年度前呼叫）。空字串＝刪除該月設定；沒動過的月份不進草稿。 */
     stashSettlementWeekInputs(year) {
-        const map = {};
+        const y = String(year);
+        const touched = this._swTouched[y];
+        if (!touched || !touched.size) return;
+        const map = { ...(this._settlementWeeksDraft[y] || {}) };
         document.querySelectorAll('.sw-week-input').forEach(inp => {
-            if (inp.value.trim() !== '') map[inp.dataset.month] = inp.value.trim();
+            if (touched.has(inp.dataset.month)) map[inp.dataset.month] = inp.value.trim();
         });
-        this._settlementWeeksDraft[String(year)] = map;
+        this._settlementWeeksDraft[y] = map;
     }
 
     renderSettlementWeekInputs() {
         const year = this._swShownYear;
-        const map = this._settlementWeeksDraft[year] || this._settlementConfig?.weeksByYear?.[year] || {};
+        const map = { ...(this._settlementConfig?.weeksByYear?.[year] || {}), ...(this._settlementWeeksDraft[year] || {}) };
         document.querySelectorAll('.sw-week-input').forEach(inp => {
             const v = map[inp.dataset.month];
             inp.value = (v === undefined || v === null) ? '' : String(v);
@@ -3899,11 +3914,19 @@ class SubstituteTeacherApp {
         if (this._swDirty && !force && !this._swLoadFailed) return;
         if (!this.settlementConfigStore) this.settlementConfigStore = this.createLocalSettlementConfigStore();
         const store = this.settlementConfigStore;
-        const editable = !!store.canEdit?.();
+        const editable = !!store?.canEdit?.();
         const note = document.getElementById('sw-readonly-note');
         const retryBtn = document.getElementById('sw-retry-btn');
         const setDisabled = (v) => card.querySelectorAll('.sw-week-input, #sw-calendar-id, #sw-api-key, #sw-import-btn, #sw-save-btn')
             .forEach(el => { el.disabled = v; });
+
+        // M1：讀取成功前一律停用（含 V2 尚未裝上 Firestore store 的空窗期，此時不可用 local store 的空值）
+        setDisabled(true);
+        if (isV2Enabled() && !store.isRemote) {
+            this._swLoadFailed = false;
+            this.swMessage('載入週數設定中…');
+            return;
+        }
 
         let loadFailed = false;
         if (!editable) {
@@ -3921,6 +3944,7 @@ class SubstituteTeacherApp {
         this._swLoadFailed = loadFailed;
         this._swDirty = false;
         this._settlementWeeksDraft = {};
+        this._swTouched = {};
         document.getElementById('sw-calendar-id').value = this._settlementConfig.calendarId;
         document.getElementById('sw-api-key').value = this._settlementConfig.calendarApiKey;
         this.renderSettlementWeekInputs();
@@ -3959,7 +3983,10 @@ class SubstituteTeacherApp {
             }
             document.querySelectorAll('.sw-week-input').forEach(inp => {
                 const w = r.weeks[Number(inp.dataset.month)];
-                if (w !== undefined) inp.value = String(w);
+                if (w !== undefined) {
+                    inp.value = String(w);
+                    this.markSettlementWeekTouched(this._swShownYear, inp.dataset.month);
+                }
             });
             const order = [8, 9, 10, 11, 12, 1, 2, 3, 4, 5, 6, 7];
             const got = order.filter(m => m in r.weeks).map(m => `${m} 月 ${r.weeks[m]} 週`).join('、');
@@ -3989,6 +4016,7 @@ class SubstituteTeacherApp {
         // 驗證：只接受 0–6 整數
         for (const [year, map] of Object.entries(this._settlementWeeksDraft)) {
             for (const [m, v] of Object.entries(map)) {
+                if (v === '') continue;
                 const n = Number(v);
                 if (!Number.isInteger(n) || n < 0 || n > 6) {
                     this.showToast(`${year} 學年度 ${m} 月的週數「${v}」不合法，請填 0–6 的整數`, 'warning', 5000);
@@ -4001,10 +4029,13 @@ class SubstituteTeacherApp {
             btn.disabled = true;
             const cfg = await this.loadSettlementConfig();
             const weeksByYear = { ...cfg.weeksByYear };
+            // L1：以儲存前重讀的伺服器資料為底，只覆寫草稿中動過的月份；空字串只刪該月
             for (const [year, map] of Object.entries(this._settlementWeeksDraft)) {
-                const clean = {};
-                for (const [m, v] of Object.entries(map)) clean[m] = Number(v);
-                if (Object.keys(clean).length) weeksByYear[year] = clean; else delete weeksByYear[year];
+                const merged = { ...(weeksByYear[year] || {}) };
+                for (const [m, v] of Object.entries(map)) {
+                    if (v === '') delete merged[m]; else merged[m] = Number(v);
+                }
+                if (Object.keys(merged).length) weeksByYear[year] = merged; else delete weeksByYear[year];
             }
             await store.save({
                 calendarId: document.getElementById('sw-calendar-id').value.trim(),
