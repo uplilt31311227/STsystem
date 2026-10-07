@@ -19,10 +19,10 @@
     <!-- html2canvas - HTML 轉圖片（用於 PDF 中文支援） -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 
-    <link rel="stylesheet" href="src/css/tokens.css?v=2.6.1">
-    <link rel="stylesheet" href="src/css/base.css?v=2.6.1">
-    <link rel="stylesheet" href="src/css/components.css?v=2.6.1">
-    <link rel="stylesheet" href="src/css/features.css?v=2.6.1">
+    <link rel="stylesheet" href="src/css/tokens.css?v=2.6.2">
+    <link rel="stylesheet" href="src/css/base.css?v=2.6.2">
+    <link rel="stylesheet" href="src/css/components.css?v=2.6.2">
+    <link rel="stylesheet" href="src/css/features.css?v=2.6.2">
 </head>
 <body>
     <div class="app-container">
@@ -688,6 +688,48 @@
                     </div>
                 </div>
 
+                <!-- 月結算上課週數：逐月設定、可由公開 Google 行事曆帶入。
+                     V1 存 localStorage；V2 存 config/settlement，僅 director 可改（其他角色唯讀）。
+                     內容由 app.js renderSettlementWeeksCard() 填值。 -->
+                <div class="card v2-approver-only" id="settlement-weeks-card">
+                    <h3>月結算上課週數</h3>
+                    <p class="hint">月結算的「原定時數」與超鐘點門檻 = 每週節數（或 20）× 該月週數。未填的月份沿用系統預設（1 月 2、2 月 3、7／8 月 0、其餘 4）。可由公開的 Google 學校行事曆帶入後再手動調整，儲存後的值才是結算依據。</p>
+                    <div class="form-group form-group-inline">
+                        <label for="sw-year">學年度</label>
+                        <select id="sw-year"></select>
+                    </div>
+                    <div class="sw-month-grid" id="sw-month-grid">
+                        <label class="sw-month"><span>8 月</span><input type="number" class="sw-week-input" data-month="8" min="0" max="6" step="1" inputmode="numeric" placeholder="預設"></label>
+                        <label class="sw-month"><span>9 月</span><input type="number" class="sw-week-input" data-month="9" min="0" max="6" step="1" inputmode="numeric" placeholder="預設"></label>
+                        <label class="sw-month"><span>10 月</span><input type="number" class="sw-week-input" data-month="10" min="0" max="6" step="1" inputmode="numeric" placeholder="預設"></label>
+                        <label class="sw-month"><span>11 月</span><input type="number" class="sw-week-input" data-month="11" min="0" max="6" step="1" inputmode="numeric" placeholder="預設"></label>
+                        <label class="sw-month"><span>12 月</span><input type="number" class="sw-week-input" data-month="12" min="0" max="6" step="1" inputmode="numeric" placeholder="預設"></label>
+                        <label class="sw-month"><span>1 月</span><input type="number" class="sw-week-input" data-month="1" min="0" max="6" step="1" inputmode="numeric" placeholder="預設"></label>
+                        <label class="sw-month"><span>2 月</span><input type="number" class="sw-week-input" data-month="2" min="0" max="6" step="1" inputmode="numeric" placeholder="預設"></label>
+                        <label class="sw-month"><span>3 月</span><input type="number" class="sw-week-input" data-month="3" min="0" max="6" step="1" inputmode="numeric" placeholder="預設"></label>
+                        <label class="sw-month"><span>4 月</span><input type="number" class="sw-week-input" data-month="4" min="0" max="6" step="1" inputmode="numeric" placeholder="預設"></label>
+                        <label class="sw-month"><span>5 月</span><input type="number" class="sw-week-input" data-month="5" min="0" max="6" step="1" inputmode="numeric" placeholder="預設"></label>
+                        <label class="sw-month"><span>6 月</span><input type="number" class="sw-week-input" data-month="6" min="0" max="6" step="1" inputmode="numeric" placeholder="預設"></label>
+                        <label class="sw-month"><span>7 月</span><input type="number" class="sw-week-input" data-month="7" min="0" max="6" step="1" inputmode="numeric" placeholder="預設"></label>
+                    </div>
+                    <div class="form-row mt-3">
+                        <div class="form-group flex-1">
+                            <label for="sw-calendar-id">日曆 ID</label>
+                            <input type="text" id="sw-calendar-id" placeholder="例如 xxxx@group.calendar.google.com" autocomplete="off">
+                        </div>
+                        <div class="form-group flex-1">
+                            <label for="sw-api-key">API key</label>
+                            <input type="password" id="sw-api-key" placeholder="Google Calendar API key" autocomplete="off">
+                        </div>
+                    </div>
+                    <div class="sw-actions">
+                        <button type="button" class="btn btn-secondary btn-sm" id="sw-import-btn">從日曆帶入</button>
+                        <button type="button" class="btn btn-primary btn-sm" id="sw-save-btn">儲存</button>
+                    </div>
+                    <p class="hint sw-message hidden" id="sw-message"></p>
+                    <p class="hint sw-readonly-note hidden" id="sw-readonly-note"></p>
+                </div>
+
                 <div class="card v2-approver-only">
                     <h3>科目領域對應表</h3>
                     <p class="hint">匯入課表時自動擷取「科目→領域」對應；課表編輯選擇科目時會據此自動帶出領域。可在此手動增修。一個科目可對應多個領域（編輯課程時預設帶第一個）。</p>
@@ -971,8 +1013,8 @@
          Firebase <script> 標籤——比照既有 Auth/Firestore SDK 的載入方式，見該檔
          initializeFirebase()、RECAPTCHA_V3_SITE_KEY 常數與 docs/STAGE4-DEPLOY.md
          「App Check 啟用步驟」。 -->
-    <script type="module" src="src/js/app.js?v=1.13.8"></script>
+    <script type="module" src="src/js/app.js?v=1.14.0"></script>
     <!-- V2 權限系統（?v2=1 或預覽站才啟用；對穩定版無影響） -->
-    <script type="module" src="src/js/v2-app.js?v=0.1.11"></script>
+    <script type="module" src="src/js/v2-app.js?v=0.1.12"></script>
 </body>
 </html>

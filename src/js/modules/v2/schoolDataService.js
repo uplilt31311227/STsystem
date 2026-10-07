@@ -106,6 +106,24 @@ export async function upsertConfig(patch) {
 }
 
 /**
+ * 月結算設定（config/settlement）：{ calendarId, calendarApiKey, weeksByYear, updatedAt, updatedBy }。
+ * 規則為「成員可讀、director 可寫」（沿用 config/{docId} 既有規則，未新增規則）。
+ * 整份覆寫（不 merge），由呼叫端先讀後改，確保清空的月份真的被移除。
+ */
+export async function getSettlementConfig() {
+    const fs   = await getV2Firestore();
+    const ref  = fs.doc(fs.db, SCHEMA_PATHS.settlementConfig());
+    const snap = await fs.getDoc(ref);
+    return snap.exists() ? snap.data() : null;
+}
+
+export async function saveSettlementConfig({ calendarId = '', calendarApiKey = '', weeksByYear = {} }, updatedBy = null) {
+    const fs  = await getV2Firestore();
+    const ref = fs.doc(fs.db, SCHEMA_PATHS.settlementConfig());
+    await fs.setDoc(ref, { calendarId, calendarApiKey, weeksByYear, updatedAt: new Date().toISOString(), updatedBy });
+}
+
+/**
  * 驗收修復（中 3）：訂閱 config/main，供 v2-app.js 偵測「別的裝置/分頁的 director 已切換
  * 學期」並提示使用者重新整理。本機所有訂閱（待辦／全校紀錄／課表）都綁死在 bootstrap 當時
  * 讀到的 semesterId，沒有這條訂閱，切換學期後其他仍開著頁面的使用者不會知道自己看到的是
