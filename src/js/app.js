@@ -14,6 +14,7 @@ import { ScheduleParser } from './modules/scheduleParser.js';
 import { RecommendationEngine } from './modules/recommendationEngine.js';
 import { PDFGenerator } from './modules/pdfGenerator.js';
 import { SettlementCalculator } from './modules/settlementCalculator.js';
+import { importWeeksFromCalendar, calendarErrorMessage } from './modules/schoolCalendar.js';
 
 // 匯入 Firebase 相關模組
 import {
@@ -3784,6 +3785,189 @@ class SubstituteTeacherApp {
         document.getElementById('show-changed-only').addEventListener('change', (e) => {
             this.filterSettlementTable(e.target.checked);
         });
+
+        this.bindSettlementWeeksEvents();
+    }
+
+    /* ===== 月結算上課週數設定（設定頁） =====
+     * 儲存層可抽換：預設 V1 localStorage；V2 由 v2-app.js 換成 Firestore config/settlement
+     * （僅 director 可寫）。store 介面：{ canEdit(), readonlyReason, load(), save(cfg) }。
+     * cfg 形狀：{ calendarId, calendarApiKey, weeksByYear: { "115": { "8": 1, ... } } }。 */
+
+    createLocalSettlementConfigStore() {
+        const key = () => `${this.getLocalStorageKey()}_settlementConfig`;
+        return {
+            canEdit: () => true,
+            readonlyReason: '',
+            load: async () => {
+                try { return JSON.parse(localStorage.getItem(key()) || 'null'); } catch (e) { return null; }
+            },
+            save: async (cfg) => { localStorage.setItem(key(), JSON.stringify(cfg)); },
+        };
+    }
+
+    async loadSettlementConfig() {
+        if (!this.settlementConfigStore) this.settlementConfigStore = this.createLocalSettlementConfigStore();
+        const raw = await this.settlementConfigStore.load();
+        return {
+            calendarId: raw?.calendarId || '',
+            calendarApiKey: raw?.calendarApiKey || '',
+            weeksByYear: raw?.weeksByYear && typeof raw.weeksByYear === 'object' ? raw.weeksByYear : {},
+        };
+    }
+
+    /** 產生月結算前套用已存的週數覆寫；讀取失敗直接拋出（金額計算不可悄悄退回預設）。 */
+    async applySettlementWeeksOverride(year) {
+        const cfg = await this.loadSettlementConfig();
+        this.settlementCalculator.setWeeksOverride(year, cfg.weeksByYear[String(year)] || {});
+    }
+
+    bindSettlementWeeksEvents() {
+        const yearSel = document.getElementById('sw-year');
+        if (!yearSel) return;
+        this._settlementWeeksDraft = {};
+        const current = this.getCurrentAcademicYear();
+        yearSel.innerHTML = [current + 1, current, current - 1, current - 2]
+            .map(y => `<option value="${y}"${y === current ? ' selected' : ''}>${y}</option>`).join('');
+        yearSel.value = String(current);
+        this._swShownYear = String(current);
+
+        yearSel.addEventListener('change', () => {
+            this.stashSettlementWeekInputs(this._swShownYear);
+            this._swShownYear = yearSel.value;
+            this.renderSettlementWeekInputs();
+        });
+        document.getElementById('sw-import-btn').addEventListener('click', () => this.importSettlementWeeksFromCalendar());
+        document.getElementById('sw-save-btn').addEventListener('click', () => this.saveSettlementWeeks());
+        document.querySelector('.tab-btn[data-tab="settings"]')?.addEventListener('click', () => this.refreshSettlementWeeksCard());
+        this.refreshSettlementWeeksCard();
+    }
+
+    swMessage(text) {
+        const el = document.getElementById('sw-message');
+        if (!el) return;
+        el.textContent = text || '';
+        el.classList.toggle('hidden', !text);
+    }
+
+    /** 把目前畫面上的 12 格暫存到草稿（切換學年度前呼叫，避免未儲存的修改被吃掉） */
+    stashSettlementWeekInputs(year) {
+        const map = {};
+        document.querySelectorAll('.sw-week-input').forEach(inp => {
+            if (inp.value.trim() !== '') map[inp.dataset.month] = inp.value.trim();
+        });
+        this._settlementWeeksDraft[String(year)] = map;
+    }
+
+    renderSettlementWeekInputs() {
+        const year = this._swShownYear;
+        const map = this._settlementWeeksDraft[year] || this._settlementConfig?.weeksByYear?.[year] || {};
+        document.querySelectorAll('.sw-week-input').forEach(inp => {
+            const v = map[inp.dataset.month];
+            inp.value = (v === undefined || v === null) ? '' : String(v);
+        });
+    }
+
+    async refreshSettlementWeeksCard() {
+        const card = document.getElementById('settlement-weeks-card');
+        if (!card) return;
+        try {
+            this._settlementConfig = await this.loadSettlementConfig();
+        } catch (err) {
+            console.error('讀取月結算週數設定失敗:', err);
+            this._settlementConfig = { calendarId: '', calendarApiKey: '', weeksByYear: {} };
+            this.swMessage('讀取月結算週數設定失敗，請重新整理後再試');
+        }
+        this._settlementWeeksDraft = {};
+        document.getElementById('sw-calendar-id').value = this._settlementConfig.calendarId;
+        document.getElementById('sw-api-key').value = this._settlementConfig.calendarApiKey;
+        this.renderSettlementWeekInputs();
+
+        const store = this.settlementConfigStore;
+        const editable = !!store?.canEdit?.();
+        card.querySelectorAll('.sw-week-input, #sw-calendar-id, #sw-api-key, #sw-import-btn, #sw-save-btn')
+            .forEach(el => { el.disabled = !editable; });
+        const note = document.getElementById('sw-readonly-note');
+        note.textContent = editable ? '' : (store?.readonlyReason || '目前身份不可編輯');
+        note.classList.toggle('hidden', editable);
+    }
+
+    async importSettlementWeeksFromCalendar() {
+        const calendarId = document.getElementById('sw-calendar-id').value.trim();
+        const apiKey = document.getElementById('sw-api-key').value.trim();
+        const rocYear = Number(document.getElementById('sw-year').value);
+        if (!calendarId || !apiKey) {
+            this.showToast('請先填入日曆 ID 與 API key', 'warning');
+            return;
+        }
+        const btn = document.getElementById('sw-import-btn');
+        try {
+            btn.disabled = true;
+            this.swMessage('讀取日曆中…');
+            const r = await importWeeksFromCalendar({ calendarId, apiKey, rocYear });
+            if (!Object.keys(r.weeks).length) {
+                this.swMessage('');
+                this.showToast(`日曆中找不到 ${rocYear} 學年度的學期資料（需有「正式上課」與「休業式」標記）`, 'warning', 5000);
+                return;
+            }
+            document.querySelectorAll('.sw-week-input').forEach(inp => {
+                const w = r.weeks[Number(inp.dataset.month)];
+                if (w !== undefined) inp.value = String(w);
+            });
+            const order = [8, 9, 10, 11, 12, 1, 2, 3, 4, 5, 6, 7];
+            const got = order.filter(m => m in r.weeks).map(m => `${m} 月 ${r.weeks[m]} 週`).join('、');
+            const miss = r.missingMonths.map(m => `${m} 月`).join('、') || '無';
+            this.swMessage(`已帶入：${got}\n日曆中找不到資料（維持原值）：${miss}\n尚未儲存，確認後請按「儲存」。`);
+        } catch (err) {
+            this.swMessage('');
+            if (err?.name !== 'CalendarError') console.error('日曆帶入失敗:', err);
+            this.showToast(calendarErrorMessage(err), 'error', 6000);
+        } finally {
+            btn.disabled = !this.settlementConfigStore?.canEdit?.();
+        }
+    }
+
+    async saveSettlementWeeks() {
+        const store = this.settlementConfigStore;
+        if (!store?.canEdit?.()) {
+            this.showToast(store?.readonlyReason || '目前身份不可編輯', 'warning');
+            return;
+        }
+        this.stashSettlementWeekInputs(this._swShownYear);
+        // 驗證：只接受 0–6 整數
+        for (const [year, map] of Object.entries(this._settlementWeeksDraft)) {
+            for (const [m, v] of Object.entries(map)) {
+                const n = Number(v);
+                if (!Number.isInteger(n) || n < 0 || n > 6) {
+                    this.showToast(`${year} 學年度 ${m} 月的週數「${v}」不合法，請填 0–6 的整數`, 'warning', 5000);
+                    return;
+                }
+            }
+        }
+        const btn = document.getElementById('sw-save-btn');
+        try {
+            btn.disabled = true;
+            const cfg = await this.loadSettlementConfig();
+            const weeksByYear = { ...cfg.weeksByYear };
+            for (const [year, map] of Object.entries(this._settlementWeeksDraft)) {
+                const clean = {};
+                for (const [m, v] of Object.entries(map)) clean[m] = Number(v);
+                if (Object.keys(clean).length) weeksByYear[year] = clean; else delete weeksByYear[year];
+            }
+            await store.save({
+                calendarId: document.getElementById('sw-calendar-id').value.trim(),
+                calendarApiKey: document.getElementById('sw-api-key').value.trim(),
+                weeksByYear,
+            });
+            await this.refreshSettlementWeeksCard();
+            this.swMessage('');
+            this.showToast('月結算上課週數已儲存', 'success');
+        } catch (err) {
+            console.error('儲存月結算週數失敗:', err);
+            this.showToast('儲存失敗：' + (err?.message || '請查看 console'), 'error', 5000);
+        } finally {
+            btn.disabled = !store.canEdit?.();
+        }
     }
 
     /**
@@ -3835,6 +4019,7 @@ class SubstituteTeacherApp {
             if (btn) btn.disabled = true;
             const { startDate, endDate } = this.settlementCalculator.getMonthDateRange(year, month);
             const records = await this.dataManager.getSubstituteRecordsAsync(startDate, endDate);
+            await this.applySettlementWeeksOverride(year);
 
             const settlementData = this.settlementCalculator.calculate(
                 year,
@@ -3933,6 +4118,7 @@ class SubstituteTeacherApp {
             if (btn) btn.disabled = true;
             const { startDate, endDate } = this.settlementCalculator.getMonthDateRange(year, month);
             const records = await this.dataManager.getSubstituteRecordsAsync(startDate, endDate);
+            await this.applySettlementWeeksOverride(year);
 
             const settlementData = this.settlementCalculator.calculate(
                 year,

@@ -880,3 +880,12 @@ body.v2-locked #v2-auth-gate {
 /* 資料合併 modal */
 .merge-prompt { margin-top: var(--sp-4); color: #666; }
 .modal-actions.modal-actions-stack { flex-direction: column; gap: var(--sp-3); }
+
+/* ---- 月結算上課週數（設定頁） ---- */
+.sw-month-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(4.75rem, 1fr)); gap: var(--sp-2); margin: var(--sp-3) 0; }
+.sw-month { display: flex; flex-direction: column; gap: var(--sp-1); font-size: var(--fs-sm); color: var(--color-text-muted); }
+.sw-month input { width: 100%; padding: var(--sp-2); border: var(--bd); border-radius: var(--r-sm); font-size: var(--fs-lg); text-align: center; }
+.sw-month input:disabled { background: var(--color-surface-2); cursor: not-allowed; }
+.sw-actions { display: flex; gap: var(--sp-2); flex-wrap: wrap; margin-top: var(--sp-2); }
+.sw-message { white-space: pre-line; margin-top: var(--sp-3); color: var(--color-text); }
+.sw-readonly-note { color: var(--c-warning-800); }
