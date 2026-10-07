@@ -711,7 +711,7 @@
 @media (min-width: 640px) {
     #course-edit-modal .modal-content { max-width: 420px; }
 }
-#course-edit-modal .course-modal-info { font-weight: var(--fw-semibold); color: var(--color-accent); }
+#course-edit-modal .course-modal-info { font-weight: var(--fw-semibold); color: var(--color-accent); margin-bottom: var(--sp-4); padding: var(--sp-3); background: var(--color-bg); border-radius: var(--r-sm); }
 
 /* ===================================
    V2 專屬視覺（原 v2-app.js injectV2Styles() 內的視覺規則，
@@ -852,3 +852,31 @@ body.v2-locked #v2-auth-gate {
 /* 教師表「兼課」勾選：避免 .teacher-input 的 width:100% 把勾選框撐開、與文字錯位 */
 .parttime-label { display: inline-flex; align-items: center; gap: var(--sp-1); white-space: nowrap; cursor: pointer; }
 .parttime-label input[type="checkbox"] { width: auto; margin: 0; }
+
+/* ===================================
+   index.html inline style 收斂（Stage 6）
+   =================================== */
+.school-name-warning { color: var(--c-danger-600); background: var(--c-danger-50); padding: 6px 10px; border-radius: var(--r-sm); margin-top: 6px; font-size: 0.85rem; }
+
+/* 調課面板：時段 A / B 卡片 */
+.swap-slot-info { background: var(--c-primary-100); padding: 12px; border-radius: var(--r-md); margin-bottom: 15px; }
+.swap-slot-select { background: var(--c-warning-100); padding: 12px; border-radius: var(--r-md); margin-bottom: 15px; }
+.swap-slot-title { font-weight: bold; }
+.swap-slot-title-a { color: var(--c-primary-700); margin-bottom: 5px; }
+.swap-slot-title-b { color: #b45309; margin-bottom: 10px; }
+.swap-slot-detail { font-size: 14px; }
+.swap-preview { background: #f0f9ff; padding: 15px; border-radius: var(--r-md); margin-top: 10px; border: 1px solid var(--c-info-200); }
+.swap-preview h4 { margin: 0 0 10px 0; color: var(--c-info-600); }
+.swap-validation-error { color: var(--c-danger-600); padding: 10px; background: var(--c-danger-50); border-radius: var(--r-sm); margin-top: 10px; }
+
+.subject-domain-add-row { margin-top: var(--sp-2); display: flex; gap: 0.4rem; }
+#clear-local-data-btn { margin-top: 0.4rem; }
+
+/* 週彙整 modal */
+.weekly-summary-hint { margin-top: 6px; }
+#weekly-summary-preview { margin-top: 12px; padding: 10px; background: #f5f5f5; border-radius: var(--r-sm); font-size: 13px; }
+.weekly-summary-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+
+/* 資料合併 modal */
+.merge-prompt { margin-top: var(--sp-4); color: #666; }
+.modal-actions.modal-actions-stack { flex-direction: column; gap: var(--sp-3); }

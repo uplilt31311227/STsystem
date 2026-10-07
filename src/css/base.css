@@ -51,6 +51,18 @@ body {
     margin-bottom: var(--sp-2);
 }
 
+/* ===== 間距／尺寸 utility（取代 index.html inline style；!important 以維持 inline 等級的優先權） ===== */
+.m-0 { margin: 0 !important; }
+.mt-2 { margin-top: var(--sp-2) !important; }
+.mt-3 { margin-top: var(--sp-3) !important; }
+.mb-0 { margin-bottom: 0 !important; }
+.mb-4 { margin-bottom: var(--sp-4) !important; }
+.flex-1 { flex: 1 !important; }
+.w-full { width: 100% !important; }
+.hint-flush { margin: var(--sp-1) 0 0 !important; }
+.required-mark { color: red; }
+.label-hint { font-weight: normal; color: #6b7280; }
+
 /* 載入動畫（header 同步圖示 .sync-status.syncing .sync-icon 亦沿用同一 keyframe） */
 .loading {
     display: inline-block;

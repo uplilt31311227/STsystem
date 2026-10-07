@@ -105,13 +105,13 @@
 
                         <!-- 學校名稱設定 -->
                         <div id="school-name-section" class="school-name-setting school-name-compact hidden">
-                            <label for="school-name"><strong>學校名稱</strong> <span style="color: red;">*</span></label>
+                            <label for="school-name"><strong>學校名稱</strong> <span class="required-mark">*</span></label>
                             <div class="school-name-row">
                                 <input type="text" id="school-name" placeholder="如：臺北市立大安國民中學">
                                 <button class="btn btn-primary btn-sm" id="save-school-name-btn">確認</button>
                             </div>
                             <p class="hint" id="school-name-hint">系統已從檔名自動擷取，請確認或修改</p>
-                            <div id="school-name-warning" class="hidden" style="color: #dc2626; background: #fef2f2; padding: 6px 10px; border-radius: 6px; margin-top: 6px; font-size: 0.85rem;">
+                            <div id="school-name-warning" class="hidden school-name-warning">
                                 ⚠ 請先設定學校名稱
                             </div>
                         </div>
@@ -130,7 +130,7 @@
                                     <option value="">請選擇教師</option>
                                 </select>
                             </div>
-                            <p class="hint" style="margin:0;">選擇教師後可編輯其週課表，新增教師請至「教師管理」頁籤</p>
+                            <p class="hint m-0">選擇教師後可編輯其週課表，新增教師請至「教師管理」頁籤</p>
                         </div>
                     </div>
 
@@ -153,7 +153,7 @@
                         <div class="schedule-grid" id="editor-schedule-grid">
                             <!-- 動態生成可編輯週課表 -->
                         </div>
-                        <div id="editor-save-status" class="hidden" style="margin-top: 0.5rem;"></div>
+                        <div id="editor-save-status" class="hidden mt-2"></div>
                     </div>
                 </div>
             </section>
@@ -169,7 +169,7 @@
                         <h3>教師屬性</h3>
                         <div class="teacher-header-actions">
                             <button class="btn btn-secondary btn-sm" id="add-teacher-btn">+ 新增教師</button>
-                            <span class="hint" style="margin:0;">變更即時自動儲存</span>
+                            <span class="hint m-0">變更即時自動儲存</span>
                         </div>
                     </div>
                     <div id="teacher-editor" class="hidden">
@@ -189,7 +189,7 @@
                         </table>
                         </div>
                     </div>
-                    <div id="save-status" class="hidden" style="margin-top: 0.5rem;"></div>
+                    <div id="save-status" class="hidden mt-2"></div>
                 </div>
 
                 <!-- V2 教師管理合併表：課表屬性（領域／導師班級，approver 可編）與帳號
@@ -214,15 +214,15 @@
                 <div class="sub-top-row">
                     <div class="card sub-top-left">
                         <h3>步驟一：選擇教師與日期</h3>
-                        <div class="form-row" style="margin-bottom:0;">
-                            <div class="form-group" style="flex:1;">
+                        <div class="form-row mb-0">
+                            <div class="form-group flex-1">
                                 <label for="sub-teacher">原任課教師</label>
                                 <select id="sub-teacher">
                                     <option value="">請選擇教師</option>
                                 </select>
                             </div>
-                            <div class="form-group" style="flex:1;">
-                                <label for="sub-date">調代課日期 <span id="date-label-hint" style="font-weight: normal; color: #6b7280;"></span></label>
+                            <div class="form-group flex-1">
+                                <label for="sub-date">調代課日期 <span id="date-label-hint" class="label-hint"></span></label>
                                 <input type="date" id="sub-date">
                             </div>
                         </div>
@@ -262,9 +262,9 @@
 
                         <!-- 代課專用：假別選擇 -->
                         <div id="substitute-options-early" class="substitute-early-options">
-                            <div class="form-row" style="margin-top: 0.5rem; margin-bottom: 0;">
-                                <div class="form-group" style="flex:1;">
-                                    <label for="leave-type">假別 <span style="color: red;">*</span></label>
+                            <div class="form-row mt-2 mb-0">
+                                <div class="form-group flex-1">
+                                    <label for="leave-type">假別 <span class="required-mark">*</span></label>
                                     <select id="leave-type">
                                         <option value="">請選擇假別</option>
                                         <optgroup label="公付假別（不扣時數）">
@@ -280,11 +280,11 @@
                                         </optgroup>
                                     </select>
                                 </div>
-                                <div class="form-group" id="doc-number-group" style="display: none; flex:1;">
-                                    <label for="doc-number">公假字號 <span style="color: red;">*</span></label>
+                                <div class="form-group flex-1" id="doc-number-group" style="display: none;">
+                                    <label for="doc-number">公假字號 <span class="required-mark">*</span></label>
                                     <input type="text" id="doc-number" placeholder="如：北教字第1140012345號">
                                 </div>
-                                <div class="form-group" style="flex: 1;">
+                                <div class="form-group flex-1">
                                     <label for="sub-reason">事由說明</label>
                                     <input type="text" id="sub-reason" placeholder="選填，如：參加研習">
                                 </div>
@@ -391,22 +391,22 @@
                         <h3>選擇互換課程與日期</h3>
 
                         <!-- 時段 A 資訊（已選擇） -->
-                        <div class="swap-slot-info" style="background: #dbeafe; padding: 12px; border-radius: 8px; margin-bottom: 15px;">
-                            <div style="font-weight: bold; color: #1d4ed8; margin-bottom: 5px;">時段 A（原課程）</div>
-                            <div id="swap-slot-a-info" style="font-size: 14px;"></div>
+                        <div class="swap-slot-info">
+                            <div class="swap-slot-title swap-slot-title-a">時段 A（原課程）</div>
+                            <div id="swap-slot-a-info" class="swap-slot-detail"></div>
                         </div>
 
                         <!-- 時段 B 選擇 -->
-                        <div class="swap-slot-select" style="background: #fef3c7; padding: 12px; border-radius: 8px; margin-bottom: 15px;">
-                            <div style="font-weight: bold; color: #b45309; margin-bottom: 10px;">時段 B（互換課程）</div>
+                        <div class="swap-slot-select">
+                            <div class="swap-slot-title swap-slot-title-b">時段 B（互換課程）</div>
                             <div class="form-row">
                                 <div class="form-group">
-                                    <label for="swap-date">時段 B 日期：<span style="color: red;">*</span></label>
+                                    <label for="swap-date">時段 B 日期：<span class="required-mark">*</span></label>
                                     <input type="date" id="swap-date">
                                     <p class="hint" id="swap-date-hint"></p>
                                 </div>
                                 <div class="form-group">
-                                    <label for="swap-course">互換課程：<span style="color: red;">*</span></label>
+                                    <label for="swap-course">互換課程：<span class="required-mark">*</span></label>
                                     <select id="swap-course">
                                         <option value="">請先選擇時段 B 日期</option>
                                     </select>
@@ -416,15 +416,15 @@
 
                         <p class="hint" id="swap-hint">調課說明：選擇同班級的另一時段課程進行互換，兩堂課可在不同日期</p>
 
-                        <div id="swap-preview" class="hidden" style="background: #f0f9ff; padding: 15px; border-radius: 8px; margin-top: 10px; border: 1px solid #bae6fd;">
-                            <h4 style="margin: 0 0 10px 0; color: #0369a1;">調課預覽</h4>
+                        <div id="swap-preview" class="hidden swap-preview">
+                            <h4>調課預覽</h4>
                             <div id="swap-preview-content"></div>
                         </div>
-                        <div id="swap-validation-error" class="hidden" style="color: #dc2626; padding: 10px; background: #fef2f2; border-radius: 6px; margin-top: 10px;">
+                        <div id="swap-validation-error" class="hidden swap-validation-error">
                         </div>
                     </div>
 
-                    <div class="action-buttons" style="margin-top: 1rem;">
+                    <div class="action-buttons">
                         <button class="btn btn-primary btn-sm" id="confirm-substitute-btn">確認並產生表單</button>
                         <button type="button" class="btn btn-primary btn-sm hidden" id="add-to-batch-btn">加入批次</button>
                         <button class="btn btn-secondary btn-sm" id="cancel-substitute-btn">重新選擇</button>
@@ -456,7 +456,7 @@
                     </div>
 
                     <!-- 批次操作按鈕 -->
-                    <div class="action-buttons" style="margin-top: 1rem;">
+                    <div class="action-buttons">
                         <button class="btn btn-primary" id="batch-submit-btn" disabled>確認全部調課並產生表單</button>
                     </div>
                 </div>
@@ -569,8 +569,8 @@
                     </div>
 
                     <div id="settlement-result" class="hidden">
-                        <div class="settlement-header" style="margin-top:0.75rem;">
-                            <span class="hint" style="margin:0;">教師授課時數統計表</span>
+                        <div class="settlement-header mt-3">
+                            <span class="hint m-0">教師授課時數統計表</span>
                             <div class="settlement-filter">
                                 <label class="checkbox-label">
                                     <input type="checkbox" id="show-changed-only">
@@ -708,7 +708,7 @@
                             </table>
                             <p class="hint" id="subject-domain-empty" style="display:none;">尚無對應資料，請先匯入課表或在上方手動新增。</p>
                         </div>
-                        <div style="margin-top:0.5rem; display:flex; gap:0.4rem;">
+                        <div class="subject-domain-add-row">
                             <button class="btn btn-secondary btn-sm" id="subject-map-rebuild-btn">從目前課表重新擷取</button>
                         </div>
                     </div>
@@ -743,7 +743,7 @@
 
                     <div class="data-management-section danger-zone v2-director-only">
                         <strong>危險操作</strong>
-                        <button class="btn btn-danger btn-sm" id="clear-local-data-btn" style="margin-top:0.4rem;">清除所有資料</button>
+                        <button class="btn btn-danger btn-sm" id="clear-local-data-btn">清除所有資料</button>
                     </div>
                 </div>
                 </div>
@@ -797,21 +797,21 @@
                     <button class="modal-close" id="close-course-modal-btn">&times;</button>
                 </div>
                 <div class="modal-body">
-                    <div class="course-modal-info" style="margin-bottom: 1rem; padding: 0.75rem; background: var(--color-bg); border-radius: 6px;">
+                    <div class="course-modal-info">
                         <span id="course-modal-slot-info"></span>
                     </div>
-                    <div class="form-group" style="margin-bottom: 1rem;">
-                        <label for="course-modal-class">班級：<span style="color: red;">*</span></label>
+                    <div class="form-group mb-4">
+                        <label for="course-modal-class">班級：<span class="required-mark">*</span></label>
                         <input type="text" id="course-modal-class" placeholder="如：7年1班" list="class-datalist">
                         <datalist id="class-datalist"></datalist>
                     </div>
-                    <div class="form-group" style="margin-bottom: 1rem;">
-                        <label for="course-modal-subject">科目：<span style="color: red;">*</span></label>
+                    <div class="form-group mb-4">
+                        <label for="course-modal-subject">科目：<span class="required-mark">*</span></label>
                         <input type="text" id="course-modal-subject" placeholder="如：數學" list="subject-datalist" autocomplete="off">
                         <datalist id="subject-datalist"></datalist>
-                        <p class="hint" style="margin:0.25rem 0 0;">可從清單選擇，選後自動帶出領域；亦可手動輸入新科目</p>
+                        <p class="hint hint-flush">可從清單選擇，選後自動帶出領域；亦可手動輸入新科目</p>
                     </div>
-                    <div class="form-group" style="margin-bottom: 1rem;">
+                    <div class="form-group mb-4">
                         <label for="course-modal-domain">領域：</label>
                         <select id="course-modal-domain">
                             <option value="">請選擇領域</option>
@@ -860,12 +860,12 @@
                     <div class="form-group">
                         <label for="weekly-summary-date">選擇週內任一日期</label>
                         <input type="date" id="weekly-summary-date">
-                        <p class="hint" id="weekly-summary-range-hint" style="margin-top:6px;">系統將自動取該日所在週一到週五。</p>
+                        <p class="hint weekly-summary-hint" id="weekly-summary-range-hint">系統將自動取該日所在週一到週五。</p>
                     </div>
-                    <div id="weekly-summary-preview" style="margin-top:12px; padding:10px; background:#f5f5f5; border-radius:6px; font-size:13px;">
+                    <div id="weekly-summary-preview">
                         請先選擇日期。
                     </div>
-                    <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:14px;">
+                    <div class="weekly-summary-actions">
                         <button class="btn btn-secondary btn-sm" id="cancel-weekly-summary-btn">取消</button>
                         <button class="btn btn-primary btn-sm" id="confirm-weekly-summary-btn" disabled>產生 PDF</button>
                     </div>
@@ -950,13 +950,13 @@
                         </div>
                     </div>
 
-                    <p style="margin-top: 1rem; color: #666;">請選擇要如何處理這些資料：</p>
+                    <p class="merge-prompt">請選擇要如何處理這些資料：</p>
 
-                    <div class="modal-actions" style="flex-direction: column; gap: 0.75rem;">
-                        <button class="btn btn-primary" id="merge-data-btn" style="width: 100%;">
+                    <div class="modal-actions modal-actions-stack">
+                        <button class="btn btn-primary w-full" id="merge-data-btn">
                             🔀 合併資料（保留兩邊所有紀錄）
                         </button>
-                        <button class="btn btn-secondary" id="use-cloud-data-btn" style="width: 100%;">
+                        <button class="btn btn-secondary w-full" id="use-cloud-data-btn">
                             ☁️ 使用雲端資料（清除本機）
                         </button>
                     </div>
