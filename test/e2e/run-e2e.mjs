@@ -15,6 +15,7 @@ import { run as runAdmin }      from './e2e-03-admin-flows.mjs';
 import { run as runPdfClear }   from './e2e-04-pdf-and-clear.mjs';
 import { run as runPartTime }   from './e2e-05-parttime.mjs';
 import { run as runSettleNums } from './e2e-06-settlement-numbers.mjs';
+import { run as runSettleWeeks } from './e2e-07-settlement-weeks.mjs';
 
 const SUITES = [
     { name: '登入穩定度', run: runStability },
@@ -28,6 +29,8 @@ const SUITES = [
     // 06 會把課表與紀錄換成手算黃金資料，必須在最後。
     { name: '兼課教師勾選', run: runPartTime },
     { name: '月結算畫面數字（手算）', run: runSettleNums },
+    // 07 開頭自行 seed 並清除 config/settlement，不依賴 06 的狀態。
+    { name: '月結算上課週數設定／日曆帶入', run: runSettleWeeks },
 ];
 
 async function main() {
