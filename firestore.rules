@@ -1,6 +1,6 @@
 rules_version = '2';
 
-// STsystem V2 權限系統 Firestore 規則（v2.7 — 三層角色 + 敏感欄位私有化 + 學期唯讀鎖 + 封存生命週期 + schoolId 反查目錄 + 多租戶開通）
+// STsystem V2 權限系統 Firestore 規則（v2.8 — 三層角色 + 敏感欄位私有化 + 學期唯讀鎖 + 封存生命週期 + schoolId 反查目錄 + 多租戶開通 + 月結算設定開放 approver）
 //
 // 設計原則：
 //   1. 兩條根路徑物理隔離
@@ -383,6 +383,14 @@ service cloud.firestore {
         allow read:  if isMemberOrBootstrapDirector(schoolId);
         // 僅 director 可改學校名稱、白名單
         allow write: if isDirector(schoolId);
+        // v2.8：月結算週數設定（config/settlement）開放 approver（含 section_chief）建立與
+        // 更新——教學組長負責月結算，需能維護每月上課週數與日曆來源。僅限此 docId、
+        // 欄位白名單，不含 delete；其他 config 文件（main 等）仍只有 director 可寫。
+        allow create, update: if docId == 'settlement'
+          && isApprover(schoolId)
+          && request.resource.data.keys().hasOnly(
+               ['calendarId', 'calendarApiKey', 'weeksByYear', 'updatedAt', 'updatedBy'])
+          && (!('weeksByYear' in request.resource.data) || request.resource.data.weeksByYear is map);
         // Stage 4（多租戶開通，§4.2-4.4）：platformAdmin 核准學校申請時，代為建立全新學校的
         // config/main（initialAdminEmails=[申請者 email]）。僅開放 create——Firestore 的
         // create 語意只在文件「尚不存在」時成立，這正是本設計依賴的 schoolId 衝突防線：
