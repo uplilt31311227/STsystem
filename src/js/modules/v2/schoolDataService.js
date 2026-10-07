@@ -107,14 +107,26 @@ export async function upsertConfig(patch) {
 
 /**
  * 月結算設定（config/settlement）：{ calendarId, calendarApiKey, weeksByYear, updatedAt, updatedBy }。
- * 規則為「成員可讀、director 可寫」（沿用 config/{docId} 既有規則，未新增規則）。
+ * 規則：成員可讀；寫入權限由 firestore.rules 的 config/settlement 規則決定（director 與 section_chief）。
  * 整份覆寫（不 merge），由呼叫端先讀後改，確保清空的月份真的被移除。
  */
 export async function getSettlementConfig() {
     const fs   = await getV2Firestore();
     const ref  = fs.doc(fs.db, SCHEMA_PATHS.settlementConfig());
-    const snap = await fs.getDoc(ref);
-    return snap.exists() ? snap.data() : null;
+    // 剛登入、連線尚未建立時 getDoc 會以 unavailable（client is offline）失敗，短暫重試；
+    // 其他錯誤（權限等）直接拋出。月結算金額不可在讀不到設定時悄悄退回預設週數。
+    let lastErr = null;
+    for (let i = 0; i < 6; i++) {
+        try {
+            const snap = await fs.getDoc(ref);
+            return snap.exists() ? snap.data() : null;
+        } catch (err) {
+            lastErr = err;
+            if (err?.code !== 'unavailable') throw err;
+            await new Promise(r => setTimeout(r, 2000));
+        }
+    }
+    throw lastErr;
 }
 
 export async function saveSettlementConfig({ calendarId = '', calendarApiKey = '', weeksByYear = {} }, updatedBy = null) {

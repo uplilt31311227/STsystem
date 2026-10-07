@@ -2944,11 +2944,11 @@ async function renderPlatformAdminReviewTab() {
 function installSettlementConfigStore() {
     if (!window.app) return;
     window.app.settlementConfigStore = {
-        canEdit: () => roleSvc.isDirector(),
-        readonlyReason: '僅教務主任可編輯月結算上課週數；目前顯示的是已儲存的設定（唯讀）。',
+        canEdit: () => roleSvc.isApprover(),
+        readonlyReason: '僅教務主任與教學組長可編輯月結算上課週數；目前顯示的是已儲存的設定（唯讀）。',
         load: () => dataSvc.getSettlementConfig(),
         save: (cfg) => {
-            if (!roleSvc.isDirector()) throw new Error('僅教務主任可儲存');
+            if (!roleSvc.isApprover()) throw new Error('僅教務主任或教學組長可儲存');
             const who = roleSvc.getCurrentIdentity();
             return dataSvc.saveSettlementConfig(cfg, who?.email || who?.uid || null);
         },
@@ -4736,8 +4736,7 @@ async function bootstrap() {
             patchOwnTeacherLock();
             applyOwnTeacherLock();
 
-            // 月結算上課週數設定：改存 Firestore config/settlement；僅 director 可編輯（規則面同為
-            // director 可寫），組長等其他角色唯讀。refresh 在下面的 bootstrap 步驟執行。
+            // 月結算上課週數設定：改存 Firestore config/settlement；director 與 section_chief（approver）可編輯，一般教師唯讀。refresh 在下面的 bootstrap 步驟執行。
             installSettlementConfigStore();
 
             const roleLabelMap = { director: '教務主任', section_chief: '教學組長', teacher: '教師' };
@@ -4798,9 +4797,7 @@ async function bootstrap() {
             if (roleSvc.canManageRoster()) {
                 await safeBootstrapStep('教師管理', renderTeachersAdminTab);
             }
-            if (roleSvc.isApprover()) {
-                await safeBootstrapStep('月結算週數設定', () => window.app?.refreshSettlementWeeksCard?.());
-            }
+            await safeBootstrapStep('月結算週數設定', () => window.app?.refreshSettlementWeeksCard?.());
             if (roleSvc.isDirector()) {
                 await safeBootstrapStep('學期管理', renderSemesterAdminTab);
                 await safeBootstrapStep('資料封存', renderArchiveAdminTab);
