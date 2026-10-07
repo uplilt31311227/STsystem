@@ -17,7 +17,7 @@ import {
 } from './helpers.mjs';
 import { Suite, eq, ok } from '../scenarios/harness.mjs';
 import { seedAll } from '../emulator/seed.mjs';
-import { getDoc, deleteDoc } from '../emulator/emu-client.mjs';
+import { getDoc, setDoc, deleteDoc } from '../emulator/emu-client.mjs';
 
 const SCHOOL = 'demo-alpha';
 const CFG_PATH = `schools/${SCHOOL}/config/settlement`;
@@ -188,6 +188,80 @@ export async function run(browser) {
             eq(await page.inputValue('.sw-week-input[data-month="3"]'), '3', '草稿仍在');
             await page.evaluate(() => window.app.refreshSettlementWeeksCard({ force: true }));
             eq(await page.inputValue('.sw-week-input[data-month="3"]'), '', '強制重讀後回到已存值');
+        });
+
+        const BASE_WEEKS = { 8: 1, 9: 4, 10: 5, 11: 5, 12: 4, 1: 3 };
+        const cardState = (p) => p.evaluate(() => ({
+            inputs: [...document.querySelectorAll('.sw-week-input, #sw-calendar-id, #sw-api-key, #sw-import-btn, #sw-save-btn')].map(e => e.disabled),
+            ten: document.querySelector('.sw-week-input[data-month="10"]').value,
+        }));
+
+        await suite.case('M1：讀取週數設定延遲／store 尚未換成 Firestore 期間，輸入格與儲存鈕皆停用，讀取後才顯示既有值', async () => {
+            await gotoTab(page, 'settings', 1500);
+            const before = (await getDoc(CFG_PATH)).data;
+            const r = await page.evaluate(async () => {
+                const app = window.app;
+                const real = app.settlementConfigStore;
+                const dis = () => [...document.querySelectorAll('.sw-week-input, #sw-calendar-id, #sw-api-key, #sw-import-btn, #sw-save-btn')].map(e => e.disabled);
+                // 1) V2 但儲存層不是 Firestore store（尚未裝上）
+                app.settlementConfigStore = { canEdit: () => true, readonlyReason: '', load: async () => null, save: async () => {} };
+                await app.refreshSettlementWeeksCard({ force: true });
+                const noStore = dis();
+                const msg = document.getElementById('sw-message').textContent;
+                let saveCalls = 0;
+                app.settlementConfigStore.save = async () => { saveCalls++; };
+                await app.saveSettlementWeeks().catch(() => {});
+                // 2) Firestore store 但 load 延遲 5 秒
+                const slow = { ...real, load: () => new Promise((res, rej) => setTimeout(() => real.load().then(res, rej), 5000)) };
+                app.settlementConfigStore = slow;
+                const p = app.refreshSettlementWeeksCard({ force: true });
+                await new Promise(r2 => setTimeout(r2, 1500));
+                const during = dis();
+                const tenDuring = document.querySelector('.sw-week-input[data-month="10"]').value;
+                await p;
+                const after = dis();
+                const tenAfter = document.querySelector('.sw-week-input[data-month="10"]').value;
+                app.settlementConfigStore = real;
+                return { noStore, msg, saveCalls, during, tenDuring, after, tenAfter };
+            });
+            eq(r.noStore.every(Boolean), true, 'store 尚未換成 Firestore 時全部停用');
+            ok(/載入/.test(r.msg), `訊息：${r.msg}`);
+            eq(r.saveCalls, 0, '停用期間直接呼叫儲存不會寫入非 Firestore store');
+            eq(r.during.every(Boolean), true, '延遲期間輸入格與儲存鈕皆停用');
+            eq(r.after.every(d => !d), true, '延遲結束後開放');
+            eq(r.tenAfter, '5', '延遲結束後顯示 Firestore 既有值');
+            eq((await getDoc(CFG_PATH)).data.weeksByYear, before.weeksByYear, 'Firestore 未被動到');
+        });
+
+        const readWeeks = async () => (await getDoc(CFG_PATH)).data.weeksByYear['115'];
+
+        await suite.case('L1：另一位 approver 改了 10 月，本頁只改 9 月儲存 → 10 月保留伺服器值、9 月為新值（切換學年度不帶入舊值）', async () => {
+            await page.evaluate(() => window.app.refreshSettlementWeeksCard({ force: true }));
+            eq((await cardState(page)).ten, '5', '畫面載入時 10 月為 5');
+            // 另一位 approver 以 admin 寫入伺服器 10 月 = 6（本頁畫面仍是 5）
+            const cur = (await getDoc(CFG_PATH)).data;
+            await setDoc(CFG_PATH, { ...cur, weeksByYear: { ...cur.weeksByYear, 115: { ...BASE_WEEKS, 10: 6 } } });
+            // 切到別的學年度再切回（沒動任何格）→ 不應把畫面舊值寫進草稿
+            await page.selectOption('#sw-year', '116');
+            await page.selectOption('#sw-year', '115');
+            await page.fill('.sw-week-input[data-month="9"]', '3');
+            await page.click('#sw-save-btn');
+            const data = await waitCfg(d => d.weeksByYear?.['115']?.['9'] === 3);
+            eq(data?.weeksByYear?.['115'], { ...BASE_WEEKS, 9: 3, 10: 6 }, '10 月保留 6、9 月為 3');
+            eq(data?.weeksByYear?.['116'], undefined, '沒動過的 116 學年度不寫入');
+        });
+
+        await suite.case('L1：清空某一格儲存 → 只刪該月，其他月份與學年度保留', async () => {
+            await page.fill('.sw-week-input[data-month="1"]', '');
+            await page.click('#sw-save-btn');
+            const data = await waitCfg(d => d.weeksByYear?.['115'] && d.weeksByYear['115']['1'] === undefined);
+            const { 1: _gone, ...rest } = { ...BASE_WEEKS, 9: 3, 10: 6 };
+            eq(data?.weeksByYear?.['115'], rest, '只有 1 月被刪除');
+            // 還原成基準資料，讓後面案例沿用
+            const cur = (await getDoc(CFG_PATH)).data;
+            await setDoc(CFG_PATH, { ...cur, weeksByYear: { 115: BASE_WEEKS } });
+            await page.evaluate(() => window.app.refreshSettlementWeeksCard({ force: true }));
+            eq((await cardState(page)).ten, '5', '還原後重讀');
         });
 
         await suite.case('月結算：10 月原定時數 = 每週節數 × 5（已存值）、9 月 × 4、8 月 × 1', async () => {
