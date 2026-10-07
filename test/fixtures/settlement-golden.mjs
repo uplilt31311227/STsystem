@@ -82,10 +82,10 @@ export const GOLDEN_RECORDS = [
     // ---- 跨月／跨年：全部該被排除 ----
     { id: 'x01', date: '2026-09-30', type: '代課', orig: 'A', sub: 'B', leave: '事假', inScope: false,
       note: '9/30（前一月）：不算 10 月' },
-    { id: 'x02', date: '2026-11-02', type: '代課', orig: 'A', sub: 'B', leave: '事假', inScope: false,
-      note: '11/2（後一月）：不算 10 月' },
-    { id: 'x03', date: '2025-10-06', type: '代課', orig: 'A', sub: 'B', leave: '事假', inScope: false,
-      note: '2025-10（前一學年度的 10 月）：不算 115 學年度' },
+    { id: 'x02', date: '2026-11-02', type: '代課', orig: 'B', sub: 'C', leave: '事假', inScope: false,
+      note: '11/2（後一月）：不算 10 月；單獨結算 11 月時 B 19、C 13（與 9 月、114 學年度 10 月的結果互不相同）' },
+    { id: 'x03', date: '2025-10-06', type: '代課', orig: 'C', sub: 'A', leave: '事假', inScope: false,
+      note: '2025-10（前一學年度的 10 月）：不算 115 學年度；單獨結算 114 學年度 10 月時 A 25、C 11' },
 ];
 
 /** 駁回的請求（只存在 pendingRequests，不是已成立紀錄）與被刪除的紀錄（文件已不存在）。 */
