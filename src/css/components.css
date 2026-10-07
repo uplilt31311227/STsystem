@@ -143,18 +143,15 @@
     transform: translateY(-10px);
 }
 
-/* 提示卡片：新名 .card-notice，.notice-card 為舊名 alias（Stage 6 才刪，兩者指同一實作） */
-.card-notice,
-.notice-card {
+/* 提示卡片 */
+.card-notice {
     text-align: center;
     padding: var(--sp-12) var(--sp-8);
     background-color: var(--c-warning-50);
     border: 1px solid var(--c-warning-200);
 }
-.card-notice h3,
-.notice-card h3 { color: var(--c-warning-800); margin-bottom: var(--sp-2); }
-.card-notice p,
-.notice-card p { color: var(--c-warning-800); }
+.card-notice h3 { color: var(--c-warning-800); margin-bottom: var(--sp-2); }
+.card-notice p { color: var(--c-warning-800); }
 
 .notice-card-compact {
     padding: var(--sp-6) var(--sp-4);
