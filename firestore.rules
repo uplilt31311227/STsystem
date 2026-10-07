@@ -380,17 +380,34 @@ service cloud.firestore {
         // ⚠ Stage 4：platformAdmin 不在這條 read 規則的任何分支——如實對齊檔頭第 9 點的
         // 權限面設計，platformAdmin 不能讀任何學校（含自己核准建立的新學校）的 config 內容，
         // 只有下面的 create 寫入權限。
-        allow read:  if isMemberOrBootstrapDirector(schoolId);
-        // 僅 director 可改學校名稱、白名單
-        allow write: if isDirector(schoolId);
-        // v2.8：月結算週數設定（config/settlement）開放 approver（含 section_chief）建立與
-        // 更新——教學組長負責月結算，需能維護每月上課週數與日曆來源。僅限此 docId、
-        // 欄位白名單，不含 delete；其他 config 文件（main 等）仍只有 director 可寫。
+        // v2.8：config/settlement 內含日曆 API key，僅 approver 可讀（一般教師讀取一律拒絕）；
+        // 其他 config 文件讀取維持原狀。isApprover 含 isInitialDirector，白名單主任首登仍可讀。
+        allow read:  if isMemberOrBootstrapDirector(schoolId)
+          && (docId != 'settlement' || isApprover(schoolId));
+        // 僅 director 可改學校名稱、白名單（不含 settlement，settlement 走下方有欄位驗證的規則）
+        allow create, update: if isDirector(schoolId) && docId != 'settlement';
+        allow delete: if isDirector(schoolId);
+        // v2.8：月結算週數設定（config/settlement）開放 approver（含 section_chief、director）
+        // 建立與更新，含欄位白名單、型別與大小檢查；不含 delete。
+        // updatedBy 須為本人 email 或 uid（client 寫 email || uid）；updatedAt 為 ISO 字串。
         allow create, update: if docId == 'settlement'
           && isApprover(schoolId)
           && request.resource.data.keys().hasOnly(
                ['calendarId', 'calendarApiKey', 'weeksByYear', 'updatedAt', 'updatedBy'])
-          && (!('weeksByYear' in request.resource.data) || request.resource.data.weeksByYear is map);
+          && request.resource.data.keys().hasAll(
+               ['calendarId', 'calendarApiKey', 'weeksByYear', 'updatedAt', 'updatedBy'])
+          && request.resource.data.calendarId is string
+          && request.resource.data.calendarId.size() <= 256
+          && request.resource.data.calendarApiKey is string
+          && request.resource.data.calendarApiKey.size() <= 128
+          && request.resource.data.weeksByYear is map
+          && request.resource.data.weeksByYear.size() <= 20
+          && request.resource.data.updatedAt is string
+          && request.resource.data.updatedAt.size() <= 40
+          && request.resource.data.updatedBy is string
+          && (request.resource.data.updatedBy == request.auth.uid
+              || ('email' in request.auth.token
+                  && request.resource.data.updatedBy == request.auth.token.email));
         // Stage 4（多租戶開通，§4.2-4.4）：platformAdmin 核准學校申請時，代為建立全新學校的
         // config/main（initialAdminEmails=[申請者 email]）。僅開放 create——Firestore 的
         // create 語意只在文件「尚不存在」時成立，這正是本設計依賴的 schoolId 衝突防線：
