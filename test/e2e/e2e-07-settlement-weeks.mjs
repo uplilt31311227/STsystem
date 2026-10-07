@@ -178,6 +178,8 @@ export async function run(browser) {
             eq(r.savedWhileFailed, 0, '讀取失敗時呼叫儲存不會寫入');
             eq([r.afterEnabled, r.retryHidden, r.ten], [true, true, '5'], '重試成功後恢復並帶回已存值');
             eq((await getDoc(CFG_PATH)).data.weeksByYear, before.weeksByYear, 'Firestore 週數未被清掉');
+            // 模擬的讀取失敗會留下預期內的 console.error，移除以免影響後面「不應有 console 錯誤」斷言
+            page.errors = page.errors.filter(e => !/simulated offline/.test(e));
         });
 
         await suite.case('L6：有未儲存修改時，再點設定頁籤不重讀覆蓋', async () => {
