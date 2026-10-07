@@ -54,12 +54,12 @@ await suite.case('相鄰月份各自結算：9 月只有 x01（9/30）、11 月�
     // 9 月：僅 x01（9/30，A 事假被 B 代）。A = 6×4 − 1 = 23；B = 5×4 + 1 = 21
     const sep = run(115, 9, sched, recs);
     eq([row(sep, '林彥廷').actualHours, row(sep, '王大明').actualHours], [23, 21], '9 月 A、B');
-    // 11 月：僅 x02（11/2，同上）。同樣 A=23、B=21
+    // 11 月：僅 x02（11/2，B 事假被 C 代）。B = 5×4 − 1 = 19；C = 3×4 + 1 = 13；A 不變 24
     const nov = run(115, 11, sched, recs);
-    eq([row(nov, '林彥廷').actualHours, row(nov, '王大明').actualHours], [23, 21], '11 月 A、B');
-    // 前一學年度 10 月（2025-10-06）：114 學年度 10 月 → A=23、B=21
+    eq([row(nov, '林彥廷').actualHours, row(nov, '王大明').actualHours, row(nov, '張淑芬').actualHours], [24, 19, 13], '11 月 A、B、C');
+    // 114 學年度 10 月（2025-10-06，C 事假被 A 代）：A = 24 + 1 = 25；C = 12 − 1 = 11；B 不變 20
     const prev = run(114, 10, sched, recs);
-    eq([row(prev, '林彥廷').actualHours, row(prev, '王大明').actualHours], [23, 21], '114 學年度 10 月 A、B');
+    eq([row(prev, '林彥廷').actualHours, row(prev, '王大明').actualHours, row(prev, '張淑芬').actualHours], [25, 20, 11], '114 學年度 10 月 A、B、C');
 });
 
 await suite.case('學年度換算：1～7 月屬次年（115 學年度 1 月 = 2027-01）', () => {
@@ -71,6 +71,18 @@ await suite.case('學年度換算：1～7 月屬次年（115 學年度 1 月 = 2
     // 同一筆紀錄在 115 學年度 8 月（2026-08）不應出現
     const aug = run(115, 8, buildGoldenSchedule(), recs);
     eq([row(aug, '林彥廷').substitutedHours, row(aug, '王大明').substituteHours], [0, 0], '2027-01 的紀錄不屬於 2026-08');
+});
+
+await suite.case('學年度換算：8 月屬本年（115 學年度 8 月 = 2026-08）；8 月週數 0，現行行為會出現負時數', () => {
+    // 手算：2026-08 週數 0 → 原定 0、基本 0。紀錄 2026-08-10 A 事假被 B 代：A 實際 0+0−1 = −1；B 實際 0+1−0 = 1、超鐘點 1。
+    // 照現行行為寫死（負時數屬已知疑點，見「寒暑假月份」案例）。
+    const recs = [{ date: '2026-08-10', type: '代課', originalTeacher: '林彥廷', substituteTeacher: '王大明', leaveType: '事假' }];
+    const aug = run(115, 8, buildGoldenSchedule(), recs);
+    eq([row(aug, '林彥廷').substitutedHours, row(aug, '林彥廷').actualHours], [1, -1], '2026-08 歸 115 學年度 8 月：A 被代 1、實際 −1');
+    eq([row(aug, '王大明').substituteHours, row(aug, '王大明').actualHours, row(aug, '王大明').overtimeHours], [1, 1, 1], 'B 代 1、實際 1、超鐘點 1');
+    // 反向：同一筆紀錄不屬於 114 學年度 8 月（2025-08）
+    const prevYear = run(114, 8, buildGoldenSchedule(), recs);
+    eq([row(prevYear, '林彥廷').substitutedHours, row(prevYear, '王大明').substituteHours], [0, 0], '2026-08 不屬於 114 學年度');
 });
 
 await suite.case('2 月 3 週：D 21 列 → 63；基本 20×3=60；超鐘點 3', () => {
@@ -113,7 +125,7 @@ await suite.case('寒暑假月份有紀錄時：週數 0 的月份會算出負�
     const res = run(115, 7, buildGoldenSchedule(), recs);
     eq([row(res, '林彥廷').actualHours, row(res, '王大明').actualHours, row(res, '王大明').overtimeHours], [-1, 1, 1],
        '現行行為：A=-1、B=1、B 超鐘點=1');
-}, { knownGap: '7/8 月週數寫死為 0，若該月仍有調代課紀錄（如暑期輔導），實際時數會出現負數、被代課者超鐘點會 >0' });
+}, { knownGap: '7/8 月週數寫死為 0，若該月仍有調代課紀錄（如暑期輔導），實際時數會出現負數、代課者超鐘點會 >0' });
 
 await suite.case('getDetailedSettlement：A 在 10 月的分類（手算）', () => {
     const recs = goldenRecordsForCalculator().filter((_, i) => GOLDEN_RECORDS[i].inScope);

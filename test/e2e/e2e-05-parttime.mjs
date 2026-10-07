@@ -36,23 +36,16 @@ async function fillUntilCourse(page, { teacher, date = DATE_MON, weekday = '週�
     await page.waitForTimeout(1200);
 }
 
-/** 推薦清單（依畫面順序）：[{ name, tag }]。標籤五種開頭對齊 recommendationEngine。 */
-function recommendedTeachers(page) {
-    return page.evaluate(() => {
-        const HEAD = '同科目（|同領域（|該班導師（|同任課班級（|兼課教師|該時段空堂';
-        const full = new RegExp(`^([一-龥]{2,4})\\n(${HEAD})([^\\n]*)`);
-        const head = new RegExp(`^[一-龥]{2,4}\\n(${HEAD})`);
-        const out = [];
-        document.querySelectorAll('#substitute-tab *').forEach(el => {
-            if (el.children.length > 3) return;
-            const m = full.exec((el.innerText || '').trim());
-            if (!m) return;
-            if ([...el.children].some(c => head.test((c.innerText || '').trim()))) return;
-            out.push({ name: m[1], tag: m[2] + m[3] });
-        });
-        const seen = new Set();
-        return out.filter(x => (seen.has(x.name) ? false : seen.add(x.name)));
-    });
+/** 推薦清單（依畫面順序）：[{ name, tag, partTime }]。以 .recommendation-item 的 class 結構讀取（app.js 渲染）。 */
+async function recommendedTeachers(page) {
+    // 本機 emulator 查詢慢：先等清單渲染出至少一項（逾時就照現況讀，由斷言報錯）
+    await page.waitForSelector('#recommendation-list .recommendation-item', { timeout: 60000 }).catch(() => {});
+    return page.evaluate(() => [...document.querySelectorAll('#recommendation-list .recommendation-item')].map(el => ({
+        name: el.querySelector('.recommendation-name')?.textContent.trim() || '',
+        tag: (el.querySelector('.recommendation-reason')?.textContent.trim() || '')
+            + ' ' + [...el.querySelectorAll('.recommendation-badge')].map(b => b.textContent.trim()).join(' '),
+        partTime: !!el.querySelector('.recommendation-badge.badge-part-time'),
+    })));
 }
 
 /** 輪詢 Firestore 教師文件直到 partTime 等於期望布林值（寫入非同步，emulator 又慢）。 */
@@ -105,9 +98,18 @@ export async function run(browser) {
             ok(target, '課表中應有同科目且該時段空堂的教師');
             ctx.name = target;
 
+            // 基準：勾選前，目標教師應「不是最後一層」且無兼課標記，之後掉到最後才有對比意義
+            await fillUntilCourse(page, { teacher: '林彥廷' });
+            const base = await recommendedTeachers(page);
+            const bi = base.findIndex(r => r.name === ctx.name);
+            ok(bi >= 0, `${ctx.name} 勾選前應在推薦清單內`);
+            ok(!base[bi].partTime, `勾選前不應有兼課標記（實際：${base[bi].tag}）`);
+            ok(bi < base.length - 1, `勾選前不應已在最後一位（第 ${bi + 1}/${base.length}；順序：${base.map(r => r.name).join('、')}）`);
+            ok(base.every(r => !r.partTime), '勾選前清單內無任何兼課標記');
+
             await gotoTab(page, 'teachers', 2500);
             const row = page.locator(`tr[data-name="${ctx.name}"]`);
-            await row.waitFor({ state: 'visible', timeout: 20000 });
+            await row.waitFor({ state: 'visible', timeout: 90000 });
             ctx.id = await row.getAttribute('data-id');
             const box = row.locator('.v2-parttime-input');
             eq(await box.isDisabled(), false, `${ctx.name} 已在課表上，兼課勾選應可用`);
@@ -125,7 +127,7 @@ export async function run(browser) {
             ok(await reloadAndWait(page), '重新整理後應回到已登入且課表載入');
             await gotoTab(page, 'teachers', 2500);
             const row = page.locator(`tr[data-name="${ctx.name}"]`);
-            await row.waitFor({ state: 'visible', timeout: 20000 });
+            await row.waitFor({ state: 'visible', timeout: 90000 });
             eq(await row.locator('.v2-parttime-input').isChecked(), true, '重新整理後勾選應仍在');
             await shot(page, '05-parttime-after-reload');
         });
@@ -136,16 +138,16 @@ export async function run(browser) {
             ok(recs.length >= 3, `推薦清單應有多位教師（實際 ${recs.length}）`);
             const idx = recs.findIndex(r => r.name === ctx.name);
             ok(idx >= 0, `${ctx.name} 仍應在推薦清單內（兼課只是排最後，不是排除）`);
-            ok(recs[idx].tag.includes('兼課'), `標記應含「兼課」（實際：${recs[idx].tag}）`);
+            ok(recs[idx].partTime, `標記應含「兼課」（實際：${recs[idx].tag}）`);
             eq(idx, recs.length - 1, `${ctx.name} 應排在最後一位（實際第 ${idx + 1}/${recs.length}；順序：${recs.map(r => r.name).join('、')}）`);
-            eq(recs.filter(r => r.tag.includes('兼課')).map(r => r.name), [ctx.name], '只有被勾選的教師帶兼課標記');
+            eq(recs.filter(r => r.partTime).map(r => r.name), [ctx.name], '只有被勾選的教師帶兼課標記');
             await shot(page, '05-parttime-recommend');
         });
 
         await suite.case('取消勾選：Firestore partTime 回 false，推薦清單不再帶兼課標記', async () => {
             await gotoTab(page, 'teachers', 2500);
             const row = page.locator(`tr[data-name="${ctx.name}"]`);
-            await row.waitFor({ state: 'visible', timeout: 20000 });
+            await row.waitFor({ state: 'visible', timeout: 90000 });
             const box = row.locator('.v2-parttime-input');
             ok(await box.isChecked(), '取消前應為勾選');
             await box.click();
@@ -156,13 +158,15 @@ export async function run(browser) {
             const recs = await recommendedTeachers(page);
             const me = recs.find(r => r.name === ctx.name);
             ok(me, `${ctx.name} 應在推薦清單`);
-            ok(!me.tag.includes('兼課'), `取消後不應再有兼課標記（實際：${me.tag}）`);
+            ok(!me.partTime, `取消後不應再有兼課標記（實際：${me.tag}）`);
             ok(recs.findIndex(r => r.name === ctx.name) < recs.length - 1, '取消後不應仍排在最後');
             eq(realErrors(page), [], '過程不應有 console 錯誤');
         });
 
         await suite.case('尚未出現在課表的教師（名冊有、課表無），兼課勾選為停用', async () => {
             await gotoTab(page, 'teachers', 2500);
+            // 教師表由 Firestore 載入，emulator 慢：先等整張表（含已知在課表上的目標）出現
+            await page.waitForSelector(`tr[data-name="${ctx.name}"]`, { timeout: 90000 });
             const idle = await page.evaluate(() => {
                 const sd = window.app?.dataManager?.scheduleData || [];
                 const inSchedule = new Set(sd.map(r => r.teacher));

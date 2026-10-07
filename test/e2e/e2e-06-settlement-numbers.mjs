@@ -102,9 +102,15 @@ async function generateAndRead(page, year, month) {
     await gotoTab(page, 'settlement', 1500);
     await page.selectOption('#settle-year', String(year));
     await page.selectOption('#settle-month', String(month));
+    // 先清空舊表格：查詢失敗時 app 不會重繪表格（app.js generateSettlement 的 catch 不清表），
+    // 不清的話上一次的表格會讓等待立刻滿足、讀到舊資料。
+    await page.evaluate(() => { document.getElementById('settlement-tbody').innerHTML = ''; });
     await page.click('#generate-settlement-btn');
-    await page.waitForSelector('#settlement-tbody tr[data-has-change]', { timeout: 60000 });
-    await page.waitForTimeout(500);
+    // 等新表格出現，且產生按鈕已解除 disabled（代表這次查詢已結束）
+    await page.waitForFunction(() => {
+        const btn = document.getElementById('generate-settlement-btn');
+        return btn && !btn.disabled && document.querySelector('#settlement-tbody tr[data-has-change]');
+    }, null, { timeout: 90000 });
     return page.evaluate(() => {
         const num = (t) => (t.trim() === '-' ? 0 : Number(t.trim().replace('+', '')));
         const out = {};
@@ -156,7 +162,7 @@ export async function run(browser) {
                    `${name} 的畫面列（${g.raw.join(' | ')}）`);
             }
             // 手算：有變動者 = A（被代 4）、B（代 3）、C（代 5 被代 1）、E（代 1）；D 只被代公付假別 → 無變動
-            ok(/4/.test(changed), `「有變動」計數應為 4 位（實際：${changed}）`);
+            eq(changed, '共 4 位教師有變動', '「有變動」計數');
             await shot(page, '06-settlement-golden-115-10');
             eq(realErrors(page), [], '過程不應有 console 錯誤');
         });
@@ -167,17 +173,19 @@ export async function run(browser) {
             eq(names, ['黃志偉', '吳佩珊', '王大明', '林彥廷', '張淑芬'], '列順序');
         });
 
-        await suite.case('相鄰月份：9 月與 11 月各只吃到一筆跨月紀錄（A=23、B=21），不受 10 月紀錄影響', async () => {
+        await suite.case('相鄰月份：9 月與 11 月各只吃到一筆跨月紀錄（期望值互不相同），不受 10 月紀錄影響', async () => {
+            // 三次查詢的期望值刻意互不相同，讀到前一次的舊表格必定失敗。
             // 手算：9 月只有 x01（9/30，A 事假被 B 代）→ A 24−1=23、B 20+1=21；C、D、E 不變 12/84/80
             const sep = (await generateAndRead(page, 115, 9)).rows;
             eq([sep['林彥廷'].actual, sep['王大明'].actual, sep['張淑芬'].actual, sep['黃志偉'].actual, sep['吳佩珊'].actual],
                [23, 21, 12, 84, 80], '9 月');
-            // 11 月：只有 x02（11/2，同型）→ 同樣的數字
+            // 11 月：只有 x02（11/2，B 事假被 C 代）→ B 20−1=19、C 12+1=13；A 不變 24
             const nov = (await generateAndRead(page, 115, 11)).rows;
-            eq([nov['林彥廷'].actual, nov['王大明'].actual], [23, 21], '11 月');
-            // 114 學年度 10 月（2025-10）：只有 x03（2025-10-06，同型）→ 同樣
+            eq([nov['林彥廷'].actual, nov['王大明'].actual, nov['張淑芬'].actual], [24, 19, 13], '11 月');
+            // 114 學年度 10 月（2025-10）：只有 x03（2025-10-06，C 事假被 A 代）→ A 24+1=25、C 12−1=11；B 不變 20
             const prev = (await generateAndRead(page, 114, 10)).rows;
-            eq([prev['林彥廷'].actual, prev['王大明'].actual], [23, 21], '114 學年度 10 月');
+            eq([prev['林彥廷'].actual, prev['王大明'].actual, prev['張淑芬'].actual], [25, 20, 11], '114 學年度 10 月');
+            eq(realErrors(page), [], '相鄰月份查詢過程不應有 console 錯誤');
         });
 
         await suite.case('再回到 115 學年度 10 月：結果與第一次相同（查詢快取不污染）', async () => {
