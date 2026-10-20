@@ -3401,17 +3401,15 @@ class SubstituteTeacherApp {
         });
         this.saveDataToStorage();
 
-        // 逐一生成 PDF
-        for (const record of records) {
-            await this.generateSubstitutePDF(record);
-        }
+        // 整批產生一份多重調課通知單（以淨結果呈現，連鎖對調的中繼位置不會出現在教師聯）
+        await this.pdfGenerator.generateSwapBatchForm(records, this.dataManager.getScheduleData());
 
         // 重置
         this.swapBatch = [];
         this.resetSubstituteFlow();
 
         const syncText = typeof isSignedIn === 'function' && isSignedIn() ? '並同步到雲端' : '';
-        this.showToast(`已完成 ${records.length} 筆多重調課${syncText}，PDF 已逐一生成`, 'success', 4000);
+        this.showToast(`已完成 ${records.length} 筆多重調課${syncText}，已產生多重調課通知單`, 'success', 4000);
     }
 
     /**
