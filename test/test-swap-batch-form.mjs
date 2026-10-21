@@ -85,5 +85,46 @@ check('教學組聯含總表、異動一覽與明細註記', adminHTML.includes(
 const classHTML = gen.createSwapClassSheetHTML('8年1班', grid);
 check('801 班級聯不含 701', classHTML.includes('8年1班') && !classHTML.includes('7年1班'));
 
+// 原版調課單分組：兩節互換 → pair（沿用原紀錄）、三節輪換 → chain
+const groups = gen.groupSwapFinalMoves(net);
+const desc = g => `${g.type}:${g.className}:${g.moves.map(m => m.teacher).sort().join('/')}`;
+check('5 筆批次分成 3 個 pair 與 1 個 chain', groups.filter(g => g.type === 'pair').length === 3 && groups.filter(g => g.type === 'chain').length === 1,
+    groups.map(desc).join(' '));
+const chain = groups.find(g => g.type === 'chain');
+check('chain 是 701 王智萱／藍奕麟／林信安三節輪換', chain.className === '7年1班' && chain.moves.map(m => m.teacher).sort().join() === '林信安,王智萱,藍奕麟');
+const pairs = groups.filter(g => g.type === 'pair').map(g => gen.buildPairRecordFromMoves(g.moves, records));
+check('801 兩組與 701 公民⇄數學都沿用原紀錄', pairs.every(p => records.includes(p)), pairs.map(p => `${p.originalTeacher}⇄${p.swapTeacher}`).join(' '));
+const chainHTML = gen.createSwapChainSheetHTML(chain, { label: '教師聯', teacher: '林信安' });
+check('連調單為一式五聯（3 位教師＋班級＋教學組）', chainHTML.includes('3 節連調') && chainHTML.includes('一式五聯'));
+check('連調單週課表：第三節改上林信安生物、第六節改上王智萱數學',
+    chainHTML.includes('7年1班 生物<br>原 王智萱<br>改 林信安') && chainHTML.includes('7年1班 數學<br>原 藍奕麟<br>改 王智萱'));
+
+// 10/27 實際送出的 4 筆（數學只跟國英數換）：兩班各一組三節連調，沒有 pair
+const r4 = [
+    swap('2026-10-27', '週二', '第五節', '7年1班', '公民與社會', '邱旭琳', '2026-10-28', '週三', '第六節', '英語文', '陳品瑄'),
+    swap('2026-10-27', '週二', '第三節', '7年1班', '數學', '王智萱', '2026-10-27', '週二', '第五節', '英語文', '陳品瑄'),
+    swap('2026-10-27', '週二', '第五節', '8年1班', '英語文', '高家涵', '2026-10-27', '週二', '第六節', '家政', '吳沛臻'),
+    swap('2026-10-27', '週二', '第三節', '8年1班', '數學', '盧玉燕', '2026-10-27', '週二', '第六節', '英語文', '高家涵'),
+];
+const g4 = gen.groupSwapFinalMoves(gen.computeSwapNetMoves(r4));
+check('4 筆批次 → 701、801 各一組三節連調', g4.length === 2 && g4.every(g => g.type === 'chain' && g.moves.length === 3), g4.map(desc).join(' '));
+const c801 = g4.find(g => g.className === '8年1班');
+const hi = c801.moves.find(m => m.teacher === '高家涵');
+check('高家涵連調結果為第五節→第三節', hi.from.period === '第五節' && hi.to.period === '第三節');
+
+// 重印：每筆紀錄只對應到自己所屬的那一組
+const belong = r => g4.filter(g => gen.isRecordInSwapGroup(r, g)).map(g => g.className);
+check('重印 801 中繼那筆（數學⇄第六節英語）只印 801 連調單', belong(r4[3]).join() === '8年1班');
+check('重印 701 第一筆（公民⇄週三英語）只印 701 連調單', belong(r4[0]).join() === '7年1班');
+const own = groups.filter(g => gen.isRecordInSwapGroup(records[2], g));
+check('重印 5 筆批次的 801 家政⇄數學只印那一組 pair', own.length === 1 && own[0].type === 'pair'
+    && gen.buildPairRecordFromMoves(own[0].moves, records) === records[2]);
+
+// 單純兩組互不相干的對調 → 兩個 pair，皆為原紀錄
+const simple = [records[2], records[3]];
+const gs = gen.groupSwapFinalMoves(gen.computeSwapNetMoves(simple));
+check('互不相干的對調各自輸出原版調課單', gs.length === 2 && gs.every(g => g.type === 'pair')
+    && gs.every(g => simple.includes(gen.buildPairRecordFromMoves(g.moves, simple))));
+
 if (failed) { process.stdout.write(`\n${failed} 項失敗\n`); process.exit(1); }
 process.stdout.write('\n全部通過\n');

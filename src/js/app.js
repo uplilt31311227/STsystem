@@ -3401,15 +3401,27 @@ class SubstituteTeacherApp {
         });
         this.saveDataToStorage();
 
-        // 整批產生一份多重調課通知單（以淨結果呈現，連鎖對調的中繼位置不會出現在教師聯）
-        await this.pdfGenerator.generateSwapBatchForm(records, this.dataManager.getScheduleData());
+        // 原版調課單：兩節互換照舊一式四聯，連調只輸出最終結果；另附整批多重調課通知單
+        const scheduleData = this.dataManager.getScheduleData();
+        await this.pdfGenerator.generateSwapFinalForms(records, scheduleData, this.dataManager.getTeachers());
+        await this.pdfGenerator.generateSwapBatchForm(records, scheduleData);
 
         // 重置
         this.swapBatch = [];
         this.resetSubstituteFlow();
 
         const syncText = typeof isSignedIn === 'function' && isSignedIn() ? '並同步到雲端' : '';
-        this.showToast(`已完成 ${records.length} 筆多重調課${syncText}，已產生多重調課通知單`, 'success', 4000);
+        this.showToast(`已完成 ${records.length} 筆多重調課${syncText}，已產生調課單與多重調課通知單`, 'success', 4000);
+    }
+
+    /**
+     * 重印多重調課紀錄：以整批計算最終結果，只印這筆所屬的對調組（連調不會印出中繼位置）
+     */
+    async reprintSwapBatchRecord(record) {
+        const batch = this.dataManager.substituteRecords
+            .filter(r => r.batchId === record.batchId)
+            .sort((a, b) => Number(a.id.split('_').pop()) - Number(b.id.split('_').pop()));
+        await this.pdfGenerator.generateSwapFinalForms(batch, this.dataManager.getScheduleData(), this.dataManager.getTeachers(), record);
     }
 
     /**
@@ -3643,7 +3655,9 @@ class SubstituteTeacherApp {
             btn.addEventListener('click', (e) => {
                 const id = e.target.dataset.id;
                 const record = records.find(r => r.id === id);
-                if (record) {
+                if (record?.batchId && record.type === '調課') {
+                    this.reprintSwapBatchRecord(record);
+                } else if (record) {
                     this.generateSubstitutePDF(record);
                 }
             });
