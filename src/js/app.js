@@ -11,7 +11,7 @@
 // 匯入模組
 import { DataManager } from './modules/dataManager.js';
 import { ScheduleParser } from './modules/scheduleParser.js';
-import { RecommendationEngine, findSwapDateConflict } from './modules/recommendationEngine.js';
+import { RecommendationEngine, findSwapDateConflict, pendingTag } from './modules/recommendationEngine.js';
 import { PDFGenerator } from './modules/pdfGenerator.js';
 import { SettlementCalculator } from './modules/settlementCalculator.js';
 import { importWeeksFromCalendar, calendarErrorMessage } from './modules/schoolCalendar.js';
@@ -1779,11 +1779,11 @@ class SubstituteTeacherApp {
         const where = hit.role === '調課' && d.swapDate === hit.date && d.swapPeriod === hit.period && d.originalTeacher === hit.teacher
             ? `已調課移入${d.className || ''}`
             : `已被指派為${d.className || ''}的${hit.role}`;
-        return `${hit.teacher}在${hit.date} ${hit.period}${where}`;
+        return `${hit.teacher}在${hit.date} ${hit.period}${where}${pendingTag(d)}`;
     }
 
     /**
-     * 取得指定日期「附近」的調代課紀錄（日期查詢，不用訂閱快取）
+     * 取得指定日期「附近」的調代課佔用紀錄（日期查詢，不用訂閱快取；V2 含在途申請）
      *
      * 調課紀錄以 date（時段 A）為索引，但會佔用 swapDate（時段 B）；要找出「移入某日」的調課，
      * 必須把前後一段日期一併查回。這裡取每個日期前後各 31 天（跨月調課已足夠），依 id 去重。
@@ -1792,16 +1792,8 @@ class SubstituteTeacherApp {
      * @returns {Promise<Array>}
      */
     async fetchRecordsAroundDates(dates) {
-        const fmt = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-        const byId = new Map();
-        for (const date of new Set(dates.filter(Boolean))) {
-            const base = new Date(`${date}T00:00:00`);
-            const from = new Date(base); from.setDate(from.getDate() - 31);
-            const to = new Date(base); to.setDate(to.getDate() + 31);
-            const rows = await this.dataManager.getSubstituteRecordsAsync(fmt(from), fmt(to));
-            rows.forEach(r => byId.set(r.id, r));
-        }
-        return [...byId.values()];
+        // 佔用紀錄：V1 為既有紀錄；V2 另含「待同意／待核准」在途申請（標示於衝堂訊息）。
+        return this.dataManager.getOccupancyRecordsAround(dates);
     }
 
     /**
@@ -2452,8 +2444,18 @@ class SubstituteTeacherApp {
             console.error('讀取本月調代課紀錄失敗：', err);
             this.showToast('讀取本月紀錄失敗，推薦未套用公平排序，且可能未排除已被指派的教師', 'warning', 6000);
         }
-        const substituteRecords = (monthRecords || this.dataManager.substituteRecords || [])
-            .filter(r => r.date === date);
+        // 衝堂過濾用的佔用紀錄：當日已成立紀錄 + 前後 31 天內「調課移入當日」的紀錄 + （V2）在途申請
+        // （待同意／待核准，推薦時直接排除被佔用的教師）。monthRecords 另供公平性與請假標註使用，
+        // 刻意不含在途申請——在途申請不算「本月已代」節數。
+        let substituteRecords;
+        try {
+            substituteRecords = await this.dataManager.getOccupancyRecordsAround([date]);
+        } catch (err) {
+            console.error('讀取佔用紀錄失敗，改用本月紀錄過濾：', err);
+            this.showToast('讀取在途申請與調課紀錄失敗，推薦可能未排除已被指派或待核准中的教師（送出前會再檢查）', 'warning', 6000);
+            substituteRecords = (monthRecords || this.dataManager.substituteRecords || [])
+                .filter(r => r.date === date);
+        }
         if (gen !== this._recommendationsGen) return; // 期間使用者已改選其他課程/日期，放棄本輪結果
 
         console.log('===== 代課教師推薦 =====');
@@ -2831,15 +2833,22 @@ class SubstituteTeacherApp {
             multiCourseTotal: sortedCourses.length
         }));
 
-        // 多節代課送出前批次衝堂攔截
+        // 多節代課送出前批次衝堂攔截（按需讀取當下紀錄；V2 含在途申請與調課移入；讀取失敗 fail-closed）
         for (const record of records) {
-            const conflict = this.dataManager.checkSubstituteTeacherConflict(
-                record.substituteTeacher,
-                record.date,
-                record.weekday,
-                record.period,
-                record.id
-            );
+            let conflict;
+            try {
+                conflict = await this.dataManager.checkSubstituteTeacherConflictAsync(
+                    record.substituteTeacher,
+                    record.date,
+                    record.weekday,
+                    record.period,
+                    record.id
+                );
+            } catch (err) {
+                console.error('代課送出前讀取紀錄失敗：', err);
+                this.showToast('讀取既有調代課紀錄失敗，無法確認代課教師當日是否已被指派，請稍後重試', 'error', 6000);
+                return;
+            }
             if (conflict) {
                 this.showToast(`代課指派衝突：${conflict}，請重新選擇代課教師`, 'error', 6000);
                 return;
@@ -2878,13 +2887,20 @@ class SubstituteTeacherApp {
 
         // 代課送出前衝堂攔截
         if (record.type === '代課' && record.substituteTeacher) {
-            const conflict = this.dataManager.checkSubstituteTeacherConflict(
-                record.substituteTeacher,
-                record.date,
-                record.weekday,
-                record.period,
-                record.id
-            );
+            let conflict;
+            try {
+                conflict = await this.dataManager.checkSubstituteTeacherConflictAsync(
+                    record.substituteTeacher,
+                    record.date,
+                    record.weekday,
+                    record.period,
+                    record.id
+                );
+            } catch (err) {
+                console.error('代課送出前讀取紀錄失敗：', err);
+                this.showToast('讀取既有調代課紀錄失敗，無法確認代課教師當日是否已被指派，請稍後重試', 'error', 6000);
+                return;
+            }
             if (conflict) {
                 this.showToast(`代課指派衝突：${conflict}，請重新選擇代課教師`, 'error', 6000);
                 return;

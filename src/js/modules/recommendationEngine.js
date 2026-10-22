@@ -3,7 +3,7 @@
  *
  * 代課教師推薦邏輯：
  * 1. 候選名單 = 教師名單 ∪ 課表上出現的所有教師（只存在於課表、尚未加入名單者也會列出）
- * 2. 排除該時段有課、當日該節已被指派代/調課者，以及原任課教師 → 全部可代課教師
+ * 2. 排除該時段有課、當日該節已被指派代/調課（含被調課移入）者，以及原任課教師 → 全部可代課教師
  * 3. 依以下優先順序排序（全部列出，不截斷）：
  *    - 優先度 1：同科目教師（課表上也教這一科，或任教領域欄填了這一科）
  *    - 優先度 2：該班導師
@@ -14,6 +14,17 @@
  * 同一優先度內，符合的條件越多越前面；再以「同領域」微調；同分者「本月已代節數」少者優先
  * （公平性 tie-break，不改分數、不會壓過上述任何一層），最後依姓名排序以保持穩定。
  */
+
+/**
+ * 衝堂訊息用的「在途」標示：V2 把待同意／待核准的申請轉成佔用紀錄（帶 __pendingLabel）後，
+ * 與已成立紀錄一起丟進衝堂判斷；訊息組裝時用本函式補上「（待核准中）」或「（待同意中）」。
+ * 已成立紀錄沒有 __pendingLabel，回傳空字串，V1 行為不變。
+ * @param {Object} [detail] - 命中的紀錄
+ * @returns {string}
+ */
+export function pendingTag(detail) {
+    return detail && detail.__pendingLabel ? `（${detail.__pendingLabel}）` : '';
+}
 
 /**
  * 單一衝堂判斷來源：某教師在指定日期／星期／節次是否已無法再被指派代課。
@@ -150,8 +161,11 @@ export class RecommendationEngine {
         const original = this.normalizeName(originalTeacher);
         const freeTeachers = this.getCandidateTeachers(teachers, scheduleData).filter(teacher => {
             const name = this.normalizeName(teacher.name);
+            // 另加 findSwapInConflict：被別筆調課「移入」該節去上別班的教師，findTeacherConflict 看不到
             return name && name !== original && !findTeacherConflict({
                 teacherName: name, date, weekday, period, scheduleData, records: substituteRecords
+            }) && !findSwapInConflict({
+                teacherName: name, date, period, records: substituteRecords
             });
         });
         console.log('空堂教師:', freeTeachers.map(t => t.name));

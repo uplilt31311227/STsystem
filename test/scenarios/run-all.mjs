@@ -18,6 +18,7 @@ import { run as runSchedule }   from './scenario-01-schedule-import.mjs';
 import { run as runApproval }   from './scenario-02-approval-flow.mjs';
 import { run as runSettlement } from './scenario-03-settlement.mjs';
 import { run as runIsolation }  from './scenario-04-isolation.mjs';
+import { run as runAssignment } from './scenario-05-assignment-conflict.mjs';
 
 /** ScheduleParser 每解析一份檔案就 console.log 欄位對應，會把測試輸出淹掉。 */
 function withQuietConsole(fn) {
@@ -60,6 +61,9 @@ async function main() {
 
         console.log('▶ 重新種入假資料（情境 4）…');
         suites.push(await runIsolation(await seedAll({ quiet: true })));
+
+        console.log('▶ 重新種入假資料（情境 5）…');
+        suites.push(await runAssignment(await seedAll({ quiet: true })));
     }
 
     // --- 報告 ---

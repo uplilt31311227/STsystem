@@ -18,7 +18,7 @@ import {
     mergeData
 } from './cloudSyncService.js';
 import { isSignedIn } from './authService.js';
-import { findTeacherConflict } from './recommendationEngine.js';
+import { findTeacherConflict, findSwapInConflict, pendingTag } from './recommendationEngine.js';
 
 export class DataManager {
     constructor() {
@@ -539,6 +539,40 @@ export class DataManager {
     }
 
     /**
+     * 衝堂判斷專用的「佔用紀錄」查詢（日期範圍）。
+     * V1／離線：就是已存在的調代課紀錄（等同 getSubstituteRecordsAsync），行為不變。
+     * V2 已登入模式由 v2-app.js patchDataManager() 覆寫：改查 Firestore 當下資料，並額外把
+     * 「待同意／待核准」的在途申請轉成佔用紀錄（帶 __pendingLabel）一併回傳。
+     * ⚠ 僅供衝堂判斷（推薦過濾、送出前攔截）使用，絕不可餵給月結算／週彙整——那些呼叫端
+     * 一律維持 getSubstituteRecordsAsync()，不含在途申請。
+     * 查詢失敗會丟出例外，由呼叫端決定如何提示（送出前攔截須 fail-closed）。
+     * @returns {Promise<Array>}
+     */
+    async getAssignmentOccupancyRecordsAsync(startDate = '', endDate = '') {
+        return this.getSubstituteRecordsAsync(startDate, endDate);
+    }
+
+    /**
+     * 取得指定日期「前後各 days 天」的佔用紀錄並去重。
+     * 調課紀錄以 date（時段 A）為索引，但會佔用 swapDate（時段 B），要找出「移入某日」的調課
+     * 必須把前後一段日期一併查回（跨月調課 31 天已足夠）。
+     * @param {string[]} dates - YYYY-MM-DD
+     * @returns {Promise<Array>}
+     */
+    async getOccupancyRecordsAround(dates, days = 31) {
+        const fmt = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        const byKey = new Map();
+        for (const date of new Set((dates || []).filter(Boolean))) {
+            const base = new Date(`${date}T00:00:00`);
+            const from = new Date(base); from.setDate(from.getDate() - days);
+            const to = new Date(base); to.setDate(to.getDate() + days);
+            const rows = await this.getAssignmentOccupancyRecordsAsync(fmt(from), fmt(to));
+            rows.forEach(r => byKey.set(r.recordId || r.id || r.reqId || JSON.stringify(r), r));
+        }
+        return [...byKey.values()];
+    }
+
+    /**
      * 標準化日期格式為 YYYY-MM-DD
      * @param {string} dateStr - 日期字串
      * @returns {string} 標準化後的日期
@@ -602,11 +636,14 @@ export class DataManager {
      * @param {string} weekday - 代課星期（用於查 scheduleData）
      * @param {string} period - 代課節次
      * @param {string} [excludeRecordId] - 排除這個 record id（編輯既有紀錄時用）
+     * @param {Array|null} [recordsOverride] - 呼叫端自行取得的佔用紀錄（V2 須用 getOccupancyRecordsAround
+     *        按需查詢，含在途申請）；未提供則用本機 this.substituteRecords（V1／離線）
      * @returns {string|null} 衝突原因，null 表示無衝突
      */
-    checkSubstituteTeacherConflict(substituteTeacherName, date, weekday, period, excludeRecordId = null) {
+    checkSubstituteTeacherConflict(substituteTeacherName, date, weekday, period, excludeRecordId = null, recordsOverride = null) {
         if (!substituteTeacherName || !date || !period) return null;
 
+        const records = recordsOverride || this.substituteRecords;
         // 衝堂判斷走共用的 findTeacherConflict（與推薦過濾同一份邏輯）；
         // 九年級已畢業時不算有課，故傳入有效課表
         const hit = findTeacherConflict({
@@ -615,17 +652,36 @@ export class DataManager {
             weekday,
             period,
             scheduleData: this.getActiveScheduleData(),
-            records: this.substituteRecords,
+            records,
             excludeRecordId
         });
         if (hit) {
             if (hit.kind === 'teaching') {
                 return `${substituteTeacherName}在${weekday}${period}原本有${hit.detail.className}的課`;
             }
-            return `${substituteTeacherName}在${date} ${period}已被指派為${hit.detail.className}的${hit.role}`;
+            return `${substituteTeacherName}在${date} ${period}已被指派為${hit.detail.className}的${hit.role}${pendingTag(hit.detail)}`;
+        }
+
+        // 被別筆調課「移入」該節去上別班的課（findTeacherConflict 不看調課移入）
+        const swapIn = findSwapInConflict({ teacherName: substituteTeacherName, date, period, records, excludeRecordId });
+        if (swapIn) {
+            return `${substituteTeacherName}在${date} ${period}已調課移入${swapIn.detail.className || ''}${pendingTag(swapIn.detail)}`;
         }
 
         return null;
+    }
+
+    /**
+     * checkSubstituteTeacherConflict 的非同步版本：先按需取得「當下」的佔用紀錄再判斷。
+     * V2 下 this.substituteRecords 恆為空（紀錄不再 push 進本機陣列），同步版等於只檢查課表；
+     * 送出前攔截一律改用本方法，才看得到已成立紀錄與在途申請。
+     * 讀取失敗會丟出例外，呼叫端須 fail-closed（不送出）。
+     * @returns {Promise<string|null>}
+     */
+    async checkSubstituteTeacherConflictAsync(substituteTeacherName, date, weekday, period, excludeRecordId = null) {
+        if (!substituteTeacherName || !date || !period) return null;
+        const records = await this.getOccupancyRecordsAround([date]);
+        return this.checkSubstituteTeacherConflict(substituteTeacherName, date, weekday, period, excludeRecordId, records);
     }
 
     /**

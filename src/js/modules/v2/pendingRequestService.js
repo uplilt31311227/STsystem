@@ -24,6 +24,7 @@ import * as logger         from './operationLogger.js';
 import * as roleSvc        from './roleService.js';
 import * as semesterState  from './semesterState.js';
 import { getV2Firestore }  from './firebaseV2.js';
+import { verifyNoAssignmentConflict, buildApprovalConflictMessage } from './assignmentConflict.js';
 import {
     LOG_ACTIONS,
     LOG_TARGET_TYPES,
@@ -42,6 +43,49 @@ export class RequestAlreadyProcessedError extends Error {
         this.name = 'RequestAlreadyProcessedError';
         this.code = 'ALREADY_PROCESSED';
     }
+}
+
+/**
+ * 核准／直接成立前重新驗證發現雙重指派時丟出的錯誤。UI 依 err.code === 'ASSIGNMENT_CONFLICT' 辨識。
+ */
+export class AssignmentConflictError extends Error {
+    constructor(message, hit = null) {
+        super(message);
+        this.name = 'AssignmentConflictError';
+        this.code = 'ASSIGNMENT_CONFLICT';
+        this.hit = hit;
+    }
+}
+
+/**
+ * 核准前（交易之外）以「當下」的已成立紀錄重新檢查衝堂；有衝突就寫操作日誌並丟
+ * AssignmentConflictError，查詢失敗丟 APPROVAL_VERIFY_FAILED（fail-closed，不核准）。
+ *
+ * 為什麼放在交易「之前」且非交易性：交易內的 rules 文件存取有共用配額（見 approveRequest 內
+ * 註解），日期範圍查詢也無法放進 Firestore 交易。代價是「驗證通過 → 交易提交」之間有極短的
+ * 競態窗口（毫秒級，期間另一位組長剛好成立了同教師同節的紀錄）；此窗口刻意接受——
+ * 本檢查要堵的是「申請擱置數小時～數天」的主要缺口，且最終仍由人工核准把關。
+ */
+async function assertNoAssignmentConflict(req, { logTargetType, logTargetId, logContext }) {
+    const hit = await verifyNoAssignmentConflict(req, (range) => dataSvc.queryRecordsByDateRange(range));
+    if (!hit) return;
+    const message = buildApprovalConflictMessage(hit);
+    try {
+        await logger.log(LOG_ACTIONS.APPROVE_BLOCKED_CONFLICT, logTargetType, logTargetId, {
+            reason:             'assignment_conflict',
+            context:            logContext,
+            conflictTeacher:    hit.teacher,
+            conflictDate:       hit.date,
+            conflictPeriod:     hit.period,
+            conflictRole:       hit.role,
+            conflictRecordId:   hit.detail?.recordId || hit.detail?.id || null,
+            affectedTeacherIds: buildAffectedList(req),
+        });
+    } catch (e) {
+        // 日誌失敗不可蓋掉真正的衝突訊息
+        console.warn('[V2] 寫入衝堂攔截日誌失敗：', e);
+    }
+    throw new AssignmentConflictError(message, hit);
 }
 
 function buildAffectedList(req) {
@@ -251,6 +295,22 @@ export async function approveRequest(reqId) {
     const fs  = await getV2Firestore();
     const reqRef = fs.doc(fs.db, SCHEMA_PATHS.pendingDoc(reqId));
 
+    // 雙重指派防線（P0-1）：申請擱置期間，代課／調課教師可能已被另一筆紀錄佔走同日同節。
+    // 在任何寫入（含下方先寫的 private/detail）之前，用當下的已成立紀錄重驗；有衝突就中止。
+    // 先非交易性讀一次請求內容（只為取得 type／日期／教師）；狀態不對交給交易內原有檢查
+    // 與 RequestAlreadyProcessedError，這裡不重複判斷，避免行為改變。
+    const preReq = await dataSvc.getPendingRequest(reqId);
+    if (preReq) {
+        const normalizedPre = normalizeLegacyRequest(preReq);
+        if (normalizedPre.status === REQUEST_STATUS.PENDING_APPROVAL) {
+            await assertNoAssignmentConflict(normalizedPre, {
+                logTargetType: LOG_TARGET_TYPES.PENDING_REQUEST,
+                logTargetId:   reqId,
+                logContext:    'approve_request',
+            });
+        }
+    }
+
     // Firestore 對單一 transaction 的 rules document access 有共用配額限制（約 20 次，
     // 完整推導見 legacyMigrationService.js 檔頭註解）。交易內部 tx.get(reqRef)／tx.set(recordRef,...)
     // 已各自觸發 isApprover(schoolId) 判斷鏈，若再把「新紀錄 private/detail」的 create 規則
@@ -451,6 +511,13 @@ export async function adminCreate(payload) {
         });
         throw new Error('僅組長可代發起');
     }
+
+    // 雙重指派防線（P0-1）：直接成立也要以當下紀錄重驗，衝突則不寫入。
+    await assertNoAssignmentConflict(payload, {
+        logTargetType: LOG_TARGET_TYPES.SUBSTITUTE_RECORD,
+        logTargetId:   null,
+        logContext:    'admin_create',
+    });
 
     const me  = roleSvc.getCurrentIdentity();
     const now = new Date().toISOString();
