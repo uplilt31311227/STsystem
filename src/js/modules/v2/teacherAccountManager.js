@@ -15,6 +15,7 @@
 
 import * as dataSvc    from './schoolDataService.js';
 import * as logger     from './operationLogger.js';
+import * as roleSvc    from './roleService.js';
 import { LOG_ACTIONS, LOG_TARGET_TYPES, ROLES, VALID_ROLES, normalizeRole } from './schemaConstants.js';
 
 /**
@@ -256,6 +257,17 @@ export async function setRole(teacherId, role) {
     }
     const before = await dataSvc.getTeacher(teacherId);
     if (!before) throw new Error('找不到教師');
+
+    // 角色異動護欄（對應 firestore.rules v2.9）：不可改自己的角色，避免唯一的主任誤把自己降級而鎖死。
+    // 只在「實際變更」時擋；選同值不算異動。rules 端是最終防線，這裡先給友善訊息並留稽核紀錄。
+    const me = roleSvc.getCurrentIdentity();
+    if (me && me.teacherId === teacherId && normalizeRole(before.role) !== normalized) {
+        await logger.log(LOG_ACTIONS.PERMISSION_DENIED, LOG_TARGET_TYPES.TEACHER, teacherId, {
+            reason: 'set_own_role_forbidden',
+            attempted: normalized,
+        });
+        throw new Error('不可修改自己的角色（避免誤降級而無人能管理系統）。請由另一位教務主任為您調整。');
+    }
 
     const after = await dataSvc.updateTeacher(teacherId, { role: normalized });
     await logger.log(
