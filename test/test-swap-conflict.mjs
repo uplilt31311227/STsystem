@@ -46,7 +46,8 @@ const teachers = ['原師', '數甲', '數乙', '空甲', '空乙'].map(name => 
 const target = { weekday: '星期一', period: '第一節', className: '7年1班', subject: '數學', rawSubject: '數學', domain: '', originalTeacher: '原師' };
 const date = '2026-09-21';
 const leave = (id, who, period, type = '代課') => ({ id, type, date, period, originalTeacher: who, substituteTeacher: '外人' + id, className: 'x', status: undefined });
-const dayRecs = [leave('a', '數甲', '第三節'), leave('b', '空乙', '第二節', '調課'), { ...leave('c', '空甲', '第五節'), status: 'rejected' }];
+// 調課（教師自行互換）不算請假，見 test-p0-fixes.mjs (a)
+const dayRecs = [leave('a', '數甲', '第三節'), leave('b', '空乙', '第二節'), { ...leave('c', '空甲', '第五節'), status: 'rejected' }];
 const engine = new RecommendationEngine();
 // 同分比較：數甲/數乙都「同科目」、空甲/空乙都「空堂」；數乙本月代課較多，用來證明 onLeave 比本月節數優先
 const monthRecs = [...dayRecs, ...[1, 2, 3].map(i => ({ id: 'm' + i, type: '代課', date: '2026-09-0' + i, period: '第一節', originalTeacher: '誰', substituteTeacher: '數乙' }))];
@@ -58,7 +59,7 @@ check('(c) tags 含 onLeaveToday', get('數甲').tags.includes('onLeaveToday') &
 check('(c) 同層內排在無標記者之後（即使本月節數較少）', names.indexOf('數乙') < names.indexOf('數甲') && names.indexOf('空甲') < names.indexOf('空乙'), names.join(','));
 check('(c) 不跨層：請假的同科目教師仍排在未請假的空堂教師之前', names.indexOf('數甲') < names.indexOf('空甲'), names.join(','));
 check('(c) 不改分數', get('數甲').score === get('數乙').score && get('空甲').score === get('空乙').score);
-check('(c) 調課的 originalTeacher 也標記；被拒絕的紀錄不標記', get('空乙').onLeaveToday === true && !get('空甲').onLeaveToday);
+check('(c) 代課請假者標記；被拒絕的紀錄不標記', get('空乙').onLeaveToday === true && !get('空甲').onLeaveToday);
 check('(c) 不硬性排除', names.includes('數甲') && names.includes('空乙'));
 const recsNoMonth = engine.getRecommendations(target, schedule, teachers, date, dayRecs, null);
 check('(c) 未提供月紀錄時退用當日紀錄仍會標註', recsNoMonth.find(r => r.teacher.name === '數甲').tags.includes('onLeaveToday'));

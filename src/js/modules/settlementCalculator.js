@@ -287,6 +287,8 @@ export class SettlementCalculator {
      * @returns {Object} 分類統計
      */
     getDetailedSettlement(records, teacherName) {
+        // 與彙總共用成立防線：排除非核准／刪除旗標紀錄（呼叫端即使傳入未過濾陣列也不會誤算）
+        records = (records || []).filter(r => this.isEffectiveRecord(r));
         const asSubstitute = records.filter(r => r.substituteTeacher === teacherName);
         const asOriginal = records.filter(r => r.originalTeacher === teacherName);
 
@@ -506,6 +508,7 @@ export class SettlementCalculator {
      * @returns {Object} 調課明細
      */
     getSubstituteDetails(records, teacherName) {
+        records = (records || []).filter(r => this.isEffectiveRecord(r));
         const asSubstitute = records.filter(r => r.substituteTeacher === teacherName);
         const asOriginal = records.filter(r => r.originalTeacher === teacherName);
 

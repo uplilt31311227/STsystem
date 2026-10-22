@@ -1668,7 +1668,7 @@ class SubstituteTeacherApp {
             // 多重調課模式：不禁用，顯示警告但仍可選取，衝突在整批送出時檢查
             conflictCourses.forEach(({ course, conflict }) => {
                 const courseId = `${course.weekday}_${course.period}_${course.teacher}`;
-                options += `<option value="${courseId}" style="color: #b45309;">⚠ ${course.period} - ${course.teacher}（${course.subject}）- ${conflict}</option>`;
+                options += `<option value="${esc(courseId)}" style="color: #b45309;">⚠ ${esc(course.period)} - ${esc(course.teacher)}（${esc(course.subject)}）- ${esc(conflict)}</option>`;
             });
         } else {
             // 單次調課模式：禁用衝堂課程
@@ -2834,30 +2834,25 @@ class SubstituteTeacherApp {
         }));
 
         // 多節代課送出前批次衝堂攔截（按需讀取當下紀錄；V2 含在途申請與調課移入；讀取失敗 fail-closed）
-        for (const record of records) {
-            let conflict;
-            try {
-                conflict = await this.dataManager.checkSubstituteTeacherConflictAsync(
-                    record.substituteTeacher,
-                    record.date,
-                    record.weekday,
-                    record.period,
-                    record.id
-                );
-            } catch (err) {
-                console.error('代課送出前讀取紀錄失敗：', err);
-                this.showToast('讀取既有調代課紀錄失敗，無法確認代課教師當日是否已被指派，請稍後重試', 'error', 6000);
-                return;
-            }
-            if (conflict) {
-                this.showToast(`代課指派衝突：${conflict}，請重新選擇代課教師`, 'error', 6000);
-                return;
-            }
+        // 對所有不重複日期只取一次佔用紀錄，再逐節檢查（不是每一節都重查全校紀錄與在途申請）
+        let conflict;
+        try {
+            conflict = await this.dataManager.checkSubstituteTeacherConflictsBatchAsync(records);
+        } catch (err) {
+            console.error('代課送出前讀取紀錄失敗：', err);
+            this.showToast('讀取既有調代課紀錄失敗，無法確認代課教師當日是否已被指派，請稍後重試', 'error', 6000);
+            return;
+        }
+        if (conflict) {
+            this.showToast(`代課指派衝突：${conflict}，請重新選擇代課教師`, 'error', 6000);
+            return;
         }
 
-        // 儲存所有紀錄
+        // 儲存所有紀錄：等寫入完成才往下（V2 寫入可能被 adminCreate 重驗擋下，回傳 false；
+        // V1 為同步寫 localStorage，回傳 undefined，行為不變）。失敗時 V2 已顯示錯誤訊息，不產 PDF。
         for (const record of records) {
-            this.dataManager.addSubstituteRecord(record);
+            const ok = await this.dataManager.addSubstituteRecord(record);
+            if (ok === false) return;
         }
         this.saveDataToStorage();
 
@@ -2907,8 +2902,11 @@ class SubstituteTeacherApp {
             }
         }
 
-        // 儲存紀錄到本地（會自動同步到 Firebase 雲端）
-        this.dataManager.addSubstituteRecord(record);
+        // 儲存紀錄到本地（會自動同步到 Firebase 雲端）。
+        // await 寫入完成才產 PDF／顯示成功：V2 寫入可能被 adminCreate 重驗擋下（回傳 false，錯誤已由 V2 顯示）；
+        // V1 為同步寫 localStorage，回傳 undefined，行為不變。
+        const saved = await this.dataManager.addSubstituteRecord(record);
+        if (saved === false) return;
         this.saveDataToStorage();
 
         // 生成 PDF

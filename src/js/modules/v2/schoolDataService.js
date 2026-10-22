@@ -679,6 +679,40 @@ export async function queryRecordsByDateRange({ startDate = null, endDate = null
     return snap.docs.map(d => ({ recordId: d.id, ...d.data() }));
 }
 
+/**
+ * 依 swapDate（調課時段 B 的日期）範圍查詢已成立紀錄。
+ * 單一欄位的 range 條件（不帶其他等式／orderBy），Firestore 自動建立單欄位索引即可，
+ * 不需要複合索引、不需部署 firestore.indexes.json。沒有 swapDate 欄位的代課紀錄不會被命中。
+ */
+export async function queryRecordsBySwapDateRange({ startDate = null, endDate = null } = {}) {
+    const { effectiveStart, effectiveEnd, valid } = resolveDateRangeBounds({ startDate, endDate });
+    if (!valid) return [];
+    const fs   = await getV2Firestore();
+    const col  = fs.collection(fs.db, SCHEMA_PATHS.substituteCol());
+    const q    = fs.query(
+        col,
+        fs.where('swapDate', '>=', effectiveStart),
+        fs.where('swapDate', '<=', effectiveEnd),
+    );
+    const snap = await fs.getDocs(q);
+    return snap.docs.map(d => ({ recordId: d.id, ...d.data() }));
+}
+
+/**
+ * 衝堂判斷專用：回傳「佔用」範圍內日期的已成立紀錄 = date 落在範圍內 ∪ swapDate 落在範圍內，
+ * 依 recordId 去重。補上遠距調課（date=09-01、swapDate=11-16）查 11-16 時只靠 date 窗口會漏掉的缺口。
+ * 兩個查詢並行；任一失敗即丟出（呼叫端 fail-closed）。
+ */
+export async function queryRecordsOccupyingRange({ startDate = null, endDate = null } = {}) {
+    const [byDate, bySwap] = await Promise.all([
+        queryRecordsByDateRange({ startDate, endDate }),
+        queryRecordsBySwapDateRange({ startDate, endDate }),
+    ]);
+    const map = new Map();
+    for (const r of [...byDate, ...bySwap]) map.set(r.recordId, r);
+    return [...map.values()];
+}
+
 export async function getSubstituteRecord(recordId) {
     const fs   = await getV2Firestore();
     const ref  = fs.doc(fs.db, SCHEMA_PATHS.substituteDoc(recordId));
