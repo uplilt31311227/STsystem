@@ -9,6 +9,23 @@ tags:
 
 ---
 
+## [2026-10-22] P0 修正：雙重指派防護（核准重驗、在途申請、日期感知調課）、月結成立防線與寒暑假下限（僅本分支）
+
+**起因**：與 Course_Scheduling_System 比對發現的 P0 缺口（`docs/research/COMPARE_Course_Scheduling_System.md` §5），以及 [[ISSUES_LOG]] 2026-10-07 月結規則疑點、2026-10-22「在途申請未納入代課衝堂」。
+
+- **核准前重驗衝堂**（新模組 `src/js/modules/v2/assignmentConflict.js`、`pendingRequestService.js`）：`approveRequest` 與 `adminCreate` 在交易**前**以當下 Firestore 紀錄（date 與 swapDate 兩種範圍查詢去重，不吃快取）重驗代課／調課教師是否已被佔用；衝突則拒絕、不寫入、記 `approve_blocked_conflict` 日誌；查詢失敗 fail-closed。核准只比對已成立紀錄（避免兩張互衝的在途申請互卡），驗證到交易間的極小競態已接受並註明。
+- **在途申請納入佔用**（V2）：推薦過濾與送出前攔截把待同意／待核准申請視為佔用，訊息標「（待核准中）／（待同意中）」；在途申請讀取有 5 秒 TTL＋in-flight 去重（核准重驗不經快取）。月結與週彙整路徑不含在途申請。
+- **調課日期感知**（`recommendationEngine.js` `findSwapDateConflict`／`findSwapInConflict`、`app.js`）：調課下拉與送出前（單筆與多重調課批次）依實際日期檢查兩位教師是否已被代課、被調課佔用或調課移入；遠距調課（date 與 swapDate 相距 >31 天）以 swapDate 補查。代課衝堂也納入「已被調課移入」。
+- **推薦標註當日請假**：候選人同日另有被代課紀錄時標「⚠ 當日請假」與理由（第X節，依節次順序），排到同層最後，不跨層、不排除；調課與自我調課不算請假。
+- **月結算**（`settlementCalculator.js`）：`isEffectiveRecord` 排除非 approved 與 deleted／isDeleted 紀錄（無 status 視為已成立），彙總、明細、`getDetailedSettlement`、`getSubstituteDetails` 一致；實際時數以 0 為下限（被代課減少照計），Excel 表尾註記受下限影響的教師。
+- **多節代課讀取量**：送出前每個不重複日期只查一次 occupancy。
+- **UI 修正**：V2 寫入改 await 完成才產 PDF 與顯示成功；直接成立被擋改用「無法成立…請改選代課教師」；錯誤前綴不再重複；待辦卡片「第 第一節 節」修正並補 escapeHtml。
+- **XSS**：多重調課下拉選單 conflict／課程欄位補 `esc()`（獨立驗收以 Chrome 實證觸發）；待辦卡片 rejectNote 等欄位補跳脫。
+
+**驗證**：`npm test` 全過（新增 test-swap-conflict、test-assignment-conflict、test-p0-fixes 27 項；settlement 21/21，移除兩個 knownGap）、`npm run check` 41/41；emulator `test:scenarios` 96/96（新情境 5 雙重指派 6/6）、`test:rules-settlement` 11/11、`test:rules-role-guard` 4/4；獨立 opus 驗收以 Playwright＋emulator 真實登入走 V2 四情境（核准被擋且日誌正確、第二張申請送出被攔、無衝突正常核准、推薦排除在途佔用者）與 V1 回歸，修正後重跑 XSS／V2 e2e（9 PASS）／V1 腳本全過。不需新增索引或改 rules。
+
+---
+
 ## [2026-10-22] 參考 Course_Scheduling_System 的 P1 改進：推薦公平性、無人可代建議、匯入略過列、月結明細、主任角色護欄（僅本分支）
 
 **起因**：與開源專案 begin0808/Course_Scheduling_System 深度比對（`docs/research/COMPARE_Course_Scheduling_System.md`），挑出低成本的 P1 項目。
