@@ -362,6 +362,7 @@
 .badge-same-class { background-color: var(--c-info-50); color: var(--c-info-600); }
 .badge-free { background-color: var(--c-success-100); color: var(--c-success-600); }
 .badge-part-time { background-color: var(--c-n-100); color: var(--c-n-600); }
+.badge-on-leave { background-color: var(--c-warning-100); color: var(--c-warning-600); }
 .recommendation-item.selected .recommendation-badge { background-color: rgba(255, 255, 255, 0.2); color: var(--color-text-invert); }
 
 /* 調課預覽表（原 app.js inline style 表格，改用 .data-table class） */
