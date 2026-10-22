@@ -1565,6 +1565,8 @@ class SubstituteTeacherApp {
         // 隱藏預覽
         swapPreview.classList.add('hidden');
         this.selectedSwapCourse = null;
+        // 作廢仍在進行中的清單查詢，避免舊日期的結果晚到後覆寫清單
+        this._swapListGen = (this._swapListGen || 0) + 1;
 
         if (!date) {
             swapCourseSelect.innerHTML = '<option value="">請先選擇時段 B 日期</option>';
@@ -1590,6 +1592,8 @@ class SubstituteTeacherApp {
         const swapPreview = document.getElementById('swap-preview');
         // 使用有效課表：九年級已畢業時，其課程不再造成調課衝堂誤判
         const scheduleData = this.dataManager.getActiveScheduleData();
+        // 每次呼叫都先取得新世代，任何提早 return 的路徑也會作廢先前仍在查詢中的呼叫
+        const gen = (this._swapListGen = (this._swapListGen || 0) + 1);
 
         // 隱藏預覽
         swapPreview.classList.add('hidden');
@@ -1623,7 +1627,6 @@ class SubstituteTeacherApp {
         // 查詢失敗時退回只看週課表，並提示（送出前仍會再攔一次）
         const dateA = document.getElementById('sub-date')?.value || '';
         const dateB = document.getElementById('swap-date')?.value || '';
-        const gen = (this._swapListGen = (this._swapListGen || 0) + 1);
         let dateRecords = null;
         if (dateA && dateB) {
             try {
@@ -2850,9 +2853,22 @@ class SubstituteTeacherApp {
 
         // 儲存所有紀錄：等寫入完成才往下（V2 寫入可能被 adminCreate 重驗擋下，回傳 false；
         // V1 為同步寫 localStorage，回傳 undefined，行為不變）。失敗時 V2 已顯示錯誤訊息，不產 PDF。
+        const savedRecords = [];
         for (const record of records) {
             const ok = await this.dataManager.addSubstituteRecord(record);
-            if (ok === false) return;
+            if (ok === false) {
+                // 逐筆寫入非原子：前面已成立的節次不會回滾，明確告知使用者哪些已存、哪些未存
+                if (savedRecords.length > 0) {
+                    this.saveDataToStorage();
+                    const label = r => `${r.date} ${r.period}`;
+                    const unsaved = records.slice(savedRecords.length);
+                    this.showToast(
+                        `部分節次未儲存。已成立：${savedRecords.map(label).join('、')}；未成立：${unsaved.map(label).join('、')}。請至紀錄查詢確認後，再為未成立節次另行申請`,
+                        'warning', 10000);
+                }
+                return;
+            }
+            savedRecords.push(record);
         }
         this.saveDataToStorage();
 
