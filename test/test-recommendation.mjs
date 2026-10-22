@@ -2,7 +2,7 @@
  * 代課推薦引擎單元測試：五層順序（同科目 → 班導師 → 同任課班級 → 空堂 → 兼課）與候選名單完整性
  * 執行：node test/test-recommendation.mjs
  */
-import { RecommendationEngine } from '../src/js/modules/recommendationEngine.js';
+import { RecommendationEngine, findTeacherConflict } from '../src/js/modules/recommendationEngine.js';
 
 console.log = () => {}; // 引擎本身有大量 debug log，測試時靜音
 let failed = 0;
@@ -80,6 +80,63 @@ const recs4 = engine.getRecommendations(target,
     [...schedule, c('忙碌 ', '星期一', '第一節', '7年4班', '國文')],
     [...teachers, { name: ' 數甲', domains: [], homeroomClass: '' }], '2026-09-21', []);
 check('姓名空白不造成重複候選', recs4.filter(r => r.teacher.name.trim() === '數甲').length === 1);
+
+// ===== (5) 公平性：本月已代節數 tie-break =====
+const subRec = (teacher, date, extra = {}) =>
+    ({ id: `${teacher}-${date}-${Math.random()}`, type: '代課', date, period: '第三節', substituteTeacher: teacher, ...extra });
+const monthRecs = [
+    subRec('空堂', '2026-09-02'), subRec('空堂', '2026-09-03'),
+    subRec('空堂', '2026-09-04', { status: 'approved' }),
+    subRec('空堂', '2026-09-05', { status: 'pending_approval' }),   // 未成立不算
+    subRec('空堂', '2026-08-31'),                                    // 別的月份不算
+    subRec('空堂', '2026-09-06', { type: '調課' }),                  // 非代課不算
+    subRec('無課表', '2026-09-02')
+];
+const recsF = engine.getRecommendations(target, schedule, teachers, '2026-09-21', [], monthRecs);
+const pos = n => recsF.findIndex(r => r.teacher.name === n);
+check('(a) 空堂本月已代 3 節（只算已成立的代課、同月）', recsF[pos('空堂')].monthlyCount === 3, String(recsF[pos('空堂')].monthlyCount));
+check('(a) 同層候選：本月代課較少者（無課表 1 節）排在較多者（空堂 3 節）前面', pos('無課表') < pos('空堂'));
+check('(a) 未提供本月紀錄時退回姓名排序（無公平性）', (() => {
+    const r = engine.getRecommendations(target, schedule, teachers, '2026-09-21', []);
+    return r.findIndex(x => x.teacher.name === '空堂') < r.findIndex(x => x.teacher.name === '無課表');
+})());
+check('reasonText 顯示「本月已代 N 節」與「本月未代課」',
+    recsF[pos('空堂')].reasonText.includes('本月已代 3 節') && recsF[pos('數甲')].reasonText.includes('本月未代課'));
+// (b) 低層級候選本月代 0 節，也不得超越高層級（代很多節）的候選
+const heavy = Array.from({ length: 20 }, (_, i) => subRec('數導', `2026-09-${String(i + 1).padStart(2, '0')}`));
+const recsB = engine.getRecommendations(target, schedule, teachers, '2026-09-21', [], heavy);
+const posB = n => recsB.findIndex(r => r.teacher.name === n);
+check('(b) 公平性不壓過層級：數導(同科目+導師+同班)代 20 節仍排在數甲(同科目)與空堂(0 節)前',
+    posB('數導') < posB('數甲') && posB('數甲') < posB('空堂'));
+check('(b) 兼課層仍在最後（本月 0 節的兼課不超越代很多的一般空堂）',
+    posB('兼課') > posB('數導') && posB('兼課') > posB('空堂'));
+check('分數不受公平性影響', recsB[posB('數導')].score === recs.find(r => r.teacher.name === '數導').score);
+
+// ===== (6) getMergeOptions =====
+const mergeSchedule = [
+    c('原師', '星期一', '第一節', '7年1班', '數學'),
+    c('甲', '星期一', '第一節', '8年1班', '英語'),
+    c('乙', '星期一', '第一節', '7年2班', '國文'),
+    c('丙', '星期一', '第一節', '7年3班', '數學'),
+    c('丁', '星期一', '第二節', '7年4班', '數學')      // 不同節 → 排除
+];
+const mergeOpts = engine.getMergeOptions({ ...target }, mergeSchedule);
+check('(c) 併班候選排除原任課教師與不同節者', mergeOpts.map(o => o.teacher).join(',') === '丙,乙,甲', mergeOpts.map(o => o.teacher).join(','));
+check('(c) 同年級優先於他年級，同年級中同科目優先', mergeOpts[0].teacher === '丙' && mergeOpts[0].sameSubject && mergeOpts[2].teacher === '甲' && !mergeOpts[2].sameGrade);
+
+// ===== (7) 共用衝堂函式 =====
+const cf = (name, extra = {}) => findTeacherConflict({
+    teacherName: name, date: '2026-09-21', weekday: '星期一', period: '第一節',
+    scheduleData: schedule, records: [], ...extra });
+check('(d) 該節有課 → kind teaching', cf('忙碌')?.kind === 'teaching' && cf('忙碌').detail.className === '7年2班');
+const covRecs = [{ id: 'r1', date: '2026-09-21', period: '第一節', substituteTeacher: '空堂', className: '7年9班' },
+                 { id: 'r2', date: '2026-09-21', period: '第一節', swapTeacher: '無課表', className: '7年8班' }];
+check('(d) 同日同節已代課 → kind covering（role 代課）', cf('空堂', { records: covRecs })?.kind === 'covering' && cf('空堂', { records: covRecs }).role === '代課');
+check('(d) 同日同節調課 → kind covering（role 調課）', cf('無課表', { records: covRecs })?.role === '調課');
+check('(d) 排除自身 id 後無衝突；不同日／無衝突回傳 null',
+    cf('空堂', { records: covRecs, excludeRecordId: 'r1' }) === null && cf('空堂', { records: covRecs, date: '2026-09-22' }) === null);
+check('(d) 推薦過濾與共用函式一致：已代課者被排除', !engine.getRecommendations(target, schedule, teachers, '2026-09-21', covRecs).some(r => r.teacher.name === '空堂'));
+
 
 if (failed) { process.stdout.write(`\n${failed} 項失敗\n`); process.exit(1); }
 process.stdout.write('\n全部通過\n');

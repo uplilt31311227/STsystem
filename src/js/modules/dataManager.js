@@ -18,6 +18,7 @@ import {
     mergeData
 } from './cloudSyncService.js';
 import { isSignedIn } from './authService.js';
+import { findTeacherConflict } from './recommendationEngine.js';
 
 export class DataManager {
     constructor() {
@@ -606,28 +607,22 @@ export class DataManager {
     checkSubstituteTeacherConflict(substituteTeacherName, date, weekday, period, excludeRecordId = null) {
         if (!substituteTeacherName || !date || !period) return null;
 
-        // (1) 該老師當天當節是否有自己的原課（九年級已畢業時不算，使用有效課表）
-        if (weekday) {
-            const ownClass = this.getActiveScheduleData().find(c =>
-                c.teacher === substituteTeacherName &&
-                c.weekday === weekday &&
-                c.period === period
-            );
-            if (ownClass) {
-                return `${substituteTeacherName}在${weekday}${period}原本有${ownClass.className}的課`;
+        // 衝堂判斷走共用的 findTeacherConflict（與推薦過濾同一份邏輯）；
+        // 九年級已畢業時不算有課，故傳入有效課表
+        const hit = findTeacherConflict({
+            teacherName: substituteTeacherName,
+            date,
+            weekday,
+            period,
+            scheduleData: this.getActiveScheduleData(),
+            records: this.substituteRecords,
+            excludeRecordId
+        });
+        if (hit) {
+            if (hit.kind === 'teaching') {
+                return `${substituteTeacherName}在${weekday}${period}原本有${hit.detail.className}的課`;
             }
-        }
-
-        // (2) 該老師同日同節是否已被指派為其他代課/調課
-        const assigned = this.substituteRecords.find(r =>
-            r.id !== excludeRecordId &&
-            r.date === date &&
-            r.period === period &&
-            (r.substituteTeacher === substituteTeacherName || r.swapTeacher === substituteTeacherName)
-        );
-        if (assigned) {
-            const role = assigned.swapTeacher === substituteTeacherName ? '調課' : '代課';
-            return `${substituteTeacherName}在${date} ${period}已被指派為${assigned.className}的${role}`;
+            return `${substituteTeacherName}在${date} ${period}已被指派為${hit.detail.className}的${hit.role}`;
         }
 
         return null;
