@@ -844,6 +844,34 @@ class SubstituteTeacherApp {
     }
 
     /**
+     * 顯示課表匯入時被略過的列（Y=0 或無 warnings 時隱藏）
+     * 摘要「已匯入 X 筆，略過 Y 列」，可展開明細，最多列前 50 筆
+     * @param {Object} parseResult - ScheduleParser 的解析結果
+     */
+    renderImportWarnings(parseResult) {
+        const el = document.getElementById('schedule-import-warnings');
+        if (!el) return;
+        const warnings = parseResult.warnings || [];
+        if (warnings.length === 0) {
+            el.classList.add('hidden');
+            el.innerHTML = '';
+            return;
+        }
+        const MAX_SHOWN = 50;
+        const items = warnings.slice(0, MAX_SHOWN).map(w =>
+            `<li>第 ${esc(w.row)} 列：${esc(w.reason)}（${esc(w.summary)}）</li>`
+        ).join('');
+        const more = warnings.length > MAX_SHOWN
+            ? `<li>…另有 ${warnings.length - MAX_SHOWN} 列未顯示，請對照原檔檢查</li>` : '';
+        el.innerHTML = `
+            <details>
+                <summary>⚠ 已匯入 ${parseResult.scheduleData.length} 筆，略過 ${warnings.length} 列（點開看明細）</summary>
+                <ul>${items}${more}</ul>
+            </details>`;
+        el.classList.remove('hidden');
+    }
+
+    /**
      * 從檔名擷取學校名稱
      * @param {string} fileName - 檔案名稱
      * @returns {string} 學校名稱
@@ -1047,6 +1075,9 @@ class SubstituteTeacherApp {
 
         // 檢查課表衝突
         this.checkScheduleConflicts(parseResult.scheduleData);
+
+        // 匯入時被略過的列（僅剛匯入的解析結果才有 warnings；從儲存還原時沒有，會隱藏）
+        this.renderImportWarnings(parseResult);
 
         // 顯示教師編輯區域
         document.getElementById('teacher-editor').classList.remove('hidden');
@@ -4215,7 +4246,8 @@ class SubstituteTeacherApp {
                 this.dataManager.getTeachers()
             );
 
-            this.settlementCalculator.exportToExcel(settlementData, year, month);
+            // records 同時傳入，供「明細」分頁使用（內部以同一個 filterMonthlyRecords 篩月）
+            this.settlementCalculator.exportToExcel(settlementData, year, month, records);
         } catch (err) {
             console.error('匯出月結算 Excel 失敗:', err);
             this.notifySettlementError(err);

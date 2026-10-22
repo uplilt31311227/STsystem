@@ -222,23 +222,33 @@ export class SettlementCalculator {
      * @returns {number} 被代課節數
      */
     countSubstitutedHours(records, teacherName) {
-        return records.filter(record => {
-            if (record.originalTeacher !== teacherName) return false;
+        return records.filter(record =>
+            record.originalTeacher === teacherName && this.isDeductedFromOriginal(record)
+        ).length;
+    }
 
-            // 調課不扣時數（檢查 type 欄位，支援中英文）
-            if (record.type === 'swap' || record.type === '調課') {
-                return false;
-            }
+    /**
+     * 這筆紀錄是否要扣原任課教師的時數（countSubstitutedHours 與明細表共用的唯一判斷，確保同一口徑）
+     * - 調課（type 為 swap／調課）：不扣
+     * - 假別在 noDeductLeaveTypes（公假／長期病假／喪假…）：不扣
+     * - 其他（事假／病假／休假／其他／缺假別）：扣
+     * @param {Object} record - 單筆調代課紀錄
+     * @returns {boolean}
+     */
+    isDeductedFromOriginal(record) {
+        // 調課不扣時數（檢查 type 欄位，支援中英文）
+        if (record.type === 'swap' || record.type === '調課') {
+            return false;
+        }
 
-            // 公假和調課不扣時數（檢查 leaveType 欄位）
-            const leaveType = record.leaveType || '';
-            if (this.noDeductLeaveTypes.includes(leaveType)) {
-                return false;
-            }
+        // 公假和調課不扣時數（檢查 leaveType 欄位）
+        const leaveType = record.leaveType || '';
+        if (this.noDeductLeaveTypes.includes(leaveType)) {
+            return false;
+        }
 
-            // 其他假別扣時數
-            return true;
-        }).length;
+        // 其他假別扣時數
+        return true;
     }
 
     /**
@@ -299,7 +309,26 @@ export class SettlementCalculator {
      * @param {number} year - 學年度
      * @param {number} month - 月份
      */
-    exportToExcel(settlementData, year, month) {
+    exportToExcel(settlementData, year, month, records = []) {
+        const wb = this.buildWorkbook(settlementData, year, month, records);
+
+        // 下載檔案
+        const fileName = `授課時數結算表_${year}學年度_${month}月.xlsx`;
+        XLSX.writeFile(wb, fileName);
+    }
+
+    /**
+     * 建立結算表工作簿（兩個分頁：「結算表」彙總、「明細」逐節）。
+     * 與下載動作分開，方便單元測試；XLSX 預設取全域（瀏覽器 CDN），測試時可注入 node 版。
+     * @param {Array} settlementData - calculate() 的結果
+     * @param {number} year - 學年度
+     * @param {number} month - 月份
+     * @param {Array} records - 與 calculate() 相同來源的調代課紀錄（內部會再經 filterMonthlyRecords 篩月）
+     * @param {Object} [xlsxLib] - SheetJS 實體
+     * @returns {Object} workbook
+     */
+    buildWorkbook(settlementData, year, month, records = [], xlsxLib = globalThis.XLSX) {
+        const XLSX = xlsxLib;
         // 建立工作表資料
         const wsData = [
             [`${year} 學年度 ${month} 月 教師授課時數結算表`],
@@ -353,9 +382,65 @@ export class SettlementCalculator {
 
         XLSX.utils.book_append_sheet(wb, ws, '結算表');
 
-        // 下載檔案
-        const fileName = `授課時數結算表_${year}學年度_${month}月.xlsx`;
-        XLSX.writeFile(wb, fileName);
+        // 第二分頁：逐節明細（與彙總同一口徑：同樣經過 filterMonthlyRecords 與 isDeductedFromOriginal）
+        const detailRows = this.getMonthlyDetailRows(records, year, month);
+        const detailData = [
+            [`${year} 學年度 ${month} 月 調代課逐節明細`],
+            [],
+            ['日期', '星期', '節次', '班級', '科目', '類型', '原任課教師', '代課／調課教師', '假別', '是否扣原任課教師時數'],
+            ...detailRows.map(r => [
+                r.date, r.weekday, r.period, r.className, r.subject,
+                r.type, r.originalTeacher, r.substituteTeacher, r.leaveType, r.deducted ? '是' : '否'
+            ])
+        ];
+        const wsDetail = XLSX.utils.aoa_to_sheet(detailData);
+        wsDetail['!cols'] = [
+            { wch: 12 }, { wch: 6 }, { wch: 8 }, { wch: 10 }, { wch: 12 },
+            { wch: 6 }, { wch: 12 }, { wch: 14 }, { wch: 10 }, { wch: 20 }
+        ];
+        wsDetail['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 9 } }];
+        XLSX.utils.book_append_sheet(wb, wsDetail, '明細');
+
+        return wb;
+    }
+
+    /**
+     * 當月逐節明細列（月結算 Excel「明細」分頁的資料來源）。
+     * 篩月沿用 filterMonthlyRecords，與 calculate() 納入的紀錄完全相同；
+     * 「是否扣時數」呼叫 isDeductedFromOriginal，與 countSubstitutedHours 同一判斷。
+     * @param {Array} records - 調代課紀錄（可含全部月份）
+     * @param {number} year - 學年度
+     * @param {number} month - 月份
+     * @returns {Array<Object>} 依日期、節次排序的明細列
+     */
+    getMonthlyDetailRows(records, year, month) {
+        const leaveLabels = {
+            official: '公假', longsick: '長期病假', funeral: '喪假', personal: '事假',
+            sick: '病假', rest: '休假', other: '其他', swap: '調課'
+        };
+        const periodOrder = ['第一節', '第二節', '第三節', '第四節', '第五節', '第六節', '第七節', '第八節'];
+        const weekdayLabels = ['日', '一', '二', '三', '四', '五', '六'];
+        const periodIdx = p => { const i = periodOrder.indexOf(p); return i < 0 ? 99 : i; };
+
+        return this.filterMonthlyRecords(records || [], year, month)
+            .map(r => {
+                const isSwap = r.type === 'swap' || r.type === '調課';
+                const [y, m, d] = String(r.date).split('-').map(Number);
+                const dow = new Date(y, m - 1, d).getDay();
+                return {
+                    date: r.date,
+                    weekday: Number.isNaN(dow) ? '' : '週' + weekdayLabels[dow],
+                    period: r.period || '',
+                    className: r.className || '',
+                    subject: r.subject || '',
+                    type: isSwap ? '調課' : '代課',
+                    originalTeacher: r.originalTeacher || '',
+                    substituteTeacher: r.substituteTeacher || '',
+                    leaveType: isSwap ? '調課' : (leaveLabels[r.leaveType] || r.leaveType || ''),
+                    deducted: this.isDeductedFromOriginal(r)
+                };
+            })
+            .sort((a, b) => a.date.localeCompare(b.date) || periodIdx(a.period) - periodIdx(b.period));
     }
 
     /**

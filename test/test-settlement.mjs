@@ -8,11 +8,14 @@
  */
 
 import { SettlementCalculator } from '../src/js/modules/settlementCalculator.js';
-import { Suite, eq } from './scenarios/harness.mjs';
+import { createRequire } from 'node:module';
+import { Suite, eq, ok } from './scenarios/harness.mjs';
 import {
     GOLDEN_EXPECTED_2026_10, buildGoldenSchedule, goldenRecordsForCalculator,
     GOLDEN_RECORDS, GOLDEN_NAME,
 } from './fixtures/settlement-golden.mjs';
+
+const XLSX = createRequire(import.meta.url)('xlsx');   // 瀏覽器端由 CDN 提供，node 端用 devDependency
 
 const suite = new Suite('月結算數字正確性（單元）');
 const calc = () => new SettlementCalculator();
@@ -173,6 +176,35 @@ await suite.case('無覆寫時結果與預設完全相同（深比較）', () =>
     c.setWeeksOverride(114, { 10: 5 });   // 其他學年度的覆寫不得外溢
     const b = c.calculate(115, 10, buildGoldenSchedule(), goldenRecordsForCalculator(), roster);
     eq(b, a, '結果一致');
+});
+
+await suite.case('明細分頁：列數與彙總的代課／被代課總數一致（同一口徑）', () => {
+    const c = calc();
+    const records = goldenRecordsForCalculator();
+    const res = c.calculate(115, 10, buildGoldenSchedule(), records, roster);
+    const rows = c.getMonthlyDetailRows(records, 115, 10);
+    // 黃金資料 10 月 in-scope 共 10 筆（g01–g10），x01–x03 跨月不得出現
+    eq(rows.length, 10, '當月明細 10 列');
+    eq(rows.filter(r => r.type === '代課').length, res.reduce((s, r) => s + r.substituteHours, 0), '代課列數 = 彙總代課增加合計（9）');
+    eq(rows.filter(r => r.deducted).length, res.reduce((s, r) => s + r.substitutedHours, 0), '扣時數列數 = 彙總被代課減少合計（5）');
+    eq(rows.filter(r => r.type === '調課').length, 1, '調課 1 列');
+    eq(rows.filter(r => r.type === '調課').every(r => !r.deducted), true, '調課不扣');
+    eq(rows[0].date, '2026-10-01', '依日期排序');
+    eq(rows[0].weekday, '週四', '2026-10-01 為週四');
+});
+
+await suite.case('buildWorkbook：兩個分頁、名稱正確、明細列數與內容', () => {
+    const c = calc();
+    const records = goldenRecordsForCalculator();
+    const res = c.calculate(115, 10, buildGoldenSchedule(), records, roster);
+    const wb = c.buildWorkbook(res, 115, 10, records, XLSX);
+    eq(wb.SheetNames, ['結算表', '明細'], '分頁名稱');
+    const detail = XLSX.utils.sheet_to_json(wb.Sheets['明細'], { header: 1 });
+    eq(detail[2][0], '日期', '明細表頭第一欄');
+    eq(detail[2].length, 10, '明細 10 欄');
+    eq(detail.length - 3, 10, '明細資料列 10');
+    ok(detail.slice(3).some(r => r[5] === '代課' && r[8] === '公假' && r[9] === '否'), '公假代課標示不扣');
+    ok(detail.slice(3).some(r => r[5] === '代課' && r[8] === '事假' && r[9] === '是'), '事假代課標示扣');
 });
 
 suite.print();
