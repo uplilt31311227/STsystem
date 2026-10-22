@@ -11,7 +11,8 @@ tags:
 ## 2026-10-22 P0 修正後殘留（未修）
 
 - **核准競態**：兩位組長在「重驗完成→交易寫入」之間同時核准互衝的申請，仍可能雙重指派（rules 交易配額限制，驗證放在交易外）。機率極低，已接受。
-- **多節代課非原子寫入**：V2 逐筆寫入，第 N 節失敗時前 N-1 節已成立，不會自動回滾（錯誤會顯示）。
+- **多節代課非原子寫入**：V2 逐筆寫入，第 N 節失敗時前 N-1 節已成立，不會自動回滾；畫面會列出已成立與未成立的節次。
+- **重複實作**：`app.js` `describeSwapDateConflict` 與 `assignmentConflict.js` `describeAssignmentConflict`、`dataManager.getOccupancyRecordsAround` 與 `assignmentConflict.fetchRecordsAroundDates` 近似重複，日後改一邊須同步另一邊（可整併）。
 - **`npm run check` 漏抓 ES module 語法錯誤**：修 P0 時 v2-app.js 多一個 `}` 未被抓到（靠瀏覽器 pageerror 發現）。可改用 `node --input-type=module --check < file` 逐檔檢查。
 - **月結舊口徑**：`settlementCalculator.js` 原 2026-10-07 疑點中「負時數」與「不看 status」已修；「每月固定週數」改由設定頁週數覆寫處理。
 
