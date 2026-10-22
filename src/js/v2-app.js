@@ -951,6 +951,7 @@ async function renderTeachersAdminTab() {
         return;
     }
     const canRoster = roleSvc.canManageRoster();
+    const myTeacherId = roleSvc.getCurrentIdentity()?.teacherId || null;
 
     const _gen = _v2IdentityGen;
     host.innerHTML = '<p>載入中…</p>';
@@ -1041,6 +1042,7 @@ async function renderTeachersAdminTab() {
                     ? [homeroom, ...classList]
                     : classList;
                 const lockAttr = canRoster ? '' : 'disabled title="僅教務主任可修改"';
+                const isSelfRow = !!myTeacherId && t.teacherId === myTeacherId;
                 return `
                 <tr class="${rowClass}" data-id="${t.teacherId}" data-name="${escapeHtml(t.name)}">
                     <td data-label="姓名" class="cell-primary">${escapeHtml(t.name)}</td>
@@ -1049,7 +1051,7 @@ async function renderTeachersAdminTab() {
                                placeholder="未指派" ${lockAttr}>
                     </td>
                     <td data-label="角色">
-                        <select class="v2-role-select" ${lockAttr}>
+                        <select class="v2-role-select" ${lockAttr || (isSelfRow ? 'disabled title="不可修改自己的角色（需由另一位教務主任調整）"' : '')}>
                             <option value="teacher"       ${normRole === 'teacher' ? 'selected' : ''}>教師</option>
                             <option value="section_chief" ${normRole === 'section_chief' ? 'selected' : ''}>組長</option>
                             <option value="director"      ${normRole === 'director' ? 'selected' : ''}>主任</option>

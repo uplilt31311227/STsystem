@@ -1,6 +1,6 @@
 rules_version = '2';
 
-// STsystem V2 權限系統 Firestore 規則（v2.8 — 三層角色 + 敏感欄位私有化 + 學期唯讀鎖 + 封存生命週期 + schoolId 反查目錄 + 多租戶開通 + 月結算設定開放 approver）
+// STsystem V2 權限系統 Firestore 規則（v2.9 — 三層角色 + 敏感欄位私有化 + 學期唯讀鎖 + 封存生命週期 + schoolId 反查目錄 + 多租戶開通 + 月結算設定開放 approver + 主任不可改自己的 role）
 //
 // 設計原則：
 //   1. 兩條根路徑物理隔離
@@ -98,6 +98,12 @@ rules_version = '2';
 //      App Check（classic reCAPTCHA v3，非 Enterprise，理由見 RESEARCH-blaze-followup.md §3）
 //      與支出風控（多門檻預算警報 + scripts/emergency-brake.js 緊急煞車腳本）皆為
 //      client SDK／Console／離線腳本層面的措施，與本檔規則內容無直接關聯，不在此列。
+//
+//  10. v2.9（2026-10-22）角色異動護欄：teachers 的 update，director 分支新增「不可改自己教師檔的
+//      role」——避免唯一的主任誤把自己降級而鎖死。「自己」＝ myTeacherId(schoolId) == teacherId
+//      （userMappings.linkedTeacherId，沿用既有判定，不另創）。規則無法計數「還剩幾位主任」，
+//      故只擋「改自己」，改別人、改自己的其他欄位不受影響。initialAdminEmails 白名單分支
+//      （bootstrap 補登）刻意不動，作為緊急後備：白名單主任仍可改自己 role 救援。
 //
 // 部署：透過 gcloud REST API 或 Firebase Console（見 docs/V2_PERMISSION_SYSTEM.md）
 
@@ -503,7 +509,13 @@ service cloud.firestore {
         // Phase 3 資安收緊：director / 初始主任 途徑一併驗證 isValidRoleValue()
         // 驗收修復 S5-R：同上，resource.data.email 是既有小寫儲存值，比對 userEmail().lower()
         allow update: if (
-            (isDirector(schoolId) && isValidRoleValue(request.resource.data.role))
+            (
+              isDirector(schoolId)
+              && isValidRoleValue(request.resource.data.role)
+              // v2.9 護欄：主任不可改自己教師檔的 role（改別人 / 改自己其他欄位不受影響）
+              && !(request.resource.data.role != resource.data.role
+                   && myTeacherId(schoolId) == teacherId)
+            )
             || (
               isInitialDirector(schoolId)
               && resource.data.email == userEmail().lower()

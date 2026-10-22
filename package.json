@@ -6,7 +6,8 @@
     "seed": "node test/emulator/seed.mjs",
     "test:scenarios": "node test/scenarios/run-all.mjs",
     "test:e2e": "node test/e2e/run-e2e.mjs",
-    "test:rules-settlement": "node test/emulator/rules-settlement.mjs"
+    "test:rules-settlement": "node test/emulator/rules-settlement.mjs",
+    "test:rules-role-guard": "node test/emulator/rules-role-guard.mjs"
   },
   "devDependencies": {
     "firebase-tools": "^15.26.0",
