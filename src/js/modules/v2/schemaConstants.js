@@ -173,6 +173,9 @@ export const LOG_ACTIONS = Object.freeze({
     CREATE_REQUEST:     'create_request',
     SWAP_CONSENT:       'swap_consent',
     APPROVE:            'approve',
+    // 核准／組長直接成立前重新驗證發現教師已被另一筆紀錄佔走同日同節而被擋下。
+    // firestore.rules 的 operationLogs.action 只限 string 且 size < 100，沒有值白名單，不需改 rules。
+    APPROVE_BLOCKED_CONFLICT: 'approve_blocked_conflict',
     REJECT:             'reject',
     CANCEL:             'cancel',
     ADMIN_CREATE:       'admin_create',

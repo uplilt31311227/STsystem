@@ -24,6 +24,7 @@ import * as cloudSyncSvc from './modules/cloudSyncService.js';
 import { notify, notifyError, setSyncStatus, resetSyncStatus } from './modules/v2/uiFeedback.js';
 import * as semesterUtils from './modules/v2/semesterUtils.js';
 import * as semesterState from './modules/v2/semesterState.js';
+import { pendingRequestsToOccupancyRecords } from './modules/v2/assignmentConflict.js';
 
 /* ===== 樣式注入 ===== */
 
@@ -3996,6 +3997,36 @@ function patchDataManager() {
         }
         records = [...records].sort((a, b) => new Date(b.date) - new Date(a.date));
         return records;
+    };
+
+    /**
+     * 雙重指派防線：衝堂判斷專用的佔用紀錄查詢（推薦過濾、代課／調課送出前攔截使用）。
+     *
+     * 與 getSubstituteRecordsAsync 的差別：
+     *   1. 不走 v2GetRecordsInRange 的記憶體快取（快取只在本機寫入時清，看不到其他人剛成立的
+     *      紀錄；衝堂判斷必須是當下資料），直接 queryRecordsByDateRange。
+     *   2. 額外併入「待同意／待核准」在途申請（pendingRequestsToOccupancyRecords），帶
+     *      __pendingLabel，衝堂訊息會標示「（待核准中）」「（待同意中）」。在途申請以
+     *      listOpenPendingRequests() 即時讀取（目前學期、狀態在途，筆數天生有界），不依賴
+     *      _v2PendingCache（可能尚未載入或讀取失敗）。
+     * ⚠ 月結算／週彙整 PDF 一律維持 getSubstituteRecordsAsync()，不得改用本方法——
+     * 在途申請不是已成立紀錄，混入會被誤算鐘點。
+     * 任一查詢失敗都會丟出，由呼叫端 fail-closed（送出前攔截）或降級提示（推薦）。
+     */
+    dm.getAssignmentOccupancyRecordsAsync = async function(startDate = '', endDate = '') {
+        if (!roleSvc.isSignedIn()) {
+            return origGet(startDate, endDate);
+        }
+        const [rows, open] = await Promise.all([
+            dataSvc.queryRecordsByDateRange({ startDate: startDate || null, endDate: endDate || null }),
+            dataSvc.listOpenPendingRequests(),
+        ]);
+        const established = rows.map(r => ({ ...r, id: r.id ?? r.recordId }));
+        const inFlight = pendingRequestsToOccupancyRecords(
+            open.map(requestSvc.normalizeLegacyRequest),
+            { startDate, endDate }
+        );
+        return [...established, ...inFlight];
     };
 
     /**
