@@ -24,7 +24,7 @@ import * as cloudSyncSvc from './modules/cloudSyncService.js';
 import { notify, notifyError, setSyncStatus, resetSyncStatus } from './modules/v2/uiFeedback.js';
 import * as semesterUtils from './modules/v2/semesterUtils.js';
 import * as semesterState from './modules/v2/semesterState.js';
-import { pendingRequestsToOccupancyRecords } from './modules/v2/assignmentConflict.js';
+import { pendingRequestsToOccupancyRecords, createShortTtlCache } from './modules/v2/assignmentConflict.js';
 
 /* ===== 樣式注入 ===== */
 
@@ -650,11 +650,11 @@ async function renderPendingTab() {
         <div class="list-item list-item-${cls}" data-id="${r.reqId}">
             <div>
                 ${stageLabel(r)}
-                <strong>${typeLabel(r)}</strong> ・ ${r.date || ''} 第 ${r.period || '?'} 節 ・ ${r.className || ''} ${r.subject || ''}
+                <strong>${typeLabel(r)}</strong> ・ ${escapeHtml(r.date || '')} ${escapeHtml(r.period || '?')} ・ ${escapeHtml(r.className || '')} ${escapeHtml(r.subject || '')}
             </div>
             <div class="v2-pending-meta">
-                發起：${r.initiatedByName || r.initiatedBy || ''}${extraMeta} ・ ${fmtDate(r.createdAt)}
-                ${r.status === REQUEST_STATUS.REJECTED && r.rejectNote ? `<br>拒絕原因：${r.rejectNote}` : ''}
+                發起：${escapeHtml(r.initiatedByName || r.initiatedBy || '')}${extraMeta} ・ ${fmtDate(r.createdAt)}
+                ${r.status === REQUEST_STATUS.REJECTED && r.rejectNote ? `<br>拒絕原因：${escapeHtml(r.rejectNote)}` : ''}
             </div>
             <div class="v2-pending-actions">${actionsHtml}</div>
         </div>`;
@@ -684,7 +684,7 @@ async function renderPendingTab() {
     // 「我的申請」補對象資訊：multi_swap 顯示尚待同意人數，其餘顯示對象教師姓名
     const mineMeta = (r) => {
         if (r.requestType === REQUEST_TYPES.MULTI_SWAP) return consentRemainMeta(r);
-        return r.requiredApproverName ? ` ・ 對象：${r.requiredApproverName}` : '';
+        return r.requiredApproverName ? ` ・ 對象：${escapeHtml(r.requiredApproverName)}` : '';
     };
 
     // 驗收修復（中 #A）：pendingSourceError 非 null 時，「待我同意/待我審核」三個區塊統一
@@ -757,6 +757,10 @@ async function renderPendingTab() {
                     // 兩位 approver 並發核准：後到者顯示「已被處理」並刷新列表
                     window.app?.showToast?.(e.message || '此請求已被處理', 'warning', 4500);
                     await renderPendingTab();
+                } else if (e.code === 'ASSIGNMENT_CONFLICT') {
+                    // 衝堂訊息已自帶「核准失敗：…」，直接顯示，不再套 notifyError 的情境前綴（避免「核准請求失敗：核准失敗：…」）
+                    notify(e.message, 'error');
+                    btn.disabled = false;
                 } else {
                     notifyError(e, '核准請求');
                     btn.disabled = false;
@@ -3862,6 +3866,10 @@ async function syncScheduleToV2(opts = {}) {
     }
 }
 
+// 衝堂判斷用的在途申請讀取：極短 TTL（5 秒）＋進行中請求去重。
+// 核准重驗（approveRequest／adminCreate）不經此路徑，永遠讀當下資料。
+const _openPendingOccupancyCache = createShortTtlCache(() => dataSvc.listOpenPendingRequests(), 5000);
+
 function patchDataManager() {
     const dm = window.app?.dataManager;
     if (!dm || dm.__v2_patched) return;
@@ -3882,19 +3890,33 @@ function patchDataManager() {
             // 同步標記：pending 路徑不應產 PDF（由 patched generatePDF 檢查）
             record.__v2NeedsApproval = v2NeedsApproval(record);
             if (record.__v2NeedsApproval) _swallowPdfSummaryToast = true;
-            writeV2Record(record)
-                .then(async () => {
+            // 回傳 Promise<boolean>：寫入（含 adminCreate 衝堂重驗）完成才 resolve true；失敗已通知使用者並 resolve false。
+            // app.js 的送出流程 await 後才產 PDF／顯示成功訊息。刻意不 reject，避免未 await 的呼叫端出現 unhandledrejection。
+            return (async () => {
+                try {
+                    await writeV2Record(record);
+                } catch (err) {
+                    console.error('[V2] 寫入失敗:', err);
+                    _swallowPdfSummaryToast = false;   // 寫入失敗不會有「PDF 已生成」訊息，別讓旗標殘留吞掉下一則
+                    if (err?.code === 'ASSIGNMENT_CONFLICT') {
+                        notify(err.message, 'error');   // 訊息已自帶「無法成立：…」，不再加前綴
+                    } else {
+                        notifyError(err, '寫入調代課紀錄');
+                    }
+                    return false;
+                }
+                try {
                     // 驗收修復（中 #4）：同上（adminDeleteRecord），寫入的紀錄不論是直接成立
                     // 或先進 pendingRequests，都可能讓已快取的日期範圍查詢結果過期。
                     _v2DateRangeQueryCache.clear();
+                    _openPendingOccupancyCache.invalidate();
                     await renderPendingTab();
                     await renderRecordsTab();
-                })
-                .catch(err => {
-                    console.error('[V2] 寫入失敗:', err);
-                    notifyError(err, '寫入調代課紀錄');
-                });
-            return; // 不 push local
+                } catch (err) {
+                    console.error('[V2] 寫入後重繪失敗:', err);
+                }
+                return true;
+            })();
         }
         return origAdd(record);
     };
@@ -4017,9 +4039,11 @@ function patchDataManager() {
         if (!roleSvc.isSignedIn()) {
             return origGet(startDate, endDate);
         }
+        // 紀錄：date 範圍 ∪ swapDate 範圍（遠距調課的「移入」），依 recordId 去重；每次讀當下資料不快取。
+        // 在途申請：5 秒 TTL＋進行中去重，同一輪操作（多日期／多節）只讀一次。
         const [rows, open] = await Promise.all([
-            dataSvc.queryRecordsByDateRange({ startDate: startDate || null, endDate: endDate || null }),
-            dataSvc.listOpenPendingRequests(),
+            dataSvc.queryRecordsOccupyingRange({ startDate: startDate || null, endDate: endDate || null }),
+            _openPendingOccupancyCache.get(),
         ]);
         const established = rows.map(r => ({ ...r, id: r.id ?? r.recordId }));
         const inFlight = pendingRequestsToOccupancyRecords(

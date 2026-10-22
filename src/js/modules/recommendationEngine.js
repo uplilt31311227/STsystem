@@ -124,6 +124,13 @@ export function findSwapDateConflict({ teacherA, dateA, periodA, teacherB, dateB
     return null;
 }
 
+/** 節次順序（排序用）；不在清單內的節次排最後，彼此維持原順序 */
+export const PERIOD_ORDER = ['第一節', '第二節', '第三節', '第四節', '第五節', '第六節', '第七節', '第八節'];
+export function periodIndex(period) {
+    const i = PERIOD_ORDER.indexOf(period);
+    return i < 0 ? PERIOD_ORDER.length : i;
+}
+
 export class RecommendationEngine {
     constructor() {
         // 評分權重：各層相差夠大，確保高優先條件永遠壓過低優先條件的組合
@@ -290,7 +297,8 @@ export class RecommendationEngine {
     /**
      * 統計目標日期各教師「自己請假（originalTeacher）」的節次，用於推薦時標註當日也請假者
      *
-     * 含代課與調課紀錄；已被拒絕（status==='rejected'）者不算。節次依原字串去重並排序。
+     * 只算「請假」性質的紀錄（type 為代課）；調課（type==='調課'，含自我調課 isSelfSwap）是教師自行
+     * 與人互換，並非請假，不計入。已被拒絕（status==='rejected'）者不算。節次去重後依節次順序排列。
      *
      * @param {Array} records - 調代課紀錄（可含其他日期，本函式會依日期過濾）
      * @param {string} date - 目標日期 YYYY-MM-DD
@@ -302,11 +310,12 @@ export class RecommendationEngine {
         (records || []).forEach(r => {
             if (!r || r.date !== date || !r.originalTeacher || !r.period) return;
             if (r.status === 'rejected') return;
+            if (r.type === '調課' || r.isSelfSwap) return;   // 調課不是請假
             const name = this.normalizeName(r.originalTeacher);
             if (!map.has(name)) map.set(name, []);
             if (!map.get(name).includes(r.period)) map.get(name).push(r.period);
         });
-        map.forEach(list => list.sort());
+        map.forEach(list => list.sort((a, b) => periodIndex(a) - periodIndex(b)));
         return map;
     }
 

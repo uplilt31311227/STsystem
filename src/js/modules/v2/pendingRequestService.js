@@ -24,7 +24,7 @@ import * as logger         from './operationLogger.js';
 import * as roleSvc        from './roleService.js';
 import * as semesterState  from './semesterState.js';
 import { getV2Firestore }  from './firebaseV2.js';
-import { verifyNoAssignmentConflict, buildApprovalConflictMessage } from './assignmentConflict.js';
+import { verifyNoAssignmentConflict, buildApprovalConflictMessage, buildAdminCreateConflictMessage } from './assignmentConflict.js';
 import {
     LOG_ACTIONS,
     LOG_TARGET_TYPES,
@@ -66,10 +66,11 @@ export class AssignmentConflictError extends Error {
  * 競態窗口（毫秒級，期間另一位組長剛好成立了同教師同節的紀錄）；此窗口刻意接受——
  * 本檢查要堵的是「申請擱置數小時～數天」的主要缺口，且最終仍由人工核准把關。
  */
-async function assertNoAssignmentConflict(req, { logTargetType, logTargetId, logContext }) {
-    const hit = await verifyNoAssignmentConflict(req, (range) => dataSvc.queryRecordsByDateRange(range));
+async function assertNoAssignmentConflict(req, { logTargetType, logTargetId, logContext, forAdminCreate = false }) {
+    // 含 swapDate 索引的查詢：遠距調課（date 與 swapDate 相差 >31 天）的「移入」也要抓到；每次都讀當下資料，不吃快取
+    const hit = await verifyNoAssignmentConflict(req, (range) => dataSvc.queryRecordsOccupyingRange(range));
     if (!hit) return;
-    const message = buildApprovalConflictMessage(hit);
+    const message = forAdminCreate ? buildAdminCreateConflictMessage(hit, req) : buildApprovalConflictMessage(hit);
     try {
         await logger.log(LOG_ACTIONS.APPROVE_BLOCKED_CONFLICT, logTargetType, logTargetId, {
             reason:             'assignment_conflict',
@@ -517,6 +518,7 @@ export async function adminCreate(payload) {
         logTargetType: LOG_TARGET_TYPES.SUBSTITUTE_RECORD,
         logTargetId:   null,
         logContext:    'admin_create',
+        forAdminCreate: true,
     });
 
     const me  = roleSvc.getCurrentIdentity();

@@ -549,7 +549,14 @@ export class DataManager {
      * @returns {Promise<Array>}
      */
     async getAssignmentOccupancyRecordsAsync(startDate = '', endDate = '') {
-        return this.getSubstituteRecordsAsync(startDate, endDate);
+        const rows = await this.getSubstituteRecordsAsync(startDate, endDate);
+        // V1／離線：紀錄全在本機，date 窗口會漏掉「date 在窗外、swapDate 在窗內」的遠距調課，
+        // 這裡直接掃全部本機紀錄的 swapDate 補回（V2 由 v2-app.js 覆寫，改用 swapDate 範圍查詢）
+        const inRange = d => !!d && (!startDate || d >= startDate) && (!endDate || d <= endDate);
+        const extra = (this.substituteRecords || []).filter(r => r && r.swapDate && inRange(r.swapDate));
+        if (extra.length === 0) return rows;
+        const seen = new Set(rows);
+        return [...rows, ...extra.filter(r => !seen.has(r))];
     }
 
     /**
@@ -682,6 +689,25 @@ export class DataManager {
         if (!substituteTeacherName || !date || !period) return null;
         const records = await this.getOccupancyRecordsAround([date]);
         return this.checkSubstituteTeacherConflict(substituteTeacherName, date, weekday, period, excludeRecordId, records);
+    }
+
+    /**
+     * 多筆代課送出前的批次衝堂攔截：對所有不重複日期只取一次佔用紀錄（每個日期一次查詢），
+     * 再以 recordsOverride 逐筆檢查，避免每一節都重查 62 天全校紀錄與在途申請。
+     * 讀取失敗會丟出例外，呼叫端須 fail-closed。
+     * @param {Array<{substituteTeacher:string,date:string,weekday:string,period:string,id?:string}>} items
+     * @returns {Promise<string|null>} 第一個衝突原因；全部無衝突回傳 null
+     */
+    async checkSubstituteTeacherConflictsBatchAsync(items) {
+        const list = (items || []).filter(i => i && i.substituteTeacher && i.date && i.period);
+        if (list.length === 0) return null;
+        const records = await this.getOccupancyRecordsAround(list.map(i => i.date));
+        for (const i of list) {
+            const conflict = this.checkSubstituteTeacherConflict(
+                i.substituteTeacher, i.date, i.weekday, i.period, i.id ?? null, records);
+            if (conflict) return conflict;
+        }
+        return null;
     }
 
     /**

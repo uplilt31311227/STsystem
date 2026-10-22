@@ -75,6 +75,9 @@ export function shiftDate(dateStr, days) {
  * 查詢指定日期「前後各 days 天」的已成立紀錄並去重。
  * 調課紀錄以 date（時段 A）為索引、但佔用 swapDate（時段 B），所以要把前後一段一併查回
  * （與 app.js fetchRecordsAroundDates 相同的 31 天窗口）。
+ * ⚠ 窗口只涵蓋「date 落在範圍內」的紀錄；遠距調課（date 與 swapDate 相差 >31 天）的「移入」
+ * 不會被抓到，所以注入的 queryRange 必須同時含 swapDate 落在範圍內的紀錄
+ * （V2 見 schoolDataService.queryRecordsOccupyingRange）。
  * 查詢失敗直接丟出，由呼叫端決定 fail-closed。
  * @param {string[]} dates
  * @param {(range:{startDate:string,endDate:string})=>Promise<Array>} queryRange - 注入的日期範圍查詢
@@ -124,9 +127,19 @@ export function describeAssignmentConflict(hit) {
     return `${hit.teacher} ${hit.date} ${hit.period}${where}${pendingTag(d)}`;
 }
 
-/** 核准失敗訊息（拋給使用者看）。 */
+/** 核准失敗訊息（拋給使用者看）。呼叫端 UI 對此訊息不得再加「核准失敗：」類前綴。 */
 export function buildApprovalConflictMessage(hit) {
     return `核准失敗：${describeAssignmentConflict(hit)}，請駁回或請申請人改選`;
+}
+
+/**
+ * 組長直接成立（adminCreate）被擋的訊息：此情境沒有「申請」可駁回，應請組長改選。
+ * @param {Object} hit - findAssignmentConflict 的命中
+ * @param {Object} [req] - 原 payload；調課類型提示改選互換課程或日期
+ */
+export function buildAdminCreateConflictMessage(hit, req = null) {
+    const advice = req?.type === '調課' ? '請重新選擇互換課程或日期' : '請改選代課教師';
+    return `無法成立：${describeAssignmentConflict(hit)}，${advice}`;
 }
 
 /**
@@ -151,4 +164,29 @@ export async function verifyNoAssignmentConflict(req, queryRange) {
         throw err;
     }
     return findAssignmentConflict(req, records);
+}
+
+/**
+ * 極短 TTL 的「進行中請求去重＋結果快取」：同一輪操作（例如多日期、多節代課的連續衝堂判斷）
+ * 內只實際讀取一次，避免重複查詢。失敗的結果不快取。
+ * ⚠ 只可用於推薦過濾／送出前攔截；核准重驗（approveRequest／adminCreate）必須讀當下資料，不得使用。
+ * @param {()=>Promise<any>} loader - 實際讀取函式
+ * @param {number} [ttlMs=5000]
+ * @param {()=>number} [now] - 可注入時鐘（測試用）
+ * @returns {{get:()=>Promise<any>, invalidate:()=>void}}
+ */
+export function createShortTtlCache(loader, ttlMs = 5000, now = Date.now) {
+    let promise = null;
+    let at = 0;
+    return {
+        get() {
+            if (promise && now() - at < ttlMs) return promise;
+            const p = loader();
+            promise = p;
+            at = now();
+            Promise.resolve(p).catch(() => { if (promise === p) promise = null; });
+            return p;
+        },
+        invalidate() { promise = null; },
+    };
 }
