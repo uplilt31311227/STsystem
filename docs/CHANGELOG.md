@@ -1,11 +1,27 @@
 ---
 created: 2026-03-12
-updated: 2026-10-07
+updated: 2026-10-22
 tags:
   - changelog
 ---
 
 # 版本紀錄
+
+---
+
+## [2026-10-22] 參考 Course_Scheduling_System 的 P1 改進：推薦公平性、無人可代建議、匯入略過列、月結明細、主任角色護欄（僅本分支）
+
+**起因**：與開源專案 begin0808/Course_Scheduling_System 深度比對（`docs/research/COMPARE_Course_Scheduling_System.md`），挑出低成本的 P1 項目。
+
+- **推薦公平性**（`recommendationEngine.js`、`app.js` showRecommendations）：以推薦日所在月份的代課紀錄（月初～月底日期範圍查詢，V2 不用訂閱快取）計算每人本月代課節數，作為「同分時」的次要排序鍵（分數降序 → 本月節數升序 → 姓名），不改分數、不會壓過任何層級；理由附「本月已代 N 節／本月未代課」。刪除無呼叫端的死碼 `adjustForFrequency`。月範圍查詢失敗時退回本機當日紀錄並提示。
+- **無人可代**：顯示「全校 N 位教師此節皆無法代課，建議併班或自習」（N 不含原任課教師）＋併班候選（同星期同節正在上別班課者，同年級優先、其次同科目）；新增 `getMergeOptions`。僅顯示，不新增處置類型。
+- **衝堂單一來源**：新增 `findTeacherConflict`（回傳 `{kind:'teaching'|'covering', detail}`），推薦過濾與 `dataManager.checkSubstituteTeacherConflict` 共用；姓名比對改為去前後空白（只更嚴）。
+- **課表匯入略過列可見**（`scheduleParser.js`、`index.html`、`features.css`）：缺欄位、無效星期（週六日）、無效節次的列收集為 warnings（Excel 列號、原因、內容摘要），畫面顯示「已匯入 X 筆，略過 Y 列」可展開前 50 筆。行為變更：非週一～五／第一～八節的列以前會進課表（但 UI／PDF 本就不顯示），現在略過並提示；使用者確認本校無週六與第九節課。
+- **月結 Excel「明細」分頁**（`settlementCalculator.js` 新增 `buildWorkbook`、`getMonthlyDetailRows`、`isDeductedFromOriginal`）：與彙總同口徑，逐筆列日期／星期／節次／班級／科目／類型／雙方教師／假別／是否扣原任課教師時數。
+- **Firestore 規則 v2.9（未部署）**：teachers 的 director update 分支禁止改自己的 `role`（以 `myTeacherId` 判定本人；`initialAdminEmails` 白名單主任刻意豁免作為緊急後備）；前端 `setRole` 同步擋下並寫 `PERMISSION_DENIED` 日誌，教師管理頁自身列角色選單停用。
+- **XSS 修正**：教師下拉選單 `<option>` 的姓名改經 `esc()`（獨立驗收實測觸發，舊程式碼）。
+
+**驗證**：`npm test` 全過（含新 `test-schedule-parser.mjs` 2/2、settlement 18/18、recommendation 新增 14 斷言）、`npm run check` 40/40；emulator `test:rules-role-guard` 4/4、`test:rules-settlement` 11/11、`test:scenarios` 90/90；獨立 opus 驗收以 Playwright 在 V1 本機模式實測匯入警告、推薦理由、無人可代（修正後 N=2 正確）、Excel 兩分頁、XSS 不再觸發。**未做**：V2 推薦流程未在瀏覽器實測；rules v2.9 未部署；殘留問題見 [[ISSUES_LOG]] 2026-10-22。
 
 ---
 

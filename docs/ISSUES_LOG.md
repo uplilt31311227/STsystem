@@ -1,12 +1,21 @@
 ---
 created: 2026-04-10
-updated: 2026-10-07
+updated: 2026-10-22
 tags:
   - issues
   - troubleshooting
 ---
 
 # 問題追蹤：國中調代課自動化系統
+
+## 2026-10-22 P1 改進後殘留問題（獨立驗收發現，未修）
+
+- **在途申請未納入代課衝堂**：教師若已被他人「待同意／待核准」的請求指派代課，推薦過濾與送出攔截都看不到（只看已成立紀錄）。屬既有缺口，與 P0「核准時不重驗衝堂」同源，建議一起修。
+- **主任仍可經其他路徑鎖死自己**：rules `teachers` 的 `allow delete: if isDirector`（約 :533）與 userMappings director 可改任何 mapping（約 :873），可刪自己教師檔或改指 mapping。修法：delete 加 `myTeacherId(schoolId) != teacherId`，前端自身列刪除鈕停用。
+- **前端 setRole 與 rules 不一致**：前端連白名單主任都擋，rules 刻意放行白名單主任；緊急救援只能走 Console。
+- **名冊 CSV 匯入改 role 不經 setRole**（`importRosterCsv` → `svc.updateTeacher`）：主任在 CSV 改自己角色會直接被 rules 拒絕，訊息不友善。
+- **公平排序作用範圍窄**：只在分數完全相同時生效；同領域 +5 使空堂層同分者變少。符合「不壓過層級」需求，若要更明顯需另訂權重。
+- `attachRowNumbers` 以 Papa 資料索引推列號，CSV 含換行引號欄位時列號會偏移（人力資源網匯出不太會出現）。
 
 ## 2026-10-07 月結算週數卡片：已知未修缺陷（client，僅 feature 分支）
 
