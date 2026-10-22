@@ -48,6 +48,10 @@ export class ScheduleParser {
             '第八節': '第八節', '8': '第八節', '第8節': '第八節'
         };
 
+        // 合法的標準化結果（normalize 對查不到的值會原樣回傳，所以要另外比對是否為標準值）
+        this.validWeekdays = new Set(Object.values(this.weekdayMap));
+        this.validPeriods = new Set(Object.values(this.periodMap));
+
         // 排除的領域（不納入教師任教領域統計）
         this.excludedDomains = [
             '統整性主題/專題/議題探究',
@@ -95,18 +99,36 @@ export class ScheduleParser {
             Papa.parse(file, {
                 header: true,
                 encoding: 'UTF-8',
-                skipEmptyLines: true,
+                // 不讓 Papa 自己略過空白行，否則會丟失「第幾列」資訊；改在下面自行過濾並保留列號
+                skipEmptyLines: false,
                 complete: (results) => {
                     if (results.errors.length > 0) {
                         console.warn('CSV 解析警告:', results.errors);
                     }
-                    resolve(results.data);
+                    resolve(this.attachRowNumbers(results.data));
                 },
                 error: (error) => {
                     reject(new Error('CSV 解析失敗: ' + error.message));
                 }
             });
         });
+    }
+
+    /**
+     * 為 CSV 資料列掛上原始列號（不可列舉屬性，不影響 Object.keys 欄位偵測），並濾掉全空白列。
+     * 列號慣例與 SheetJS 的 __rowNum__ 相同：0 起算的工作表列索引（標題列 = 0、第一筆資料 = 1）。
+     * @param {Array} rows - Papa.parse(header:true) 的資料列
+     * @returns {Array} 已掛列號、無全空白列的資料列
+     */
+    attachRowNumbers(rows) {
+        const result = [];
+        rows.forEach((row, i) => {
+            const isBlank = Object.values(row).every(v => v === undefined || v === null || String(v).trim() === '');
+            if (isBlank) return;
+            Object.defineProperty(row, '__rowNum__', { value: i + 1, enumerable: false });
+            result.push(row);
+        });
+        return result;
     }
 
     /**
@@ -177,24 +199,46 @@ export class ScheduleParser {
         const scheduleData = [];
         const teacherMap = new Map(); // 用於收集教師資訊
         const classSet = new Set();
+        // 被略過的列：[{ row: Excel 列號, reason: 原因, summary: 原始內容摘要 }]
+        const warnings = [];
 
         rawData.forEach((row, index) => {
+            // 整列皆空白（常見於表尾殘留格式）不是資料問題，直接忽略，不列入警告
+            if (Object.values(row).every(v => v === undefined || v === null || String(v).trim() === '')) return;
+
+            // 使用者在 Excel 看到的列號：標題列為第 1 列，資料從第 2 列起。
+            // SheetJS／CSV 路徑的 row.__rowNum__ 是 0 起算的工作表列索引（標題 0），+1 即 Excel 列號，
+            // 且會把中間的空白列算進去；沒有 __rowNum__ 時（呼叫端直接傳陣列）退回 index + 2。
+            const excelRow = (typeof row.__rowNum__ === 'number') ? row.__rowNum__ + 1 : index + 2;
+
             // 取得標準化的值
             const weekday = this.normalizeWeekday(row[fieldMap.weekday]);
             const period = this.normalizePeriod(row[fieldMap.period]);
-            const className = row[fieldMap.className]?.trim();
-            const teacher = row[fieldMap.teacher]?.trim();
-            const domain = row[fieldMap.domain]?.trim() || '';
-            const rawSubject = row[fieldMap.subject]?.trim() || '';
-            const courseName = row[fieldMap.courseName]?.trim() || '';
-            const category = row[fieldMap.category]?.trim() || '';
+            // Excel 數字儲存格（如班級 701）讀進來是 number，先轉字串再 trim
+            const cell = (key) => (row[key] === undefined || row[key] === null) ? '' : String(row[key]).trim();
+            const className = cell(fieldMap.className);
+            const teacher = cell(fieldMap.teacher);
+            const domain = cell(fieldMap.domain);
+            const rawSubject = cell(fieldMap.subject);
+            const courseName = cell(fieldMap.courseName);
+            const category = cell(fieldMap.category);
 
             // 課程顯示名稱：優先使用「語言別/校訂課程名稱」，若為空則使用「科目」
             const subject = courseName || rawSubject;
 
-            // 跳過無效資料
-            if (!weekday || !period || !className || !teacher) {
-                console.warn(`第 ${index + 2} 列資料不完整，已跳過`);
+            // 跳過無效資料，並記錄原因讓使用者看得到（一列可能同時有多個原因）
+            const reasons = [];
+            if (!weekday) reasons.push('缺星期');
+            else if (!this.validWeekdays.has(weekday)) reasons.push(`無效星期「${weekday}」`);
+            if (!period) reasons.push('缺節次');
+            else if (!this.validPeriods.has(period)) reasons.push(`無效節次「${period}」`);
+            if (!className) reasons.push('缺班級');
+            if (!teacher) reasons.push('缺教師');
+
+            if (reasons.length > 0) {
+                const summary = this.summarizeRow(row);
+                warnings.push({ row: excelRow, reason: reasons.join('、'), summary });
+                console.warn(`第 ${excelRow} 列已略過：${reasons.join('、')}（${summary}）`);
                 return;
             }
 
@@ -253,8 +297,22 @@ export class ScheduleParser {
             success: true,
             scheduleData,
             teachers,
-            classes
+            classes,
+            warnings,                       // 被略過的列明細
+            skippedCount: warnings.length   // 略過列數
         };
+    }
+
+    /**
+     * 產生原始列內容摘要（供略過列明細顯示）：各欄位值以「|」串接，過長截斷
+     * @param {Object} row - 原始資料列
+     * @returns {string} 摘要
+     */
+    summarizeRow(row) {
+        const text = Object.values(row)
+            .map(v => (v === undefined || v === null) ? '' : String(v).trim())
+            .join('|');
+        return text.length > 80 ? text.slice(0, 80) + '…' : text;
     }
 
     /**

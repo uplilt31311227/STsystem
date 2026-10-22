@@ -142,9 +142,8 @@ export function buildCsvVariants(normalRows) {
         ]),
         expect: {
             success: true,
-            rowCount: 3,
-            note: 'normalizeWeekday 對未知值原樣保留（不丟資料），第八節在 periodMap 內應正常',
-            knownGap: '週六／週日會原樣進入課表，系統沒有任何一處擋下非上課日——真實匯出檔若含週末課程不會被察覺',
+            rowCount: 1,
+            note: '週六／週日不在標準星期內，整列略過並列入 warnings（匯入後 UI 會顯示「略過 Y 列」）；週一第八節在 periodMap 內應正常',
         },
     });
 

@@ -889,3 +889,8 @@ body.v2-locked #v2-auth-gate {
 .sw-actions { display: flex; gap: var(--sp-2); flex-wrap: wrap; margin-top: var(--sp-2); }
 .sw-message { white-space: pre-line; margin-top: var(--sp-3); color: var(--color-text); }
 .sw-readonly-note { color: var(--c-warning-800); }
+
+/* 課表匯入：被略過的列明細 */
+.schedule-import-warnings { margin-top: var(--sp-2); font-size: var(--fs-sm); color: var(--c-warning-800); }
+.schedule-import-warnings summary { cursor: pointer; font-weight: 600; }
+.schedule-import-warnings ul { margin: var(--sp-2) 0 0; padding-left: 1.25em; max-height: 240px; overflow: auto; }
