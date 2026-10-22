@@ -11,7 +11,7 @@
 // 匯入模組
 import { DataManager } from './modules/dataManager.js';
 import { ScheduleParser } from './modules/scheduleParser.js';
-import { RecommendationEngine } from './modules/recommendationEngine.js';
+import { RecommendationEngine, findSwapDateConflict } from './modules/recommendationEngine.js';
 import { PDFGenerator } from './modules/pdfGenerator.js';
 import { SettlementCalculator } from './modules/settlementCalculator.js';
 import { importWeeksFromCalendar, calendarErrorMessage } from './modules/schoolCalendar.js';
@@ -61,7 +61,8 @@ const RECOMMENDATION_BADGES = [
     { tag: 'homeroom',     cls: 'badge-homeroom',     text: '班導師' },
     { tag: 'same_class',   cls: 'badge-same-class',   text: '同任課班級' },
     { tag: 'free',         cls: 'badge-free',         text: '空堂' },
-    { tag: 'part_time',    cls: 'badge-part-time',    text: '兼課' }
+    { tag: 'part_time',    cls: 'badge-part-time',    text: '兼課' },
+    { tag: 'onLeaveToday', cls: 'badge-on-leave',     text: '⚠ 當日請假' }
 ];
 
 /**
@@ -1583,7 +1584,7 @@ class SubstituteTeacherApp {
      * 更新調課可互換課程列表（根據時段 B 日期過濾）
      * @param {string} swapWeekday - 時段 B 的星期
      */
-    updateSwapCourseListForDate(swapWeekday) {
+    async updateSwapCourseListForDate(swapWeekday) {
         const swapCourseSelect = document.getElementById('swap-course');
         const swapHint = document.getElementById('swap-hint');
         const swapPreview = document.getElementById('swap-preview');
@@ -1618,12 +1619,29 @@ class SubstituteTeacherApp {
             return;
         }
 
+        // 日期層級衝堂需要兩個實際日期附近的紀錄（V2 不可用訂閱快取，須按需查詢）；
+        // 查詢失敗時退回只看週課表，並提示（送出前仍會再攔一次）
+        const dateA = document.getElementById('sub-date')?.value || '';
+        const dateB = document.getElementById('swap-date')?.value || '';
+        const gen = (this._swapListGen = (this._swapListGen || 0) + 1);
+        let dateRecords = null;
+        if (dateA && dateB) {
+            try {
+                dateRecords = await this.fetchRecordsAroundDates([dateA, dateB]);
+            } catch (err) {
+                console.error('讀取調課日期附近的紀錄失敗：', err);
+                this.showToast('讀取該日期的調代課紀錄失敗，互換課程清單未檢查日期佔用（送出前會再檢查）', 'warning', 6000);
+            }
+            if (gen !== this._swapListGen) return; // 期間使用者已改選其他日期，放棄本輪結果
+        }
+
         // 檢查每堂課是否會造成衝堂
         const eligibleCourses = [];
         const conflictCourses = [];
 
         sameclassCourses.forEach(course => {
-            const conflict = this.checkSwapConflict(originalTeacher, originalWeekday, originalPeriod, course, scheduleData);
+            const conflict = this.checkSwapConflict(originalTeacher, originalWeekday, originalPeriod, course, scheduleData,
+                dateRecords ? { dateA, dateB, records: dateRecords } : null);
             if (conflict) {
                 conflictCourses.push({ course, conflict });
             } else {
@@ -1702,9 +1720,11 @@ class SubstituteTeacherApp {
      * @param {string} periodA - 原課程節次
      * @param {Object} courseB - 目標課程
      * @param {Array} scheduleData - 課表資料
+     * @param {{dateA:string, dateB:string, records:Array, excludeRecordId?:string}|null} [dateCheck] -
+     *        提供時，週課表檢查通過後再檢查兩個實際日期是否已被其他紀錄佔用（findSwapDateConflict）
      * @returns {string|null} 衝堂原因，null 表示無衝堂
      */
-    checkSwapConflict(teacherA, weekdayA, periodA, courseB, scheduleData) {
+    checkSwapConflict(teacherA, weekdayA, periodA, courseB, scheduleData, dateCheck = null) {
         const teacherB = courseB.teacher;
         const weekdayB = courseB.weekday;
         const periodB = courseB.period;
@@ -1738,6 +1758,75 @@ class SubstituteTeacherApp {
             return `${teacherB}在${weekdayA}${periodA}有${teacherBConflict.className}課`;
         }
 
+        // 日期層級：同日同節是否已被指派代課／調課（週課表看不到）
+        if (dateCheck) {
+            const hit = findSwapDateConflict({
+                teacherA, dateA: dateCheck.dateA, periodA,
+                teacherB, dateB: dateCheck.dateB, periodB: courseB.period,
+                records: dateCheck.records, excludeRecordId: dateCheck.excludeRecordId
+            });
+            if (hit) return this.describeSwapDateConflict(hit);
+        }
+
+        return null;
+    }
+
+    /**
+     * 將 findSwapDateConflict 的結果轉成使用者看得懂的訊息
+     */
+    describeSwapDateConflict(hit) {
+        const d = hit.detail || {};
+        const where = hit.role === '調課' && d.swapDate === hit.date && d.swapPeriod === hit.period && d.originalTeacher === hit.teacher
+            ? `已調課移入${d.className || ''}`
+            : `已被指派為${d.className || ''}的${hit.role}`;
+        return `${hit.teacher}在${hit.date} ${hit.period}${where}`;
+    }
+
+    /**
+     * 取得指定日期「附近」的調代課紀錄（日期查詢，不用訂閱快取）
+     *
+     * 調課紀錄以 date（時段 A）為索引，但會佔用 swapDate（時段 B）；要找出「移入某日」的調課，
+     * 必須把前後一段日期一併查回。這裡取每個日期前後各 31 天（跨月調課已足夠），依 id 去重。
+     * 查詢失敗會丟出例外，由呼叫端提示，不可默默放行。
+     * @param {string[]} dates - YYYY-MM-DD
+     * @returns {Promise<Array>}
+     */
+    async fetchRecordsAroundDates(dates) {
+        const fmt = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        const byId = new Map();
+        for (const date of new Set(dates.filter(Boolean))) {
+            const base = new Date(`${date}T00:00:00`);
+            const from = new Date(base); from.setDate(from.getDate() - 31);
+            const to = new Date(base); to.setDate(to.getDate() + 31);
+            const rows = await this.dataManager.getSubstituteRecordsAsync(fmt(from), fmt(to));
+            rows.forEach(r => byId.set(r.id, r));
+        }
+        return [...byId.values()];
+    }
+
+    /**
+     * 調課送出前的日期層級衝堂攔截（單筆與多重調課共用）
+     * @param {Array} records - 即將寫入的調課紀錄（buildSwapRecord 的結果）
+     * @returns {Promise<string|null>} 衝突訊息；null 表示可送出。查詢失敗以訊息回傳（fail-closed）
+     */
+    async checkSwapRecordsDateConflicts(records) {
+        const swaps = records.filter(r => r.type === '調課' && !r.isSelfSwap && r.originalTeacher && r.swapTeacher);
+        if (swaps.length === 0) return null;
+        let existing;
+        try {
+            existing = await this.fetchRecordsAroundDates(swaps.flatMap(r => [r.date, r.swapDate]));
+        } catch (err) {
+            console.error('調課送出前讀取紀錄失敗：', err);
+            return '讀取既有調代課紀錄失敗，無法確認教師當日是否已被指派，請稍後重試';
+        }
+        for (const r of swaps) {
+            const hit = findSwapDateConflict({
+                teacherA: r.originalTeacher, dateA: r.date, periodA: r.period,
+                teacherB: r.swapTeacher, dateB: r.swapDate, periodB: r.swapPeriod,
+                records: existing, excludeRecordId: r.id
+            });
+            if (hit) return this.describeSwapDateConflict(hit);
+        }
         return null;
     }
 
@@ -2778,7 +2867,16 @@ class SubstituteTeacherApp {
      * 儲存並處理紀錄
      */
     async saveAndProcessRecord(record) {
-        // 代課送出前衝堂攔截（調課由 checkSwapConflict 處理）
+        // 調課送出前攔截：週課表由 checkSwapConflict 處理，這裡補日期層級（fail-safe，與代課對稱）
+        if (record.type === '調課') {
+            const swapConflict = await this.checkSwapRecordsDateConflicts([record]);
+            if (swapConflict) {
+                this.showToast(`調課衝突：${swapConflict}，請重新選擇互換課程或日期`, 'error', 6000);
+                return;
+            }
+        }
+
+        // 代課送出前衝堂攔截
         if (record.type === '代課' && record.substituteTeacher) {
             const conflict = this.dataManager.checkSubstituteTeacherConflict(
                 record.substituteTeacher,
@@ -3449,6 +3547,14 @@ class SubstituteTeacherApp {
         const records = this.swapBatch.map((swap, idx) =>
             this.buildSwapRecord(swap, `_${idx}`)
         );
+
+        // 整批對既有紀錄做日期層級衝堂攔截（批次內部互相的衝突已由 checkBatchConflicts 模擬處理，
+        // 這裡只比對「已存在的紀錄」，所以不需排除批次內其他筆）
+        const batchConflict = await this.checkSwapRecordsDateConflicts(records);
+        if (batchConflict) {
+            this.showToast(`調課衝突：${batchConflict}，請調整批次後再送出`, 'error', 6000);
+            return;
+        }
 
         // 批次 ID，讓這些紀錄可被識別為同一批
         const batchId = Date.now().toString();

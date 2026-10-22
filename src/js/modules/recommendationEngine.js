@@ -55,6 +55,64 @@ export function findTeacherConflict({ teacherName, date, weekday, period, schedu
     return null;
 }
 
+/**
+ * 「調課移入」判斷：教師是否因另一筆調課，在指定日期／節次被移去上別班的課。
+ *
+ * 調課紀錄 R（date/period = 時段 A、swapDate/swapPeriod = 時段 B）：
+ *   - 互換教師(swapTeacher/substituteTeacher) 在 A（date, period）上原任課教師的課 → findTeacherConflict 已涵蓋
+ *   - 原任課教師(originalTeacher) 在 B（swapDate, swapPeriod）上互換教師的課 → 本函式涵蓋
+ * 自行調課（originalTeacher === swapTeacher）是同一人搬動自己的課，不算佔用他人時段，略過。
+ * 不併入 findTeacherConflict：代課推薦的既有行為不變。
+ *
+ * @returns {{kind:'covering', detail:Object, role:'調課'}|null}
+ */
+export function findSwapInConflict({ teacherName, date, period, records = [], excludeRecordId = null }) {
+    const name = teacherName == null ? '' : String(teacherName).trim();
+    if (!name || !date || !period) return null;
+    const hit = (records || []).find(r =>
+        r && r.type === '調課' && r.id !== excludeRecordId &&
+        r.swapDate === date && r.swapPeriod === period &&
+        r.originalTeacher != null && String(r.originalTeacher).trim() === name &&
+        String(r.swapTeacher == null ? '' : r.swapTeacher).trim() !== name);
+    return hit ? { kind: 'covering', detail: hit, role: '調課' } : null;
+}
+
+/**
+ * 調課「日期層級」衝堂判斷（純函式，送出前攔截／互換課程下拉共用）。
+ *
+ * 週課表衝堂（兩位教師在對方時段是否另有課）仍由 app.js checkSwapConflict 負責；
+ * 本函式補上「實際日期」是否已被其他紀錄佔用：
+ *   - 教師 B 要去上時段 A（dateA, periodA）：該日該節是否已被指派代課／調課，或已調課移入別班
+ *   - 教師 A 要去上時段 B（dateB, periodB）：同上
+ * 自行調課（同一教師）不檢查。回傳第一個衝突，無衝突回傳 null。
+ *
+ * @param {Object} p
+ * @param {string} p.teacherA - 時段 A 原任課教師
+ * @param {string} p.dateA
+ * @param {string} p.periodA
+ * @param {string} p.teacherB - 時段 B 原任課教師
+ * @param {string} p.dateB
+ * @param {string} p.periodB
+ * @param {Array} [p.records] - 已存在的調代課紀錄（須涵蓋 dateA、dateB 附近日期）
+ * @param {string} [p.excludeRecordId] - 編輯既有紀錄時排除該 id
+ * @returns {{teacher:string, date:string, period:string, role:string, detail:Object}|null}
+ */
+export function findSwapDateConflict({ teacherA, dateA, periodA, teacherB, dateB, periodB, records = [], excludeRecordId = null }) {
+    const a = teacherA == null ? '' : String(teacherA).trim();
+    const b = teacherB == null ? '' : String(teacherB).trim();
+    if (!a || !b || a === b) return null;
+    const legs = [
+        { teacher: b, date: dateA, period: periodA },
+        { teacher: a, date: dateB, period: periodB }
+    ];
+    for (const leg of legs) {
+        const hit = findTeacherConflict({ teacherName: leg.teacher, date: leg.date, period: leg.period, records, excludeRecordId })
+            || findSwapInConflict({ teacherName: leg.teacher, date: leg.date, period: leg.period, records, excludeRecordId });
+        if (hit) return { teacher: leg.teacher, date: leg.date, period: leg.period, role: hit.role, detail: hit.detail };
+    }
+    return null;
+}
+
 export class RecommendationEngine {
     constructor() {
         // 評分權重：各層相差夠大，確保高優先條件永遠壓過低優先條件的組合
@@ -101,6 +159,8 @@ export class RecommendationEngine {
         // 步驟 3：計算每位空堂教師的推薦分數
         const teachingIndex = this.buildTeachingIndex(scheduleData);
         const monthCounts = monthRecords ? this.countMonthlySubstitutes(monthRecords, date) : null;
+        // 當日請假：候選人當天任一節是原任課教師（被代課／調課）。優先用月紀錄，否則用傳入的當日紀錄
+        const leaveToday = this.collectLeavePeriods(monthRecords || substituteRecords, date);
         const scoredTeachers = freeTeachers.map(teacher => {
             const score = this.calculateScore(teacher, targetCourse, teachingIndex);
             const rec = {
@@ -110,6 +170,13 @@ export class RecommendationEngine {
                 reasonText: score.reasonText,
                 tags: score.reasons
             };
+            const leavePeriods = leaveToday.get(this.normalizeName(teacher.name));
+            if (leavePeriods && leavePeriods.length) {
+                // 不硬性排除（可能是半天假）：只標記與提示，並在同層內排後面
+                rec.onLeaveToday = true;
+                rec.tags = [...rec.tags, 'onLeaveToday'];
+                rec.reasonText += (rec.reasonText ? '、' : '') + `⚠ 當日另有請假紀錄（${leavePeriods.join('、')}）`;
+            }
             if (monthCounts) {
                 // 有提供本月紀錄時一律標示：N>0 顯示「本月已代 N 節」，N=0 顯示「本月未代課」
                 const n = monthCounts.get(this.normalizeName(teacher.name)) || 0;
@@ -119,10 +186,11 @@ export class RecommendationEngine {
             return rec;
         });
 
-        // 步驟 4：依分數降序；同分者本月已代節數少者優先（只在同分內生效，
-        // 因此不可能壓過任何一層）；最後依姓名排序以保持穩定
+        // 步驟 4：依分數降序；同分者「當日也請假」者排後，再比本月已代節數少者優先
+        // （皆只在同分內生效，因此不可能壓過任何一層）；最後依姓名排序以保持穩定
         scoredTeachers.sort((a, b) =>
             (b.score - a.score) ||
+            (Number(!!a.onLeaveToday) - Number(!!b.onLeaveToday)) ||
             ((a.monthlyCount || 0) - (b.monthlyCount || 0)) ||
             String(a.teacher.name).localeCompare(String(b.teacher.name), 'zh-Hant'));
 
@@ -203,6 +271,29 @@ export class RecommendationEngine {
             counts.set(name, (counts.get(name) || 0) + 1);
         });
         return counts;
+    }
+
+    /**
+     * 統計目標日期各教師「自己請假（originalTeacher）」的節次，用於推薦時標註當日也請假者
+     *
+     * 含代課與調課紀錄；已被拒絕（status==='rejected'）者不算。節次依原字串去重並排序。
+     *
+     * @param {Array} records - 調代課紀錄（可含其他日期，本函式會依日期過濾）
+     * @param {string} date - 目標日期 YYYY-MM-DD
+     * @returns {Map<string, string[]>} 教師姓名（trim）→ 當日請假節次（如 ['第三節']）
+     */
+    collectLeavePeriods(records, date) {
+        const map = new Map();
+        if (!date) return map;
+        (records || []).forEach(r => {
+            if (!r || r.date !== date || !r.originalTeacher || !r.period) return;
+            if (r.status === 'rejected') return;
+            const name = this.normalizeName(r.originalTeacher);
+            if (!map.has(name)) map.set(name, []);
+            if (!map.get(name).includes(r.period)) map.get(name).push(r.period);
+        });
+        map.forEach(list => list.sort());
+        return map;
     }
 
     /**
