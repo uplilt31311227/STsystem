@@ -2319,7 +2319,13 @@ class SubstituteTeacherApp {
         const scheduleData = this.dataManager.getActiveScheduleData();
         const teachers = this.dataManager.getTeachers();
         const gen = ++this._recommendationsGen;
-        const substituteRecords = await this.dataManager.getSubstituteRecordsAsync(date, date);
+        // 公平性（本月已代 N 節）需要整個月的紀錄：比照單日查詢，用月初到月底的日期範圍查詢
+        // （V2 不可用訂閱視窗快取）。單日衝堂過濾也直接從這批紀錄取（引擎內依日期＋節次比對）。
+        const [yy, mm] = date.split('-').map(Number);
+        const monthPrefix = `${yy}-${String(mm).padStart(2, '0')}`;
+        const monthEnd = `${monthPrefix}-${String(new Date(yy, mm, 0).getDate()).padStart(2, '0')}`;
+        const monthRecords = await this.dataManager.getSubstituteRecordsAsync(`${monthPrefix}-01`, monthEnd);
+        const substituteRecords = monthRecords.filter(r => r.date === date);
         if (gen !== this._recommendationsGen) return; // 期間使用者已改選其他課程/日期，放棄本輪結果
 
         console.log('===== 代課教師推薦 =====');
@@ -2334,7 +2340,8 @@ class SubstituteTeacherApp {
             scheduleData,
             teachers,
             date,
-            substituteRecords
+            substituteRecords,
+            monthRecords
         );
 
         console.log('推薦結果筆數:', recommendations.length);
@@ -2344,7 +2351,15 @@ class SubstituteTeacherApp {
         list.innerHTML = '';
 
         if (recommendations.length === 0) {
-            list.innerHTML = '<p class="hint">該時段無可用的代課教師</p>';
+            // 無人可代：提示併班或自習，並列出併班候選（同星期同節正在上別班課的教師；僅供參考）
+            const total = this.recommendationEngine.getCandidateTeachers(teachers, scheduleData).length;
+            const merge = this.recommendationEngine.getMergeOptions(this.selectedCourse, scheduleData);
+            const mergeHtml = merge.length === 0 ? '' : `
+                <p class="hint">併班候選（同一節正在上別班課的教師，同年級優先）：</p>
+                <ul class="merge-options">
+                    ${merge.map(m => `<li>${esc(m.teacher)}（${esc(m.className)}${m.subject ? ' ' + esc(m.subject) : ''}${m.sameGrade ? '・同年級' : ''}${m.sameSubject ? '・同科目' : ''}）</li>`).join('')}
+                </ul>`;
+            list.innerHTML = `<p class="hint">全校 ${total} 位教師此節皆無法代課，建議併班或自習</p>${mergeHtml}`;
             return;
         }
 

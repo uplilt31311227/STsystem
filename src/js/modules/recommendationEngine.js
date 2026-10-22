@@ -11,8 +11,49 @@
  *    - 優先度 4：其他空堂教師
  *    - 優先度 5：兼課教師（teacher.partTime === true，不論是否符合上述條件一律排最後）
  *
- * 同一優先度內，符合的條件越多越前面；再以「同領域」微調，最後依姓名排序以保持穩定。
+ * 同一優先度內，符合的條件越多越前面；再以「同領域」微調；同分者「本月已代節數」少者優先
+ * （公平性 tie-break，不改分數、不會壓過上述任何一層），最後依姓名排序以保持穩定。
  */
+
+/**
+ * 單一衝堂判斷來源：某教師在指定日期／星期／節次是否已無法再被指派代課。
+ * 推薦過濾（RecommendationEngine）與送出前攔截（DataManager.checkSubstituteTeacherConflict）
+ * 共用此函式，避免兩份邏輯日後各自漂移。
+ *
+ * 檢查兩件事（先「有課」後「已代課」）：
+ *   (1) kind:'teaching' 該教師當星期當節原本有自己的課（scheduleData；呼叫端負責傳入有效課表）
+ *   (2) kind:'covering' 該教師同日同節已被指派為代課(role:'代課')或調課(role:'調課')
+ * 姓名比對皆去除前後空白。
+ *
+ * @param {Object} p
+ * @param {string} p.teacherName - 教師姓名
+ * @param {string} p.date - 日期 YYYY-MM-DD
+ * @param {string} [p.weekday] - 星期；未提供則略過「有課」檢查
+ * @param {string} p.period - 節次
+ * @param {Array} [p.scheduleData] - 課表
+ * @param {Array} [p.records] - 已存在的調代課紀錄（呼叫端自行決定是否含 V2 在途請求）
+ * @param {string} [p.excludeRecordId] - 編輯既有紀錄時排除該 id
+ * @returns {{kind:'teaching', detail:Object}|{kind:'covering', detail:Object, role:string}|null}
+ */
+export function findTeacherConflict({ teacherName, date, weekday, period, scheduleData = [], records = [], excludeRecordId = null }) {
+    const name = teacherName == null ? '' : String(teacherName).trim();
+    if (!name || !period) return null;
+    const same = v => v != null && String(v).trim() === name;
+
+    if (weekday) {
+        const own = (scheduleData || []).find(c =>
+            c.weekday === weekday && c.period === period && same(c.teacher));
+        if (own) return { kind: 'teaching', detail: own };
+    }
+
+    if (date) {
+        const hit = (records || []).find(r =>
+            r.id !== excludeRecordId && r.date === date && r.period === period &&
+            (same(r.substituteTeacher) || same(r.swapTeacher)));
+        if (hit) return { kind: 'covering', detail: hit, role: same(hit.swapTeacher) ? '調課' : '代課' };
+    }
+    return null;
+}
 
 export class RecommendationEngine {
     constructor() {
@@ -35,48 +76,55 @@ export class RecommendationEngine {
      * @param {Array} teachers - 全部教師資料
      * @param {string} date - 調課日期（用於判斷星期）
      * @param {Array} [substituteRecords=[]] - 已存在的調代課紀錄（用於排除已被指派的教師）
+     * @param {Array|null} [monthRecords=null] - 目標日期所在月份的調代課紀錄（用於「本月已代 N 節」公平性
+     *        tie-break）；不提供（null）則不做公平性排序也不顯示本月節數
      * @returns {Array} 推薦教師列表（已排序）：{ teacher, score, reason, reasonText, tags }
      */
-    getRecommendations(targetCourse, scheduleData, teachers, date, substituteRecords = []) {
+    getRecommendations(targetCourse, scheduleData, teachers, date, substituteRecords = [], monthRecords = null) {
         const { weekday, period, className, domain, originalTeacher } = targetCourse;
         scheduleData = scheduleData || [];
 
         console.log('===== 智慧推薦引擎開始運算 =====');
         console.log('目標課程:', { weekday, period, className, domain, originalTeacher });
 
-        // 步驟 1：找出該時段有原課的教師
-        const scheduledBusy = this.getBusyTeachers(scheduleData, weekday, period);
-
-        // 步驟 1.5：找出該日該節已被指派為代課/調課的教師（避免重複指派造成衝堂）
-        const assignedBusy = this.getAssignedTeachers(substituteRecords, date, period);
-
-        const busyTeachers = new Set([...scheduledBusy, ...assignedBusy].map(n => this.normalizeName(n)));
-        console.log('有課教師（含已派代/調課）:', [...busyTeachers]);
-
-        // 步驟 2：篩選出空堂教師（排除有課者和原任課教師）
+        // 步驟 1+2：篩選出空堂教師。衝堂（該節有課、當日該節已被指派代/調課）一律走共用的
+        // findTeacherConflict；另排除原任課教師
         const original = this.normalizeName(originalTeacher);
         const freeTeachers = this.getCandidateTeachers(teachers, scheduleData).filter(teacher => {
             const name = this.normalizeName(teacher.name);
-            return name && !busyTeachers.has(name) && name !== original;
+            return name && name !== original && !findTeacherConflict({
+                teacherName: name, date, weekday, period, scheduleData, records: substituteRecords
+            });
         });
         console.log('空堂教師:', freeTeachers.map(t => t.name));
 
         // 步驟 3：計算每位空堂教師的推薦分數
         const teachingIndex = this.buildTeachingIndex(scheduleData);
+        const monthCounts = monthRecords ? this.countMonthlySubstitutes(monthRecords, date) : null;
         const scoredTeachers = freeTeachers.map(teacher => {
             const score = this.calculateScore(teacher, targetCourse, teachingIndex);
-            return {
+            const rec = {
                 teacher,
                 score: score.total,
                 reason: score.primaryReason,
                 reasonText: score.reasonText,
                 tags: score.reasons
             };
+            if (monthCounts) {
+                // 有提供本月紀錄時一律標示：N>0 顯示「本月已代 N 節」，N=0 顯示「本月未代課」
+                const n = monthCounts.get(this.normalizeName(teacher.name)) || 0;
+                rec.monthlyCount = n;
+                rec.reasonText += (rec.reasonText ? '、' : '') + (n > 0 ? `本月已代 ${n} 節` : '本月未代課');
+            }
+            return rec;
         });
 
-        // 步驟 4：依分數降序排列，同分依姓名排序
+        // 步驟 4：依分數降序；同分者本月已代節數少者優先（只在同分內生效，
+        // 因此不可能壓過任何一層）；最後依姓名排序以保持穩定
         scoredTeachers.sort((a, b) =>
-            (b.score - a.score) || String(a.teacher.name).localeCompare(String(b.teacher.name), 'zh-Hant'));
+            (b.score - a.score) ||
+            ((a.monthlyCount || 0) - (b.monthlyCount || 0)) ||
+            String(a.teacher.name).localeCompare(String(b.teacher.name), 'zh-Hant'));
 
         console.log('推薦結果:', scoredTeachers.map(r =>
             `${r.teacher.name}: ${r.score}分 (${r.reasonText})`
@@ -134,41 +182,72 @@ export class RecommendationEngine {
     }
 
     /**
-     * 取得指定時段有課的教師清單
-     * @param {Array} scheduleData - 課表資料
-     * @param {string} weekday - 星期
-     * @param {string} period - 節次
-     * @returns {Array} 有課的教師姓名清單
+     * 統計目標日期所在月份，每位教師擔任代課教師(substituteTeacher)的節數
+     *
+     * 只算 type==='代課'；有 status 欄位且不是 'approved' 者不算（待同意／待核准／已拒絕）；
+     * V1 紀錄沒有 status，視為已成立。每筆紀錄 = 一節。
+     *
+     * @param {Array} records - 調代課紀錄（可含其他月份，本函式會依日期前綴過濾）
+     * @param {string} date - 目標日期 YYYY-MM-DD
+     * @returns {Map<string, number>} 教師姓名（trim）→ 本月節數
      */
-    getBusyTeachers(scheduleData, weekday, period) {
-        return scheduleData
-            .filter(course => course.weekday === weekday && course.period === period)
-            .map(course => course.teacher);
+    countMonthlySubstitutes(records, date) {
+        const counts = new Map();
+        const month = String(date || '').slice(0, 7);
+        if (!month) return counts;
+        (records || []).forEach(r => {
+            if (!r || r.type !== '代課' || !r.substituteTeacher) return;
+            if (r.status && r.status !== 'approved') return;
+            if (String(r.date || '').slice(0, 7) !== month) return;
+            const name = this.normalizeName(r.substituteTeacher);
+            counts.set(name, (counts.get(name) || 0) + 1);
+        });
+        return counts;
     }
 
     /**
-     * 取得指定日期+節次已被指派為代課/調課的教師清單
+     * 併班候選：同一星期同一節「正在上別班課」的教師（無人可代時的建議，僅供顯示）
      *
-     * Why: 推薦引擎原本只看原始課表的空堂狀態，
-     * 但同一日同一節該教師可能已被指派代別人的課（substituteRecord 已存在），
-     * 再次推薦會造成同時段重複指派、實際代課當下兩堂課衝堂。
+     * 排除原任課教師與目標班級自己的課；同年級優先，其次同科目，再依姓名排序。
      *
-     * @param {Array} substituteRecords - 已存在的調代課紀錄
-     * @param {string} date - 目標日期 (YYYY-MM-DD)
-     * @param {string} period - 目標節次
-     * @returns {Array} 該日該節已被指派的教師姓名清單（substituteTeacher / swapTeacher）
+     * @param {Object} targetCourse - { weekday, period, className, subject, rawSubject, originalTeacher }
+     * @param {Array} scheduleData - 課表（呼叫端傳有效課表）
+     * @returns {Array<{teacher:string, className:string, subject:string, sameGrade:boolean, sameSubject:boolean}>}
      */
-    getAssignedTeachers(substituteRecords, date, period) {
-        if (!substituteRecords || substituteRecords.length === 0 || !date || !period) {
-            return [];
-        }
-        const names = [];
-        substituteRecords.forEach(r => {
-            if (r.date !== date || r.period !== period) return;
-            if (r.substituteTeacher) names.push(r.substituteTeacher);
-            if (r.swapTeacher) names.push(r.swapTeacher);
+    getMergeOptions(targetCourse, scheduleData) {
+        const { weekday, period, className, originalTeacher } = targetCourse || {};
+        const original = this.normalizeName(originalTeacher);
+        const targetClass = this.normalizeClassName(className);
+        const gradeOf = c => { const m = this.normalizeClassName(c).match(/^(\d+)年/); return m ? m[1] : ''; };
+        const targetGrade = gradeOf(className);
+        const targetSubjects = [targetCourse && targetCourse.subject, targetCourse && targetCourse.rawSubject]
+            .map(s => this.normalizeSubject(s)).filter(Boolean);
+
+        const seen = new Set();
+        const options = [];
+        (scheduleData || []).forEach(course => {
+            if (course.weekday !== weekday || course.period !== period) return;
+            const teacher = this.normalizeName(course.teacher);
+            if (!teacher || teacher === original) return;
+            const cls = this.normalizeClassName(course.className);
+            if (!cls || cls === targetClass) return;
+            const key = `${teacher}|${cls}`;
+            if (seen.has(key)) return;
+            seen.add(key);
+            options.push({
+                teacher,
+                className: course.className,
+                subject: course.subject || course.rawSubject || '',
+                sameGrade: !!targetGrade && gradeOf(course.className) === targetGrade,
+                sameSubject: [course.subject, course.rawSubject]
+                    .map(x => this.normalizeSubject(x)).some(x => x && targetSubjects.includes(x))
+            });
         });
-        return [...new Set(names)];
+        options.sort((a, b) =>
+            (Number(b.sameGrade) - Number(a.sameGrade)) ||
+            (Number(b.sameSubject) - Number(a.sameSubject)) ||
+            a.teacher.localeCompare(b.teacher, 'zh-Hant'));
+        return options;
     }
 
     /**
@@ -382,43 +461,6 @@ export class RecommendationEngine {
         }
 
         return normalized;
-    }
-
-    /**
-     * 進階推薦：考慮教師近期代課頻率
-     * （避免同一位教師被過度推薦）
-     * @param {Array} recommendations - 初步推薦列表
-     * @param {Array} recentRecords - 近期調課紀錄
-     * @param {number} days - 考慮的天數
-     * @returns {Array} 調整後的推薦列表
-     */
-    adjustForFrequency(recommendations, recentRecords, days = 7) {
-        // 計算每位教師近期代課次數
-        const cutoffDate = new Date();
-        cutoffDate.setDate(cutoffDate.getDate() - days);
-
-        const frequencyMap = new Map();
-        recentRecords.forEach(record => {
-            const recordDate = new Date(record.date);
-            if (recordDate >= cutoffDate) {
-                const count = frequencyMap.get(record.substituteTeacher) || 0;
-                frequencyMap.set(record.substituteTeacher, count + 1);
-            }
-        });
-
-        // 根據頻率調整分數（代課越多，分數略微降低）
-        return recommendations.map(rec => {
-            const frequency = frequencyMap.get(rec.teacher.name) || 0;
-            const adjustedScore = rec.score - (frequency * 5); // 每次代課扣 5 分
-            return {
-                ...rec,
-                score: adjustedScore,
-                frequency,
-                reasonText: frequency > 0
-                    ? `${rec.reasonText}（近 ${days} 天已代課 ${frequency} 次）`
-                    : rec.reasonText
-            };
-        }).sort((a, b) => b.score - a.score);
     }
 
     /**
