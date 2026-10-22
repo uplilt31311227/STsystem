@@ -15,8 +15,19 @@
  *    - 事假/病假/休假/其他
  *    【調課 - 不扣時數（互換）】
  *    - 調課 (swap)
- * 4. 實際授課時數 = 原定時數 + 代課增加 - 被代課減少
- * 5. 超鐘點時數 = 實際授課時數 - 基本授課時數（需另設定）
+ * 4. 實際授課時數 = max(0, 原定時數 + 代課增加 - 被代課減少)
+ *    下限 0：寒暑假（7、8 月預設 0 週，或使用者覆寫為 0 週）若仍有代課紀錄，被代者的
+ *    原定時數是 0，直接相減會出現負數。實際授課時數不可能為負，故以 0 為下限；
+ *    「被代課減少」欄仍照實計數（不被下限吞掉），明細才能對帳。
+ *    因此該列會出現「原定 + 增加 − 減少 ≠ 實際」，Excel 彙總表尾會加註記說明。
+ * 5. 超鐘點時數 = max(0, 實際授課時數 - 基本授課時數×週數)
+ *    週數為 0 時基本時數也是 0，代課者的代課節數全部算超鐘點（寒暑假代課都是額外）。
+ *
+ * 紀錄成立防線（isEffectiveRecord，篩月時一律套用，彙總與明細共用）：
+ * - 沒有 status 欄位（V1 本機紀錄）視為已成立。
+ * - 有 status 時只有 'approved' 算成立（pending / pending_swap_consent / pending_approval /
+ *   rejected 與未知值一律排除；schemaConstants.REQUEST_STATUS 中只有 APPROVED 代表已成立）。
+ * - deleted 或 isDeleted 為真者排除（目前專案資料層尚無此欄位，屬預防性防線）。
  */
 
 export class SettlementCalculator {
@@ -68,7 +79,8 @@ export class SettlementCalculator {
             const substitutedHours = this.countSubstitutedHours(monthlyRecords, teacher.name);
 
             // 4. 計算實際授課時數
-            const actualHours = originalHours + substituteHours - substitutedHours;
+            // 以 0 為下限（寒暑假週數 0 時被代者不會出現負時數）；substitutedHours 維持原計數
+            const actualHours = Math.max(0, originalHours + substituteHours - substitutedHours);
 
             // 5. 計算超鐘點時數
             const baseMonthlyHours = this.baseWeeklyHours * weeksInMonth;
@@ -148,7 +160,24 @@ export class SettlementCalculator {
      */
     filterMonthlyRecords(records, year, month) {
         const { prefix } = this._resolveMonth(year, month);
-        return records.filter(record => record.date && record.date.startsWith(prefix));
+        return records.filter(record =>
+            this.isEffectiveRecord(record) && record.date && record.date.startsWith(prefix));
+    }
+
+    /**
+     * 紀錄是否「已成立」可計入結算（calculate 與 getMonthlyDetailRows 都經 filterMonthlyRecords
+     * 走到這裡，所以彙總與明細口徑一致）。
+     * - deleted／isDeleted 為真：排除
+     * - 沒有 status（undefined／null／空字串，V1 本機紀錄）：視為已成立
+     * - 有 status：只有 'approved' 成立，其餘（含 rejected、pending_*、legacy pending、未知值）排除
+     * @param {Object} record
+     * @returns {boolean}
+     */
+    isEffectiveRecord(record) {
+        if (!record || record.deleted || record.isDeleted) return false;
+        const status = record.status;
+        if (status === undefined || status === null || status === '') return true;
+        return status === 'approved';
     }
 
     /**
@@ -359,6 +388,17 @@ export class SettlementCalculator {
             settlementData.reduce((sum, r) => sum + r.overtimeHours, 0)
         ];
         wsData.push(totalRow);
+
+        // 下限註記：實際授課時數最低以 0 計（見檔頭說明）。任何一列「原定 + 增加 − 減少 ≠ 實際」
+        // 時，合計列也會不平，於表尾說明，避免對帳時誤以為算錯。
+        const clamped = settlementData.filter(r =>
+            r.actualHours !== r.originalHours + r.substituteHours - r.substitutedHours);
+        if (clamped.length) {
+            wsData.push([]);
+            wsData.push([`註：實際授課時數最低以 0 計（寒暑假等 0 週月份，被代課節數大於原定時數時不計負數），` +
+                `故下列教師「原定＋代課增加−被代課減少」不等於「實際授課時數」，合計列亦同：` +
+                `${clamped.map(r => r.teacherName).join('、')}。「被代課減少」欄仍為實際被代節數。`]);
+        }
 
         // 建立工作簿
         const wb = XLSX.utils.book_new();
