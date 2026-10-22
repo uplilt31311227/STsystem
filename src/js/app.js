@@ -1263,7 +1263,7 @@ class SubstituteTeacherApp {
      */
     populateTeacherDropdowns() {
         const teachers = this.dataManager.getTeachers();
-        const options = teachers.map(t => `<option value="${t.name}">${t.name}</option>`).join('');
+        const options = teachers.map(t => `<option value="${esc(t.name)}">${esc(t.name)}</option>`).join('');
 
         // 調代課頁面的教師選單
         const subTeacherSelect = document.getElementById('sub-teacher');
@@ -2355,8 +2355,16 @@ class SubstituteTeacherApp {
         const [yy, mm] = date.split('-').map(Number);
         const monthPrefix = `${yy}-${String(mm).padStart(2, '0')}`;
         const monthEnd = `${monthPrefix}-${String(new Date(yy, mm, 0).getDate()).padStart(2, '0')}`;
-        const monthRecords = await this.dataManager.getSubstituteRecordsAsync(`${monthPrefix}-01`, monthEnd);
-        const substituteRecords = monthRecords.filter(r => r.date === date);
+        let monthRecords = null;
+        try {
+            monthRecords = await this.dataManager.getSubstituteRecordsAsync(`${monthPrefix}-01`, monthEnd);
+        } catch (err) {
+            // 月範圍查詢失敗時不中斷推薦：退回本機已載入的當日紀錄做衝堂過濾，並略過公平排序
+            console.error('讀取本月調代課紀錄失敗：', err);
+            this.showToast('讀取本月紀錄失敗，推薦未套用公平排序，且可能未排除已被指派的教師', 'warning', 6000);
+        }
+        const substituteRecords = (monthRecords || this.dataManager.substituteRecords || [])
+            .filter(r => r.date === date);
         if (gen !== this._recommendationsGen) return; // 期間使用者已改選其他課程/日期，放棄本輪結果
 
         console.log('===== 代課教師推薦 =====');
@@ -2383,7 +2391,10 @@ class SubstituteTeacherApp {
 
         if (recommendations.length === 0) {
             // 無人可代：提示併班或自習，並列出併班候選（同星期同節正在上別班課的教師；僅供參考）
-            const total = this.recommendationEngine.getCandidateTeachers(teachers, scheduleData).length;
+            const engine = this.recommendationEngine;
+            const original = engine.normalizeName(this.selectedCourse.originalTeacher);
+            const total = engine.getCandidateTeachers(teachers, scheduleData)
+                .filter(t => engine.normalizeName(t.name) !== original).length;
             const merge = this.recommendationEngine.getMergeOptions(this.selectedCourse, scheduleData);
             const mergeHtml = merge.length === 0 ? '' : `
                 <p class="hint">併班候選（同一節正在上別班課的教師，同年級優先）：</p>
@@ -4796,7 +4807,7 @@ class SubstituteTeacherApp {
         if (!select) return;
 
         const currentValue = select.value;
-        const options = teachers.map(t => `<option value="${t.name}">${t.name}</option>`).join('');
+        const options = teachers.map(t => `<option value="${esc(t.name)}">${esc(t.name)}</option>`).join('');
         select.innerHTML = '<option value="">請選擇教師</option>' + options;
 
         // 恢復之前的選擇
