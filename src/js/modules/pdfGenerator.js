@@ -1351,6 +1351,599 @@ export class PDFGenerator {
         }
     }
 
+    // ============================================================
+    // 多重調課通知單：以「淨結果」呈現，避免連鎖對調的中繼位置造成誤解
+    // ============================================================
+
+    /**
+     * 依批次順序追蹤每一堂課，算出「原本時段 → 最後時段」。
+     * 連鎖對調（例：林 4→6、再 6→3）合併為一筆 4→3；起訖相同者略去。
+     * @param {Array} records - buildSwapRecord 產生的調課紀錄（依批次順序）
+     * @returns {Array<{teacher, className, subject, from: {date, weekday, period}, to: {date, weekday, period}}>}
+     */
+    computeSwapNetMoves(records) {
+        const items = [];
+        const sameSlot = (a, b) => a.date === b.date && this.normalizePeriod(a.period) === this.normalizePeriod(b.period);
+        const find = (teacher, className, at) =>
+            items.find(it => it.teacher === teacher && it.className === className && sameSlot(it.to, at));
+
+        records.forEach(r => {
+            const slotA = { date: r.date, weekday: r.weekday, period: r.period };
+            const slotB = { date: r.swapDate, weekday: r.swapWeekday, period: r.swapPeriod };
+            // 兩側先找好再套用，避免自行調課時 A 移動後被 B 誤認
+            const moves = [
+                { teacher: r.originalTeacher, subject: r.subject, src: slotA, dst: slotB },
+                { teacher: r.swapTeacher, subject: r.swapSubject, src: slotB, dst: slotA }
+            ].map(m => ({ ...m, item: find(m.teacher, r.className, m.src) }));
+
+            moves.forEach(m => {
+                if (m.item) {
+                    m.item.to = m.dst;
+                } else {
+                    items.push({ teacher: m.teacher, className: r.className, subject: m.subject, from: m.src, to: m.dst });
+                }
+            });
+        });
+
+        const slotOrder = s => `${s.date}|${this.periods.indexOf(this.normalizePeriod(s.period))}`;
+        return items
+            .filter(it => !sameSlot(it.from, it.to))
+            .sort((a, b) => a.teacher.localeCompare(b.teacher, 'zh-TW') || slotOrder(a.from).localeCompare(slotOrder(b.from)));
+    }
+
+    /**
+     * 建立受影響班級在受影響日期的「調課前 / 調課後」課表。
+     * 同一格調課後不是剛好一位教師時標記 problem（空堂或重疊）。
+     * @returns {Array<{date, weekday, classes: Array<{className, rows: Array<{period, before, after, changed, problem}>}>}>}
+     */
+    buildSwapBatchGrid(records, netMoves, scheduleData) {
+        const dates = new Map();
+        records.forEach(r => {
+            dates.set(r.date, r.weekday);
+            dates.set(r.swapDate, r.swapWeekday);
+        });
+        const classNames = [...new Set(records.map(r => r.className))].sort((a, b) => a.localeCompare(b, 'zh-TW'));
+        const label = c => `${c.subject} ${c.teacher}`;
+
+        return [...dates.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([date, weekday]) => ({
+            date,
+            weekday,
+            classes: classNames.map(className => ({
+                className,
+                rows: this.periods.map(period => {
+                    const before = scheduleData
+                        .filter(c => c.className === className && c.weekday === weekday && this.normalizePeriod(c.period) === period)
+                        .map(c => ({ teacher: c.teacher, subject: c.subject }));
+                    const isHere = s => s.date === date && this.normalizePeriod(s.period) === period;
+                    const after = before
+                        .filter(c => !netMoves.some(m => m.className === className && m.teacher === c.teacher && isHere(m.from)))
+                        .concat(netMoves
+                            .filter(m => m.className === className && isHere(m.to))
+                            .map(m => ({ teacher: m.teacher, subject: m.subject })));
+                    const changed = before.map(label).join() !== after.map(label).join();
+                    return { period, before, after, changed, problem: changed && after.length !== 1 };
+                })
+            }))
+        }));
+    }
+
+    /**
+     * 找出對調明細中的「中繼位置」：該側教師並非原課表在此時段上課的人，
+     * 而是被前面某筆調進來的，需在明細加註以免收單者誤以為在此上課。
+     * @returns {Array<string>} 與 records 等長的註記（無則空字串）
+     */
+    getSwapTransitNotes(records, scheduleData) {
+        const isOriginal = (teacher, className, weekday, period) => scheduleData.some(c =>
+            c.teacher === teacher && c.className === className && c.weekday === weekday
+            && this.normalizePeriod(c.period) === this.normalizePeriod(period));
+
+        return records.map(r => {
+            const notes = [];
+            if (!isOriginal(r.originalTeacher, r.className, r.weekday, r.period)) {
+                notes.push(`${r.originalTeacher} ${this.formatMonthDay(r.date)}${r.period}`);
+            }
+            if (!isOriginal(r.swapTeacher, r.className, r.swapWeekday, r.swapPeriod)) {
+                notes.push(`${r.swapTeacher} ${this.formatMonthDay(r.swapDate)}${r.swapPeriod}`);
+            }
+            return notes.length ? `${notes.join('、')} 為前面對調調入的暫時位置，實際上課時段以「教師異動一覽」為準` : '';
+        });
+    }
+
+    /** 時段文字：10/27(二) 第三節 */
+    formatSwapSlot(slot) {
+        return `${this.formatMonthDay(slot.date)}(${(slot.weekday || '').replace('週', '')}) ${slot.period}`;
+    }
+
+    /**
+     * 調課前後對照表 HTML（一個日期一張表，欄為班級、列為節次；異動格加粗並標底色）
+     */
+    createSwapGridTableHTML(day, fontSize = 11) {
+        const cellText = list => list.length ? list.map(c => `${c.subject} ${c.teacher}`).join('<br>') : '空堂';
+        const head = day.classes.map(c =>
+            `<th style="padding: 4px; border: 1px solid #333; font-size: ${fontSize}px;">${c.className}</th>`
+        ).join('');
+        const rows = this.periods.map((period, i) => {
+            const cells = day.classes.map(c => {
+                const row = c.rows[i];
+                if (!row.changed) {
+                    return `<td style="padding: 3px 4px; border: 1px solid #333; font-size: ${fontSize}px; color: #888; text-align: center;">${cellText(row.before)}</td>`;
+                }
+                const bg = row.problem ? '#fde2e2' : '#fff4c2';
+                const warn = row.problem ? '<br><span style="color:#c00;">⚠ 請檢查</span>' : '';
+                return `<td style="padding: 3px 4px; border: 1px solid #333; font-size: ${fontSize}px; background: ${bg}; text-align: center;">
+                    <span style="color:#888; text-decoration: line-through;">${cellText(row.before)}</span><br>
+                    <strong>${cellText(row.after)}</strong>${warn}</td>`;
+            }).join('');
+            return `<tr><td style="padding: 3px 4px; border: 1px solid #333; font-size: ${fontSize}px; text-align: center; background: #f5f5f5;">${period.replace('第', '').replace('節', '')}</td>${cells}</tr>`;
+        }).join('');
+
+        return `
+        <div style="margin-bottom: 8px;">
+            <div style="font-size: ${fontSize + 1}px; font-weight: bold; margin-bottom: 3px;">${this.formatWeekLabel(day.date)}</div>
+            <table style="width: 100%; border-collapse: collapse; table-layout: fixed;">
+                <thead><tr style="background: #333; color: white;">
+                    <th style="padding: 4px; border: 1px solid #333; font-size: ${fontSize}px; width: 8%;">節</th>${head}
+                </tr></thead>
+                <tbody>${rows}</tbody>
+            </table>
+        </div>`;
+    }
+
+    /**
+     * 教學組聯（A4 直向）：調課總表 + 教師異動一覽（每位教師一格簽名）+ 對調明細
+     */
+    createSwapBatchAdminPageHTML(records, netMoves, grid, transitNotes) {
+        const printDate = new Date().toLocaleDateString('zh-TW');
+        // 每個日期只列當天有異動的班級
+        const gridHTML = grid
+            .map(day => ({ ...day, classes: day.classes.filter(c => c.rows.some(r => r.changed)) }))
+            .filter(day => day.classes.length > 0)
+            .map(day => this.createSwapGridTableHTML(day, 10))
+            .join('');
+
+        const byTeacher = this.groupNetMovesByTeacher(netMoves);
+        const teacherRows = Object.entries(byTeacher).map(([teacher, moves]) => moves.map((m, i) => `
+            <tr>
+                ${i === 0 ? `<td rowspan="${moves.length}" style="padding: 4px; border: 1px solid #333; font-size: 11px; text-align: center; font-weight: bold;">${teacher}</td>` : ''}
+                <td style="padding: 4px; border: 1px solid #333; font-size: 11px; text-align: center;">${m.className} ${m.subject}</td>
+                <td style="padding: 4px; border: 1px solid #333; font-size: 11px; text-align: center; color: #666;">${this.formatSwapSlot(m.from)}</td>
+                <td style="padding: 4px; border: 1px solid #333; font-size: 11px; text-align: center; font-weight: bold;">${this.formatSwapSlot(m.to)}</td>
+                ${i === 0 ? `<td rowspan="${moves.length}" style="padding: 4px; border: 1px solid #333;"></td>` : ''}
+            </tr>`).join('')).join('');
+
+        const detailRows = records.map((r, i) => `
+            <tr>
+                <td style="padding: 3px; border: 1px solid #999; font-size: 9px; text-align: center;">${i + 1}</td>
+                <td style="padding: 3px; border: 1px solid #999; font-size: 9px;">${this.formatSwapSlot({ date: r.date, weekday: r.weekday, period: r.period })} ${r.className} ${r.subject}（${r.originalTeacher}）</td>
+                <td style="padding: 3px; border: 1px solid #999; font-size: 9px; text-align: center;">⇄</td>
+                <td style="padding: 3px; border: 1px solid #999; font-size: 9px;">${this.formatSwapSlot({ date: r.swapDate, weekday: r.swapWeekday, period: r.swapPeriod })} ${r.swapSubject || ''}（${r.swapTeacher}）</td>
+                <td style="padding: 3px; border: 1px solid #999; font-size: 9px; color: #b45309;">${transitNotes[i] ? '※ ' + transitNotes[i] : ''}</td>
+            </tr>`).join('');
+
+        return `
+        <div style="
+            width: 794px;
+            min-height: 1123px;
+            padding: 28px 25px;
+            font-family: 'Microsoft JhengHei', 'Noto Sans TC', sans-serif;
+            background: white;
+            box-sizing: border-box;
+        ">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;">
+                <div style="font-size: 14px; font-weight: bold;">${this.schoolName}</div>
+                <div style="font-size: 20px; font-weight: bold; letter-spacing: 4px;">多重調課通知單</div>
+                <div style="background: #555; color: white; padding: 6px 12px; font-size: 12px; font-weight: bold; border-radius: 4px;">教學組聯</div>
+            </div>
+
+            <div style="font-size: 13px; font-weight: bold; margin: 8px 0 4px;">一、調課總表（劃線為原課程，粗體為調課後）</div>
+            ${gridHTML}
+
+            <div style="font-size: 13px; font-weight: bold; margin: 10px 0 4px;">二、教師異動一覽（以此為準）</div>
+            <table style="width: 100%; border-collapse: collapse;">
+                <thead><tr style="background: #333; color: white;">
+                    <th style="padding: 5px; border: 1px solid #333; font-size: 11px; width: 14%;">教師</th>
+                    <th style="padding: 5px; border: 1px solid #333; font-size: 11px; width: 20%;">班級科目</th>
+                    <th style="padding: 5px; border: 1px solid #333; font-size: 11px; width: 24%;">原本</th>
+                    <th style="padding: 5px; border: 1px solid #333; font-size: 11px; width: 24%;">改為</th>
+                    <th style="padding: 5px; border: 1px solid #333; font-size: 11px; width: 18%;">簽名</th>
+                </tr></thead>
+                <tbody>${teacherRows}</tbody>
+            </table>
+
+            <div style="font-size: 11px; font-weight: bold; margin: 12px 0 3px; color: #555;">附：對調明細（系統紀錄，依輸入順序）</div>
+            <table style="width: 100%; border-collapse: collapse;">
+                <tbody>${detailRows}</tbody>
+            </table>
+
+            <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-top: 16px; font-size: 11px;">
+                <div>列印日期：${printDate}　共 ${records.length} 筆對調、${Object.keys(byTeacher).length} 位教師異動</div>
+                <div style="display: flex; gap: 24px;">
+                    <div>教學組長：__________</div>
+                    <div>教務主任：__________</div>
+                </div>
+            </div>
+        </div>
+        `;
+    }
+
+    /** 依教師分組（保留 computeSwapNetMoves 的排序） */
+    groupNetMovesByTeacher(netMoves) {
+        const byTeacher = {};
+        netMoves.forEach(m => { (byTeacher[m.teacher] = byTeacher[m.teacher] || []).push(m); });
+        return byTeacher;
+    }
+
+    /**
+     * 教師聯（半頁 551×794）：只列這位教師自己的「原本 → 改為」
+     */
+    createSwapTeacherSheetHTML(teacher, moves) {
+        const printDate = new Date().toLocaleDateString('zh-TW');
+        const rows = moves.map(m => `
+            <tr>
+                <td style="padding: 8px 4px; border: 1px solid #333; font-size: 13px; text-align: center;">${m.className}<br>${m.subject}</td>
+                <td style="padding: 8px 4px; border: 1px solid #333; font-size: 13px; text-align: center; color: #666;">${this.formatSwapSlot(m.from)}</td>
+                <td style="padding: 8px 4px; border: 1px solid #333; font-size: 13px; text-align: center;">→</td>
+                <td style="padding: 8px 4px; border: 1px solid #333; font-size: 15px; text-align: center; font-weight: bold; background: #fff4c2;">${this.formatSwapSlot(m.to)}</td>
+            </tr>`).join('');
+
+        return `
+        <div style="
+            width: 551px;
+            height: 794px;
+            padding: 16px 18px;
+            font-family: 'Microsoft JhengHei', 'Noto Sans TC', sans-serif;
+            background: white;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+        ">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;">
+                <div style="font-size: 11px; font-weight: bold;">${this.schoolName}</div>
+                <div style="font-size: 16px; font-weight: bold; letter-spacing: 2px;">調課通知單</div>
+                <div style="background: #555; color: white; padding: 3px 8px; font-size: 10px; font-weight: bold; border-radius: 3px;">${teacher}老師 教師聯</div>
+            </div>
+            <div style="font-size: 12px; margin-bottom: 8px;">${teacher} 老師您好，您的課程異動如下，請依「改為」時段上課：</div>
+            <table style="width: 100%; border-collapse: collapse;">
+                <thead><tr style="background: #333; color: white;">
+                    <th style="padding: 5px; border: 1px solid #333; font-size: 12px; width: 22%;">班級科目</th>
+                    <th style="padding: 5px; border: 1px solid #333; font-size: 12px; width: 32%;">原本</th>
+                    <th style="padding: 5px; border: 1px solid #333; font-size: 12px; width: 8%;"></th>
+                    <th style="padding: 5px; border: 1px solid #333; font-size: 12px; width: 38%;">改為</th>
+                </tr></thead>
+                <tbody>${rows}</tbody>
+            </table>
+            <div style="flex: 1;"></div>
+            <div style="display: flex; justify-content: space-between; align-items: flex-end; font-size: 11px;">
+                <div>教師簽收：__________</div>
+                <div style="display: flex; gap: 18px;">
+                    <div>教務處：__________</div>
+                    <div style="color:#666;">列印日期：${printDate}</div>
+                </div>
+            </div>
+        </div>
+        `;
+    }
+
+    /**
+     * 班級聯（半頁 551×794）：該班在受影響日期的調課前後對照
+     */
+    createSwapClassSheetHTML(className, grid) {
+        const printDate = new Date().toLocaleDateString('zh-TW');
+        const tablesHTML = grid
+            .map(day => ({ ...day, classes: day.classes.filter(c => c.className === className) }))
+            .filter(day => day.classes.some(c => c.rows.some(r => r.changed)))
+            .map(day => this.createSwapGridTableHTML(day, 12))
+            .join('');
+
+        return `
+        <div style="
+            width: 551px;
+            height: 794px;
+            padding: 16px 18px;
+            font-family: 'Microsoft JhengHei', 'Noto Sans TC', sans-serif;
+            background: white;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+        ">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;">
+                <div style="font-size: 11px; font-weight: bold;">${this.schoolName}</div>
+                <div style="font-size: 16px; font-weight: bold; letter-spacing: 2px;">調課通知單</div>
+                <div style="background: #555; color: white; padding: 3px 8px; font-size: 10px; font-weight: bold; border-radius: 3px;">${className} 班級聯</div>
+            </div>
+            <div style="font-size: 12px; margin-bottom: 6px;">劃線為原課程，粗體為調課後課程。</div>
+            ${tablesHTML}
+            <div style="flex: 1;"></div>
+            <div style="display: flex; justify-content: space-between; align-items: flex-end; font-size: 11px;">
+                <div>導師簽收：__________</div>
+                <div style="color:#666;">列印日期：${printDate}</div>
+            </div>
+        </div>
+        `;
+    }
+
+    /**
+     * 將淨移動拆成「最終對調組」：同班內依時段串成循環。
+     * 兩節互換（含連調後恰好收斂成兩節）→ type 'pair'，可用原版調課單；
+     * 三節以上輪換 → type 'chain'；串不成循環的剩餘移動依班級併成一組 chain。
+     * @returns {Array<{type: 'pair'|'chain', className, moves: Array}>}
+     */
+    groupSwapFinalMoves(netMoves) {
+        const key = s => `${s.date}|${this.normalizePeriod(s.period)}`;
+        const groups = [];
+        const classNames = [...new Set(netMoves.map(m => m.className))];
+
+        classNames.forEach(className => {
+            const remaining = netMoves.filter(m => m.className === className);
+            const leftovers = [];
+            while (remaining.length > 0) {
+                const cycle = [remaining.shift()];
+                let closed = false;
+                while (!closed) {
+                    const last = cycle[cycle.length - 1];
+                    if (key(last.to) === key(cycle[0].from)) { closed = true; break; }
+                    const idx = remaining.findIndex(m => key(m.from) === key(last.to));
+                    if (idx < 0) break;
+                    cycle.push(remaining.splice(idx, 1)[0]);
+                }
+                if (!closed) leftovers.push(...cycle);
+                else groups.push({ type: cycle.length === 2 ? 'pair' : 'chain', className, moves: cycle });
+            }
+            if (leftovers.length > 0) groups.push({ type: 'chain', className, moves: leftovers });
+        });
+        return groups;
+    }
+
+    /**
+     * 由兩節互換的淨移動組出原版調課單用的紀錄；若批次裡本來就有這筆對調，沿用原紀錄
+     */
+    buildPairRecordFromMoves(moves, records) {
+        const same = (s, date, period) => s.date === date && this.normalizePeriod(s.period) === this.normalizePeriod(period);
+        const matches = (r, x, y) => r.className === x.className && r.originalTeacher === x.teacher && r.swapTeacher === y.teacher
+            && same(x.from, r.date, r.period) && same(y.from, r.swapDate, r.swapPeriod);
+        const existing = records.find(r => matches(r, moves[0], moves[1]) || matches(r, moves[1], moves[0]));
+        if (existing) return existing;
+
+        const [a, b] = moves;
+
+        const base = records.find(r => r.className === a.className) || {};
+        return {
+            ...base,
+            type: '調課',
+            date: a.from.date,
+            weekday: a.from.weekday,
+            period: a.from.period,
+            className: a.className,
+            subject: a.subject,
+            originalTeacher: a.teacher,
+            swapDate: b.from.date,
+            swapWeekday: b.from.weekday,
+            swapPeriod: b.from.period,
+            swapSubject: b.subject,
+            swapTeacher: b.teacher,
+            substituteTeacher: b.teacher,
+            isSelfSwap: a.teacher === b.teacher
+        };
+    }
+
+    /**
+     * 連調單聯 HTML（沿用原版調課單版型）：基本資訊改為「最終異動」列表，週課表標出各節最終課程
+     * @param {Object} group - groupSwapFinalMoves 的 chain 組
+     * @param {Object} sheet - { label, teacher? }；教師聯會加深該教師的列與課表格
+     */
+    createSwapChainSheetHTML(group, sheet) {
+        const highlightBg = '#d0d0d0';
+        const normalBg = '#f5f5f5';
+        const isClassSheet = sheet.label === '班級聯';
+        const printDate = new Date().toLocaleDateString('zh-TW', { year: 'numeric', month: 'numeric', day: 'numeric' });
+        const fmtDate = s => {
+            const d = new Date(s.date + 'T00:00:00');
+            return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`;
+        };
+
+        const moveRows = group.moves.map(m => {
+            const mine = sheet.teacher === m.teacher;
+            const bg = mine ? `background: ${highlightBg};` : '';
+            return `
+                <tr>
+                    <td style="padding: 4px 6px; border: 1px solid #333; ${bg} text-align: center;">${m.teacher}</td>
+                    <td style="padding: 4px 6px; border: 1px solid #333; ${bg} text-align: center;">${m.subject}</td>
+                    <td style="padding: 4px 6px; border: 1px solid #333; ${bg}">${fmtDate(m.from)}<br>${m.from.weekday} ${m.from.period}</td>
+                    <td style="padding: 4px 6px; border: 1px solid #333; ${bg}"><strong>${fmtDate(m.to)}<br>${m.to.weekday} ${m.to.period}</strong></td>
+                </tr>`;
+        }).join('');
+
+        const infoTableHTML = `
+            <table style="width: 100%; border-collapse: collapse; margin-bottom: 6px; font-size: 13px;">
+                <tr>
+                    <td style="padding: 8px; border: 1px solid #333; background: ${normalBg}; width: 18%; font-weight: bold;">異動類型</td>
+                    <td style="padding: 8px; border: 1px solid #333; width: 32%;">調課（${group.moves.length} 節連調）</td>
+                    <td style="padding: 8px; border: 1px solid #333; background: ${isClassSheet ? highlightBg : normalBg}; width: 18%; font-weight: bold;">班級</td>
+                    <td style="padding: 8px; border: 1px solid #333; ${isClassSheet ? 'background: ' + highlightBg + ';' : ''} width: 32%;">${group.className}</td>
+                </tr>
+            </table>
+            <table style="width: 100%; border-collapse: collapse; margin-bottom: 6px; font-size: 13px;">
+                <tr style="background: ${normalBg};">
+                    <th style="padding: 6px; border: 1px solid #333; width: 18%;">教師</th>
+                    <th style="padding: 6px; border: 1px solid #333; width: 22%;">科目</th>
+                    <th style="padding: 6px; border: 1px solid #333; width: 30%;">原時段</th>
+                    <th style="padding: 6px; border: 1px solid #333; width: 30%;">改至（最終）</th>
+                </tr>
+                ${moveRows}
+            </table>
+            <div style="font-size: 12px; margin-bottom: 10px;">調課說明：${group.moves.length} 節課程輪換，各教師總時數不變；上表為最終上課時段。</div>`;
+
+        // 週課表：每一格顯示該時段最終的課程（原 → 改）
+        const slotBg = '#e0e0e0';
+        const mineBg = '#c0c0c0';
+        let tableRows = '';
+        this.periods.forEach((period, index) => {
+            let row = `<td style="padding: 4px; border: 1px solid #333; font-weight: bold; text-align: center; background: #f5f5f5; font-size: 13px;">${period}</td>`;
+            this.weekdays.forEach(weekday => {
+                const incoming = group.moves.find(m => m.to.weekday === weekday && this.normalizePeriod(m.to.period) === period);
+                if (!incoming) {
+                    row += `<td style="padding: 4px; border: 1px solid #333; height: 30px;"></td>`;
+                    return;
+                }
+                const outgoing = group.moves.find(m => m.from.date === incoming.to.date && this.normalizePeriod(m.from.period) === period);
+                const mine = sheet.teacher && (incoming.teacher === sheet.teacher || outgoing?.teacher === sheet.teacher);
+                const d = new Date(incoming.to.date + 'T00:00:00');
+                row += `<td style="padding: 3px; border: 1px solid #333; text-align: center; background: ${mine ? mineBg : slotBg}; font-weight: bold; font-size: 11px; line-height: 1.3;">
+                    ${d.getMonth() + 1}/${d.getDate()}<br>${group.className} ${incoming.subject}<br>${outgoing ? `原 ${outgoing.teacher}<br>` : ''}改 ${incoming.teacher}</td>`;
+            });
+            tableRows += `<tr>${row}</tr>`;
+            if (index === 3) {
+                tableRows += `<tr><td colspan="6" style="padding: 4px; border: 1px solid #333; text-align: center; background: #888; color: white; font-size: 12px; font-weight: bold; letter-spacing: 3px;">午 休</td></tr>`;
+            }
+        });
+        const weekHead = ['節次', ...this.weekdays].map(h => `<th style="padding: 6px 4px; border: 1px solid #333; font-size: 14px; width: ${h === '節次' ? '15%' : '17%'};">${h}</th>`).join('');
+
+        const totalSheets = group.moves.length + 2;
+        return `
+        <div style="height: 100%; display: flex; flex-direction: column;">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px;">
+                <div style="font-size: 16px; font-weight: bold;">${this.schoolName}</div>
+                <div style="font-size: 22px; font-weight: bold; letter-spacing: 8px;">調課通知單</div>
+                <div style="background: #555; color: white; padding: 6px 12px; font-size: 12px; font-weight: bold; border-radius: 4px;">${sheet.teacher ? sheet.teacher + ' ' : ''}${sheet.label}</div>
+            </div>
+            ${infoTableHTML}
+            <div style="flex: 1;">
+                <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+                    <thead><tr style="background: #333; color: white;">${weekHead}</tr></thead>
+                    <tbody>${tableRows}</tbody>
+                </table>
+            </div>
+            <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-top: 15px; font-size: 11px;">
+                <div>列印日期：${printDate} (此單一式${this.toChineseCount(totalSheets)}聯，請依聯單執存)</div>
+                <div style="display: flex; gap: 30px;">
+                    <div>申請人：__________</div>
+                    <div>教務處：__________</div>
+                </div>
+            </div>
+        </div>
+        `;
+    }
+
+    /**
+     * 連調調課單 PDF：各相關教師一聯 + 班級聯 + 教學組聯，每頁左右各一聯
+     */
+    async generateSwapChainForm(group) {
+        const { jsPDF } = window.jspdf;
+        const doc = new jsPDF('l', 'mm', 'a4');
+        const teachers = [...new Set(group.moves.map(m => m.teacher))];
+        const sheets = [
+            ...teachers.map(teacher => ({ label: '教師聯', teacher })),
+            { label: '班級聯' },
+            { label: '教學組聯' }
+        ];
+
+        const container = document.createElement('div');
+        container.style.cssText = 'position: absolute; left: -9999px; top: 0;';
+        container.style.width = '1123px';
+        document.body.appendChild(container);
+
+        try {
+            for (let i = 0; i < sheets.length; i += 2) {
+                if (i > 0) doc.addPage();
+                const right = sheets[i + 1] ? this.createSwapChainSheetHTML(group, sheets[i + 1]) : '';
+                container.innerHTML = `
+                <div style="display: flex; width: 1123px; height: 794px; font-family: 'Microsoft JhengHei', 'Noto Sans TC', sans-serif; background: white;">
+                    <div style="flex: 1; padding: 20px; border-right: 1px dashed #ccc;">${this.createSwapChainSheetHTML(group, sheets[i])}</div>
+                    <div style="flex: 1; padding: 20px;">${right}</div>
+                </div>`;
+                await new Promise(resolve => setTimeout(resolve, 150));
+                const canvas = await html2canvas(container, { scale: 2, useCORS: true, logging: false, backgroundColor: '#ffffff' });
+                doc.addImage(canvas.toDataURL('image/jpeg', 0.95), 'JPEG', 0, 0, 297, 210);
+            }
+
+            const first = group.moves.map(m => m.from.date).sort()[0];
+            doc.save(`調課通知_${first.replace(/-/g, '')}_${group.className}_連調${group.moves.length}節.pdf`);
+        } finally {
+            document.body.removeChild(container);
+        }
+    }
+
+    /**
+     * 判斷調課紀錄是否屬於某個對調組：紀錄兩側的教師在組內有移動，且起訖之一落在紀錄的時段
+     */
+    isRecordInSwapGroup(record, group) {
+        const slots = [
+            { date: record.date, period: record.period },
+            { date: record.swapDate, period: record.swapPeriod }
+        ];
+        const at = s => slots.some(x => x.date === s.date && this.normalizePeriod(x.period) === this.normalizePeriod(s.period));
+        return group.className === record.className && group.moves.some(m =>
+            (m.teacher === record.originalTeacher || m.teacher === record.swapTeacher) && (at(m.from) || at(m.to)));
+    }
+
+    /**
+     * 多重調課的原版調課單：兩節互換輸出原版一式四聯；連調只輸出最終結果（連調單）
+     * @param {Array} records - 本批調課紀錄（依批次順序）
+     * @param {Array} scheduleData - 課表資料
+     * @param {Array} teachers - 教師資料
+     * @param {Object} [onlyRecord] - 重印時指定：只輸出這筆紀錄所屬的對調組
+     */
+    async generateSwapFinalForms(records, scheduleData, teachers, onlyRecord = null) {
+        let groups = this.groupSwapFinalMoves(this.computeSwapNetMoves(records));
+        if (onlyRecord) {
+            groups = groups.filter(g => this.isRecordInSwapGroup(onlyRecord, g));
+        }
+        for (const group of groups) {
+            if (group.type === 'pair') {
+                await this.generateSubstituteForm(this.buildPairRecordFromMoves(group.moves, records), scheduleData, teachers);
+            } else {
+                await this.generateSwapChainForm(group);
+            }
+        }
+    }
+
+    /**
+     * 多重調課通知單 PDF（整批一份）
+     * 頁序：教學組聯（A4 直向）→ 各教師聯、各班級聯（A4 橫向，左右各一聯）
+     * @param {Array} records - 本批調課紀錄（依批次順序）
+     * @param {Array} scheduleData - 課表資料
+     */
+    async generateSwapBatchForm(records, scheduleData) {
+        const { jsPDF } = window.jspdf;
+        const netMoves = this.computeSwapNetMoves(records);
+        const grid = this.buildSwapBatchGrid(records, netMoves, scheduleData);
+        const transitNotes = this.getSwapTransitNotes(records, scheduleData);
+
+        const doc = new jsPDF('p', 'mm', 'a4');
+        const container = document.createElement('div');
+        container.style.cssText = 'position: absolute; left: -9999px; top: 0;';
+        document.body.appendChild(container);
+
+        const renderPage = async (html, width) => {
+            container.style.width = `${width}px`;
+            container.innerHTML = html;
+            await new Promise(r => setTimeout(r, 150));
+            return html2canvas(container, { scale: 2, useCORS: true, logging: false, backgroundColor: '#ffffff' });
+        };
+
+        try {
+            // 教學組聯：內容超過一頁高度時等比縮小塞進一頁
+            const adminCanvas = await renderPage(this.createSwapBatchAdminPageHTML(records, netMoves, grid, transitNotes), 794);
+            const h = Math.min(297, 210 * adminCanvas.height / adminCanvas.width);
+            const w = h * adminCanvas.width / adminCanvas.height;
+            doc.addImage(adminCanvas.toDataURL('image/jpeg', 0.95), 'JPEG', (210 - w) / 2, 0, w, h);
+
+            const halfSheets = [
+                ...Object.entries(this.groupNetMovesByTeacher(netMoves)).map(([t, moves]) => this.createSwapTeacherSheetHTML(t, moves)),
+                ...grid[0].classes.map(c => this.createSwapClassSheetHTML(c.className, grid))
+            ];
+            for (let i = 0; i < halfSheets.length; i += 2) {
+                doc.addPage('a4', 'landscape');
+                const canvas = await renderPage(this.createCombinedHalfPageHTML(halfSheets[i], halfSheets[i + 1]), 1123);
+                doc.addImage(canvas.toDataURL('image/jpeg', 0.95), 'JPEG', 0, 0, 297, 210);
+            }
+
+            doc.save(`多重調課通知_${records[0].date.replace(/-/g, '')}_${records.length}筆.pdf`);
+        } finally {
+            document.body.removeChild(container);
+        }
+    }
+
     /**
      * 生成月結算報表 PDF
      */
