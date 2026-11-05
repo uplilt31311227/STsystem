@@ -202,6 +202,26 @@ export async function run(browser) {
             eq(cloud.classes, 3, '雲端課表的班級數應同步更新');
             ok(cloud.n > 0 && cloud.n < 306, `雲端課表節數應已更新（實際 ${cloud.n}）`);
         });
+
+        await suite.case('課表匯入後，主文件帶 lastImport 且 imports 子集合多一版（含快照）', async () => {
+            const r = await page.evaluate(async () => {
+                const fm = window.firebaseModules, db = fm.getFirestore();
+                const s = await fm.getDoc(fm.doc(db, 'schools/demo-alpha/schedules/115-1'));
+                const li = (s.data() || {}).lastImport || null;
+                const col = await fm.getDocs(fm.collection(db, 'schools/demo-alpha/schedules/115-1/imports'));
+                const docs = col.docs.map(d => d.data());
+                return {
+                    li, n: docs.length,
+                    hasSnapshot: docs.some(d => Array.isArray(d.snapshot?.scheduleData) && d.snapshot.scheduleData.length > 0),
+                    sameVersion: docs.some(d => li && d.versionNo === li.versionNo),
+                };
+            });
+            ok(r.li && r.li.fileName && r.li.importedAt, `主文件應有 lastImport（實際 ${JSON.stringify(r.li)}）`);
+            eq(r.li.source, 'file', 'lastImport.source 應為 file');
+            ok(r.li.importedBy?.name, 'lastImport 應記錄匯入者');
+            ok(r.n >= 1 && r.hasSnapshot && r.sameVersion, `imports 子集合應有對應版本且含快照（實際 ${r.n} 筆）`);
+            ok(!('snapshot' in r.li), '主文件的 lastImport 不應含快照');
+        });
     } finally {
         await page.close();
     }
