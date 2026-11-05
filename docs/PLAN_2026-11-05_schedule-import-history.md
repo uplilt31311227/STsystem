@@ -25,8 +25,8 @@
 
 ## 進度
 
-- [ ] 實作
-- [ ] 測試（npm test / check / emulator rules / e2e）
-- [ ] 獨立驗收
-- [ ] 文件（CHANGELOG、DEPLOYMENT rules 版本）＋ commit
+- [x] 實作（sonnet，cherry-pick 至 feature 分支 021e512…4cd5f99）
+- [x] 測試（npm test / check / emulator rules 9/9 / scenarios 96/96 / e2e 55/56，唯一失敗為環境）
+- [x] 獨立驗收（opus：9 條通過，8 缺陷修 5，餘記 ISSUES_LOG 2026-11-05）
+- [x] 文件（CHANGELOG、ISSUES_LOG）＋ commit
 - [ ] 部署（rules v2.10 + preview）——待使用者同意
