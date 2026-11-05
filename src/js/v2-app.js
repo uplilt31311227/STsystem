@@ -2144,6 +2144,11 @@ async function collectSemesterArchiveData(semesterId, onProgress) {
     onProgress?.('讀取操作日誌…');
     const logs = await dataSvc.listLogsBySemesterForArchive(semesterId);
 
+    // 課表匯入版本紀錄（schedules/{sid}/imports，含快照）：deleteScheduleForSemester() 會連同刪除，
+    // 所以必須先隨封存 JSON 匯出；讀取失敗直接丟出（不確定＝中止）。僅供備份，不參與刪除前核對。
+    onProgress?.('讀取課表匯入紀錄…');
+    const scheduleImports = await dataSvc.listScheduleImportsForArchive(semesterId);
+
     // Stage 5 驗收修復（中3）：counts 不含 operationLogs——operationLogs 只在「匯出」這次性
     // 讀取中被納入（見下方 payload.meta.counts），驗證/刪除前的重新核對不比對它，理由見
     // fetchSemesterArchiveSnapshot() 的完整說明（歷史學期的 operationLogs 結構上不會再變動）。
@@ -2160,12 +2165,14 @@ async function collectSemesterArchiveData(semesterId, onProgress) {
             counts: {
                 ...counts,
                 operationLogs: logs.length,
+                scheduleImports: scheduleImports.length,
                 substituteRecordDetails: recordDetails.size,
                 pendingRequestDetails:   pendingDetails.size,
             },
             reportRef: 'docs/RESEARCH-multitenancy-semester.md §6.2',
         },
         schedule: schedule || null,
+        scheduleImports,
         substituteRecords: records.map(r => ({ ...r, private: recordDetails.get(r.recordId) || null })),
         pendingRequests:   pendings.map(p => ({ ...p, private: pendingDetails.get(p.reqId) || null })),
         operationLogs:     logs,
@@ -3100,7 +3107,9 @@ function resetV2ViewState() {
         dmForReset.classes           = [];
         dmForReset.schoolName        = '';
         dmForReset.substituteRecords = [];
+        dmForReset.lastImport        = null;
     }
+    _v2PendingImport = null;
     // 同步鎖住課表回寫，直到新身份的 bootstrap 真正收到「這所學校」的課表快照為止——
     // 見 _v2ScheduleReady 宣告處的完整說明，這是防止上面清空後的空狀態本身被誤當成合法的
     // 「清空課表」操作而回寫的第二道防線（第一道是不透過 mutator 清空，本來就不會觸發回寫；
@@ -3785,6 +3794,11 @@ let _v2LastAppliedScheduleSig = null;
 // 「不同校資料錯置」，值得一併補上。
 let _v2ScheduleReady = false;
 
+// 課表匯入紀錄（scheduleImportHistory）：app.js 匯入／還原後經 importHistoryProvider.onRecorded()
+// 暫存於此，由下一次 syncScheduleToV2() 連同主文件一起寫入 imports 子集合並記日誌。
+// 一般編輯（單格增修、教師屬性）不會設定它，所以不會冒充成「匯入」。
+let _v2PendingImport = null;
+
 /**
  * 把全校課表快照（Stage 2 起為 schools/{schoolId}/schedules/{semesterId}，見
  * dataSvc.subscribeSchedule）套用到本機 dataManager 並刷新 UI。
@@ -3804,6 +3818,8 @@ function applyRemoteSchedule(doc) {
     if (Array.isArray(doc.classes))  dm.classes  = doc.classes;
     if (typeof doc.schoolName === 'string') dm.schoolName = doc.schoolName;
     if (doc.subjectDomainMap && dm.settings) dm.settings.subjectDomainMap = doc.subjectDomainMap;
+    // 舊文件沒有 lastImport 欄位：視為尚無匯入紀錄（null），UI 顯示「尚無匯入紀錄」
+    dm.lastImport = (doc.lastImport && typeof doc.lastImport === 'object') ? doc.lastImport : null;
 
     // 落地 localStorage（V2 停用個人雲端，此為本機主要儲存；否則離線 / 重整前會看不到課表）
     try { window.app?.saveDataToStorage?.(); } catch (e) { console.warn('[V2] 課表本機儲存失敗:', e); }
@@ -3828,9 +3844,13 @@ async function syncScheduleToV2(opts = {}) {
     if (_v2ScheduleSyncInFlight) { _v2ScheduleSyncPending = true; return; }
 
     _v2ScheduleSyncInFlight = true;
+    let pendingImport = null;
     try {
         do {
             _v2ScheduleSyncPending = false;
+            // 取走待寫入的匯入紀錄；寫入失敗時在 catch 內放回，避免遺失
+            pendingImport = _v2PendingImport;
+            _v2PendingImport = null;
             const scheduleData = dm.getScheduleData?.() || dm.scheduleData || [];
             if (!Array.isArray(scheduleData)) break;
             const me = roleSvc.getCurrentIdentity();
@@ -3840,6 +3860,8 @@ async function syncScheduleToV2(opts = {}) {
                 classes:          dm.classes || [],
                 schoolName:       dm.schoolName || '',
                 subjectDomainMap: dm.settings?.subjectDomainMap || {},
+                // 整份 setDoc 覆寫，欄位不帶就會被抹掉：每次 sync 都要帶上 lastImport（僅中繼資料，不含快照）
+                lastImport:       dm.lastImport || null,
                 // meta 形狀統一為 { lastAction, byName, byTeacherId, at }，與 clearAllSchoolData()
                 // 的寫入對齊（驗收缺陷 #8）：兩者都用 setDoc 整份覆寫同一份 schedule doc，過去
                 // 一邊寫 uploadedBy*、一邊寫 clearedBy*，欄位名稱不同會互相抹除、也無法從單一
@@ -3851,9 +3873,35 @@ async function syncScheduleToV2(opts = {}) {
                     at:          new Date().toISOString(),
                 },
             });
-            await logger.log(LOG_ACTIONS.SCHEDULE_IMPORT, LOG_TARGET_TYPES.SCHEDULE, null, {
-                entries: scheduleData.length,
-            });
+            if (pendingImport) {
+                const sid = semesterState.getCurrentSemesterId();
+                const rec = pendingImport.record;
+                // 主文件已寫入成功；imports 子集合寫入失敗（例如 rules v2.10 尚未部署）只提示，
+                // 不讓課表本身的同步失敗——課表是主要資料，版本紀錄是附加功能。
+                try {
+                    await dataSvc.addScheduleImport(sid, rec, pendingImport.snapshot);
+                } catch (impErr) {
+                    console.error('[V2] 匯入紀錄寫入失敗（課表已更新）:', impErr);
+                    notifyError(impErr, '寫入課表匯入紀錄');
+                }
+                // 只有真正的匯入／還原才記 schedule_import（附檔名與各計數）
+                await logger.log(LOG_ACTIONS.SCHEDULE_IMPORT, LOG_TARGET_TYPES.SCHEDULE, null, {
+                    kind: rec.source,
+                    versionNo: rec.versionNo,
+                    fileName: rec.fileName,
+                    restoredFromVersion: rec.restoredFromVersion ?? null,
+                    ...rec.counts,
+                });
+                pendingImport = null;
+            } else {
+                // 一般編輯（單格增修刪、教師屬性、學校名稱）：改記 EDIT 而非 schedule_import。
+                // 理由：每次 sync 都記 schedule_import 會讓日誌誤以為「又匯入了一次課表」；用既有的
+                // EDIT action 保留稽核軌跡又不需新增 action 列舉值（rules 對 action 只限長度）。
+                await logger.log(LOG_ACTIONS.EDIT, LOG_TARGET_TYPES.SCHEDULE, null, {
+                    kind: 'edit',
+                    entries: scheduleData.length,
+                });
+            }
         } while (_v2ScheduleSyncPending);
         if (!opts.silent) {
             window.app?.showToast?.('✅ 全校課表已更新，所有教師即時同步', 'success', 3500);
@@ -3861,6 +3909,8 @@ async function syncScheduleToV2(opts = {}) {
     } catch (err) {
         console.error('[V2] 全校課表同步失敗:', err);
         notifyError(err, '全校課表同步');
+        // 主文件沒寫成功：把尚未寫入的匯入紀錄放回，下次 sync 再帶上
+        if (pendingImport && !_v2PendingImport) _v2PendingImport = pendingImport;
     } finally {
         _v2ScheduleSyncInFlight = false;
     }
@@ -4126,6 +4176,20 @@ function patchDataManager() {
     // silent：這些是逐格即時儲存的觸發點，不跳課表同步 toast，見 syncScheduleToV2 註解。
     ['updateTeacher', 'addTeacher', 'removeTeacher']
         .forEach(n => wrapScheduleMutator(n, { requireSchedule: true, silent: true }));
+
+    // 課表匯入紀錄改走 Firestore（覆寫 app.js 預設的 V1 localStorage provider）。
+    // 清單預設只撈最近 20 版（orderBy importedAt desc, limit；單欄位排序不需複合索引）。
+    window.app.importHistoryProvider = {
+        hint: '最近 20 版（存於雲端，全校共用）。還原會記成新的一版，僅教學組長以上可操作。',
+        getImporter: () => {
+            const me = roleSvc.getCurrentIdentity();
+            return me?.name ? { name: me.name, teacherId: me.teacherId || null } : null;
+        },
+        onRecorded: (result) => { _v2PendingImport = result; },
+        list: () => dataSvc.listScheduleImports(semesterState.getCurrentSemesterId(), 20),
+        // 還原只對 approver 以上開放；寫入端 rules 另鎖「僅目前學期」（本頁恆為目前學期）
+        canRestore: () => roleSvc.isApprover(),
+    };
 }
 
 /**
