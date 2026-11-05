@@ -82,7 +82,12 @@
                 <!-- sub-view：課表匯入 -->
                 <div id="schedule-import-view" class="schedule-subview">
                     <div class="card">
-                        <h3>匯入課表資料</h3>
+                        <div class="teacher-header">
+                            <h3>匯入課表資料</h3>
+                            <div class="teacher-header-actions">
+                                <button type="button" class="btn btn-secondary btn-sm" id="schedule-import-history-btn">📜 匯入紀錄</button>
+                            </div>
+                        </div>
                         <div class="upload-area upload-area-compact v2-approver-only" id="schedule-upload">
                             <div class="upload-icon-compact">📅</div>
                             <p>拖放課表檔案或<label for="schedule-file" class="upload-link">點擊選擇</label></p>
@@ -94,6 +99,7 @@
                             <div class="status-header">
                                 <span class="status-icon">✓</span>
                                 <span class="status-text">課表已載入</span>
+                                <span class="status-last-import" id="schedule-last-import"></span>
                             </div>
                             <div class="status-details status-details-inline">
                                 <span>班級 <strong id="class-count">0</strong></span>
@@ -817,6 +823,20 @@
     <!-- 所有 modal 集中於此（Stage 2 起：原本散落各分頁內，分頁非 active 時 modal 因祖先
          display:none 而打不開；全部只靠 getElementById 存取，搬到這裡後不受任何分頁切換影響） -->
     <div id="modal-root">
+        <!-- 課表匯入紀錄對話框（版本清單 + 還原成這一版，見 app.js openImportHistoryModal()） -->
+        <div id="import-history-modal" class="modal hidden">
+            <div class="modal-content import-history-modal-content">
+                <div class="modal-header">
+                    <h3>課表匯入紀錄</h3>
+                    <button type="button" class="modal-close" id="close-import-history-btn">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <p class="hint" id="import-history-hint"></p>
+                    <div class="table-wrap" id="import-history-list"></div>
+                </div>
+            </div>
+        </div>
+
         <!-- 統一 confirm 對話框（Stage 5：取代原生 confirm()，見 app.js confirmDialog()） -->
         <div id="confirm-modal" class="modal hidden">
             <div class="modal-content">
