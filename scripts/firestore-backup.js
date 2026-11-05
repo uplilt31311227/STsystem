@@ -14,6 +14,7 @@
  *
  * 備份內容（schools/{schoolId} 底下）：
  *   - schedules                             per-semester 課表（Stage 2 起的現行路徑）
+ *   - schedules/{semesterId}/imports        課表匯入版本紀錄（含快照），存 scheduleImports.json
  *   - data/schedule                         單一 doc，Stage 2 之前的舊課表路徑（保留備查）
  *   - substituteRecords（含子文件 private/detail） 調代課紀錄
  *   - pendingRequests（含子文件 private/detail）    待審請求
@@ -178,6 +179,16 @@ async function doBackup() {
         console.log(`▶ ${name}：${items.length} 筆`);
     }
 
+    // 課表匯入版本紀錄：imports 是 schedules 底下的子集合，列舉 schedules 不會帶到，須逐學期讀取。
+    const scheduleDocs = await listCollection(`schools/${SCHOOL_ID}/schedules`);
+    const importItems  = [];
+    for (const sd of scheduleDocs) {
+        const docs = await listCollection(`schools/${SCHOOL_ID}/schedules/${docId(sd)}/imports`);
+        for (const d of docs) importItems.push({ document: d });
+    }
+    writeJson(dir, 'scheduleImports.json', { collectionPath: `schools/${SCHOOL_ID}/schedules/*/imports`, count: importItems.length, documents: importItems });
+    console.log(`▶ schedules/*/imports：${importItems.length} 筆`);
+
     console.log(`\n✅ 備份完成：${dir}`);
     return dir;
 }
@@ -199,7 +210,7 @@ function buildRestorePlan(dir) {
         if (item) plan.push({ ...item, label: 'data/schedule' });
     }
 
-    for (const name of [...PRIVATE_DETAIL_COLLECTIONS, ...PLAIN_COLLECTIONS]) {
+    for (const name of [...PRIVATE_DETAIL_COLLECTIONS, ...PLAIN_COLLECTIONS, 'scheduleImports']) {
         const file = path.join(dir, `${name}.json`);
         if (!fs.existsSync(file)) continue;
         const data = JSON.parse(fs.readFileSync(file, 'utf8'));
