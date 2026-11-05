@@ -3883,6 +3883,11 @@ async function syncScheduleToV2(opts = {}) {
                 } catch (impErr) {
                     console.error('[V2] 匯入紀錄寫入失敗（課表已更新）:', impErr);
                     notifyError(impErr, '寫入課表匯入紀錄');
+                    // 放回待寫，下次同步重試（驗收缺陷 #5）；期間若已有更新的匯入則以新的為準。
+                    // 尚未寫成功前不記 schedule_import 日誌，避免重試時重複記錄。
+                    if (!_v2PendingImport) _v2PendingImport = pendingImport;
+                    pendingImport = null;
+                    continue;
                 }
                 // 只有真正的匯入／還原才記 schedule_import（附檔名與各計數）
                 await logger.log(LOG_ACTIONS.SCHEDULE_IMPORT, LOG_TARGET_TYPES.SCHEDULE, null, {
@@ -4138,6 +4143,12 @@ function patchDataManager() {
         // 不影響 requireSchedule 既有的「擋空陣列」語意（兩個守門條件彼此獨立、互不取代）。
         if (!_v2ScheduleReady) {
             console.warn('[V2] 課表回寫已略過：尚未收到目前學校的課表快照，避免以未對齊的本機資料覆蓋雲端');
+            // 這次若是匯入／還原，待寫的紀錄必須丟掉：遠端快照到達後會蓋掉本機課表，留著會在下一次
+            // 編輯同步時把過時的快照與版號寫進 imports（驗收缺陷 #2）。
+            if (_v2PendingImport) {
+                _v2PendingImport = null;
+                window.app?.showToast?.('課表尚未載入完成，本次匯入未儲存到雲端，請稍候再匯入一次', 'warning', 6000);
+            }
             return;
         }
         queueMicrotask(() => { syncScheduleToV2(opts); });
