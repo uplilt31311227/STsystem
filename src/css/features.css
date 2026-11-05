@@ -895,3 +895,15 @@ body.v2-locked #v2-auth-gate {
 .schedule-import-warnings { margin-top: var(--sp-2); font-size: var(--fs-sm); color: var(--c-warning-800); }
 .schedule-import-warnings summary { cursor: pointer; font-weight: 600; }
 .schedule-import-warnings ul { margin: var(--sp-2) 0 0; padding-left: 1.25em; max-height: 240px; overflow: auto; }
+   課表匯入紀錄（最後匯入資訊 + 版本清單 modal）
+   =================================== */
+.status-last-import { margin-left: auto; font-size: var(--fs-xs); font-weight: var(--fw-normal); color: var(--color-text-muted); word-break: break-all; text-align: right; }
+.status-box.error .status-last-import { display: none; }
+@media (min-width: 640px) {
+    .import-history-modal-content { max-width: 860px; }
+}
+.import-history-table { margin-top: var(--sp-2); font-size: var(--fs-sm); }
+.import-history-table td { vertical-align: top; }
+.import-history-file { word-break: break-all; }
+.import-history-current { color: var(--c-success-600); font-weight: var(--fw-semibold); white-space: nowrap; }
+.import-history-empty { padding: var(--sp-4) 0; text-align: center; color: var(--color-text-muted); }

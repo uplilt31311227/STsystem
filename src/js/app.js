@@ -10,6 +10,10 @@
 
 // 匯入模組
 import { DataManager } from './modules/dataManager.js';
+import {
+    loadV1History, appendV1History, getRestorableSnapshot, makeSnapshot,
+    computeFingerprint, formatImportDate, formatLastImport, formatSource
+} from './modules/scheduleImportHistory.js';
 import { ScheduleParser } from './modules/scheduleParser.js';
 import { RecommendationEngine, findSwapDateConflict, pendingTag } from './modules/recommendationEngine.js';
 import { PDFGenerator } from './modules/pdfGenerator.js';
@@ -88,6 +92,17 @@ class SubstituteTeacherApp {
         // 多重調課批次相關
         this.isMultiSwapMode = false;
         this.swapBatch = [];  // 待處理調課批次
+
+        // 課表匯入紀錄的儲存／讀取／權限提供者。V1 預設存 localStorage；V2 在 v2-app.js
+        // patchDataManager() 內以 window.app.importHistoryProvider 覆寫成 Firestore imports 子集合。
+        // 介面：getImporter() / onRecorded({record, snapshot}) / list() / canRestore() / hint
+        this.importHistoryProvider = {
+            hint: '最近保留 10 版（存於此瀏覽器）。',
+            getImporter: () => null,
+            onRecorded: ({ record, snapshot }) => { appendV1History(record, snapshot); },
+            list: async () => loadV1History(),
+            canRestore: () => true,
+        };
 
         // 統一 confirm 對話框（Stage 5）：目前開啟中的 confirmDialog() resolve callback，
         // 供單例機制使用（重複呼叫時，前一個尚未關閉的 confirm 先以 resolve(false) 關閉）
@@ -819,6 +834,12 @@ class SubstituteTeacherApp {
                 this.dataManager.setTeachers(parseResult.teachers);
                 this.dataManager.setClasses(parseResult.classes);
 
+                // 記錄匯入日期／檔名／計數（須在 set* 之後、saveDataToStorage 之前）
+                this.recordScheduleImportVersion({
+                    fileName: file.name,
+                    skippedCount: parseResult.skippedCount || 0
+                });
+
                 // 從課表自動擷取「科目→領域」對應表（合併既有手動編輯）
                 this.dataManager.buildSubjectDomainMap(true);
                 this.renderSubjectDomainTable();
@@ -870,6 +891,152 @@ class SubstituteTeacherApp {
                 <ul>${items}${more}</ul>
             </details>`;
         el.classList.remove('hidden');
+    }
+
+    /**
+     * 產生新一版匯入紀錄並交給 provider 持久化（V1 localStorage／V2 Firestore）
+     * @param {Object} meta - { fileName, skippedCount, source, restoredFromVersion }
+     */
+    recordScheduleImportVersion(meta) {
+        const result = this.dataManager.recordScheduleImport({
+            ...meta,
+            importedBy: this.importHistoryProvider.getImporter()
+        });
+        try {
+            this.importHistoryProvider.onRecorded(result);
+        } catch (e) {
+            console.warn('匯入紀錄儲存失敗:', e);
+        }
+        return result;
+    }
+
+    /**
+     * 渲染「最後匯入：…」。showError() 會 innerHTML 清掉狀態區，所以每次渲染都確認
+     * 元素存在（不存在就補建在 .status-header 內），重新渲染即可恢復。
+     */
+    renderLastImport() {
+        const header = document.querySelector('#schedule-status .status-header');
+        if (!header) return;
+        let el = document.getElementById('schedule-last-import');
+        if (!el) {
+            el = document.createElement('span');
+            el.id = 'schedule-last-import';
+            el.className = 'status-last-import';
+            header.appendChild(el);
+        }
+        // textContent：檔名與匯入者為使用者可控字串，不經 innerHTML
+        el.textContent = formatLastImport(this.dataManager.lastImport);
+    }
+
+    /**
+     * 開啟匯入紀錄 modal 並載入版本清單
+     */
+    async openImportHistoryModal() {
+        const modal = document.getElementById('import-history-modal');
+        const listEl = document.getElementById('import-history-list');
+        const hintEl = document.getElementById('import-history-hint');
+        if (!modal || !listEl) return;
+        hintEl.textContent = this.importHistoryProvider.hint || '';
+        listEl.innerHTML = '<p class="import-history-empty">載入中…</p>';
+        modal.classList.remove('hidden');
+        try {
+            const entries = await this.importHistoryProvider.list();
+            this.renderImportHistoryList(entries);
+        } catch (e) {
+            console.error('讀取匯入紀錄失敗:', e);
+            listEl.innerHTML = `<p class="import-history-empty">讀取匯入紀錄失敗：${esc(e.message)}</p>`;
+        }
+    }
+
+    closeImportHistoryModal() {
+        document.getElementById('import-history-modal')?.classList.add('hidden');
+    }
+
+    /**
+     * 渲染版本清單（所有使用者可控字串一律 esc()）
+     */
+    renderImportHistoryList(entries) {
+        const listEl = document.getElementById('import-history-list');
+        this._importHistoryEntries = Array.isArray(entries) ? entries : [];
+        if (this._importHistoryEntries.length === 0) {
+            listEl.innerHTML = '<p class="import-history-empty">尚無匯入紀錄</p>';
+            return;
+        }
+        const canRestore = this.importHistoryProvider.canRestore();
+        const currentFp = computeFingerprint(this.dataManager.getScheduleData());
+        const rows = this._importHistoryEntries.map((e, i) => {
+            const c = e.counts || {};
+            const isCurrent = i === 0 && e.fingerprint && e.fingerprint === currentFp;
+            let action = '';
+            if (isCurrent) {
+                action = '<span class="import-history-current">目前版本</span>';
+            } else if (!getRestorableSnapshot(e)) {
+                action = '<span class="hint">無快照</span>';
+            } else if (canRestore) {
+                action = `<button type="button" class="btn btn-secondary btn-sm" data-restore-index="${i}">還原成這一版</button>`;
+            }
+            return `<tr>
+                <td>v${esc(e.versionNo)}</td>
+                <td>${esc(formatImportDate(e.importedAt))}</td>
+                <td>${esc(e.importedBy?.name || '—')}</td>
+                <td class="import-history-file">${esc(e.fileName || '—')}</td>
+                <td>${esc(c.entries ?? 0)} 節 / ${esc(c.classes ?? 0)} 班 / ${esc(c.teachers ?? 0)} 師</td>
+                <td>${esc(c.skipped ?? 0)}</td>
+                <td>${esc(formatSource(e))}</td>
+                <td>${action}</td>
+            </tr>`;
+        }).join('');
+        listEl.innerHTML = `<table class="data-table data-table-compact import-history-table">
+            <thead><tr><th>版本</th><th>匯入時間</th><th>匯入者</th><th>檔名</th><th>內容</th><th>略過列</th><th>來源</th><th></th></tr></thead>
+            <tbody>${rows}</tbody></table>`;
+    }
+
+    /**
+     * 還原成指定版本：以快照取代目前課表，並記成新的一版（source:'restore'）
+     */
+    async restoreImportVersion(entry) {
+        const snap = getRestorableSnapshot(entry);
+        if (!snap) {
+            this.showToast('此版本沒有快照，無法還原', 'error');
+            return;
+        }
+        const ok = await this.confirmDialog({
+            title: '還原課表',
+            message: `確定要還原成第 ${entry.versionNo} 版嗎？\n\n匯入時間：${formatImportDate(entry.importedAt)}\n檔名：${entry.fileName || '—'}\n\n目前的課表會被這一版取代，並記錄為新的一版。`,
+            confirmText: '還原',
+            danger: true
+        });
+        if (!ok) return;
+
+        // 深拷貝：避免之後編輯課表連動改到歷史快照
+        const copy = makeSnapshot(snap);
+        const dm = this.dataManager;
+        dm.setScheduleData(copy.scheduleData);
+        dm.setTeachers(copy.teachers);
+        dm.setClasses(copy.classes);
+        this.recordScheduleImportVersion({
+            fileName: entry.fileName,
+            skippedCount: entry.counts?.skipped || 0,
+            source: 'restore',
+            restoredFromVersion: entry.versionNo
+        });
+        dm.buildSubjectDomainMap(true);
+        this.renderSubjectDomainTable();
+        this.updateScheduleStatus({
+            teachers: dm.getTeachers(),
+            classes: dm.getClasses(),
+            scheduleData: dm.getScheduleData()
+        });
+        this.updateTeacherTable();
+        this.populateTeacherDropdowns();
+        this.saveDataToStorage();
+        this.showToast(`已還原成第 ${entry.versionNo} 版`, 'success');
+        // 清單即時反映新的一版（V2 為非同步寫入，稍後重讀）
+        setTimeout(() => {
+            if (!document.getElementById('import-history-modal')?.classList.contains('hidden')) {
+                this.openImportHistoryModal();
+            }
+        }, 800);
     }
 
     /**
@@ -1073,6 +1240,9 @@ class SubstituteTeacherApp {
         document.getElementById('class-count').textContent = parseResult.classes.length;
         document.getElementById('teacher-count').textContent = parseResult.teachers.length;
         document.getElementById('course-count').textContent = parseResult.scheduleData.length;
+
+        // 最後匯入日期／匯入者／檔名
+        this.renderLastImport();
 
         // 檢查課表衝突
         this.checkScheduleConflicts(parseResult.scheduleData);
@@ -4446,6 +4616,24 @@ class SubstituteTeacherApp {
         document.getElementById('cancel-import-btn')?.addEventListener('click', () => {
             this._activeImportCtx = 'settings';
             this.cancelImport();
+        });
+
+        // === 課表匯入紀錄 ===
+        document.getElementById('schedule-import-history-btn')?.addEventListener('click', () => {
+            this.openImportHistoryModal();
+        });
+        document.getElementById('close-import-history-btn')?.addEventListener('click', () => {
+            this.closeImportHistoryModal();
+        });
+        const importHistoryModal = document.getElementById('import-history-modal');
+        importHistoryModal?.addEventListener('click', (e) => {
+            if (e.target === importHistoryModal) this.closeImportHistoryModal();
+        });
+        document.getElementById('import-history-list')?.addEventListener('click', (e) => {
+            const btn = e.target.closest('[data-restore-index]');
+            if (!btn) return;
+            const entry = this._importHistoryEntries?.[Number(btn.dataset.restoreIndex)];
+            if (entry) this.restoreImportVersion(entry);
         });
 
         // === 課表管理頁籤的備份還原提示連結（Stage 2 起去重，實際功能只留設定頁一份） ===
