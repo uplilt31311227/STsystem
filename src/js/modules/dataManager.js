@@ -19,6 +19,7 @@ import {
 } from './cloudSyncService.js';
 import { isSignedIn } from './authService.js';
 import { findTeacherConflict, findSwapInConflict, pendingTag } from './recommendationEngine.js';
+import { createImportRecord, nextVersionNo, makeSnapshot } from './scheduleImportHistory.js';
 
 export class DataManager {
     constructor() {
@@ -27,6 +28,9 @@ export class DataManager {
 
         // 課表資料：每筆為一堂課
         this.scheduleData = [];
+
+        // 最後一次課表匯入的中繼資料（不含快照）；null 代表尚無紀錄（舊資料相容）
+        this.lastImport = null;
 
         // 教師資料：包含姓名、領域、導師班級
         this.teachers = [];
@@ -80,6 +84,25 @@ export class DataManager {
      */
     setScheduleData(data) {
         this.scheduleData = data;
+    }
+
+    /**
+     * 記錄一次課表匯入／還原：依目前 scheduleData/teachers/classes 產生新一版紀錄並設為 lastImport。
+     * 必須在 setScheduleData/setTeachers/setClasses 之後呼叫（紀錄的計數與快照取自目前資料）。
+     * 只負責產生紀錄；持久化（V1 localStorage 歷史／V2 imports 子集合）由呼叫端處理。
+     * @param {Object} meta - { fileName, skippedCount, source, restoredFromVersion, importedBy }
+     * @returns {{record: Object, snapshot: Object}}
+     */
+    recordScheduleImport(meta = {}) {
+        const record = createImportRecord({
+            scheduleData: this.scheduleData,
+            teachers: this.teachers,
+            classes: this.classes,
+            versionNo: nextVersionNo(this.lastImport),
+            ...meta,
+        });
+        this.lastImport = record;
+        return { record, snapshot: makeSnapshot(this) };
     }
 
     /**
@@ -730,6 +753,7 @@ export class DataManager {
         if (data.classes) this.classes = data.classes;
         if (data.substituteRecords) this.substituteRecords = data.substituteRecords;
         if (data.settings) this.settings = { ...this.settings, ...data.settings };
+        if (data.lastImport && typeof data.lastImport === 'object') this.lastImport = data.lastImport;
     }
 
     /**
@@ -743,7 +767,8 @@ export class DataManager {
             teachers: this.teachers,
             classes: this.classes,
             substituteRecords: this.substituteRecords,
-            settings: this.settings
+            settings: this.settings,
+            lastImport: this.lastImport
         };
     }
 
@@ -753,6 +778,7 @@ export class DataManager {
     clearAll() {
         this.schoolName = '';
         this.scheduleData = [];
+        this.lastImport = null;
         this.teachers = [];
         this.classes = [];
         this.substituteRecords = [];
