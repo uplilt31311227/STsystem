@@ -1,6 +1,6 @@
 rules_version = '2';
 
-// STsystem V2 權限系統 Firestore 規則（v2.9 — 三層角色 + 敏感欄位私有化 + 學期唯讀鎖 + 封存生命週期 + schoolId 反查目錄 + 多租戶開通 + 月結算設定開放 approver + 主任不可改自己的 role）
+// STsystem V2 權限系統 Firestore 規則（v2.10 — 三層角色 + 敏感欄位私有化 + 學期唯讀鎖 + 封存生命週期 + schoolId 反查目錄 + 多租戶開通 + 月結算設定開放 approver + 主任不可改自己的 role + 課表匯入版本紀錄）
 //
 // 設計原則：
 //   1. 兩條根路徑物理隔離
@@ -104,6 +104,15 @@ rules_version = '2';
 //      （userMappings.linkedTeacherId，沿用既有判定，不另創）。規則無法計數「還剩幾位主任」，
 //      故只擋「改自己」，改別人、改自己的其他欄位不受影響。initialAdminEmails 白名單分支
 //      （bootstrap 補登）刻意不動，作為緊急後備：白名單主任仍可改自己 role 救援。
+//
+//  11. v2.10（2026-11-05，docs/PLAN_2026-11-05_schedule-import-history.md；課表匯入日期與版本紀錄）：
+//      schedules/{semesterId} 底下新增子集合 imports/{importId}，每次匯入／還原課表存一筆
+//      （中繼資料 + 快照），供教學組自行「還原成這一版」。read 為 isMember；create 為 approver 且僅
+//      限目前學期（與主文件同鎖）；update 一律禁止（版本紀錄不可改寫，要更正就再新增一版）；
+//      delete 僅 director 且僅限非目前學期（供 Stage 5 封存清理，與主文件的 delete 規則同構）。
+//      主文件 schedules/{semesterId} 的規則不變，新增的 lastImport 欄位屬主文件內容，不需改規則。
+//      ⚠ 部署順序：須先部署本規則再上線新版 client，否則新 client 寫 imports 會被拒（主文件仍可寫，
+//      只是匯入紀錄寫入失敗）。
 //
 // 部署：透過 gcloud REST API 或 Firebase Console（見 docs/V2_PERMISSION_SYSTEM.md）
 
@@ -565,6 +574,16 @@ service cloud.firestore {
         // （皆鎖 isCurrentSemester），拆開後 create/update 語意不變，delete 是本次新增的
         // 唯一新增權限，且限縮在「非目前學期」，不擴大既有攻擊面。
         allow delete: if isDirector(schoolId) && !isCurrentSemester(schoolId, semesterId);
+
+        // ----- 課表匯入版本紀錄（v2.10）：schedules/{semesterId}/imports/{importId} -----
+        // 每次匯入／還原一筆（中繼資料 + 快照）。只新增、不可改；歷史學期唯讀鎖與主文件一致。
+        match /imports/{importId} {
+          allow read: if isMember(schoolId);
+          allow create: if isApprover(schoolId) && isCurrentSemester(schoolId, semesterId);
+          allow update: if false;
+          // 封存清理（Stage 5）：僅 director、僅非目前學期；目前學期的紀錄不可刪。
+          allow delete: if isDirector(schoolId) && !isCurrentSemester(schoolId, semesterId);
+        }
       }
 
       // ----- 已成立調代課紀錄 -----

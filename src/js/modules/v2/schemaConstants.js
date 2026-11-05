@@ -61,6 +61,10 @@ export const SCHEMA_PATHS = {
     // Stage 2（§5.3）：per-semester 課表文件，取代上面的單一文件。
     schedulesCol:      ()    => `schools/${getActiveSchoolId()}/schedules`,
     scheduleDocForSemester: (sid) => `schools/${getActiveSchoolId()}/schedules/${sid}`,
+    // 課表匯入版本紀錄（2026-11-05）：schedules/{semesterId}/imports/{importId}，每次匯入／還原
+    // 一筆（中繼資料 + 快照），只新增不修改；規則見 firestore.rules v2.10。
+    scheduleImportsCol: (sid) => `schools/${getActiveSchoolId()}/schedules/${sid}/imports`,
+    scheduleImportDoc:  (sid, id) => `schools/${getActiveSchoolId()}/schedules/${sid}/imports/${id}`,
     substituteCol:     ()    => `schools/${getActiveSchoolId()}/substituteRecords`,
     substituteDoc:     (id)  => `schools/${getActiveSchoolId()}/substituteRecords/${id}`,
     // Phase 6（2026-07-29）：leaveType/leaveTypeName/reason 私有化，搬到父文件底下的

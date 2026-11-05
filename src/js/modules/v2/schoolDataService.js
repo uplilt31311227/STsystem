@@ -302,6 +302,9 @@ export async function upsertJoinAttempt(uid, { email, reason } = {}) {
 export async function deleteScheduleForSemester(semesterId) {
     if (!semesterId) return;
     const fs  = await getV2Firestore();
+    // 先刪 imports 子集合：刪除父文件不會連帶刪子集合（會留下孤兒文件）；規則端
+    // imports 的 delete 同樣只允許 director 在非目前學期操作。
+    await deleteScheduleImportsForSemester(semesterId);
     const ref = fs.doc(fs.db, SCHEMA_PATHS.scheduleDocForSemester(semesterId));
     await fs.deleteDoc(ref);
 }
@@ -387,6 +390,56 @@ export async function saveSchedule(semesterId, scheduleData) {
     const fs  = await getV2Firestore();
     const ref = fs.doc(fs.db, SCHEMA_PATHS.scheduleDocForSemester(semesterId));
     await fs.setDoc(ref, { ...scheduleData, updatedAt: new Date().toISOString() });
+}
+
+/* ===== 課表匯入版本紀錄（schedules/{semesterId}/imports/{importId}） ===== */
+
+/**
+ * 新增一版匯入紀錄（中繼資料 + 快照）。doc id 使用紀錄自身的 id，只新增不修改（規則 update: false）。
+ * @param {string} semesterId
+ * @param {Object} record   scheduleImportHistory.createImportRecord() 的結果
+ * @param {Object} snapshot { scheduleData, teachers, classes }
+ */
+export async function addScheduleImport(semesterId, record, snapshot) {
+    requireScheduleSemesterId('addScheduleImport', semesterId);
+    const fs  = await getV2Firestore();
+    const ref = fs.doc(fs.db, SCHEMA_PATHS.scheduleImportDoc(semesterId, record.id));
+    await fs.setDoc(ref, { ...record, snapshot });
+}
+
+/**
+ * 讀取最近 limit 版匯入紀錄（新到舊）。orderBy 單一欄位（importedAt）使用 Firestore 自動建立的
+ * 單欄位索引，不需要複合索引。文件含快照，故預設只撈最近 20 版。
+ */
+export async function listScheduleImports(semesterId, limit = 20) {
+    requireScheduleSemesterId('listScheduleImports', semesterId);
+    const fs   = await getV2Firestore();
+    const col  = fs.collection(fs.db, SCHEMA_PATHS.scheduleImportsCol(semesterId));
+    const q    = fs.query(col, fs.orderBy('importedAt', 'desc'), fs.limit(limit));
+    const snap = await fs.getDocs(q);
+    return snap.docs.map(d => ({ ...d.data(), id: d.id }));
+}
+
+/** 封存匯出專用：讀取該學期全部匯入紀錄（不設上限，讀取失敗直接丟出，不吞錯） */
+export async function listScheduleImportsForArchive(semesterId) {
+    if (!semesterId) return [];
+    const fs   = await getV2Firestore();
+    const col  = fs.collection(fs.db, SCHEMA_PATHS.scheduleImportsCol(semesterId));
+    const snap = await fs.getDocs(col);
+    return snap.docs.map(d => ({ ...d.data(), id: d.id }));
+}
+
+/** 刪除該學期全部匯入紀錄（封存清理用；分批 writeBatch，每批 ≤ 400） */
+export async function deleteScheduleImportsForSemester(semesterId) {
+    if (!semesterId) return;
+    const fs   = await getV2Firestore();
+    const col  = fs.collection(fs.db, SCHEMA_PATHS.scheduleImportsCol(semesterId));
+    const snap = await fs.getDocs(col);
+    for (let i = 0; i < snap.docs.length; i += 400) {
+        const batch = fs.writeBatch(fs.db);
+        snap.docs.slice(i, i + 400).forEach(d => batch.delete(d.ref));
+        await batch.commit();
+    }
 }
 
 /**
