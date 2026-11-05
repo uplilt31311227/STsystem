@@ -12,7 +12,7 @@
 import { DataManager } from './modules/dataManager.js';
 import {
     loadV1History, appendV1History, getRestorableSnapshot, makeSnapshot,
-    computeFingerprint, formatImportDate, formatLastImport, formatSource
+    computeFingerprint, formatImportDate, formatLastImport, formatSource, V1_HISTORY_KEY
 } from './modules/scheduleImportHistory.js';
 import { ScheduleParser } from './modules/scheduleParser.js';
 import { RecommendationEngine, findSwapDateConflict, pendingTag } from './modules/recommendationEngine.js';
@@ -966,7 +966,10 @@ class SubstituteTeacherApp {
         const currentFp = computeFingerprint(this.dataManager.getScheduleData());
         const rows = this._importHistoryEntries.map((e, i) => {
             const c = e.counts || {};
-            const isCurrent = i === 0 && e.fingerprint && e.fingerprint === currentFp;
+            // 「目前版本」＝最後一次匯入／還原的那一版（以 id 比對；匯入後的單格編輯不會讓它變成可還原，
+            // 避免按下去悄悄撤銷編輯）。舊紀錄沒有 lastImport.id 時退回指紋比對。
+            const lastId = this.dataManager.lastImport?.id;
+            const isCurrent = i === 0 && (lastId ? e.id === lastId : (e.fingerprint && e.fingerprint === currentFp));
             let action = '';
             if (isCurrent) {
                 action = '<span class="import-history-current">目前版本</span>';
@@ -1002,7 +1005,7 @@ class SubstituteTeacherApp {
         }
         const ok = await this.confirmDialog({
             title: '還原課表',
-            message: `確定要還原成第 ${entry.versionNo} 版嗎？\n\n匯入時間：${formatImportDate(entry.importedAt)}\n檔名：${entry.fileName || '—'}\n\n目前的課表會被這一版取代，並記錄為新的一版。`,
+            message: `確定要還原成第 ${entry.versionNo} 版嗎？\n\n匯入時間：${formatImportDate(entry.importedAt)}\n檔名：${entry.fileName || '—'}\n\n目前的課表會被這一版取代（之後的匯入與手動編輯都會被撤銷），並記錄為新的一版。`,
             confirmText: '還原',
             danger: true
         });
@@ -4899,6 +4902,7 @@ class SubstituteTeacherApp {
                 // Stage 3：V1（本方法）用 this.getLocalStorageKey()，V2 模式下這整個方法會被
                 // v2-app.js 的 patchClearLocalData() 覆寫（見該函式），不會執行到這裡。
                 localStorage.removeItem(this.getLocalStorageKey());
+                localStorage.removeItem(V1_HISTORY_KEY);   // 匯入版本紀錄一併清除，避免版號從 1 重來時與舊紀錄重複
                 localStorage.removeItem('gasUrl');
                 this.showToast('所有資料已清除，頁面將重新載入', 'success');
                 location.reload();
