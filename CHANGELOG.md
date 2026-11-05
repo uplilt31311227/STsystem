@@ -1,5 +1,14 @@
 # 版本紀錄 (Changelog)
 
+## [2026-11-05] 修正：V2 雲端課表為空時，畫面殘留開頁時讀到的本機舊課表數字（僅本分支）
+
+- **現象**：正式庫本學期課表為空（114-2，7/30 已清除），但 preview 站 V2 登入後課表管理仍顯示「✓ 課表已載入 班級 12／教師 27／課程 349」與 7 筆衝突。使用者在 Console 實測：記憶體課表 0 筆、localStorage V1 key 349 筆。
+- **根因**：開頁時 app.js 先讀 localStorage 的 V1 課表（preview 與正式站同網域共用 localStorage）並繪出狀態區；登入後 `applyRemoteSchedule` 把空的雲端課表套入，但 `refreshUIAfterSync()` 只在課表「有資料」時更新狀態區，空課表時不動，舊數字殘留。資料層正確，僅顯示錯誤；雲端未被寫入（_v2ScheduleReady 守門）。
+- **修正**（`app.js` refreshUIAfterSync）：課表為空時收起 `#schedule-status`，清空並隱藏衝突與略過列提示。
+- **驗證**：emulator 重現腳本（本機塞 349 節、雲端本學期清空、主任登入）修正前 FAIL（狀態區仍顯示 349）、修正後 PASS；`npm test` 全過、`npm run check` 42/42。
+
+---
+
 ## [2026-11-05] 課表匯入日期與版本紀錄（可還原舊版，V1／V2）（僅本分支）
 
 **起因**：使用者需求「匯入課表資料新增匯入日期還有匯入課表版本紀錄」；使用者決定每版存完整快照可還原、V1 也支援（計畫 `docs/PLAN_2026-11-05_schedule-import-history.md`）。
