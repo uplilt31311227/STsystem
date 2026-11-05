@@ -9,7 +9,7 @@
 | A | 正式庫完整備份（安全網，動任何正式資料前必做） | ✅ `backups/firestore/20260911-003015/` |
 | B | 取得正式站 V1 的 115 課表（localStorage）並重建為人力資源網 2.0 格式 CSV | ✅ 349 節／12 班／27 教師，指紋與 localStorage 逐格相同 |
 | C | 在本機 emulator 以該 CSV 實跑「開 115-1 學期 → 匯入 → 驗證」 | ✅ 2026-09-10 已實跑 5/5（含舊學期未被覆寫） |
-| D | 正式站實作：開 115-1 學期 → 匯入課表 → 驗證雲端 `schools/inhu/schedules/115-1` | ⏸ 仍未執行（2026-09-20 覆核）。等使用者在瀏覽器完成 Google 登入 |
+| D | 正式站實作：開 115-1 學期 → 匯入課表 → 驗證雲端 `schools/inhu/schedules/115-1` | ✅ 2026-11-05 完成：現行為第 2 版（STC 9/4，280 節／8 班／21 師）。先前重建的 CSV 課表已過時，見 CHANGELOG |
 | E | 小修集合：e2e-02 flaky、原任課教師下拉鎖定本人、教師管理頁籤依角色隱藏 | ✅ 三項完成並 commit（`5883fcf`/`1e5954b`，2026-09-20）。e2e-02「推薦清單標示同領域」斷言過時一案亦已修（2026-09-20，實跑 5/5） |
 | F | UI 重規劃 Stage 6（清理：Tier C 死碼、Tier A alias、inline style 收 utility class） | ✅ 2026-10-07 完成：Tier A alias（`776e68c`）、CSS Tier C 死碼刪除、`index.html` inline style 51→5（`fe2b9a1`…`730b7ee`）。JS 內 inline style 與疑似死函式未處理 |
 | G | App Check enforcement 決策文件 ＋ 全校硬重整公告文稿 | ✅ 文件完成。**enforcement 本身仍未開啟**，等使用者決策 |
