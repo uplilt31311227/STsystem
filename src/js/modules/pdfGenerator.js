@@ -12,8 +12,53 @@
  * 使用 html2canvas + jsPDF 實現中文支援
  */
 
+/** HTML 跳脫（教師姓名、課程、班級、校名皆來自課表匯入／Firestore，屬使用者可控字串） */
+function escapeHtml(s) {
+    return String(s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+/** 深層複製並跳脫所有字串（陣列與一般物件遞迴；其他型別原樣）。不修改呼叫端資料。 */
+function escapeDeep(v) {
+    if (typeof v === 'string') return escapeHtml(v);
+    if (Array.isArray(v)) return v.map(escapeDeep);
+    if (v && typeof v === 'object' && Object.getPrototypeOf(v) === Object.prototype) {
+        const o = {};
+        for (const k of Object.keys(v)) o[k] = escapeDeep(v[k]);
+        return o;
+    }
+    return v;
+}
+
+/**
+ * 會以 innerHTML 組版面的公開產生函式。進入時把參數整份跳脫一次，內部各 HTML builder
+ * 直接插值即安全，不必逐一套用（插值點逾 60 處，逐點處理容易漏）。資料兩側（紀錄與課表）
+ * 以同一規則轉換，比對結果不變。巢狀呼叫（例如 generateSwapFinalForms 內呼叫
+ * generateSubstituteForm）以深度計數避免重複跳脫。
+ */
+const HTML_ENTRY_POINTS = [
+    'generateSubstituteForm', 'generateMultiCourseForm', 'generateWeeklySummaryForm',
+    'generateSwapFinalForms', 'generateSwapBatchForm', 'generateSwapChainForm',
+];
+
 export class PDFGenerator {
     constructor() {
+        this._escapeDepth = 0;
+        for (const name of HTML_ENTRY_POINTS) {
+            const orig = this[name];
+            if (typeof orig !== 'function') continue;
+            this[name] = async (...args) => {
+                const outer = this._escapeDepth === 0;
+                this._escapeDepth++;
+                try {
+                    return await orig.apply(this, outer ? args.map(escapeDeep) : args);
+                } finally {
+                    this._escapeDepth--;
+                }
+            };
+        }
+
         // PDF 設定
         this.config = {
             pageWidth: 210,  // A4 寬度 (mm)
@@ -42,8 +87,14 @@ export class PDFGenerator {
      * @param {string} name - 學校名稱
      */
     setSchoolName(name) {
-        this.schoolName = name;
+        this.schoolName = name ?? '';
     }
+
+    // 校名會插入 PDF 版面的 innerHTML：內部存原始值，讀取 schoolName（各 HTML builder 插值用）
+    // 一律回傳跳脫後字串；需要原始值者用 rawSchoolName。
+    get schoolName() { return escapeHtml(this._schoolName ?? ''); }
+    set schoolName(v) { this._schoolName = v ?? ''; }
+    get rawSchoolName() { return this._schoolName ?? ''; }
 
     /**
      * 生成調代課單 PDF

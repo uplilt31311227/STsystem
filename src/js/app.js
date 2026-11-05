@@ -3772,16 +3772,45 @@ class SubstituteTeacherApp {
         const batchId = Date.now().toString();
         records.forEach(r => { r.batchId = batchId; });
 
-        // 儲存所有紀錄
-        records.forEach(record => {
-            this.dataManager.addSubstituteRecord(record);
-        });
+        // 儲存所有紀錄：逐筆 await，比照單筆／多節代課路徑。V2 寫入可能被 adminCreate 衝堂重驗擋下
+        // 而回傳 false（錯誤訊息已由 V2 顯示）；V1 為同步寫入、回傳 undefined。失敗即中止、不產 PDF。
+        const savedRecords = [];
+        for (const record of records) {
+            const ok = await this.dataManager.addSubstituteRecord(record);
+            if (ok === false) {
+                if (savedRecords.length > 0) {
+                    this.saveDataToStorage();
+                    const label = r => `${r.date} ${r.period}`;
+                    const unsaved = records.slice(savedRecords.length);
+                    this.showToast(
+                        `部分調課未儲存。已成立：${savedRecords.map(label).join('、')}；未成立：${unsaved.map(label).join('、')}。請至紀錄查詢確認後，再為未成立的調課另行申請`,
+                        'warning', 10000);
+                }
+                return;
+            }
+            savedRecords.push(record);
+        }
         this.saveDataToStorage();
 
-        // 原版調課單：兩節互換照舊一式四聯，連調只輸出最終結果；另附整批多重調課通知單
-        const scheduleData = this.dataManager.getScheduleData();
-        await this.pdfGenerator.generateSwapFinalForms(records, scheduleData, this.dataManager.getTeachers());
-        await this.pdfGenerator.generateSwapBatchForm(records, scheduleData);
+        // V2 待同意的申請（一般教師發起）：等對方同意後由核准流程產生，這裡不產 PDF。
+        // 以前多重調課走 generateSubstitutePDF，會被 v2-app 的 patchPdfGenerators 攔下；改呼叫
+        // pdfGenerator 後繞過了那道閘門，所以在這裡明確判斷。
+        const needsApproval = records.some(r => r.__v2NeedsApproval);
+        if (!needsApproval) {
+            // 原版調課單：兩節互換照舊一式四聯，連調只輸出最終結果；另附整批多重調課通知單。
+            // 紀錄此時已成立：PDF 失敗不可讓流程卡住（未重置、無提示會讓使用者以為失敗而重送）。
+            try {
+                const scheduleData = this.dataManager.getScheduleData();
+                await this.pdfGenerator.generateSwapFinalForms(records, scheduleData, this.dataManager.getTeachers());
+                await this.pdfGenerator.generateSwapBatchForm(records, scheduleData);
+            } catch (err) {
+                console.error('多重調課 PDF 產生失敗:', err);
+                this.swapBatch = [];
+                this.resetSubstituteFlow();
+                this.showToast(`已完成 ${records.length} 筆多重調課，但 PDF 產生失敗：${err?.message || err}。紀錄已儲存，請勿重複送出，可至紀錄查詢重印`, 'error', 10000);
+                return;
+            }
+        }
 
         // 重置
         this.swapBatch = [];
@@ -3949,7 +3978,7 @@ class SubstituteTeacherApp {
         try {
             const scheduleData = this.dataManager.getScheduleData();
             const teachers = this.dataManager.getTeachers();
-            this.pdfGenerator.setSchoolName(this.dataManager.schoolName || this.pdfGenerator.schoolName);
+            this.pdfGenerator.setSchoolName(this.dataManager.schoolName || this.pdfGenerator.rawSchoolName);
             await this.pdfGenerator.generateWeeklySummaryForm(weekStart, records, scheduleData, teachers);
             this.showToast(`已產生週彙整 PDF（${records.length} 筆異動）`, 'success', 4000);
             this.closeWeeklySummaryModal();

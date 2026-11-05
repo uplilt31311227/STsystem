@@ -4560,12 +4560,13 @@ function patchPdfGenerators() {
     }
 
     // 攔截 app.js 寫死的「PDF 已生成」彙總 toast：僅當本批次確實含 pending 時才吞。
+    // 「已產生調課單」為多重調課送出的成功訊息（submitSwapBatch）；pending 時不產 PDF，訊息亦須吞掉。
     if (typeof app.showToast === 'function') {
         const origToast = app.showToast.bind(app);
         app.showToast = function(message, type, duration) {
             if (_swallowPdfSummaryToast
                 && typeof message === 'string'
-                && /PDF 已生成|PDF 已逐一生成/.test(message)) {
+                && /PDF 已生成|已產生調課單/.test(message)) {
                 _swallowPdfSummaryToast = false;
                 return;
             }
