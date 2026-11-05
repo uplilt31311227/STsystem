@@ -681,6 +681,15 @@ class SubstituteTeacherApp {
                 scheduleData: scheduleData
             };
             this.updateScheduleStatus(parseResult);
+        } else {
+            // 課表為空（例：V2 雲端本學期尚未匯入，套用後覆蓋了開頁時先讀到的本機舊課表）：
+            // 必須把狀態區收起並清掉衝突／略過列提示，否則畫面會殘留舊的「✓ 課表已載入 N 筆」，
+            // 誤導使用者以為雲端已有課表。
+            document.getElementById('schedule-status')?.classList.add('hidden');
+            for (const id of ['schedule-conflicts', 'schedule-import-warnings']) {
+                const el = document.getElementById(id);
+                if (el) { el.innerHTML = ''; el.classList.add('hidden'); }
+            }
         }
 
         // 雲端下載/合併可能翻轉「九年級已畢業」開關 → 重繪課表灰底與已開啟的推薦/調課面板
