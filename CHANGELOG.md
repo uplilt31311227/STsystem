@@ -1,5 +1,21 @@
 # 版本紀錄 (Changelog)
 
+## [2026-11-05] 課表匯入日期與版本紀錄（可還原舊版，V1／V2）（僅本分支）
+
+**起因**：使用者需求「匯入課表資料新增匯入日期還有匯入課表版本紀錄」；使用者決定每版存完整快照可還原、V1 也支援（計畫 `docs/PLAN_2026-11-05_schedule-import-history.md`）。
+
+- **最後匯入資訊**：課表匯入區 `.status-header` 顯示「最後匯入：YYYY/MM/DD HH:mm · 匯入者 · 檔名」（V1 無匯入者）；無紀錄顯示「尚無匯入紀錄」。
+- **匯入紀錄 modal**（「匯入紀錄」按鈕）：列出各版（版本號、日期、匯入者、檔名、節／班／師數、略過列、來源 檔案匯入／還原），最後一次匯入／還原那版標「目前版本」，其餘可「還原成這一版」（自訂 confirm modal；還原會撤銷之後的匯入與編輯，並記成新的一版 `source:'restore'`、`restoredFromVersion`）。V2 還原限 approver 以上。檔名與姓名一律跳脫。
+- **新模組** `src/js/modules/scheduleImportHistory.js`（紀錄建立、指紋、V1 歷史讀寫、格式化）；`DataManager.lastImport`／`recordScheduleImport()`。
+- **V1**：`localStorage['substituteSystemScheduleImports']` 保留最近 10 版（含快照，容量不足自動縮減）；「清除所有本機資料」一併清除。
+- **V2**：主文件 `schedules/{semesterId}` 新增 `lastImport`（每次 sync 帶上，避免整份覆寫遺失）；子集合 `schedules/{semesterId}/imports/{id}` 存中繼資料＋快照，清單撈最近 20 版。imports 寫入失敗時保留待寫、下次同步重試；課表未載入完成時的匯入會提示重匯而不留過時紀錄。學期封存匯出含 `scheduleImports`，刪除課表一併刪除子集合。
+- **操作日誌**：只有真正匯入／還原才記 `schedule_import`（附 kind、versionNo、檔名、計數）；一般課表編輯改記 `edit`（`details.kind:'edit'`），不再冒充匯入。
+- **Firestore rules v2.10（未部署）**：`match /imports/{importId}` read isMember；create approver 且目前學期；update 禁止；delete 僅 director 且非目前學期。⚠ 上線須先部署 rules 再上 client。
+
+**驗證**：`npm test` 全過（新增 test-schedule-import-history 48 項）、`npm run check` 42/42；emulator `test:rules-schedule-imports` 9/9、`test:scenarios` 96/96、`test:rules-role-guard` 4/4、`test:rules-settlement` 11/11；整套 e2e 55/56（新斷言「主文件帶 lastImport 且 imports 多一版含快照」通過；唯一失敗為核准時 emulator `client is offline`，獨立驗收判定與本 diff 無關，前一輪同案通過）。獨立 opus 驗收以 Playwright＋emulator 實跑 9 條（V2 匯入／編輯不吃 lastImport／兩版還原且他端同步／教師無法還原與 XSS／V1 十版上限／舊資料相容／封存匯出與刪除），找出 8 項缺陷，修正其中 5 項（CSS 註解缺開頭致樣式失效、未就緒時殘留過時待寫紀錄、V1 清除未刪紀錄、imports 寫入失敗不重試、單格編輯後最新版可被誤還原），修後重跑 CSS／V1／V2 驗收腳本通過。其餘見 [[ISSUES_LOG]] 2026-11-05。
+
+---
+
 ## [2026-10-22] P0 修正：雙重指派防護（核准重驗、在途申請、日期感知調課）、月結成立防線與寒暑假下限（僅本分支）
 
 **起因**：與 Course_Scheduling_System 比對發現的 P0 缺口（`docs/research/COMPARE_Course_Scheduling_System.md` §5），以及 [[ISSUES_LOG]] 2026-10-07 月結規則疑點、2026-10-22「在途申請未納入代課衝堂」。

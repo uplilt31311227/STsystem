@@ -1,12 +1,20 @@
 ---
 created: 2026-04-10
-updated: 2026-10-22
+updated: 2026-11-05
 tags:
   - issues
   - troubleshooting
 ---
 
 # 問題追蹤：國中調代課自動化系統
+
+## 2026-11-05 課表匯入版本紀錄：已知未修（獨立驗收發現）
+
+- **兩人同時匯入會撞版號**（`dataManager.js` recordScheduleImport）：versionNo 以本機 lastImport+1 計算，兩位組長同時匯入會產生同號的兩筆（doc id 不同，兩筆都保留，清單依時間排序）。修法：transaction 讀主文件遞增，或 UI 不以版號為唯一識別。機率低，暫接受。
+- **V2 imports 無保留上限、開 modal 連快照一起下載**（`schoolDataService.listScheduleImports`）：每筆含完整快照，開一次最多抓 20 份；無 1MB 檢查（快照與主文件同量級，主文件寫得進通常也寫得進）。修法：中繼資料與快照拆兩份文件、還原時才讀快照，並加保留版數。
+- **rules v2.10 未部署前**：新 client 每次課表同步都會重試寫 imports 並跳錯誤提示（課表本身照常同步）。上線務必先部署 rules。
+- **e2e 未涵蓋還原流程**：e2e-03 只斷言 lastImport 與 imports 子集合；還原由獨立驗收腳本實測（scratchpad，未入庫）。日後可併入 e2e-03。
+- V1 頁面 console 有 `requestStorageAccess: Permission denied` 與 403，判斷為既有 V1 雲端功能雜訊，與本功能無關（未做對照確認）。
 
 ## 2026-10-22 P0 修正後殘留（未修）
 
