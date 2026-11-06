@@ -1946,6 +1946,8 @@ export class PDFGenerator {
                 await this.generateSwapChainForm(group);
             }
         }
+        // 回傳實際產出的對調組數；0 代表淨結果無變動或 onlyRecord 不屬於任何組，呼叫端據此提示
+        return groups.length;
     }
 
     /**

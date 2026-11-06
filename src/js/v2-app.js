@@ -777,8 +777,10 @@ async function renderPendingTab() {
             if (note === null) return;   // 取消：中止拒絕動作（留空但按「確定」仍會繼續執行）
             btn.disabled = true;
             try {
+                const batchId = (await dataSvc.getPendingRequest(btn.dataset.id).catch(() => null))?.batchId;
                 await requestSvc.rejectRequest(btn.dataset.id, note);
                 await renderPendingTab();
+                await finalizeBatchAfterClose(batchId);
             } catch (e) {
                 if (e.code === 'ALREADY_PROCESSED') {
                     window.app?.showToast?.(e.message || '此請求已被處理', 'warning', 4000);
@@ -795,7 +797,12 @@ async function renderPendingTab() {
                 title: '撤回請求', message: '確定撤回此調課請求？', confirmText: '撤回', danger: true,
             });
             if (!ok) return;
-            try { await requestSvc.cancelRequest(btn.dataset.id); await renderPendingTab(); }
+            try {
+                const batchId = (await dataSvc.getPendingRequest(btn.dataset.id).catch(() => null))?.batchId;
+                await requestSvc.cancelRequest(btn.dataset.id);
+                await renderPendingTab();
+                await finalizeBatchAfterClose(batchId);
+            }
             catch (e) { notifyError(e, '撤回請求'); }
         }));
     host.querySelectorAll('.v2-dismiss-btn').forEach(btn =>
@@ -4622,6 +4629,56 @@ async function generatePdfForRecord(record) {
  * 偵測已刪除的筆數。
  * @returns {Promise<'single'|'deferred'|'batch'|'failed'>}
  */
+/**
+ * 多重調課依賴檢查：依批次順序走過「實際成立」的調課，若某位教師的起點既不是原課表該節，
+ * 也不是前面成立者調入的位置，代表它依賴的前段調課沒有成立（被拒／已刪除），淨結果會失真。
+ * @returns {string[]} 有問題的紀錄說明（例如「11/17 第一節 林老師」）
+ */
+function findBrokenSwapDependencies(records, scheduleData) {
+    const norm = p => window.app?.pdfGenerator?.normalizePeriod?.(p) || p;
+    const name = t => String(t || '').trim();
+    const inSchedule = (teacher, weekday, period, className) => scheduleData.some(c =>
+        c.weekday === weekday && norm(c.period) === norm(period)
+        && c.className === className && name(c.teacher) === name(teacher));
+    const placed = new Set();
+    const key = (teacher, date, period, className) => [name(teacher), date, norm(period), className].join('|');
+    const broken = [];
+    for (const r of records) {
+        const cA = r.className, cB = r.swapClassName || r.className;
+        const okA = inSchedule(r.originalTeacher, r.weekday, r.period, cA) || placed.has(key(r.originalTeacher, r.date, r.period, cA));
+        const okB = inSchedule(r.swapTeacher, r.swapWeekday, r.swapPeriod, cB) || placed.has(key(r.swapTeacher, r.swapDate, r.swapPeriod, cB));
+        if (!okA) broken.push(`${r.date} ${r.period} ${r.originalTeacher}`);
+        if (!okB) broken.push(`${r.swapDate} ${r.swapPeriod} ${r.swapTeacher}`);
+        placed.add(key(r.originalTeacher, r.swapDate, r.swapPeriod, cB));
+        placed.add(key(r.swapTeacher, r.date, r.period, cA));
+    }
+    return broken;
+}
+
+/**
+ * 同批最後一筆在途申請被駁回／撤回後：若同批已無在途且有已成立者，由 approver 產生整批
+ * 調課單與通知單（否則前面已核准、被延後的筆數永遠不會自動產 PDF）。僅 approver 觸發——
+ * 拒絕按鈕也供對方教師「拒絕同意」使用，不在教師端下載整批單；教師端觸發時改由 approver
+ * 於紀錄頁重印補產（見 generateRecordPdf 重印模式）。
+ */
+async function finalizeBatchAfterClose(batchId) {
+    if (!batchId || !roleSvc.isApprover()) return;
+    try {
+        const open = await dataSvc.listOpenPendingRequestsByBatch(batchId);
+        if (open.length > 0) return;
+        const recs = await dataSvc.listSubstituteRecordsByBatch(batchId);
+        const first = recs.find(r => !r.deleted && !r.isDeleted && (!r.status || r.status === 'approved'));
+        if (!first) return;
+        const result = await generateRecordPdf(first, { mode: 'approve' });
+        if (result === 'batch') {
+            window.app?.showToast?.('同批多重調課已全部處理完畢，已依實際成立的調課產生調課單與通知單', 'success', 6000);
+        }
+    } catch (e) {
+        console.error('[V2] 批次收尾產生 PDF 失敗：', e);
+        notifyError(e, '產生多重調課調課單');
+    }
+}
+
 async function generateRecordPdf(record, { mode = 'reprint' } = {}) {
     const app = window.app;
     if (!record?.batchId || record.type !== '調課') {
@@ -4630,10 +4687,21 @@ async function generateRecordPdf(record, { mode = 'reprint' } = {}) {
     }
     if (!app?.pdfGenerator) return 'failed';
     try {
+        // 在途申請查詢獨立容錯：讀不到（例如日後收緊 pendingRequests 讀取權限）不應讓重印整個失敗。
+        // 核准模式讀不到時保守視為「仍有在途」而延後，避免提前產出不完整的整批單。
+        let pendingUnknown = false;
         const [siblings, openPending] = await Promise.all([
             dataSvc.listSubstituteRecordsByBatch(record.batchId),
-            dataSvc.listOpenPendingRequestsByBatch(record.batchId),
+            dataSvc.listOpenPendingRequestsByBatch(record.batchId).catch(err => {
+                console.warn('[V2] 讀取同批在途申請失敗：', err);
+                pendingUnknown = true;
+                return [];
+            }),
         ]);
+        if (mode === 'approve' && pendingUnknown) {
+            app.showToast?.('此筆已核准，但無法確認同批其他申請的狀態，暫不產生調課單；請稍後至「調代課紀錄」重印', 'warning', 8000);
+            return 'deferred';
+        }
         if (mode === 'approve' && openPending.length > 0) {
             app.showToast?.(`此筆已核准。同批多重調課尚有 ${openPending.length} 筆待同意／待核准，全部處理後才產生調課單與多重調課通知單`, 'info', 6000);
             return 'deferred';
@@ -4654,23 +4722,38 @@ async function generateRecordPdf(record, { mode = 'reprint' } = {}) {
         });
         const target = records.find(r => r.recordId === record.recordId) || record;
 
-        const notes = [];
-        if (Number(record.batchSize) > records.length) {
-            notes.push(`本批原 ${record.batchSize} 筆，目前實際成立 ${records.length} 筆，調課單依實際成立者計算`);
-        }
-        if (mode === 'reprint' && openPending.length > 0) {
-            notes.push(`同批尚有 ${openPending.length} 筆待同意／待核准，此單僅依已成立者計算`);
-        }
-
         const scheduleData = app.dataManager?.getScheduleData?.() || [];
         const teachers     = app.dataManager?.getTeachers?.() || [];
-        if (mode === 'approve') {
-            await app.pdfGenerator.generateSwapFinalForms(records, scheduleData, teachers);
-            await app.pdfGenerator.generateSwapBatchForm(records, scheduleData);
-        } else {
-            await app.pdfGenerator.generateSwapFinalForms(records, scheduleData, teachers, target);
+
+        const notes = [];
+        if (record.batchSize == null) {
+            notes.push('舊批次無法確認是否有筆數已刪除或未成立');
+        } else if (Number(record.batchSize) > records.length) {
+            notes.push(`本批原 ${record.batchSize} 筆，目前實際成立 ${records.length} 筆，調課單依實際成立者計算`);
         }
-        if (notes.length) app.showToast?.(notes.join('；'), 'warning', 8000);
+        if (mode === 'reprint' && pendingUnknown) {
+            notes.push('無法確認同批是否仍有待處理申請');
+        } else if (mode === 'reprint' && openPending.length > 0) {
+            notes.push(`同批尚有 ${openPending.length} 筆待同意／待核准，此單僅依已成立者計算`);
+        }
+        const broken = findBrokenSwapDependencies(records, scheduleData);
+        if (broken.length) {
+            notes.push(`⚠ ${broken.join('、')} 依賴的前段調課未成立（被拒或已刪除），調課單內容可能不正確，請人工確認`);
+        }
+
+        // 重印時，若同批已無待處理申請，approver 一併重產整批通知單——同批最後一筆若是被教師拒絕或
+        // 撤回，核准流程不會自動產生整批單，這是 approver 補印通知單的途徑。
+        const closed = !pendingUnknown && openPending.length === 0;
+        const withBatchNotice = mode === 'approve' || (closed && roleSvc.isApprover());
+        const produced = await app.pdfGenerator.generateSwapFinalForms(
+            records, scheduleData, teachers, mode === 'approve' ? null : target);
+        if (withBatchNotice) await app.pdfGenerator.generateSwapBatchForm(records, scheduleData);
+        if (produced === 0) {
+            notes.push(mode === 'approve'
+                ? '本批調課的淨結果無變動，未產生調課單'
+                : '此筆在整批淨結果中無變動（例如來回互換），沒有可印的調課單');
+        }
+        if (notes.length) app.showToast?.(notes.join('；'), produced === 0 && !withBatchNotice ? 'info' : 'warning', 9000);
         return 'batch';
     } catch (e) {
         console.error('[V2] 多重調課 PDF 產生失敗：', e);
