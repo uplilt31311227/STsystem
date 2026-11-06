@@ -542,6 +542,30 @@ export async function listSubstituteRecordsPage({ pageSize = DEFAULT_PAGE_SIZE, 
  * orderBy('date') 而非 createdAt——歷史瀏覽以「上課日期」排序對使用者更直覺，且此函式
  * 不需要與即時訂閱視窗共用 cursor（不像 listSubstituteRecordsPage 需要對齊 createdAt 排序）。
  */
+/**
+ * 多重調課批次：同一 batchId 的已成立紀錄（V2 每筆調課各自一張申請、各自核准成立，
+ * 靠 batchId 串回同一批）。單欄位相等查詢，走自動索引，不需複合索引。
+ * rules：substituteRecords read 為 isMember，教師亦可讀（顯示過濾在前端）。
+ */
+export async function listSubstituteRecordsByBatch(batchId) {
+    if (!batchId) return [];
+    const fs   = await getV2Firestore();
+    const col  = fs.collection(fs.db, SCHEMA_PATHS.substituteCol());
+    const snap = await fs.getDocs(fs.query(col, fs.where('batchId', '==', String(batchId))));
+    return snap.docs.map(d => ({ recordId: d.id, ...d.data() }));
+}
+
+/** 多重調課批次：同一 batchId 仍在途（待同意／待核准）的申請。 */
+export async function listOpenPendingRequestsByBatch(batchId) {
+    if (!batchId) return [];
+    const fs   = await getV2Firestore();
+    const col  = fs.collection(fs.db, SCHEMA_PATHS.pendingCol());
+    const snap = await fs.getDocs(fs.query(col, fs.where('batchId', '==', String(batchId))));
+    return snap.docs
+        .map(d => ({ reqId: d.id, ...d.data() }))
+        .filter(r => OPEN_REQUEST_STATUSES.includes(r.status));
+}
+
 export async function listSubstituteRecordsBySemester(semesterId) {
     if (!semesterId) return [];
     const fs   = await getV2Firestore();

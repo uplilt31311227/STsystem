@@ -3770,7 +3770,8 @@ class SubstituteTeacherApp {
 
         // 批次 ID，讓這些紀錄可被識別為同一批
         const batchId = Date.now().toString();
-        records.forEach(r => { r.batchId = batchId; });
+        // batchSize：V2 每筆各自核准成立，產整批調課單時用來判斷同批是否有筆數未成立／已刪除
+        records.forEach(r => { r.batchId = batchId; r.batchSize = records.length; });
 
         // 儲存所有紀錄：逐筆 await，比照單筆／多節代課路徑。V2 寫入可能被 adminCreate 衝堂重驗擋下
         // 而回傳 false（錯誤訊息已由 V2 顯示）；V1 為同步寫入、回傳 undefined。失敗即中止、不產 PDF。

@@ -746,12 +746,15 @@ async function renderPendingTab() {
                 const saved = await requestSvc.approveRequest(btn.dataset.id);
                 // 核准成功後才產生 PDF（Phase 3：PDF 產生時機從「同意時」移到「核准後」）；
                 // PDF 與兩個列表重繪互不相依，並行執行縮短等待。
-                await Promise.all([
-                    generatePdfForRecord(saved),
+                // 多重調課批次：同批全部處理完才產生整批調課單與通知單（見 generateRecordPdf）。
+                const [pdfResult] = await Promise.all([
+                    generateRecordPdf(saved, { mode: 'approve' }),
                     renderPendingTab(),
                     renderRecordsTab(),
                 ]);
-                window.app?.showToast?.('已核准並產生 PDF', 'success', 3500);
+                if (pdfResult === 'single' || pdfResult === 'batch') {
+                    window.app?.showToast?.('已核准並產生 PDF', 'success', 3500);
+                }
             } catch (e) {
                 if (e.code === 'ALREADY_PROCESSED') {
                     // 兩位 approver 並發核准：後到者顯示「已被處理」並刷新列表
@@ -1798,7 +1801,7 @@ async function renderRecordsTab() {
             const rec = visible.find(x => x.recordId === btn.dataset.id);
             if (!rec) return;
             btn.disabled = true;
-            await generatePdfForRecord(rec);
+            await generateRecordPdf(rec, { mode: 'reprint' });
             btn.disabled = false;
         }));
 
@@ -4603,6 +4606,76 @@ async function generatePdfForRecord(record) {
     } catch (e) {
         console.error('[V2] PDF 產生失敗：', e);
         app.showToast?.('PDF 產生失敗：' + e.message, 'error', 4000);
+    }
+}
+
+/**
+ * 依紀錄產生 PDF；多重調課批次（record.batchId）改以「整批淨結果」產生，避免逐筆印出
+ * 連調的中繼位置（與 V1 submitSwapBatch／reprintSwapBatchRecord 同口徑）。
+ *
+ * V2 的批次是每筆各自一張申請、各自核准成立，所以：
+ *   - mode 'approve'：同批仍有在途申請 → 不產 PDF（回傳 'deferred'），等最後一筆核准時
+ *     一次產生全部調課單＋整批多重調課通知單。
+ *   - mode 'reprint'：只印這筆所屬的對調組；同批仍有在途申請時照已成立的計算並提示。
+ * 同批有筆數未成立（被拒、刪除）時，依「實際成立」的紀錄計算並提示——未成立的調課沒有
+ * 發生，實際成立者的淨結果才是現況。batchSize 為 2026-11-06 起送出的批次才有；舊批次無法
+ * 偵測已刪除的筆數。
+ * @returns {Promise<'single'|'deferred'|'batch'|'failed'>}
+ */
+async function generateRecordPdf(record, { mode = 'reprint' } = {}) {
+    const app = window.app;
+    if (!record?.batchId || record.type !== '調課') {
+        await generatePdfForRecord(record);
+        return 'single';
+    }
+    if (!app?.pdfGenerator) return 'failed';
+    try {
+        const [siblings, openPending] = await Promise.all([
+            dataSvc.listSubstituteRecordsByBatch(record.batchId),
+            dataSvc.listOpenPendingRequestsByBatch(record.batchId),
+        ]);
+        if (mode === 'approve' && openPending.length > 0) {
+            app.showToast?.(`此筆已核准。同批多重調課尚有 ${openPending.length} 筆待同意／待核准，全部處理後才產生調課單與多重調課通知單`, 'info', 6000);
+            return 'deferred';
+        }
+        const effective = siblings.filter(r => !r.deleted && !r.isDeleted && (!r.status || r.status === 'approved'));
+        if (!effective.some(r => r.recordId === record.recordId)) effective.push(record);
+        const order = r => {
+            const n = Number(String(r.id ?? '').split('_').pop());
+            return Number.isFinite(n) ? n : Number.MAX_SAFE_INTEGER;
+        };
+        effective.sort((a, b) => order(a) - order(b) || String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+
+        // 私有欄位（leaveType／reason）已搬到 private/detail，產 PDF 前補讀（讀不到即沿用父文件）
+        const details = await dataSvc.getRecordDetailsBulk(effective.map(r => r.recordId));
+        const records = effective.map(r => {
+            const d = details.get(r.recordId);
+            return d ? { ...r, leaveType: d.leaveType ?? r.leaveType, leaveTypeName: d.leaveTypeName ?? r.leaveTypeName, reason: d.reason ?? r.reason } : r;
+        });
+        const target = records.find(r => r.recordId === record.recordId) || record;
+
+        const notes = [];
+        if (Number(record.batchSize) > records.length) {
+            notes.push(`本批原 ${record.batchSize} 筆，目前實際成立 ${records.length} 筆，調課單依實際成立者計算`);
+        }
+        if (mode === 'reprint' && openPending.length > 0) {
+            notes.push(`同批尚有 ${openPending.length} 筆待同意／待核准，此單僅依已成立者計算`);
+        }
+
+        const scheduleData = app.dataManager?.getScheduleData?.() || [];
+        const teachers     = app.dataManager?.getTeachers?.() || [];
+        if (mode === 'approve') {
+            await app.pdfGenerator.generateSwapFinalForms(records, scheduleData, teachers);
+            await app.pdfGenerator.generateSwapBatchForm(records, scheduleData);
+        } else {
+            await app.pdfGenerator.generateSwapFinalForms(records, scheduleData, teachers, target);
+        }
+        if (notes.length) app.showToast?.(notes.join('；'), 'warning', 8000);
+        return 'batch';
+    } catch (e) {
+        console.error('[V2] 多重調課 PDF 產生失敗：', e);
+        app.showToast?.('多重調課 PDF 產生失敗：' + (e?.message || e), 'error', 6000);
+        return 'failed';
     }
 }
 
