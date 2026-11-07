@@ -9,12 +9,12 @@ tags:
 
 ---
 
-## [2026-11-07] Firestore rules v2.11：開放組長刪除目前學期的調代課紀錄（待部署）
+## [2026-11-07] Firestore rules v2.11：開放組長刪除目前學期的調代課紀錄（已部署）
 
 - 使用者決定開放組長刪除。`substituteRecords` delete 由「僅 director」放寬為「director，或 approver 且紀錄屬目前學期」（無 semesterId 的舊紀錄比照 update 可刪）；歷史學期仍只有主任能刪。前端（adminDeleteRecord、紀錄頁刪除鈕）本就以 approver 判定，不需改。private/detail 的 delete 維持僅 director。
 - 新增 `test/emulator/rules-record-delete.mjs`（`npm run test:rules-record-delete`）。
 
-**驗證**：rules-record-delete 5/5（組長刪目前學期 ALLOW、刪歷史學期 DENY、刪舊紀錄 ALLOW、主任刪歷史學期 ALLOW、教師 DENY）；rules-role-guard 4/4、rules-settlement 11/11、rules-schedule-imports 9/9、scenarios 96/96、check 42/42。部署前線上 ruleset `d14e145f`（v2.10）原文已存 `backups/rules/`。
+**驗證**：rules-record-delete 5/5（組長刪目前學期 ALLOW、刪歷史學期 DENY、刪舊紀錄 ALLOW、主任刪歷史學期 ALLOW、教師 DENY）；rules-role-guard 4/4、rules-settlement 11/11、rules-schedule-imports 9/9、scenarios 96/96、check 42/42。2026-11-07 由使用者本人部署，release → ruleset `6c56e3da`，完整下載比對與本地一致；前一版 `d14e145f`（v2.10）原文存 `backups/rules/`。
 
 ---
 
