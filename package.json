@@ -8,7 +8,8 @@
     "test:e2e": "node test/e2e/run-e2e.mjs",
     "test:rules-settlement": "node test/emulator/rules-settlement.mjs",
     "test:rules-role-guard": "node test/emulator/rules-role-guard.mjs",
-    "test:rules-schedule-imports": "node test/emulator/rules-schedule-imports.mjs"
+    "test:rules-schedule-imports": "node test/emulator/rules-schedule-imports.mjs",
+    "test:rules-record-delete": "node test/emulator/rules-record-delete.mjs"
   },
   "devDependencies": {
     "firebase-tools": "^15.26.0",
