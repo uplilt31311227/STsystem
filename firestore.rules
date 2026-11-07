@@ -1,6 +1,6 @@
 rules_version = '2';
 
-// STsystem V2 權限系統 Firestore 規則（v2.10 — 三層角色 + 敏感欄位私有化 + 學期唯讀鎖 + 封存生命週期 + schoolId 反查目錄 + 多租戶開通 + 月結算設定開放 approver + 主任不可改自己的 role + 課表匯入版本紀錄）
+// STsystem V2 權限系統 Firestore 規則（v2.11 — 三層角色 + 敏感欄位私有化 + 學期唯讀鎖 + 封存生命週期 + schoolId 反查目錄 + 多租戶開通 + 月結算設定開放 approver + 主任不可改自己的 role + 課表匯入版本紀錄 + 組長可刪除目前學期紀錄）
 //
 // 設計原則：
 //   1. 兩條根路徑物理隔離
@@ -113,6 +113,12 @@ rules_version = '2';
 //      主文件 schedules/{semesterId} 的規則不變，新增的 lastImport 欄位屬主文件內容，不需改規則。
 //      ⚠ 部署順序：須先部署本規則再上線新版 client，否則新 client 寫 imports 會被拒（主文件仍可寫，
 //      只是匯入紀錄寫入失敗）。
+//
+//  12. v2.11（2026-11-07，使用者決定「開放組長刪除」）：substituteRecords 的 delete 由「僅 director」
+//      放寬為「director，或 approver 且紀錄屬目前學期（無 semesterId 的舊紀錄視為可刪）」。
+//      前端 adminDeleteRecord 與紀錄頁刪除鈕本就以 approver 判定，過去組長按下會被 rules 擋成
+//      「權限不足」。private/detail 的 delete 維持僅 director（adminDeleteRecord 只刪父文件，
+//      與既有行為相同）。刪除由前端寫 DELETE 操作日誌（含刪除前內容）。
 //
 // 部署：透過 gcloud REST API 或 Firebase Console（見 docs/V2_PERMISSION_SYSTEM.md）
 
@@ -654,8 +660,14 @@ service cloud.firestore {
             )
           );
 
-        // 刪除：只有 director 能刪除正式紀錄
-        allow delete: if isDirector(schoolId);
+        // 刪除：director 不受限（含學期封存清理）；v2.11 起 approver（組長）亦可刪除，但僅限
+        // 目前學期的紀錄——與 update 的歷史學期唯讀鎖一致，避免改動已結算學期的資料。
+        // 無 semesterId 的舊紀錄比照 update 視為可刪。
+        allow delete: if isDirector(schoolId)
+          || (
+            isApprover(schoolId)
+            && (!('semesterId' in resource.data) || isCurrentSemester(schoolId, resource.data.semesterId))
+          );
 
         // ----- 私有明細（假別／事由）-----
         // ⚠ 非 approver 的 create 額外限制 leaveType 為調課類，理由與父文件的 isSelfSwap
