@@ -1,6 +1,6 @@
 ---
 created: 2026-09-11
-updated: 2026-09-11
+updated: 2026-11-09
 tags:
   - deployment
   - security
@@ -22,6 +22,18 @@ App Check 的**用戶端**（classic reCAPTCHA v3）自 2026-08-01 起就在正�
 | 用戶端 App Check 已初始化 | ✅ 是 | 正式站實測：載入 `firebase-app-check.js` 1 個資源、reCAPTCHA 相關資源 3 個、`window.grecaptcha` 存在 |
 | Firestore enforcement | ❔ 應為「未強制」 | 依 2026-08-01 的紀錄，程式碼從未觸碰這個開關（它只存在於 Console）。**開之前請在 Console 再確認一次現值** |
 | 觀察期 | 已逾期 | 原訂 1-2 週，實際已滿 5 週以上，累積的 Metrics 足夠判斷 |
+
+### 2026-11-09 複查（決定開啟前）
+
+- Console → App Check → 應用程式：STsystem 網頁應用程式「已註冊」，provider = reCAPTCHA（classic v3）。
+- Console → APIs → Cloud Firestore：仍「未強制執行」；最近 7 天（11/2–11/10）**四項指標全是 0，連「已驗證」也是 0**，
+  但 11/5–11/6 正式站確實有寫入流量 → 指標未反映實際流量，**不能據此判斷**，因此當天沒有開。
+- 正式站用戶端實測：Console 有 `App Check 已啟用（reCAPTCHA v3）`、無 `@firebase/app-check` 錯誤；
+  IndexedDB `firebase-app-check-database` 內有有效 token（簽發 2026/11/9 16:24，效期 24 小時）
+  → 用戶端換 token 成功，問題不在用戶端。
+- 下一步：觀察 1–2 天，待「已驗證的要求」出現數字、「未經驗證」三項 ≈ 0，再於晚上或週末依第三節開啟。
+  若數天後「已驗證」仍是 0，改查 Firestore 請求是否帶 `X-Firebase-AppCheck` 標頭。
+- 開啟前備份已做：`backups/firestore/20261107-170837`（開啟當天仍應重做一次）。
 
 ## 二、開之前要在 Console 看什麼
 
