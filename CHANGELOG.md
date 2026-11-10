@@ -1,5 +1,11 @@
 # 版本紀錄 (Changelog)
 
+## [2026-11-10] 帳單自動斷線（TWD 1000）與多層預算警報
+
+- 預算警報 TWD 250／300／500（只寄信）；新增 Cloud Function `billing-kill-switch`：當月實際花費達 TWD 1000 時自動解除 stsystem-9d5fe 的帳單綁定（全專案退回免費方案）。程式在 `cloud-functions/billing-kill-switch/`，運作與恢復步驟見 `docs/BILLING-KILL-SWITCH.md`。
+
+---
+
 ## [2026-11-10] 停用舊版（V1）網址：一律轉址到 V2
 
 - `index.html` 開頭加入同步轉址：沒帶 `?v2=1`、也不是預覽站時，自動補上 `v2=1`（保留路徑、參數與 hash）。V1 頁面從此無法進入，避免 V1 個人雲端同步再次造成寫入迴圈。詳見 `docs/CHANGELOG.md`。

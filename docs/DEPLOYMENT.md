@@ -1,6 +1,6 @@
 ---
 created: 2026-04-10
-updated: 2026-07-29
+updated: 2026-11-10
 tags:
   - deployment
 ---
@@ -60,6 +60,11 @@ python start-server.py
 
 ### Firebase Config
 Firebase config 為前端公開設定（非機密），已包含在 `index.html` 中。
+
+### 帳單與自動斷線（2026-11-10 起）
+- stsystem-9d5fe 綁定帳單帳戶「STsystem」`01A75D-93C4DE-69DE70`（Blaze）。
+- 預算警報 TWD 250／300／500（只寄信）＋ **TWD 1000 自動斷線**：Cloud Function `billing-kill-switch`（gen2，asia-east1，程式在 `cloud-functions/billing-kill-switch/`），當月實際花費達 1000 即解除帳單綁定，全專案退回免費方案。觸發後的恢復步驟與重新部署指令見 [`BILLING-KILL-SWITCH.md`](./BILLING-KILL-SWITCH.md)。
+- 本專案第一個也是唯一的伺服器端元件；不接觸 Firestore 資料。
 
 ### Firestore 安全規則
 規則檔 `firestore.rules` 為 source of truth。部署：
