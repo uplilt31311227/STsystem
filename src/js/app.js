@@ -10,6 +10,7 @@
 
 // 匯入模組
 import { DataManager } from './modules/dataManager.js';
+import { formatLocalDate, parseLocalDate, todayLocal } from './modules/localDate.js';
 import {
     loadV1History, appendV1History, getRestorableSnapshot, makeSnapshot,
     computeFingerprint, formatImportDate, formatLastImport, formatSource, V1_HISTORY_KEY
@@ -755,7 +756,7 @@ class SubstituteTeacherApp {
         const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
         const lastDayOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0);
 
-        const formatDate = (date) => date.toISOString().split('T')[0];
+        const formatDate = (date) => formatLocalDate(date); // 本地日期（toISOString 在台灣清晨會差一天）
 
         const startDateValue = formatDate(firstDayOfMonth);
         const endDateValue = formatDate(lastDayOfMonth);
@@ -3170,7 +3171,7 @@ class SubstituteTeacherApp {
      * @returns {string} 中文星期
      */
     getDateWeekday(dateString) {
-        const date = new Date(dateString);
+        const date = parseLocalDate(dateString);
         return this.numberToWeekday(date.getDay());
     }
 
@@ -3195,7 +3196,7 @@ class SubstituteTeacherApp {
         const targetDay = this.weekdayToNumber(weekday);
         if (targetDay === -1) return baseDate;
 
-        const base = baseDate ? new Date(baseDate) : new Date();
+        const base = baseDate ? parseLocalDate(baseDate) : new Date();
         const currentDay = base.getDay();
 
         // 計算需要加的天數
@@ -3208,7 +3209,7 @@ class SubstituteTeacherApp {
         resultDate.setDate(resultDate.getDate() + daysToAdd);
 
         // 格式化為 YYYY-MM-DD
-        return resultDate.toISOString().split('T')[0];
+        return formatLocalDate(resultDate);
     }
 
     /**
@@ -3354,7 +3355,7 @@ class SubstituteTeacherApp {
 
         // 重置所有步驟
         document.getElementById('sub-teacher').value = '';
-        document.getElementById('sub-date').value = new Date().toISOString().split('T')[0];
+        document.getElementById('sub-date').value = todayLocal();
 
         // 隱藏步驟三、四
         document.getElementById('step-select-course').classList.add('hidden');
@@ -4926,7 +4927,7 @@ class SubstituteTeacherApp {
 
         const a = document.createElement('a');
         a.href = url;
-        a.download = `調代課系統備份_${new Date().toISOString().split('T')[0]}.json`;
+        a.download = `調代課系統備份_${todayLocal()}.json`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
@@ -5666,7 +5667,7 @@ class SubstituteTeacherApp {
      * 設定預設日期
      */
     setDefaultDates() {
-        const today = new Date().toISOString().split('T')[0];
+        const today = todayLocal();
 
         document.getElementById('sub-date').value = today;
         document.getElementById('record-start-date').value = today.substring(0, 8) + '01';

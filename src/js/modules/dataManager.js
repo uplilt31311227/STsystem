@@ -18,6 +18,7 @@ import {
     mergeData
 } from './cloudSyncService.js';
 import { isSignedIn } from './authService.js';
+import { formatLocalDate, parseLocalDate } from './localDate.js';
 import { findTeacherConflict, findSwapInConflict, pendingTag } from './recommendationEngine.js';
 import { createImportRecord, nextVersionNo, makeSnapshot } from './scheduleImportHistory.js';
 
@@ -610,9 +611,9 @@ export class DataManager {
     normalizeDate(dateStr) {
         if (!dateStr) return '';
         // 處理可能的各種日期格式
-        const date = new Date(dateStr);
+        const date = parseLocalDate(dateStr);
         if (isNaN(date.getTime())) return dateStr;
-        return date.toISOString().split('T')[0];
+        return formatLocalDate(date);
     }
 
     /**

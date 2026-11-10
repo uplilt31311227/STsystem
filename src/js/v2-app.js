@@ -23,6 +23,7 @@ import * as authMod from './modules/authService.js';
 import * as cloudSyncSvc from './modules/cloudSyncService.js';
 import { notify, notifyError, setSyncStatus, resetSyncStatus } from './modules/v2/uiFeedback.js';
 import * as semesterUtils from './modules/v2/semesterUtils.js';
+import { todayLocal } from './modules/localDate.js';
 import * as semesterState from './modules/v2/semesterState.js';
 import { pendingRequestsToOccupancyRecords, createShortTtlCache } from './modules/v2/assignmentConflict.js';
 
@@ -1436,7 +1437,7 @@ function bindLegacyMigrationCard() {
 /** 遷移前強制下載完整備份 JSON；任何步驟拋錯都會讓呼叫端（bindLegacyMigrationCard）中止遷移。 */
 function downloadLegacyBackupJson(backup) {
     const uidPart  = backup.uid || 'unknown';
-    const datePart = new Date().toISOString().split('T')[0];
+    const datePart = todayLocal();
     // backup 是 { exportedAt, uid, sources: [{ source, count, lastModified, raw }] }——
     // 整包寫出（含所有來源的原始資料），不可只取其中一份，否則遷移後想還原時
     // 才會發現另一來源的資料沒被保存。
@@ -2280,7 +2281,7 @@ async function runSemesterArchiveExport(semesterId, onProgress) {
     const url  = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `STsystem_封存_${semesterId}_${new Date().toISOString().slice(0, 10)}.json`;
+    a.download = `STsystem_封存_${semesterId}_${todayLocal()}.json`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
