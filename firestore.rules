@@ -1,6 +1,6 @@
 rules_version = '2';
 
-// STsystem V2 權限系統 Firestore 規則（v2.11 — 三層角色 + 敏感欄位私有化 + 學期唯讀鎖 + 封存生命週期 + schoolId 反查目錄 + 多租戶開通 + 月結算設定開放 approver + 主任不可改自己的 role + 課表匯入版本紀錄 + 組長可刪除目前學期紀錄）
+// STsystem V2 權限系統 Firestore 規則（v2.12 — 身分與授權修補 + 三層角色 + 敏感欄位私有化 + 學期唯讀鎖 + 封存生命週期 + schoolId 反查目錄 + 多租戶開通 + 月結算設定開放 approver + 主任不可改自己的 role + 課表匯入版本紀錄 + 組長可刪除目前學期紀錄）
 //
 // 設計原則：
 //   1. 兩條根路徑物理隔離
@@ -120,6 +120,22 @@ rules_version = '2';
 //      「權限不足」。private/detail 的 delete 維持僅 director（adminDeleteRecord 只刪父文件，
 //      與既有行為相同）。刪除由前端寫 DELETE 操作日誌（含刪除前內容）。
 //
+//  13. v2.12（2026-11-10，資安審計「身分與授權」面修補；測試見 test/emulator/rules-identity／
+//      rules-consent／rules-field-whitelist／rules-workflows／rules-v1-backup）：
+//      H1 以 token.email 作為身分依據的地方一律要求 email_verified（isEmailVerified()）：白名單主任、
+//         成員資格、userMappings 自建、emailIndex 讀取。
+//      H2 成員資格要求「mapping 指向的教師檔存在 + 教師檔 email 等於登入者 email」，教師被刪除／email 被改
+//         後原帳號立即失效；deleteTeacher／updateTeacher 一併刪除 mapping（前端）。
+//      M1 同意人只能變動自己那一筆（isValidConsenterUpdate）；approver 不得觸碰同意名單。
+//      M2/L4 private/detail docId 鎖 'detail'，非 approver 只能為自己的紀錄／申請建立。
+//      M3 稽核日誌 actor 必須是登入者本人、timestamp 不得為未來、欄位／長度上限。
+//      M4 users/{uid}/** 收斂為 users/{uid}/data/substituteSystem（V1 個人備份）＋欄位與大小約束。
+//      M5/M6 pendingRequests／自我調課紀錄欄位白名單、保留欄位 reqId／recordId 禁用、長度與未來時間限制。
+//      L2 joinAttempts.email 須為本人；L3 發起人不可刪已核准申請；L5 舊 data/{docId} 禁寫；
+//      L6 approver 更新紀錄不得改稽核欄位。
+//      評估成本：規則引擎每次請求最多評估 1000 個運算式、函式不 memoize，熱路徑（isMember／isApprover）
+//      與驗證 helper 都刻意精簡；新增規則前務必跑 rules-workflows（涵蓋最壞路徑）。
+//
 // 部署：透過 gcloud REST API 或 Firebase Console（見 docs/V2_PERMISSION_SYSTEM.md）
 
 service cloud.firestore {
@@ -133,6 +149,18 @@ service cloud.firestore {
 
     function userEmail() {
       return request.auth.token.email;
+    }
+
+    // v2.12（身分與授權修補）：「以 token.email 作為身分依據」的地方一律先過這個輔助函式。
+    // Firebase Email/Password 註冊不驗證信箱所有權，任何人都能用別人的 email 註冊出一個
+    // token.email 等於該 email、但 email_verified == false 的帳號（搶註）。Google 登入的
+    // email_verified 恆為 true，不受影響。用到的地方：isInitialDirector（白名單主任）、
+    // isMember（成員資格，間接涵蓋 mapping 自建後的所有讀寫）、userMappings 自建、
+    // emailIndex 讀取、userDirectory／joinAttempts／schoolApplications（Stage 4 起已有）。
+    // 注意：Auth 帳號的 emailVerified 變更後，ID token 內的 claim 要等 token 刷新才更新；
+    // 前端（v2-app.js 的驗證遮罩）在使用者按「我已完成驗證」時會 reload() + getIdToken(true)。
+    function isEmailVerified() {
+      return request.auth != null && request.auth.token.email_verified == true;
     }
 
     function configExists(schoolId) {
@@ -151,36 +179,26 @@ service cloud.firestore {
     // 會比對不到而永遠無法用該白名單身份登入。scripts/firestore-bootstrap-inhu.js 寫入
     // 前一律 .toLowerCase()（見該檔 ensureConfig()），docs/STAGE0-DEPLOY.md 的前置確認
     // 也列了這一項檢查，任何手動編輯 initialAdminEmails 的操作都必須遵守這個約束。
+    // v2.12：必須 email_verified（見 isEmailVerified 說明）——否則任何人只要用白名單 email
+    // 註冊一個未驗證的 Auth 帳號，就直接取得主任權限。
     function isInitialDirector(schoolId) {
-      return isSignedIn()
+      return isEmailVerified()
         && configExists(schoolId)
-        && configDoc(schoolId).initialAdminEmails is list
-        && configDoc(schoolId).initialAdminEmails.hasAny([userEmail().lower()]);
+        && listHasItem(configDoc(schoolId).initialAdminEmails, userEmail().lower());
+    }
+
+    // 成本精簡：initialAdminEmails 只讀一次（原本 is list 與 hasAny 各呼叫一次 configDoc）。
+    function listHasItem(l, item) {
+      return l is list && l.hasAny([item]);
     }
 
     function mappingExists(schoolId) {
-      return isSignedIn()
+      return request.auth != null
         && exists(/databases/$(database)/documents/schools/$(schoolId)/userMappings/$(request.auth.uid));
     }
 
-    // ---- Stage 0（2026-07-31）：成員資格隔離 ----
-    // 「該 uid 在該校有一份合法的 userMappings 文件」＝ 該校成員。userMappings 的自建規則
-    // （見下方 match /userMappings/{uid}）已保證 linkedTeacherId 只能指向 email == 本人登入
-    // email 的教師檔，故此檢查不可偽造，是校際隔離讀取規則的唯一依據。
-    function isMember(schoolId) {
-      return mappingExists(schoolId);
-    }
-
-    // 首登尚未綁定 mapping 者的例外：白名單初始主任。isInitialDirector 內部用 get() 讀
-    // config，屬規則內部呼叫、不受 read 規則限制，因此收緊 config 的 read 不會讓白名單失效。
-    function isMemberOrBootstrapDirector(schoolId) {
-      return isMember(schoolId) || isInitialDirector(schoolId);
-    }
-
-    // ---- Stage 4（2026-07-31）：email 驗證 + 平台管理者（跨校信任錨點）----
-    function isEmailVerified() {
-      return isSignedIn() && request.auth.token.email_verified == true;
-    }
+    // ---- Stage 4（2026-07-31）：平台管理者（跨校信任錨點）----
+    // （isEmailVerified() 於 v2.12 搬到檔案最前面的共用 helpers，見 userEmail() 下方）
 
     // platformAdmins/{uid} 完全禁止 client 寫入（見下方頂層 match 區塊），只能由開發者以
     // gcloud/REST 離線建立，是本次新增功能中唯一的信任根——理由與範圍見該 match 區塊註解。
@@ -231,17 +249,57 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/schools/$(schoolId)/userMappings/$(request.auth.uid)).data;
     }
 
+    // ---- Stage 0（2026-07-31）：成員資格隔離 ----
+    // 「該 uid 在該校有一份合法的 userMappings 文件」＝ 該校成員。userMappings 的自建規則
+    // （見下方 match /userMappings/{uid}）已保證 linkedTeacherId 只能指向 email == 本人登入
+    // email 的教師檔，故此檢查不可偽造，是校際隔離讀取規則的唯一依據。
+    //
+    // v2.12（H2 修補：mapping 永不撤銷）：mapping 存在不再等於成員。每次請求都重新驗證三件事：
+    //   (1) token 的 email 已驗證（isEmailVerified）；
+    //   (2) mapping.linkedTeacherId 指向的教師檔仍然存在（教師被刪除 → 立即失去成員資格）；
+    //   (3) 該教師檔的 email 仍等於登入者 email（email 被改掉／改派 → 舊帳號立即失效，
+    //       新 email 的帳號下次登入走 emailIndex 重新建立 mapping 即可）。
+    // 比對一律用 userEmail().lower()：teachers.email 一律小寫儲存（createTeacher 正規化），
+    // 與 userMappings 自建規則、isInitialDirector 同一慣例。
+    // get()/exists() 成本：mapping 與教師檔都是本請求其他規則本來就會讀的文件
+    // （myTeacherId/myTeacherDoc），同一路徑的重複存取不增加不同文件數，不會多出新的上限壓力
+    // （emulator 實測見 test/emulator/rules-identity.mjs 的最壞路徑案例）。
+    // 規則引擎有「每次請求最多評估 1000 個運算式」的上限，函式呼叫不會 memoize，
+    // 所以 tid 用參數傳入（只算一次），isMember 本身也盡量避免在同一條規則裡被重複呼叫
+    // （需要 teacherId 的規則請用 let me = myTeacherId(schoolId) 一次取好）。
+    function teacherEmailMatches(schoolId, tid) {
+      return tid is string
+        && exists(/databases/$(database)/documents/schools/$(schoolId)/teachers/$(tid))
+        && get(/databases/$(database)/documents/schools/$(schoolId)/teachers/$(tid)).data.email == userEmail().lower();
+    }
+
+    function isMember(schoolId) {
+      return isEmailVerified()
+        && mappingExists(schoolId)
+        && teacherEmailMatches(schoolId, myMapping(schoolId).linkedTeacherId);
+    }
+
+    // 首登尚未綁定 mapping 者的例外：白名單初始主任。isInitialDirector 內部用 get() 讀
+    // config，屬規則內部呼叫、不受 read 規則限制，因此收緊 config 的 read 不會讓白名單失效。
+    function isMemberOrBootstrapDirector(schoolId) {
+      return isMember(schoolId) || isInitialDirector(schoolId);
+    }
+
+    // v2.12：myTeacherId 只在「有效成員」時回傳 teacherId，否則回傳 ''（既有規則用
+    // `myTeacherId(schoolId) != ''` 當「我是成員」判斷的地方因此自動套用教師檔存在 + email
+    // 相符 + email 已驗證三項檢查，不必逐條改寫；已刪除教師的原帳號自建紀錄／申請會被擋下）。
     function myTeacherId(schoolId) {
-      return mappingExists(schoolId) ? myMapping(schoolId).linkedTeacherId : '';
+      return isMember(schoolId) ? myMapping(schoolId).linkedTeacherId : '';
     }
 
     function myTeacherExists(schoolId) {
-      return mappingExists(schoolId)
-        && exists(/databases/$(database)/documents/schools/$(schoolId)/teachers/$(myTeacherId(schoolId)));
+      return isMember(schoolId);
     }
 
+    // 只在 isMember(schoolId) 已成立之後呼叫（直接用 mapping 的 linkedTeacherId，不再經 myTeacherId，
+    // 避免重複評估 isMember）。
     function myTeacherDoc(schoolId) {
-      return get(/databases/$(database)/documents/schools/$(schoolId)/teachers/$(myTeacherId(schoolId))).data;
+      return get(/databases/$(database)/documents/schools/$(schoolId)/teachers/$(myMapping(schoolId).linkedTeacherId)).data;
     }
 
     // ---- Stage 2（2026-07-31，RESEARCH-multitenancy-semester.md §6.1）：學期唯讀鎖 ----
@@ -258,10 +316,8 @@ service cloud.firestore {
 
     // 教務主任：白名單 OR teacher.role in ['director', 'admin']（admin 為舊資料兼容）
     function isDirector(schoolId) {
-      return isSignedIn() && (
-        isInitialDirector(schoolId)
-        || (myTeacherExists(schoolId) && myTeacherDoc(schoolId).role in ['director', 'admin'])
-      );
+      return isInitialDirector(schoolId)
+        || (isMember(schoolId) && myTeacherDoc(schoolId).role in ['director', 'admin']);
     }
 
     // legacyMigrationService.js 一次性遷移舊 V1 個人資料時，substituteRecords 的 date 可能
@@ -290,10 +346,8 @@ service cloud.firestore {
 
     // 具核准權（director + section_chief，舊 admin 兼容）
     function isApprover(schoolId) {
-      return isSignedIn() && (
-        isInitialDirector(schoolId)
-        || (myTeacherExists(schoolId) && myTeacherDoc(schoolId).role in ['director', 'section_chief', 'admin'])
-      );
+      return isInitialDirector(schoolId)
+        || (isMember(schoolId) && myTeacherDoc(schoolId).role in ['director', 'section_chief', 'admin']);
     }
 
     // 相容 alias：v2.1 期間程式碼語意中的「admin」現在等同「approver」。
@@ -308,6 +362,248 @@ service cloud.firestore {
       return role in ['director', 'section_chief', 'teacher', 'admin'];
     }
 
+    // ================ v2.12：欄位白名單／型別／長度／時間戳共用 helpers ================
+    // 設計取捨（為什麼不改成 serverTimestamp）：前端所有時間欄位（createdAt、timestamp、approvedAt…）
+    // 都是 new Date().toISOString() 字串，並被 orderBy('createdAt')／where('timestamp','>=',字串)
+    // 這類查詢與 fmtDate() 顯示依賴；改成 Firestore Timestamp 會讓新舊資料混型（排序錯亂、既有
+    // 查詢條件型別不符）。因此保留 ISO 字串，改由規則「以可驗證的方式約束」：固定格式 + 日期不得
+    // 晚於伺服器時間（request.time）超過 1 天（容忍用戶端時鐘誤差；實際上限是約 2 天，因為只比對
+    // 到「日」）。這封掉的是「把 createdAt／timestamp 設成 9999 年讓惡意資料永遠置頂
+    // （orderBy desc limit 50）」這條路。
+    // 評估成本：規則引擎每次請求最多評估 1000 個運算式，函式不會 memoize，所以下面的 helper
+    // 刻意寫得短（isMember 約 95、isApprover 約 150、本函式約 45），熱路徑用 let 只取一次 me。
+    function isRecentIsoString(s) {
+      return s is string
+        && s.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$')
+        && timestamp.date(int(s.split('-')[0]), int(s.split('-')[1]), int(s.split('-')[2].split('T')[0]))
+           <= request.time + duration.value(1, 'd');
+    }
+
+    // 案件（pendingRequests 與 substituteRecords 自我調課共用）的全部文字／id／數字類欄位，
+    // 串接成一個字串後一次驗證——比逐欄呼叫 helper 省下大量運算式額度：
+    //   - 任一欄位若不是字串（map／list…），與字串串接會直接求值錯誤而整條被拒（型別檢查）；
+    //     可能為 null 或數字／布林的欄位用 string() 包起來（null → 'null'，數字／布林 → 文字）。
+    //   - 總長度上限 1000 字元（各欄位長度因此都受限）；
+    //   - 整串不得含 < > "（HTML 標籤／屬性注入所需字元）。這是 stored XSS source 端的縱深防禦，
+    //     前端輸出跳脫由另一階段處理。正常資料（班級、科目、教師姓名、文號、日期、id）不含這三個字元。
+    // 欄位清單從前端實際寫入的形狀歸納：app.js buildSwapRecord／confirmSubstitute／
+    // confirmMultiCourseSubstitute 產出的 record + v2-app.js resolveApproverInfo 的 id 欄位。
+    // leaveType／leaveTypeName／reason 已由 splitSensitive 搬到 private/detail，不在父文件。
+    function hasSafeCaseText(d) {
+      let all = d.get('type', '') + '|' + d.get('date', '') + '|' + d.get('swapDate', '') + '|' + d.get('weekday', '')
+        + '|' + d.get('swapWeekday', '') + '|' + d.get('period', '') + '|' + d.get('swapPeriod', '')
+        + '|' + d.get('className', '') + '|' + d.get('subject', '') + '|' + d.get('swapSubject', '')
+        + '|' + d.get('domain', '') + '|' + d.get('swapDomain', '')
+        + '|' + d.get('originalTeacher', '') + '|' + d.get('substituteTeacher', '') + '|' + d.get('swapTeacher', '')
+        + '|' + d.get('docNumber', '') + '|' + d.get('initiatedByName', '') + '|' + string(d.get('requiredApproverName', ''))
+        + '|' + string(d.get('id', '')) + '|' + string(d.get('batchId', '')) + '|' + string(d.get('multiCourseGroupId', ''))
+        + '|' + string(d.get('originalTeacherId', '')) + '|' + string(d.get('substituteTeacherId', ''))
+        + '|' + string(d.get('swapTeacherId', '')) + '|' + string(d.get('requiredApproverId', ''))
+        + '|' + string(d.get('batchSize', 0)) + '|' + string(d.get('multiCourseIndex', 0)) + '|' + string(d.get('multiCourseTotal', 0))
+        + '|' + string(d.get('isMultiSwap', false)) + '|' + string(d.get('isMultiCourse', false));
+      return all.size() <= 1000 && all.matches('[^<>"]*');
+    }
+
+    // 教師自建「自我調課」紀錄（substituteRecords create 的教師分支）的完整驗證。
+    // 合法形狀來源：v2-app.js writeV2Record 的 payload（record + resolveApproverInfo ids +
+    // initiatedBy/initiatedByName）加上 createSubstituteRecord 的 semesterId／createdAt／
+    // approvedAt、writeV2Record 的 status／initiatedByRole。
+    // 禁止：approvedBy／approvedByName／fromRequestId／isLegacy／migratedFrom 等稽核性欄位，以及
+    // 保留欄位 recordId／reqId（前端讀取時以 { recordId: d.id, ...d.data() } 展開，文件內的同名欄位
+    // 會覆蓋真正的 doc id）——全部由 hasOnly 白名單擋下。`id` 是前端 V1 遺留的批次排序鍵
+    // （v2-app.js 依 id 的 _序號 排序同批調課單），有合法用途，所以保留（字元集見 hasSafeCaseText）。
+    function isValidSelfSwapRecord(schoolId, d) {
+      let me = myTeacherId(schoolId);
+      return me != ''
+        && d.keys().hasOnly(['id', 'type', 'date', 'swapDate', 'weekday', 'period', 'className', 'subject', 'domain',
+             'originalTeacher', 'swapWeekday', 'swapPeriod', 'swapTeacher', 'swapSubject', 'swapDomain', 'substituteTeacher',
+             'docNumber', 'isSelfSwap', 'isMultiSwap', 'batchId', 'batchSize',
+             'originalTeacherId', 'substituteTeacherId', 'swapTeacherId',
+             'additionalConsentTeacherIds', 'requiredApproverId', 'requiredApproverName',
+             'requestType', 'initiatedBy', 'initiatedByName', 'initiatedByRole', 'status',
+             'approvedAt', 'createdAt', 'semesterId', 'affectedTeacherIds'])
+        && d.isSelfSwap == true
+        && d.type in ['調課', 'swap']
+        && d.originalTeacherId == me && d.swapTeacherId == me && d.substituteTeacherId == me
+        && hasSafeCaseText(d)
+        && d.get('initiatedBy', me) == me
+        && d.get('status', 'approved') == 'approved'
+        && d.get('initiatedByRole', 'teacher') == 'teacher'
+        && d.get('requestType', 'substitute') in ['substitute', 'swap']
+        && d.get('requiredApproverId', null) == null
+        && d.get('additionalConsentTeacherIds', []).size() == 0
+        && d.get('affectedTeacherIds', []).hasOnly([me])
+        && isRecentIsoString(d.createdAt)
+        && isSelfSwapNamesOk(schoolId, d);
+    }
+
+    // 自我調課紀錄裡的姓名欄位必須是本人姓名（前端的 id 由名冊姓名反查而來，自我調課三個 id 都是本人，
+    // 姓名因此必為本人姓名；擋下 originalTeacher 填別人姓名偽造受害者紀錄，審計 M6(a)）。
+    function isSelfSwapNamesOk(schoolId, d) {
+      let myName = myTeacherDoc(schoolId).name;
+      return d.get('originalTeacher', myName) == myName
+        && d.get('swapTeacher', myName) == myName
+        && d.get('substituteTeacher', myName) == myName;
+    }
+
+    // pendingRequests create（教師與 approver 兩條分支共用的「內容形狀」驗證）。
+    // 欄位 = 自我調課紀錄的內容欄位 + 狀態機欄位（requestType／status／pendingConsentTeacherIds／
+    // swapConsents）；不含 approvedBy／approvedAt／approvedByName（建立時禁帶，hasOnly 已涵蓋）。
+    // requestType 與 type 必須一致：substitute ↔ 代課；swap／multi_swap ↔ 調課。
+    // 已知未做（運算式額度不足）：審計 M6(b) 的「姓名與 teacherId 交叉比對」（需對 3 位教師各 get 一次）。
+    function isValidPendingRequestCreate(d) {
+      return d.keys().hasOnly(['id', 'type', 'date', 'swapDate', 'weekday', 'period', 'className', 'subject', 'domain',
+             'originalTeacher', 'swapWeekday', 'swapPeriod', 'swapTeacher', 'swapSubject', 'swapDomain', 'substituteTeacher',
+             'docNumber', 'isSelfSwap', 'isMultiSwap', 'isMultiCourse', 'multiCourseGroupId', 'multiCourseIndex', 'multiCourseTotal',
+             'batchId', 'batchSize',
+             'originalTeacherId', 'substituteTeacherId', 'swapTeacherId', 'requiredApproverId', 'requiredApproverName',
+             'requestType', 'status', 'pendingConsentTeacherIds', 'swapConsents',
+             'initiatedBy', 'initiatedByName', 'createdAt', 'semesterId', 'affectedTeacherIds'])
+        && d.initiatedBy is string
+        && hasSafeCaseText(d)
+        && d.requestType in ['substitute', 'swap', 'multi_swap']
+        && (d.requestType == 'substitute' ? d.get('type', '') == '代課' : d.get('type', '') in ['調課', 'swap'])
+        && d.pendingConsentTeacherIds is list && d.pendingConsentTeacherIds.size() <= 20
+        && d.get('isSelfSwap', false) is bool
+        && isRecentIsoString(d.createdAt)
+        && (!('affectedTeacherIds' in d) || (d.affectedTeacherIds is list && d.affectedTeacherIds.size() <= 20
+              && d.affectedTeacherIds.hasOnly([d.initiatedBy, d.get('requiredApproverId', ''), d.get('originalTeacherId', ''),
+                   d.get('substituteTeacherId', ''), d.get('swapTeacherId', '')].concat(d.pendingConsentTeacherIds))));
+    }
+
+    // pendingRequests create 的教師分支：發起人必須是本人 + 狀態機初始狀態（Phase 3 既有規則，
+    // 原本內嵌在 match 區塊，抽成函式以便只取一次 me）。swapConsents 建立時必須為空。
+    function isTeacherPendingCreate(schoolId, d) {
+      let me = myTeacherId(schoolId);
+      return me != ''
+        && d.initiatedBy == me
+        && d.get('swapConsents', {}).size() == 0
+        && (
+          (d.requestType == 'substitute' && d.status == 'pending_approval')
+          || (
+            d.requestType in ['swap', 'multi_swap']
+            && d.status == 'pending_swap_consent'
+            && d.pendingConsentTeacherIds.size() > 0
+            // 同意名單不可含發起人本人（封掉「自列唯一同意人再自我同意」跳過對方同意）
+            && !d.pendingConsentTeacherIds.hasAny([d.initiatedBy])
+          )
+        );
+    }
+
+    // 同意人在 swapConsents 裡寫入的自己那一筆（前端寫 { consentedAt: ISO }，舊測試資料為字串）。
+    function isValidConsentEntry(v) {
+      return (v is string && v.size() <= 40)
+        || (v is map && v.keys().hasOnly(['consentedAt']) && v.consentedAt is string && v.consentedAt.size() <= 40);
+    }
+
+    // M1 修補：同意人（pendingConsentTeacherIds 內的一員）的 update 只能「以自己的身分前進一步」：
+    //   同意：pendingConsentTeacherIds 恰好等於「原名單扣掉自己」；swapConsents 只准新增／變動
+    //         自己那一筆；名單清空 ⇔ status 轉 pending_approval（名單未清空則 status 不變）。
+    //   拒絕：status → rejected，且不得觸碰 pendingConsentTeacherIds／swapConsents。
+    // 舊資料相容：沒有 pendingConsentTeacherIds 欄位的 legacy 文件，以 requiredApproverId 當成
+    // 單一成員名單（與前端 normalizeLegacyRequest 一致）。
+    function isValidConsenterUpdate(schoolId) {
+      let me = myTeacherId(schoolId);
+      let nd = request.resource.data;
+      let od = resource.data;
+      let oldList = od.get('pendingConsentTeacherIds', [od.get('requiredApproverId', '')]);
+      return me != ''
+        && oldList is list && oldList.hasAny([me])
+        && od.status in ['pending', 'pending_swap_consent']
+        && (
+          (
+            nd.diff(od).affectedKeys().hasOnly(['status', 'pendingConsentTeacherIds', 'swapConsents', 'statusUpdatedAt'])
+            && nd.pendingConsentTeacherIds is list
+            && nd.pendingConsentTeacherIds.toSet() == oldList.toSet().difference([me].toSet())
+            && nd.swapConsents is map
+            && nd.swapConsents.diff(od.get('swapConsents', {})).affectedKeys().hasOnly([me])
+            && isValidConsentEntry(nd.swapConsents[me])
+            && (nd.pendingConsentTeacherIds.size() == 0 ? nd.status == 'pending_approval' : nd.status == od.status)
+            && isRecentIsoString(nd.statusUpdatedAt)
+          )
+          || (
+            nd.diff(od).affectedKeys().hasOnly(['status', 'rejectedAt', 'rejectedBy', 'rejectedByName', 'rejectNote', 'statusUpdatedAt'])
+            && nd.status == 'rejected'
+            && nd.rejectedBy == me
+            && isRecentIsoString(nd.rejectedAt) && isRecentIsoString(nd.statusUpdatedAt)
+            && (string(nd.get('rejectedByName', '')) + string(nd.get('rejectNote', ''))).size() <= 600
+          )
+        );
+    }
+
+    // approver 的 update：只能做「核准（僅 pending_approval → approved）」與「駁回」兩件事，
+    // 不得觸碰同意名單與同意紀錄（原規則的 affectedKeys 白名單含 pendingConsentTeacherIds／
+    // swapConsents，讓組長可以不經對方同意把待同意的申請推進到待核准，與 M1 同源）。
+    // 核准者必須是自己（approvedBy／rejectedBy == 登入者 mapping 的 teacherId），不得掛別人名字。
+    // approver 若同時是待同意人，走 isValidConsenterUpdate（前端 consentRequest 本來就是同意人身分）。
+    function isValidApproverUpdate(schoolId) {
+      let nd = request.resource.data;
+      let od = resource.data;
+      return nd.diff(od).affectedKeys().hasOnly([
+             'status', 'approvedAt', 'approvedBy', 'approvedByName',
+             'rejectedAt', 'rejectedBy', 'rejectedByName', 'rejectNote', 'statusUpdatedAt'])
+        && (
+          nd.status == od.status
+          || (nd.status == 'approved' && od.status == 'pending_approval')
+          || (nd.status == 'rejected' && od.status in ['pending', 'pending_swap_consent', 'pending_approval'])
+        )
+        && (string(nd.get('approvedByName', '')) + string(nd.get('rejectedByName', '')) + string(nd.get('rejectNote', ''))).size() <= 700
+        && isApprover(schoolId)
+        && (nd.status != 'approved' || nd.approvedBy == myMapping(schoolId).linkedTeacherId)
+        && (nd.status != 'rejected' || nd.rejectedBy == myMapping(schoolId).linkedTeacherId);
+    }
+
+    // 稽核日誌 create 的完整驗證（M3）。對齊 operationLogger.log() 實際寫入的 7 個欄位：
+    // timestamp／actor{uid,email,name,role,teacherId}／action／targetType／targetId／details／semesterId。
+    // actor 必須就是登入者本人（uid、teacherId、email、姓名皆與登入者一致）——否則任何成員都能
+    // 以他人名義寫入永久不可刪的稽核紀錄。details 只能限制頂層鍵數（規則語言無法遞迴檢查
+    // 巢狀內容的大小，單一文件仍受 Firestore 1MB 上限約束）。
+    // 注意：姓名須等於教師檔現行姓名；若主任在某教師登入期間改了他的姓名，該教師在重新登入前的
+    // 日誌寫入會被拒（日誌寫入失敗不阻擋業務流程，會在操作日誌頁籤顯示寫入失敗橫幅）。
+    function isValidOperationLog(schoolId, d) {
+      let me = myTeacherId(schoolId);
+      return me != ''
+        && d.keys().hasOnly(['action', 'actor', 'timestamp', 'targetType', 'targetId', 'details', 'semesterId'])
+        && d.action is string && d.action.matches('^[a-z0-9_]{1,64}$')
+        && isRecentIsoString(d.timestamp)
+        && d.targetType is string && d.targetType.matches('^[A-Za-z0-9_]{1,50}$')
+        && (d.targetId == null || (d.targetId is string && d.targetId.matches('^[A-Za-z0-9_.:-]{1,128}$')))
+        && (d.details == null || (d.details is map && d.details.size() <= 30))
+        && (string(d.get('semesterId', '')).size() <= 20)
+        && d.actor is map
+        && d.actor.keys().hasOnly(['uid', 'email', 'name', 'role', 'teacherId'])
+        && d.actor.get('uid', request.auth.uid) == request.auth.uid
+        && d.actor.teacherId == me
+        && d.actor.get('email', null) in [null, userEmail().lower()]
+        && d.actor.get('name', null) == myTeacherDoc(schoolId).name
+        && d.actor.get('role', null) in [null, 'director', 'section_chief', 'teacher'];
+    }
+
+    // 本人自建 userMappings 的欄位驗證（H1 修補的一部分）。欄位 = authGuardV2 buildMappingPatch
+    // （email／googleName／googlePhotoUrl／lastProviderId）+ linkedTeacherId + upsertUserMapping 的
+    // lastLoginAt；updatedAt 是正式庫既有 mapping 文件已存在的欄位（merge 寫入時整份合併後仍須通過）。
+    function isValidSelfMapping(schoolId, d) {
+      return d.keys().hasOnly(['linkedTeacherId', 'email', 'googleName', 'googlePhotoUrl', 'lastProviderId', 'lastLoginAt', 'updatedAt'])
+        && teacherEmailMatches(schoolId, d.get('linkedTeacherId', null))
+        && d.get('email', userEmail().lower()) in [null, userEmail().lower()]
+        && (string(d.get('googleName', '')) + string(d.get('googlePhotoUrl', '')) + string(d.get('lastProviderId', ''))
+             + string(d.get('lastLoginAt', '')) + string(d.get('updatedAt', '')) + d.linkedTeacherId).size() <= 1500;
+    }
+
+    // V1 個人雲端備份（users/{uid}/data/substituteSystem）的欄位約束（M4）。欄位 =
+    // dataManager.exportForSync() 的 8 個鍵 + uploadToCloud 補上的 lastModified／version。
+    function isValidV1Backup(d) {
+      return d.keys().hasOnly(['schoolName', 'scheduleData', 'teachers', 'classes', 'substituteRecords', 'settings', 'lastModified', 'version'])
+        && d.get('schoolName', '') is string && d.get('schoolName', '').size() <= 200
+        && d.get('lastModified', '') is string && d.get('lastModified', '').size() <= 40
+        && d.get('version', 0) is number
+        && d.get('scheduleData', []) is list && d.get('scheduleData', []).size() <= 20000
+        && d.get('teachers', []) is list && d.get('teachers', []).size() <= 2000
+        && d.get('classes', []) is list && d.get('classes', []).size() <= 500
+        && d.get('substituteRecords', []) is list && d.get('substituteRecords', []).size() <= 20000
+        && d.get('settings', {}) is map && d.get('settings', {}).size() <= 50;
+    }
+
     // ---- private/detail 子文件共用邏輯（Phase 6：敏感欄位私有化）----
     // leaveType/leaveTypeName/reason 搬到 substituteRecords/pendingRequests 底下的
     // private/detail 子文件，文件自帶 allowedTeacherIds（當事人清單），規則不需 get()
@@ -317,9 +613,12 @@ service cloud.firestore {
         || (myTeacherId(schoolId) != '' && myTeacherId(schoolId) in data.allowedTeacherIds);
     }
 
+    // v2.12（M5）：補欄位長度上限；ACL 清單最多 30 人（multi_swap 全員 + 發起人 + 核准者綽綽有餘）。
     function isValidPrivateDetailWrite(data) {
       return data.keys().hasOnly(['leaveType', 'leaveTypeName', 'reason', 'allowedTeacherIds'])
-        && data.allowedTeacherIds is list;
+        && data.allowedTeacherIds is list && data.allowedTeacherIds.size() <= 30
+        && string(data.get('leaveType', '')).size() <= 50 && string(data.get('leaveTypeName', '')).size() <= 50
+        && string(data.get('reason', '')).size() <= 2000;
     }
 
     // 驗收修復（阻斷 2，substituteRecords/private/detail update 這一半）：private/detail
@@ -363,6 +662,23 @@ service cloud.firestore {
       return !exists(/databases/$(database)/documents/schools/$(schoolId)/substituteRecords/$(recordId))
         || !('semesterId' in get(/databases/$(database)/documents/schools/$(schoolId)/substituteRecords/$(recordId)).data)
         || isCurrentSemester(schoolId, get(/databases/$(database)/documents/schools/$(schoolId)/substituteRecords/$(recordId)).data.semesterId);
+    }
+
+    // v2.12（M2）：教師自建 substituteRecords/private/detail 時，父文件必須「尚未存在」或「是本人的
+    // 自我調課」。見 substituteRecords/private 區塊註解。
+    function parentIsOwnSelfSwapOrAbsent(schoolId, recordId) {
+      return !exists(/databases/$(database)/documents/schools/$(schoolId)/substituteRecords/$(recordId))
+        || (
+          get(/databases/$(database)/documents/schools/$(schoolId)/substituteRecords/$(recordId)).data.get('isSelfSwap', false) == true
+          && get(/databases/$(database)/documents/schools/$(schoolId)/substituteRecords/$(recordId)).data.get('originalTeacherId', '') == myTeacherId(schoolId)
+        );
+    }
+
+    // v2.12（M2）：pendingRequests/private/detail 的非 approver create——父文件不存在
+    // （前端先寫 private 再寫父文件）或父文件的發起人就是本人。
+    function parentIsOwnRequestOrAbsent(schoolId, reqId) {
+      return !exists(/databases/$(database)/documents/schools/$(schoolId)/pendingRequests/$(reqId))
+        || get(/databases/$(database)/documents/schools/$(schoolId)/pendingRequests/$(reqId)).data.get('initiatedBy', '') == myTeacherId(schoolId);
     }
 
     // ---- Stage 5 驗收修復（中5，opus 驗收）----
@@ -459,7 +775,9 @@ service cloud.firestore {
       // 驗收修復 S9：write 拆成 create/update（欄位白名單 hasOnly(['teacherId'])）
       // 與 delete（無 request.resource，不能套用 hasOnly 檢查）分開宣告。
       match /emailIndex/{emailKey} {
-        allow get:    if isSignedIn() && emailKey == userEmail().lower();
+        // v2.12（H1）：加 isEmailVerified()——否則未驗證的搶註帳號可用受害者 email 查到 teacherId，
+        // 作為自建 mapping 的第一步。
+        allow get:    if isEmailVerified() && emailKey == userEmail().lower();
         allow list:   if isApprover(schoolId);
         allow create, update: if isDirector(schoolId)
                               && request.resource.data.keys().hasOnly(['teacherId']);
@@ -489,6 +807,8 @@ service cloud.firestore {
                               && request.resource.data.keys().hasOnly(['email', 'attemptedAt', 'reason'])
                               && request.resource.data.email is string
                               && request.resource.data.email.size() < 200
+                              // v2.12（L2）：email 欄位須為登入者本人 email，不可偽造他人名義的拒絕紀錄
+                              && request.resource.data.email == userEmail().lower()
                               && request.resource.data.attemptedAt is string
                               && request.resource.data.reason is string
                               && request.resource.data.reason.size() < 100;
@@ -559,7 +879,10 @@ service cloud.firestore {
         // Stage 2：schoolDataService.saveSchedule() 已改寫 schedules/{semesterId}，不再有任何
         // client 路徑寫入這個舊文件；write 規則維持不變（無成本，也不需要收緊——沒有寫入路徑
         // 可用，收緊與否不影響任何實際行為，維持原樣減少本次變更範圍）。
-        allow write: if isApprover(schoolId);
+        // v2.12（L5）：改為禁止寫入。全 repo 已無任何 client 程式寫入此路徑（schoolDataService.
+        // saveSchedule 寫 schedules/{semesterId}；遷移／備份腳本走 REST owner 憑證，不受 rules 限制），
+        // 原本「approver 可無學期鎖、無欄位驗證地寫入」是多餘的攻擊面。
+        allow write: if false;
       }
 
       // ----- 全校課表（Stage 2：per-semester 文件，取代上面的 data/{docId}） -----
@@ -620,20 +943,23 @@ service cloud.firestore {
         // 讓「舊 client 寫入被拒」是明確、可預期的行為，不依賴語言對未定義欄位存取的隱含語意。
         // 這個窗口期間全校寫入功能（新增紀錄）會中斷，直到 client 部署完成，見
         // docs/STAGE0-DEPLOY.md「附註：Stage 2」的部署順序與公告要求。
+        // v2.12（M6）：教師自我調課分支改由 isValidSelfSwapRecord() 驗證——欄位白名單
+        //   （hasOnly）、型別與長度上限、禁止保留欄位 recordId／reqId 與稽核性欄位
+        //   （approvedBy／approvedByName／fromRequestId／isLegacy／migratedFrom）、createdAt 不得晚於
+        //   伺服器時間 1 天、affectedTeacherIds 只能是本人、姓名須與教師檔一致。這同時是前端 stored
+        //   XSS（以 { recordId: d.id, ...d.data() } 展開後覆蓋 doc id、className 等欄位未跳脫）的
+        //   source 端收斂。approver 分支（含 legacy 遷移）只補「禁止保留欄位 recordId／reqId」。
+        // 評估順序：isDeclaredLegacyWrite 先檢查便宜的 'isLegacy' in data 再呼叫 isDirector，
+        //   一般寫入不會多算一次 isDirector（規則引擎每次請求最多評估 1000 個運算式）。
         allow create: if (
-            isApprover(schoolId)
+            isValidSelfSwapRecord(schoolId, request.resource.data)
             || (
-              isSignedIn()
-              && myTeacherId(schoolId) != ''
-              && request.resource.data.isSelfSwap == true
-              && request.resource.data.type in ['調課', 'swap']
-              && request.resource.data.originalTeacherId == myTeacherId(schoolId)
-              && request.resource.data.swapTeacherId == myTeacherId(schoolId)
-              && request.resource.data.substituteTeacherId == myTeacherId(schoolId)
+              isApprover(schoolId)
+              && !request.resource.data.keys().hasAny(['recordId', 'reqId'])
             )
           )
           && (
-            isDeclaredLegacyWrite(schoolId, request.resource.data)
+            (('isLegacy' in request.resource.data) && isDeclaredLegacyWrite(schoolId, request.resource.data))
             || (
               ('semesterId' in request.resource.data)
               && isCurrentSemester(schoolId, request.resource.data.semesterId)
@@ -651,7 +977,12 @@ service cloud.firestore {
         // `!('semesterId' in resource.data)` 短路豁免，讓回填完成前這些舊文件仍可正常編輯
         // （行為等同 Stage 2 之前），不會因為這條新規則突然全部無法更動。回填完成、欄位
         // 存在後，「不可變 + 須為目前學期」兩項鎖定才開始生效。
+        // v2.12（L6）：approver 更新時，稽核性欄位（createdAt／approvedBy／approvedByName／fromRequestId）
+        //   與保留欄位（recordId／reqId）不可被改寫或新增。adminEditRecord 目前沒有任何 UI 呼叫點，
+        //   正常編輯不會動到這幾個欄位。
         allow update: if isApprover(schoolId)
+          && !request.resource.data.diff(resource.data).affectedKeys().hasAny(
+               ['createdAt', 'approvedBy', 'approvedByName', 'fromRequestId', 'recordId', 'reqId'])
           && (
             !('semesterId' in resource.data)
             || (
@@ -677,22 +1008,36 @@ service cloud.firestore {
         //   藉此規避月結算的授課時數扣減——與 Phase 3 封掉的「自寫代課紀錄灌代課費」同類。
         //   代課請求的假別由教師在 pendingRequests 申報、經 approver 核准後才由 approver
         //   寫入紀錄，審核才是該路徑的控制點，故不受此限。
+        // v2.12（M2／L4）：
+        //   - docId 鎖定為 'detail'（前端與結算只讀這一份，其他名稱只會成為濫用寫入／混淆封存匯出的垃圾）。
+        //   - 非 approver 的 create 必須是「自己的自我調課」：ACL 只能是自己；且父文件不存在
+        //     （前端先寫 private 再寫父文件，見 createSubstituteRecord，此時父文件尚未存在）或父文件
+        //     已存在但正是本人的自我調課（isSelfSwap && originalTeacherId == 本人）。「父文件已存在且
+        //     不是我的紀錄」一律拒絕——這才是審計 M2 的攻擊面（替別人沒有 private 的紀錄注入假別）。
+        //     殘留風險：父文件尚不存在時無法驗證歸屬，但 recordId 是 genId 產生的不可預測 id
+        //     （rec_<毫秒時間>_<7 位隨機>），攻擊者無從預先佔位。
         match /private/{docId} {
           allow read:   if hasPrivateDetailAccess(schoolId, resource.data);
           // 驗收修復（R2）：加 parentAllowsNewPrivateDetail() 擋「為歷史紀錄事後補建
           // private/detail」，見該函式定義處的完整說明。
-          allow create: if isValidPrivateDetailWrite(request.resource.data)
+          allow create: if docId == 'detail'
+                          && isValidPrivateDetailWrite(request.resource.data)
                           && (
                             isApprover(schoolId)
                             || (
                               myTeacherId(schoolId) != ''
-                              && myTeacherId(schoolId) in request.resource.data.allowedTeacherIds
+                              && request.resource.data.allowedTeacherIds.hasOnly([myTeacherId(schoolId)])
+                              && request.resource.data.allowedTeacherIds.hasAll([myTeacherId(schoolId)])
                               && request.resource.data.leaveType in ['調課', 'swap']
+                              && parentIsOwnSelfSwapOrAbsent(schoolId, recordId)
                             )
                           )
                           && parentAllowsNewPrivateDetail(schoolId, recordId);
           // 驗收修復（阻斷 2）：加歷史學期唯讀鎖，見 parentSubstituteRecordCurrentSemester()。
-          allow update: if isApprover(schoolId) && parentSubstituteRecordCurrentSemester(schoolId, recordId);
+          allow update: if docId == 'detail'
+                          && isApprover(schoolId)
+                          && isValidPrivateDetailWrite(request.resource.data)
+                          && parentSubstituteRecordCurrentSemester(schoolId, recordId);
           allow delete: if isDirector(schoolId);
         }
       }
@@ -718,35 +1063,17 @@ service cloud.firestore {
         // 驗收修復（中 6）：`'semesterId' in request.resource.data` 顯式存在性檢查，理由與
         // substituteRecords create 規則同款（新 rules＋舊 client 過渡窗口的明確拒絕，不依賴
         // 未定義欄位存取的隱含語意）。
-        allow create: if (
-            (
+        // v2.12（M6）：兩條分支共用 isValidPendingRequestCreate() 的欄位白名單／型別／長度／
+        //   requestType-type 一致／createdAt 不得為未來／姓名與 ID 一致／affectedTeacherIds 子集驗證，
+        //   且一律禁止保留欄位 reqId／recordId／id 以外的非白名單欄位（hasOnly 已涵蓋）。
+        // 評估順序刻意先教師分支、後 approver 分支：一般教師（絕大多數寫入）命中教師分支即短路，
+        // 不必再付 isApprover 的運算式額度（規則引擎每次請求最多評估 1000 個運算式）。
+        allow create: if isValidPendingRequestCreate(request.resource.data)
+          && (
+            isTeacherPendingCreate(schoolId, request.resource.data)
+            || (
               isApprover(schoolId)
               && request.resource.data.status != 'approved'
-              && !request.resource.data.keys().hasAny(['approvedBy', 'approvedAt', 'approvedByName'])
-            )
-            || (
-              isSignedIn()
-              && myTeacherId(schoolId) != ''
-              && request.resource.data.initiatedBy == myTeacherId(schoolId)
-              && !request.resource.data.keys().hasAny(['approvedBy', 'approvedAt', 'approvedByName'])
-              && (
-                !('swapConsents' in request.resource.data)
-                || (request.resource.data.swapConsents is map && request.resource.data.swapConsents.size() == 0)
-              )
-              && (
-                (
-                  request.resource.data.requestType == 'substitute'
-                  && request.resource.data.status == 'pending_approval'
-                )
-                || (
-                  request.resource.data.requestType in ['swap', 'multi_swap']
-                  && request.resource.data.status == 'pending_swap_consent'
-                  && request.resource.data.pendingConsentTeacherIds is list
-                  && request.resource.data.pendingConsentTeacherIds.size() > 0
-                  // 同意名單不可含發起人本人（封掉「自列唯一同意人再自我同意」跳過對方同意）
-                  && !request.resource.data.pendingConsentTeacherIds.hasAny([request.resource.data.initiatedBy])
-                )
-              )
             )
           )
           && ('semesterId' in request.resource.data)
@@ -760,73 +1087,51 @@ service cloud.firestore {
         //    或轉成 pending_approval / rejected（不可越級寫成 approved）
         // Phase 3 資安收緊：兩邊都加 affectedKeys 白名單，欄位需對齊
         //   pendingRequestService 的 consentRequest / approveRequest / rejectRequest 實際寫入欄位。
-        allow update: if (
-            isApprover(schoolId)
-            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-                 'status', 'approvedAt', 'approvedBy', 'approvedByName',
-                 'rejectedAt', 'rejectedBy', 'rejectedByName', 'rejectNote',
-                 'statusUpdatedAt', 'pendingConsentTeacherIds', 'swapConsents'
-               ])
-            && request.resource.data.status in
-                 [resource.data.status, 'pending_approval', 'approved', 'rejected']
-            // 終態鎖：status 有變動時，原 status 必須仍是進行中狀態——
-            // approved / rejected 為終態，不可再被改寫（例如把已核准的請求覆寫成 rejected）。
-            // 與 approveRequest（pending_approval→approved）、rejectRequest（pending*→rejected）、
-            // legacy（'pending'）皆相容。
-            && (
-              request.resource.data.status == resource.data.status
-              || resource.data.status in ['pending', 'pending_swap_consent', 'pending_approval']
-            )
-          )
-          || (
-            isSignedIn()
-            && myTeacherId(schoolId) != ''
-            && (
-              // requiredApproverId 相容條款僅限 legacy 文件（DB 中無 pendingConsentTeacherIds 欄位）；
-              // 新流程文件（createRequest 一律寫入陣列）以陣列為唯一依據——
-              // 已同意者已被移出陣列，不得再透過舊欄位取得 update 權。
-              (
-                !('pendingConsentTeacherIds' in resource.data)
-                && resource.data.requiredApproverId == myTeacherId(schoolId)
-              )
-              || (
-                resource.data.pendingConsentTeacherIds is list
-                && resource.data.pendingConsentTeacherIds.hasAny([myTeacherId(schoolId)])
-              )
-            )
-            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-                 'status', 'rejectedAt', 'rejectedBy', 'rejectedByName', 'rejectNote',
-                 'statusUpdatedAt', 'pendingConsentTeacherIds', 'swapConsents'
-               ])
-            && request.resource.data.status in
-                 [resource.data.status, 'pending_approval', 'rejected']
-            // 終態鎖（與 approver 分支對稱）：rejected/approved 後同意人不得再改 status「復活」請求
-            && (
-              request.resource.data.status == resource.data.status
-              || resource.data.status in ['pending', 'pending_swap_consent']
-            )
-          );
+        // v2.12（M1）：兩條分支都收斂成函式——
+        //   isValidApproverUpdate：僅「pending_approval → approved」與「駁回」，不得動同意名單／同意紀錄，
+        //     approvedBy／rejectedBy 必須是自己；
+        //   isValidConsenterUpdate：同意人只能把「自己」移出名單並新增「自己」那一筆 swapConsents，
+        //     名單清空 ⇔ 轉 pending_approval；拒絕時不得觸碰同意欄位。
+        //   兩者都要求時間欄位（statusUpdatedAt／rejectedAt）不得為未來。
+        allow update: if isValidApproverUpdate(schoolId)
+          || isValidConsenterUpdate(schoolId);
 
         // 刪除：approver；發起人；被邀請人（同意後可清掉草稿）
+        // v2.12（L3）：發起人／被邀請人只能刪除「尚未結案」或「已被駁回」的申請（撤回、關閉駁回通知）；
+        //   已核准（approved）的申請是審核軌跡，只有 approver 能刪。
         allow delete: if isApprover(schoolId)
           || (
             isSignedIn()
             && myTeacherId(schoolId) != ''
+            && resource.data.status in ['pending', 'pending_swap_consent', 'pending_approval', 'rejected']
             && (
               resource.data.initiatedBy == myTeacherId(schoolId)
-              || resource.data.requiredApproverId == myTeacherId(schoolId)
+              || resource.data.get('requiredApproverId', '') == myTeacherId(schoolId)
             )
           );
 
         // ----- 私有明細（假別／事由，Phase 6）-----
         // Stage 5 驗收修復（中5）：create/update 補歷史學期唯讀鎖，比照 substituteRecords 側
         // 的 parentAllowsNewPrivateDetail()／parentSubstituteRecordCurrentSemester()。
+        // v2.12（M2／L4）：docId 鎖定 'detail'；非 approver 的 create 還要求「父文件尚不存在
+        //   （前端先寫 private 再寫父文件）或發起人就是本人」，封掉「替他人在途申請補建假別」。
         match /private/{docId} {
           allow read:   if hasPrivateDetailAccess(schoolId, resource.data);
-          allow create: if hasPrivateDetailAccess(schoolId, request.resource.data)
+          allow create: if docId == 'detail'
                           && isValidPrivateDetailWrite(request.resource.data)
+                          && (
+                            isApprover(schoolId)
+                            || (
+                              myTeacherId(schoolId) != ''
+                              && request.resource.data.allowedTeacherIds.hasAny([myTeacherId(schoolId)])
+                              && parentIsOwnRequestOrAbsent(schoolId, reqId)
+                            )
+                          )
                           && parentAllowsNewPendingRequestPrivateDetail(schoolId, reqId);
-          allow update: if isApprover(schoolId) && parentPendingRequestCurrentSemester(schoolId, reqId);
+          allow update: if docId == 'detail'
+                          && isApprover(schoolId)
+                          && isValidPrivateDetailWrite(request.resource.data)
+                          && parentPendingRequestCurrentSemester(schoolId, reqId);
           allow delete: if isDirector(schoolId);
         }
       }
@@ -846,13 +1151,11 @@ service cloud.firestore {
         // Stage 2（§5.3）：operationLogs 加 semesterId 欄位（供未來 Stage 5 封存時分批），
         // 補進欄位白名單；沒有對 semesterId 的值做進一步驗證（可以是 null，例如日誌寫入時
         // semesterState 尚未初始化的極早期時序），純供分批查詢用，不是安全關鍵欄位。
-        allow create: if isMember(schoolId)
-          && request.resource.data.keys().hasOnly(['action', 'actor', 'timestamp', 'targetType', 'targetId', 'details', 'semesterId'])
-          && request.resource.data.action is string
-          && request.resource.data.action.size() < 100
-          && request.resource.data.timestamp is string
-          && request.resource.data.actor is map
-          && (request.resource.data.details is map || request.resource.data.details == null);
+        // v2.12（M3）：改由 isValidOperationLog() 驗證——actor 必須是登入者本人（uid／teacherId／
+        //   email／姓名），timestamp 為 ISO 字串且不得晚於伺服器時間 1 天（封掉 9999 年置頂），
+        //   action／targetType／targetId 限制安全字元集與長度，details 限制頂層鍵數。
+        //   isValidOperationLog 內的 myTeacherId != '' 已包含 isMember（有效成員）檢查。
+        allow create: if isValidOperationLog(schoolId, request.resource.data);
         allow update, delete: if false;  // 稽核軌跡不可改／刪
       }
 
@@ -901,13 +1204,13 @@ service cloud.firestore {
         // director 可代寫（補綁定，linkedTeacherId 不受限）；
         // 自己 upsert 自己（authGuardV2 登入完成寫入）：linkedTeacherId 必須指向
         //   email 等於本人登入 email 的教師檔（只能映射到自己，杜絕提權）。
+        // v2.12（H1）：自建分支加 isEmailVerified()（未驗證的搶註帳號不可自建 mapping）與
+        //   isValidSelfMapping()（欄位白名單 + 長度上限 + 教師檔存在且 email 相符）。
         allow create, update: if isDirector(schoolId)
           || (
-            isSignedIn()
+            isEmailVerified()
             && request.auth.uid == uid
-            && request.resource.data.linkedTeacherId is string
-            && exists(/databases/$(database)/documents/schools/$(schoolId)/teachers/$(request.resource.data.linkedTeacherId))
-            && get(/databases/$(database)/documents/schools/$(schoolId)/teachers/$(request.resource.data.linkedTeacherId)).data.email == userEmail().lower()
+            && isValidSelfMapping(schoolId, request.resource.data)
           );
 
         // 刪除：只有 director
@@ -1105,8 +1408,18 @@ service cloud.firestore {
 
     // ================ 穩定版 master：保留原規則 ================
     // users/{uid}/... 由本人讀寫，與 V2 完全分離
-    match /users/{uid}/{document=**} {
-      allow read, write: if isSignedIn() && request.auth.uid == uid;
+    // v2.12（M4）：原本是 users/{uid}/{document=**} 遞迴萬用字元——任何自行註冊的帳號都能在自己的子樹
+    // 無限寫入任意大小的文件（帳單攻擊 → 觸發 kill switch → 全校停擺）。V1 個人雲端備份實際只使用
+    // 單一文件 users/{uid}/data/substituteSystem（cloudSyncService.getUserDocPath；legacyMigrationService
+    // 讀取同一路徑），故收斂成這一個確切路徑：
+    //   - 讀取／刪除：本人（V1 備份讀取、V2 的「清除資料」刪除本人備份、遷移偵測都用得到）。
+    //   - 建立／更新：本人 + email 已驗證 + 欄位白名單與大小約束（isValidV1Backup）。
+    // 其他任何 users/** 路徑一律拒絕。
+    match /users/{uid}/data/substituteSystem {
+      allow read, delete: if isSignedIn() && request.auth.uid == uid;
+      allow create, update: if isSignedIn() && request.auth.uid == uid
+                            && isEmailVerified()
+                            && isValidV1Backup(request.resource.data);
     }
   }
 }

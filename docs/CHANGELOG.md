@@ -9,6 +9,16 @@ tags:
 
 ---
 
+## [2026-11-10] 資安修補：身分與授權（firestore.rules v2.12，尚未部署）
+
+- **H1 搶註**：白名單主任、成員資格、userMappings 自建、emailIndex 讀取一律要求 `email_verified == true`；前端新增「email 尚未驗證」遮罩（說明、重寄驗證信、驗證後繼續），註冊成功自動寄驗證信。
+- **H2 mapping 撤銷**：成員資格要求 mapping 指向的教師檔存在且 email 與登入者相符；`deleteTeacher`／`updateTeacher`（email 異動）同批次刪除對應 userMappings；新增 `scripts/cleanup-orphan-mappings.js`（預設 dry-run，`--yes` 才刪，並先備份）。
+- **M1** 同意人只能變動自己那一筆；approver 不得繞過同意階段。**M2/L4** private/detail 限本人或 approver、docId 鎖 `detail`。**M3** 稽核日誌 actor 須為本人、timestamp 不得為未來、欄位／長度上限。**M4** `users/{uid}/**` 收斂為 `users/{uid}/data/substituteSystem`。**M5/M6** 申請與自我調課紀錄欄位白名單、保留欄位 `reqId`／`recordId` 禁用、長度與未來時間限制。附帶 L2、L3、L5、L6。
+- **測試**：新增 `rules-identity`（17）、`rules-consent`（7）、`rules-field-whitelist`（25）、`rules-workflows`（13，前端形狀全流程）、`rules-v1-backup`（5）；`npm run test:rules-all` 一次跑全部規則測試。
+- **部署順序與相容性**：見 `docs/ISSUES_LOG.md` 的「v2.12 上線前注意」。
+
+---
+
 ## [2026-11-10] 帳單自動斷線（TWD 1000）與多層預算警報
 
 - **預算警報**（只寄信）：沿用 Firebase 自動建立的 TWD 250，新增帳單帳戶層級 TWD 300、500（實際 50%／90%／100%、預測 100%）。

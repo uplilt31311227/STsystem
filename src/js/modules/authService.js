@@ -290,7 +290,18 @@ async function registerWithEmail(email, password) {
     try {
         const result = await createUserWithEmailAndPassword(auth, email.toLowerCase().trim(), password);
         currentUser = result.user;
-        return { uid: currentUser.uid, email: currentUser.email };
+        // v2.12（身分修補）：firestore.rules 起要求 email_verified==true 才承認教師身分，註冊成功後
+        // 立即自動寄驗證信（best effort——寄信失敗不影響註冊結果，使用者在登入後的「email 尚未驗證」
+        // 畫面可以按鈕重寄，見 v2-app.js renderUnverifiedGate）。
+        let verificationSent = false;
+        try {
+            const { sendEmailVerification } = window.firebaseModules;
+            await sendEmailVerification(result.user);
+            verificationSent = true;
+        } catch (e) {
+            console.warn('[auth] 註冊後自動寄送驗證信失敗（可在驗證畫面重寄）：', e?.message || e);
+        }
+        return { uid: currentUser.uid, email: currentUser.email, verificationSent };
     } catch (error) {
         if (error.code === 'auth/email-already-in-use') {
             throw new Error('此 Email 已註冊過，請直接登入或使用「忘記密碼」');

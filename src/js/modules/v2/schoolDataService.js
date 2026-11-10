@@ -240,6 +240,13 @@ export async function updateTeacher(teacherId, patch) {
         // 集中維護，所有呼叫端（assignEmail、importRosterCsv 等）不需各自處理。
         if (oldEmail && oldEmail !== clean.email) {
             batch.delete(fs.doc(fs.db, SCHEMA_PATHS.emailIndexDoc(oldEmail)));
+            // v2.12（H2）：email 真的換了 → 舊 email 的帳號不該再保有這位教師的身分。
+            // 一併刪除指向此教師的 userMappings（rules 的 isMember 也會因 email 不符而拒絕舊帳號，
+            // 這裡是把殘留的 mapping 清乾淨，避免日後 email 又改回去時舊帳號「復活」）。
+            // 新 email 的帳號首次登入時，走 emailIndex 重新建立 mapping。
+            for (const mappingRef of await listUserMappingRefsForTeacher(fs, teacherId)) {
+                batch.delete(mappingRef);
+            }
         }
         if (clean.email) {
             batch.set(fs.doc(fs.db, SCHEMA_PATHS.emailIndexDoc(clean.email)), { teacherId });
@@ -260,7 +267,27 @@ export async function deleteTeacher(teacherId) {
     if (existing?.email) {
         batch.delete(fs.doc(fs.db, SCHEMA_PATHS.emailIndexDoc(existing.email)));
     }
+    // v2.12（H2）：離職／被刪除教師的登入帳號不得保有成員資格——一併刪除指向此教師的 userMappings。
+    // （rules 的 isMember 也會因教師檔不存在而拒絕，這裡避免留下孤兒 mapping；既有的孤兒
+    // mapping 用 scripts/cleanup-orphan-mappings.js 清理。）
+    for (const mappingRef of await listUserMappingRefsForTeacher(fs, teacherId)) {
+        batch.delete(mappingRef);
+    }
     await batch.commit();
+}
+
+/**
+ * v2.12：查出所有 linkedTeacherId == teacherId 的 userMappings 文件參照（可能多筆：同一位教師
+ * 同時有 Google 與 Email/密碼兩個 Auth 帳號時，各有一個 uid）。userMappings 的 list 查詢僅
+ * approver 可讀、delete 僅 director 可做；deleteTeacher／updateTeacher(email) 本來就是 director
+ * 專屬操作（rules 的 teachers delete 與 email 變更同為 director），權限一致。
+ * 查詢失敗直接丟出：寧可整個刪除／改 email 操作失敗，也不要留下仍可登入的舊 mapping。
+ */
+async function listUserMappingRefsForTeacher(fs, teacherId) {
+    if (!teacherId) return [];
+    const col  = fs.collection(fs.db, SCHEMA_PATHS.userMapCol());
+    const snap = await fs.getDocs(fs.query(col, fs.where('linkedTeacherId', '==', teacherId)));
+    return snap.docs.map(d => d.ref);
 }
 
 /** 查自己那一份 email → teacherId 索引。回傳 { teacherId } 或 null（查不到）。 */

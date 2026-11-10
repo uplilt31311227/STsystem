@@ -8,6 +8,15 @@ tags:
 
 # 問題追蹤：國中調代課自動化系統
 
+## 2026-11-10 v2.12 上線前注意（身分與授權修補，規則尚未部署）
+
+- **部署順序**：先上新版 client（含「email 尚未驗證」遮罩與 deleteTeacher／updateTeacher 的 mapping 清理），再部署 `firestore.rules` v2.12。反過來的話，未驗證的密碼帳號會在規則生效後直接 permission-denied、看不到說明畫面。
+- **既有密碼帳號**：用 Email/密碼登入且 Auth 的 emailVerified 為 false 的使用者（2026-11-10 備份顯示 6 筆 mapping 中 4 筆為 password 登入）上線後會先看到驗證遮罩。處置：請他們按「重新寄送驗證信」並點信中連結；或由主任／開發者在 Firebase Console → Authentication 把該帳號標為已驗證。Google 登入不受影響。
+- **既有孤兒 mapping**：2026-11-10 備份的 6 筆 mapping 全部對得上教師檔且 email 相符（無孤兒）。上線前後仍可執行 `node scripts/cleanup-orphan-mappings.js`（預設只列印）確認；孤兒 mapping 在 v2.12 規則下本來就不賦予任何權限，清不清只影響資料整潔。
+- **既有文件帶白名單外欄位**：規則只在「寫入」時檢查欄位。`pendingRequests` 的 approver 更新只檢查 diff 的欄位，既有文件不受影響；`substituteRecords` 教師自建分支只影響新建。`userMappings` 的自建／更新（每次登入都會 merge 寫入）要求合併後文件只含 `linkedTeacherId／email／googleName／googlePhotoUrl／lastProviderId／lastLoginAt／updatedAt`，正式庫 6 筆皆符合；若日後有人手動加了其他欄位，該帳號登入時 mapping 更新會被拒（登入本身不受影響，走 S6 後備路徑）。
+- **案件文字欄位**：自我調課與申請的班級、科目、姓名、文號等欄位不得含 `<`、`>`、`"`，合計長度上限 1000 字元；課表若有含這三個字元的班級或科目名稱，該筆申請會被拒（需改課表資料）。
+- **日誌寫入與姓名**：稽核日誌的 actor.name 必須等於教師檔現行姓名；主任在某教師登入期間改了其姓名，該教師重新登入前的日誌寫入會被拒（失敗不阻擋業務流程，會在日誌頁籤顯示寫入失敗橫幅）。
+
 ## 2026-11-10 V1 個人雲端同步無限寫入迴圈，Firestore 帳單暴增（已修正並部署，V1 網址已停用）
 
 - **現象**：帳單帳戶「STsystem」（01A75D-93C4DE-69DE70）11/1–11/9 費用 $270.42（TWD），其中 Cloud Firestore Internet Data Transfer Out APAC→APAC 76.75 GiB = $259.69；另有寫入 232,073 次、讀取 480,601 次。費用集中在 11/8–11/9 兩天。
