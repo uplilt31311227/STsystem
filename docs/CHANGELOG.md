@@ -9,6 +9,14 @@ tags:
 
 ---
 
+## [2026-11-10] 停用舊版（V1）網址：一律轉址到 V2
+
+- `index.html` `<head>` 最前面加同步轉址程式：沒帶 `?v2=1`、也不是預覽站時，用 `location.replace` 補上 `v2=1`（保留路徑、其他參數與 hash；判斷條件與 `envDetector.isV2Enabled()` 一致）。在任何 V1 程式載入前就轉走，V1 個人雲端同步不會再啟動。
+- **驗證**：Playwright 本機實測 `/`→`/?v2=1`、`/?foo=bar#sec`→`/?foo=bar&v2=1#sec`、`/?v2=1` 不變、`/?v2=0`→`/?v2=1`，V2 頁面正常載入。
+- **影響**：本機開發（localhost）同樣會被轉到 V2；`test/e2e` 若有不帶 `?v2=1` 的 V1 情境，需改為 V2 或移除。
+
+---
+
 ## [2026-11-10] 修正 V1 個人雲端即時同步無限寫入迴圈（正式站帳單事故）
 
 **起因**：[[ISSUES_LOG]] 2026-11-10。V1 頁面（未帶 `?v2=1`）登入後，收到 onSnapshot 快照（含自己剛寫入、伺服器確認後的回音）→ `loadFromCloud()` → `notifyDataChange()` → app.js 監聽回呼 `syncToCloud()` → 再寫入，無限循環。
