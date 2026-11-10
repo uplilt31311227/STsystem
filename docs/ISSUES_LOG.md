@@ -8,14 +8,15 @@ tags:
 
 # 問題追蹤：國中調代課自動化系統
 
-## 2026-11-10 V1 個人雲端同步無限寫入迴圈，Firestore 帳單暴增（已修正程式，待部署）
+## 2026-11-10 V1 個人雲端同步無限寫入迴圈，Firestore 帳單暴增（已修正並部署，V1 網址已停用）
 
 - **現象**：帳單帳戶「STsystem」（01A75D-93C4DE-69DE70）11/1–11/9 費用 $270.42（TWD），其中 Cloud Firestore Internet Data Transfer Out APAC→APAC 76.75 GiB = $259.69；另有寫入 232,073 次、讀取 480,601 次。費用集中在 11/8–11/9 兩天。
 - **定位**：Cloud Monitoring 顯示 11/9 早上約 7–9 點起，每 3 小時約 1.6–3.4 萬次寫入（op=UPDATE），之前幾乎為 0；同時只有約 3 個即時監聽連線（排除外部攻擊）。全庫依 updateTime 掃描後，只有 `users/RsDrMk8EcNQLsjgyjEgCgO0xhot1/data/substituteSystem`（uplilt313@gmail.com 的 V1 個人雲端備份，約 270 KB）在持續更新，`version` 已累積到 570,307。
 - **根因**：`cloudSyncService.enableRealtimeSync` 只用 `hasPendingWrites` 過濾，但伺服器確認後，自己剛寫入的資料仍會以快照回來 → `dataManager.loadFromCloud()` → `notifyDataChange()` → `app.js` 監聽回呼 `syncToCloud()`（2026-06-18 v1.13.2 加入）→ 整份 setDoc → 再收到回音……每個分頁約每秒 1–2 次寫入，每次寫入都把 270 KB 推給每個監聽者，所以對外流量很大。只要有人以 V1 頁面（未帶 `?v2=1`）登入並開著分頁就會觸發。
 - **緊急處置**：2026-11-10 15:43 使用者關閉相關分頁，文件停止更新。該專案目前**未綁帳單帳戶**（Spark），這段期間迴圈可能吃光免費配額，影響正式站讀寫。
 - **修法**：見 CHANGELOG 2026-11-10——即時來源以 `fromRealtime` 標記，監聽回呼不回寫。回歸測試 `test/test-v1-realtime-loop.mjs`。
-- **待辦**：部署到正式站；建議設定預算警報；評估正式站是否全面停用 V1 個人雲端即時同步。
+- **部署**：迴圈修正 2026-11-10 部署（master `f8f67c8`）；同日 `index.html` 加入轉址，未帶 `?v2=1` 一律導向 V2，V1 頁面無法再進入。
+- **待辦**：建議先設預算警報再重新綁定帳單帳戶。已開著的舊 V1 分頁不會自動轉址（修正前載入的程式仍在記憶體），需重新整理或關閉。
 
 ## 2026-11-06 多重調課通知單：已知未修（code-review 與合併驗收發現，正式站自 10/21 即存在）
 

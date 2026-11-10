@@ -1,5 +1,11 @@
 # 版本紀錄 (Changelog)
 
+## [2026-11-10] 停用舊版（V1）網址：一律轉址到 V2
+
+- `index.html` 開頭加入同步轉址：沒帶 `?v2=1`、也不是預覽站時，自動補上 `v2=1`（保留路徑、參數與 hash）。V1 頁面從此無法進入，避免 V1 個人雲端同步再次造成寫入迴圈。詳見 `docs/CHANGELOG.md`。
+
+---
+
 ## [2026-11-10] 修正 V1 個人雲端即時同步無限寫入迴圈（正式站帳單事故）
 
 - V1 頁面收到 onSnapshot 快照（含自己寫入的回音）後會再 `syncToCloud()`，形成無限寫入迴圈。`loadFromCloud` 新增 `fromRealtime` 標記並經 `notifyDataChange(meta)` 傳給監聽者，app.js 對即時來源不回寫。
