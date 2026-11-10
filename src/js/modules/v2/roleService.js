@@ -167,7 +167,9 @@ export function filterLogsForCurrent(logs) {
     const tid = currentIdentity?.teacherId;
     if (!tid) return [];
     return logs.filter(l => {
-        const d = l.details || {};
+        // v2.12b：details 新格式為 JSON 字串（見 operationLogger.packDetails），舊資料為 map
+        let d = l.details || {};
+        if (typeof d === 'string') { try { d = JSON.parse(d) || {}; } catch (_) { d = {}; } }
         return l.actor?.teacherId === tid
             || d.initiatedBy === tid
             || d.requiredApproverId === tid

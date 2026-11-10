@@ -9,6 +9,17 @@ tags:
 
 ---
 
+## [2026-11-11] 資安修補 v2.12b：驗收補強（firestore.rules，尚未部署）
+
+- **H-1** 近 1MB 文件：自我調課 `approvedAt` 套時間驗證；`pendingConsentTeacherIds`／private `allowedTeacherIds` 的每個元素限字串、長度、不含 `< > "`（`idList20`／`idList30`）；教師自改 `authProvider` 限 `google.com`／`password` 與 ISO `updatedAt`。
+- **H-2** 操作日誌 `details` 改為「單一限長 JSON 字串」（≤10000 字元；新增 `logDetails.js` 的 `packDetails`，超大內容截斷成摘要，日誌不會遺失）；舊資料的 map 仍可讀（日誌頁與 `filterLogsForCurrent` 同時相容）。
+- **M-1** approver 只能在對應狀態轉換時寫核准／駁回欄位（狀態不變時不得改任何欄位），時間須為近期 ISO。**M-2** 日誌 `actor.role` 須與教師檔 role 一致（`admin` 視同 `director`，白名單主任例外）。**M-3** approver 更新紀錄改欄位白名單＋安全字元＋限長。**M-4** 同意後名單長度須恰少一人。
+- **L** id／batchId 格式與型別；案件文字欄位 null 不再造成 evaluation error；時間欄位加絕對下界 2026-03-01；`swapConsents` 須為 map；`attemptedAt`／`userDirectory.createdAt` 限長。前端 `writeV2Record` 送出前先檢查 `< > "` 與長度，給明確繁中訊息。
+- **測試**：新增 `rules-hardening`（14 案，每項攻擊配前端形狀 ALLOW 對照）；`rules-workflows` 的核准改用真正的交易；`rules-identity` 撤銷斷言改為有效 payload 並配對照組。
+
+---
+
+
 ## [2026-11-10] 資安修補：身分與授權（firestore.rules v2.12，尚未部署）
 
 - **H1 搶註**：白名單主任、成員資格、userMappings 自建、emailIndex 讀取一律要求 `email_verified == true`；前端新增「email 尚未驗證」遮罩（說明、重寄驗證信、驗證後繼續），註冊成功自動寄驗證信。

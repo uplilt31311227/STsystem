@@ -8,13 +8,20 @@
  *     actor: { uid, email, name, role, teacherId },
  *     action: (LOG_ACTIONS 之一),
  *     targetType, targetId,
- *     details: { before?, after?, ... }
+ *     details: null | {}（無內容）| string（JSON 字串，≤ MAX_DETAILS_BYTES，見 packDetails）
  *   }
+ *
+ * v2.12b（H-2）：firestore.rules 無法遞迴檢查巢狀 map 的大小、而日誌不可刪，所以 details 改存「單一
+ * 限長 JSON 字串」。讀取端（v2-app.js 日誌頁、roleService.filterLogsForCurrent）同時相容新的字串
+ * 與舊資料的 map。
  */
 
 import { appendLog, listLogs, upsertJoinAttempt } from './schoolDataService.js';
 import { getCurrentIdentity }  from './roleService.js';
 import * as semesterState      from './semesterState.js';
+import { packDetails }         from './logDetails.js';
+
+export { packDetails };
 
 // 本次工作階段（頁面存活期間）寫入失敗的日誌項目，供 v2-app.js 的操作日誌頁籤橫幅提示使用。
 // 僅存於記憶體，重新整理頁面即清空；不影響 log() 本身「失敗不阻斷主流程」的行為。
@@ -59,7 +66,7 @@ export async function log(action, targetType, targetId, details = {}) {
         action,
         targetType,
         targetId:  targetId || null,
-        details:   details || {},
+        details:   packDetails(details),
         semesterId: semesterState.getCurrentSemesterId(),
     };
     try {

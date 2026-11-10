@@ -133,6 +133,9 @@ rules_version = '2';
 //      M5/M6 pendingRequests／自我調課紀錄欄位白名單、保留欄位 reqId／recordId 禁用、長度與未來時間限制。
 //      L2 joinAttempts.email 須為本人；L3 發起人不可刪已核准申請；L5 舊 data/{docId} 禁寫；
 //      L6 approver 更新紀錄不得改稽核欄位。
+//      v2.12b（驗收補強，test/emulator/rules-hardening）：id 清單元素檢查（idList20／idList30）、日誌 details
+//      改單一限長 JSON 字串、approver 欄位只在對應狀態轉換可寫、actor.role 比對教師檔、substituteRecords
+//      approver 更新改白名單、id／batchId 格式、時間絕對下界 2026-03-01、教師自改 authProvider 限值。
 //      評估成本：規則引擎每次請求最多評估 1000 個運算式、函式不 memoize，熱路徑（isMember／isApprover）
 //      與驗證 helper 都刻意精簡；新增規則前務必跑 rules-workflows（涵蓋最壞路徑）。
 //
@@ -372,11 +375,31 @@ service cloud.firestore {
     // （orderBy desc limit 50）」這條路。
     // 評估成本：規則引擎每次請求最多評估 1000 個運算式，函式不會 memoize，所以下面的 helper
     // 刻意寫得短（isMember 約 95、isApprover 約 150、本函式約 45），熱路徑用 let 只取一次 me。
+    // v2.12b（L-4）：加絕對下界 2026-03-01（系統上線於 2026-03，更早的時間不可能是合法的「現在」；
+    // 用固定日期而非相對 request.time，是因為既有情境測試／離線排隊寫入帶的是較舊的真實時間，
+    // 相對下界會隨時間流逝讓它們失效）。擋下「回溯成 2000 年偽造舊稽核紀錄」。
     function isRecentIsoString(s) {
+      let day = timestamp.date(int(s.split('-')[0]), int(s.split('-')[1]), int(s.split('-')[2].split('T')[0]));
       return s is string
         && s.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$')
-        && timestamp.date(int(s.split('-')[0]), int(s.split('-')[1]), int(s.split('-')[2].split('T')[0]))
-           <= request.time + duration.value(1, 'd');
+        && day >= timestamp.date(2026, 3, 1)
+        && day <= request.time + duration.value(1, 'd');
+    }
+
+    // v2.12b（H-1b／H-1c）：id 清單（pendingConsentTeacherIds／allowedTeacherIds）的元素檢查。
+    // 規則語言沒有 all()，這裡用「補空字串墊高長度 → 逐一 string() 串接」：string() 對 map／list
+    // 會求值錯誤（元素型別檢查），串接後總長度 ≤ max×64 且不含 < > "，每個元素因此各自受限。
+    // 不用逐元素條件式，是因為那樣每個元素要 8～9 個運算式；這個寫法約 3 個。
+    function idList20(l) {
+      let p = l.concat(['','','','','','','','','','','','','','','','','','','','']);
+      let s = string(p[0]) + string(p[1]) + string(p[2]) + string(p[3]) + string(p[4]) + string(p[5]) + string(p[6]) + string(p[7]) + string(p[8]) + string(p[9]) + string(p[10]) + string(p[11]) + string(p[12]) + string(p[13]) + string(p[14]) + string(p[15]) + string(p[16]) + string(p[17]) + string(p[18]) + string(p[19]);
+      return l is list && l.size() <= 20 && s.size() <= 1280 && s.matches('[^<>"]*');
+    }
+
+    function idList30(l) {
+      let p = l.concat(['','','','','','','','','','','','','','','','','','','','','','','','','','','','','','']);
+      let s = string(p[0]) + string(p[1]) + string(p[2]) + string(p[3]) + string(p[4]) + string(p[5]) + string(p[6]) + string(p[7]) + string(p[8]) + string(p[9]) + string(p[10]) + string(p[11]) + string(p[12]) + string(p[13]) + string(p[14]) + string(p[15]) + string(p[16]) + string(p[17]) + string(p[18]) + string(p[19]) + string(p[20]) + string(p[21]) + string(p[22]) + string(p[23]) + string(p[24]) + string(p[25]) + string(p[26]) + string(p[27]) + string(p[28]) + string(p[29]);
+      return l is list && l.size() <= 30 && s.size() <= 1920 && s.matches('[^<>"]*');
     }
 
     // 案件（pendingRequests 與 substituteRecords 自我調課共用）的全部文字／id／數字類欄位，
@@ -390,18 +413,28 @@ service cloud.firestore {
     // confirmMultiCourseSubstitute 產出的 record + v2-app.js resolveApproverInfo 的 id 欄位。
     // leaveType／leaveTypeName／reason 已由 splitSensitive 搬到 private/detail，不在父文件。
     function hasSafeCaseText(d) {
-      let all = d.get('type', '') + '|' + d.get('date', '') + '|' + d.get('swapDate', '') + '|' + d.get('weekday', '')
-        + '|' + d.get('swapWeekday', '') + '|' + d.get('period', '') + '|' + d.get('swapPeriod', '')
-        + '|' + d.get('className', '') + '|' + d.get('subject', '') + '|' + d.get('swapSubject', '')
-        + '|' + d.get('domain', '') + '|' + d.get('swapDomain', '')
-        + '|' + d.get('originalTeacher', '') + '|' + d.get('substituteTeacher', '') + '|' + d.get('swapTeacher', '')
-        + '|' + d.get('docNumber', '') + '|' + d.get('initiatedByName', '') + '|' + string(d.get('requiredApproverName', ''))
+      let all = string(d.get('type', '')) + '|' + string(d.get('date', '')) + '|' + string(d.get('swapDate', '')) + '|' + string(d.get('weekday', ''))
+        + '|' + string(d.get('swapWeekday', '')) + '|' + string(d.get('period', '')) + '|' + string(d.get('swapPeriod', ''))
+        + '|' + string(d.get('className', '')) + '|' + string(d.get('subject', '')) + '|' + string(d.get('swapSubject', ''))
+        + '|' + string(d.get('domain', '')) + '|' + string(d.get('swapDomain', ''))
+        + '|' + string(d.get('originalTeacher', '')) + '|' + string(d.get('substituteTeacher', '')) + '|' + string(d.get('swapTeacher', ''))
+        + '|' + string(d.get('docNumber', '')) + '|' + string(d.get('initiatedByName', '')) + '|' + string(d.get('requiredApproverName', ''))
         + '|' + string(d.get('id', '')) + '|' + string(d.get('batchId', '')) + '|' + string(d.get('multiCourseGroupId', ''))
         + '|' + string(d.get('originalTeacherId', '')) + '|' + string(d.get('substituteTeacherId', ''))
         + '|' + string(d.get('swapTeacherId', '')) + '|' + string(d.get('requiredApproverId', ''))
         + '|' + string(d.get('batchSize', 0)) + '|' + string(d.get('multiCourseIndex', 0)) + '|' + string(d.get('multiCourseTotal', 0))
         + '|' + string(d.get('isMultiSwap', false)) + '|' + string(d.get('isMultiCourse', false));
       return all.size() <= 1000 && all.matches('[^<>"]*');
+    }
+
+    // v2.12b（L-1）：前端自產的 id／batchId／multiCourseGroupId 格式——app.js 一律是
+    // Date.now().toString()（純數字），多節／批次再加 "_序號"。必須是字串（數字型別一律拒絕）。
+    // batchId／multiCourseGroupId 嚴格要求純數字；id 放寬為英數／底線／連字號（情境測試 scenario-02
+    // 的既有 payload 用 'zz_case_record'），仍然擋下引號、空白、& 與反引號等屬性注入字元。
+    function hasValidCaseIds(d) {
+      return (!('id' in d) || (d.id is string && d.id.matches('^[A-Za-z0-9_-]{1,40}$')))
+        && (!('batchId' in d) || (d.batchId is string && d.batchId.matches('^[0-9]{1,20}$')))
+        && (!('multiCourseGroupId' in d) || (d.multiCourseGroupId is string && d.multiCourseGroupId.matches('^[0-9]{1,20}$')));
     }
 
     // 教師自建「自我調課」紀錄（substituteRecords create 的教師分支）的完整驗證。
@@ -426,6 +459,7 @@ service cloud.firestore {
         && d.type in ['調課', 'swap']
         && d.originalTeacherId == me && d.swapTeacherId == me && d.substituteTeacherId == me
         && hasSafeCaseText(d)
+        && hasValidCaseIds(d)
         && d.get('initiatedBy', me) == me
         && d.get('status', 'approved') == 'approved'
         && d.get('initiatedByRole', 'teacher') == 'teacher'
@@ -434,6 +468,7 @@ service cloud.firestore {
         && d.get('additionalConsentTeacherIds', []).size() == 0
         && d.get('affectedTeacherIds', []).hasOnly([me])
         && isRecentIsoString(d.createdAt)
+        && (!('approvedAt' in d) || isRecentIsoString(d.approvedAt))
         && isSelfSwapNamesOk(schoolId, d);
     }
 
@@ -461,9 +496,11 @@ service cloud.firestore {
              'initiatedBy', 'initiatedByName', 'createdAt', 'semesterId', 'affectedTeacherIds'])
         && d.initiatedBy is string
         && hasSafeCaseText(d)
+        && hasValidCaseIds(d)
         && d.requestType in ['substitute', 'swap', 'multi_swap']
         && (d.requestType == 'substitute' ? d.get('type', '') == '代課' : d.get('type', '') in ['調課', 'swap'])
-        && d.pendingConsentTeacherIds is list && d.pendingConsentTeacherIds.size() <= 20
+        && idList20(d.pendingConsentTeacherIds)
+        && d.get('swapConsents', {}) is map && d.get('swapConsents', {}).size() <= 20
         && d.get('isSelfSwap', false) is bool
         && isRecentIsoString(d.createdAt)
         && (!('affectedTeacherIds' in d) || (d.affectedTeacherIds is list && d.affectedTeacherIds.size() <= 20
@@ -515,6 +552,7 @@ service cloud.firestore {
             nd.diff(od).affectedKeys().hasOnly(['status', 'pendingConsentTeacherIds', 'swapConsents', 'statusUpdatedAt'])
             && nd.pendingConsentTeacherIds is list
             && nd.pendingConsentTeacherIds.toSet() == oldList.toSet().difference([me].toSet())
+            && nd.pendingConsentTeacherIds.size() == oldList.size() - 1
             && nd.swapConsents is map
             && nd.swapConsents.diff(od.get('swapConsents', {})).affectedKeys().hasOnly([me])
             && isValidConsentEntry(nd.swapConsents[me])
@@ -536,18 +574,33 @@ service cloud.firestore {
     // swapConsents，讓組長可以不經對方同意把待同意的申請推進到待核准，與 M1 同源）。
     // 核准者必須是自己（approvedBy／rejectedBy == 登入者 mapping 的 teacherId），不得掛別人名字。
     // approver 若同時是待同意人，走 isValidConsenterUpdate（前端 consentRequest 本來就是同意人身分）。
+    // v2.12b（M-1）：approver 的欄位只在「對應的狀態轉換」時才可寫，且時間欄位須為近期 ISO：
+    //   - 狀態不變：不得有任何欄位變動（原版只限欄位集合，狀態不變時可任意改寫 approvedBy／
+    //     rejectedBy／rejectNote，覆寫核准軌跡或注入內容）。
+    //   - → approved（僅 pending_approval 起）：只能寫 status／approvedAt／approvedBy／
+    //     approvedByName／statusUpdatedAt，approvedBy 必須是自己。
+    //   - → rejected：只能寫 status／rejectedAt／rejectedBy／rejectedByName／rejectNote／
+    //     statusUpdatedAt，rejectedBy 必須是自己。
     function isValidApproverUpdate(schoolId) {
       let nd = request.resource.data;
       let od = resource.data;
-      return nd.diff(od).affectedKeys().hasOnly([
-             'status', 'approvedAt', 'approvedBy', 'approvedByName',
-             'rejectedAt', 'rejectedBy', 'rejectedByName', 'rejectNote', 'statusUpdatedAt'])
-        && (
-          nd.status == od.status
-          || (nd.status == 'approved' && od.status == 'pending_approval')
-          || (nd.status == 'rejected' && od.status in ['pending', 'pending_swap_consent', 'pending_approval'])
+      let ak = nd.diff(od).affectedKeys();
+      return (
+          (nd.status == od.status && ak.size() == 0)
+          || (
+            nd.status == 'approved' && od.status == 'pending_approval'
+            && ak.hasOnly(['status', 'approvedAt', 'approvedBy', 'approvedByName', 'statusUpdatedAt'])
+            && nd.approvedByName is string && nd.approvedByName.size() <= 100
+            && isRecentIsoString(nd.approvedAt) && isRecentIsoString(nd.statusUpdatedAt)
+          )
+          || (
+            nd.status == 'rejected' && od.status in ['pending', 'pending_swap_consent', 'pending_approval']
+            && ak.hasOnly(['status', 'rejectedAt', 'rejectedBy', 'rejectedByName', 'rejectNote', 'statusUpdatedAt'])
+            && nd.rejectedByName is string && nd.rejectedByName.size() <= 100
+            && nd.rejectNote is string && nd.rejectNote.size() <= 500
+            && isRecentIsoString(nd.rejectedAt) && isRecentIsoString(nd.statusUpdatedAt)
+          )
         )
-        && (string(nd.get('approvedByName', '')) + string(nd.get('rejectedByName', '')) + string(nd.get('rejectNote', ''))).size() <= 700
         && isApprover(schoolId)
         && (nd.status != 'approved' || nd.approvedBy == myMapping(schoolId).linkedTeacherId)
         && (nd.status != 'rejected' || nd.rejectedBy == myMapping(schoolId).linkedTeacherId);
@@ -556,8 +609,10 @@ service cloud.firestore {
     // 稽核日誌 create 的完整驗證（M3）。對齊 operationLogger.log() 實際寫入的 7 個欄位：
     // timestamp／actor{uid,email,name,role,teacherId}／action／targetType／targetId／details／semesterId。
     // actor 必須就是登入者本人（uid、teacherId、email、姓名皆與登入者一致）——否則任何成員都能
-    // 以他人名義寫入永久不可刪的稽核紀錄。details 只能限制頂層鍵數（規則語言無法遞迴檢查
-    // 巢狀內容的大小，單一文件仍受 Firestore 1MB 上限約束）。
+    // 以他人名義寫入永久不可刪的稽核紀錄。
+    // v2.12b（H-2）：details 規則語言無法遞迴檢查巢狀內容大小，且日誌不可刪，所以改成「單一限長
+    // JSON 字串」（≤10000 字元；前端 operationLogger 序列化並截斷）。舊資料的 map 形狀仍可讀取；
+    // 新寫入只接受 null、空 map（相容既有測試／fixture）或字串。
     // 注意：姓名須等於教師檔現行姓名；若主任在某教師登入期間改了他的姓名，該教師在重新登入前的
     // 日誌寫入會被拒（日誌寫入失敗不阻擋業務流程，會在操作日誌頁籤顯示寫入失敗橫幅）。
     function isValidOperationLog(schoolId, d) {
@@ -568,7 +623,7 @@ service cloud.firestore {
         && isRecentIsoString(d.timestamp)
         && d.targetType is string && d.targetType.matches('^[A-Za-z0-9_]{1,50}$')
         && (d.targetId == null || (d.targetId is string && d.targetId.matches('^[A-Za-z0-9_.:-]{1,128}$')))
-        && (d.details == null || (d.details is map && d.details.size() <= 30))
+        && (d.details == null || (d.details is map && d.details.size() == 0) || (d.details is string && d.details.size() <= 10000))
         && (string(d.get('semesterId', '')).size() <= 20)
         && d.actor is map
         && d.actor.keys().hasOnly(['uid', 'email', 'name', 'role', 'teacherId'])
@@ -576,7 +631,16 @@ service cloud.firestore {
         && d.actor.teacherId == me
         && d.actor.get('email', null) in [null, userEmail().lower()]
         && d.actor.get('name', null) == myTeacherDoc(schoolId).name
-        && d.actor.get('role', null) in [null, 'director', 'section_chief', 'teacher'];
+        && actorRoleOk(schoolId, d.actor.get('role', null));
+    }
+
+    // v2.12b（M-2）：actor.role 須與登入者教師檔的 role 一致（舊 'admin' 視同 'director'，與前端
+    // normalizeRole 一致）；白名單主任在教師檔 role 尚未升級為 director 的空檔也可寫 'director'
+    // （isInitialDirector 只在前面比對都不符時才會被評估，一般情況不增加運算式成本）。
+    function actorRoleOk(schoolId, r) {
+      let docRole = myTeacherDoc(schoolId).role;
+      return r == null || r == docRole
+        || (r == 'director' && (docRole == 'admin' || isInitialDirector(schoolId)));
     }
 
     // 本人自建 userMappings 的欄位驗證（H1 修補的一部分）。欄位 = authGuardV2 buildMappingPatch
@@ -614,6 +678,8 @@ service cloud.firestore {
     }
 
     // v2.12（M5）：補欄位長度上限；ACL 清單最多 30 人（multi_swap 全員 + 發起人 + 核准者綽綽有餘）。
+    // v2.12b（H-1c）：ACL「元素」的型別／長度檢查（idList30，約 130 個運算式）不放在這裡，而是由各 match
+    // 區塊在需要的分支呼叫——教師分支的 ACL 已被限定為 [本人]，不必再檢查；approver／pending 分支才要。
     function isValidPrivateDetailWrite(data) {
       return data.keys().hasOnly(['leaveType', 'leaveTypeName', 'reason', 'allowedTeacherIds'])
         && data.allowedTeacherIds is list && data.allowedTeacherIds.size() <= 30
@@ -810,6 +876,7 @@ service cloud.firestore {
                               // v2.12（L2）：email 欄位須為登入者本人 email，不可偽造他人名義的拒絕紀錄
                               && request.resource.data.email == userEmail().lower()
                               && request.resource.data.attemptedAt is string
+                              && request.resource.data.attemptedAt.size() <= 40
                               && request.resource.data.reason is string
                               && request.resource.data.reason.size() < 100;
         allow delete: if isDirector(schoolId);
@@ -865,6 +932,9 @@ service cloud.firestore {
               isSignedIn()
               && myTeacherId(schoolId) == teacherId
               && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['authProvider', 'updatedAt'])
+              // v2.12b（H-1d）：前端只會寫 providerData[0].providerId（google.com／password）與 ISO 的 updatedAt
+              && request.resource.data.get('authProvider', 'password') in ['google.com', 'password']
+              && isRecentIsoString(request.resource.data.updatedAt)
             )
           );
 
@@ -980,9 +1050,19 @@ service cloud.firestore {
         // v2.12（L6）：approver 更新時，稽核性欄位（createdAt／approvedBy／approvedByName／fromRequestId）
         //   與保留欄位（recordId／reqId）不可被改寫或新增。adminEditRecord 目前沒有任何 UI 呼叫點，
         //   正常編輯不會動到這幾個欄位。
+        // v2.12b（M-3）：改為欄位白名單（原本只擋 6 個稽核欄位，其餘任意欄位／任意大小都能寫）：
+        //   affectedKeys 僅限案件內容欄位 + updatedAt（updateSubstituteRecord 實際寫入的欄位；
+        //   目前沒有 UI 呼叫點），合併後文件再過 hasSafeCaseText（型別／合計長度／不含 < > "）。
+        //   稽核欄位（createdAt／approvedBy／approvedByName／fromRequestId）與保留欄位（recordId／
+        //   reqId）因不在白名單而自然不可改。
         allow update: if isApprover(schoolId)
-          && !request.resource.data.diff(resource.data).affectedKeys().hasAny(
-               ['createdAt', 'approvedBy', 'approvedByName', 'fromRequestId', 'recordId', 'reqId'])
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(
+               ['type', 'date', 'weekday', 'period', 'className', 'subject', 'domain', 'originalTeacher', 'substituteTeacher',
+                'swapDate', 'swapWeekday', 'swapPeriod', 'swapSubject', 'swapDomain', 'swapTeacher', 'docNumber',
+                'originalTeacherId', 'substituteTeacherId', 'swapTeacherId', 'updatedAt'])
+          && hasSafeCaseText(request.resource.data)
+          && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['updatedAt'])
+              || isRecentIsoString(request.resource.data.updatedAt))
           && (
             !('semesterId' in resource.data)
             || (
@@ -1023,20 +1103,21 @@ service cloud.firestore {
           allow create: if docId == 'detail'
                           && isValidPrivateDetailWrite(request.resource.data)
                           && (
-                            isApprover(schoolId)
-                            || (
+                            (
                               myTeacherId(schoolId) != ''
                               && request.resource.data.allowedTeacherIds.hasOnly([myTeacherId(schoolId)])
                               && request.resource.data.allowedTeacherIds.hasAll([myTeacherId(schoolId)])
                               && request.resource.data.leaveType in ['調課', 'swap']
                               && parentIsOwnSelfSwapOrAbsent(schoolId, recordId)
                             )
+                            || (idList30(request.resource.data.allowedTeacherIds) && isApprover(schoolId))
                           )
                           && parentAllowsNewPrivateDetail(schoolId, recordId);
           // 驗收修復（阻斷 2）：加歷史學期唯讀鎖，見 parentSubstituteRecordCurrentSemester()。
           allow update: if docId == 'detail'
                           && isApprover(schoolId)
                           && isValidPrivateDetailWrite(request.resource.data)
+                          && idList30(request.resource.data.allowedTeacherIds)
                           && parentSubstituteRecordCurrentSemester(schoolId, recordId);
           allow delete: if isDirector(schoolId);
         }
@@ -1119,18 +1200,20 @@ service cloud.firestore {
           allow read:   if hasPrivateDetailAccess(schoolId, resource.data);
           allow create: if docId == 'detail'
                           && isValidPrivateDetailWrite(request.resource.data)
+                          && idList30(request.resource.data.allowedTeacherIds)
                           && (
-                            isApprover(schoolId)
-                            || (
+                            (
                               myTeacherId(schoolId) != ''
                               && request.resource.data.allowedTeacherIds.hasAny([myTeacherId(schoolId)])
                               && parentIsOwnRequestOrAbsent(schoolId, reqId)
                             )
+                            || isApprover(schoolId)
                           )
                           && parentAllowsNewPendingRequestPrivateDetail(schoolId, reqId);
           allow update: if docId == 'detail'
                           && isApprover(schoolId)
                           && isValidPrivateDetailWrite(request.resource.data)
+                          && idList30(request.resource.data.allowedTeacherIds)
                           && parentPendingRequestCurrentSemester(schoolId, reqId);
           allow delete: if isDirector(schoolId);
         }
@@ -1271,7 +1354,7 @@ service cloud.firestore {
         && request.resource.data.schoolId is string
         && request.resource.data.schoolId.matches('^[a-z0-9_-]{1,50}$')
         && configExists(request.resource.data.schoolId)
-        && request.resource.data.createdAt is string;
+        && request.resource.data.createdAt is string && request.resource.data.createdAt.size() <= 40;
 
       // 刪除：僅本人。目前 client 沒有任何路徑會呼叫刪除，保留給本人自行清空的彈性
       // （例如未來允許使用者主動「離開學校」）不構成額外風險——能刪的永遠只是自己那一份，

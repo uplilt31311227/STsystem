@@ -260,6 +260,32 @@ export function commitBatch(writes, opts = {}) {
     return request('POST', `${DOCS_ROOT}:commit`, { ...opts, body });
 }
 
+/**
+ * 真正的 Firestore 交易（等同 SDK 的 runTransaction：beginTransaction → 交易內 batchGet → 單一 commit
+ * 帶 transaction id），規則評估與前端 approveRequest／consentRequest 的 tx.get＋tx.set／tx.update 相同。
+ * readPaths：交易內要讀的文件路徑；buildWrites(reads)：依讀到的資料（欄位物件陣列，依序）回傳
+ * [{ update: path, data }（tx.update，部分欄位＋文件須存在）| { create: path, data }（tx.set 新文件）]。
+ */
+export async function runTransaction(readPaths, buildWrites, opts = {}) {
+    const begin = await request('POST', `${DOCS_ROOT}:beginTransaction`, { ...opts, body: {} });
+    if (!begin.ok) return begin;
+    const txId = begin.raw.transaction;
+    const root = `projects/${PROJECT_ID}/databases/(default)/documents`;
+    const reads = [];
+    for (const p of readPaths) {
+        const g = await request('POST', `${DOCS_ROOT}:batchGet`, { ...opts, body: { documents: [`${root}/${p}`], transaction: txId } });
+        if (!g.ok) return { ...g, error: 'tx get: ' + g.error };
+        const found = Array.isArray(g.raw) ? g.raw.find(x => x.found)?.found : null;
+        if (!found) return { ok: false, status: 404, error: 'tx get: 文件不存在：' + p };
+        reads.push(fromFirestoreFields(found.fields || {}));
+    }
+    const writes = buildWrites(reads).map(w => w.update
+        ? { update: { name: `${root}/${w.update}`, fields: toFirestoreFields(w.data) },
+            updateMask: { fieldPaths: Object.keys(w.data) }, currentDocument: { exists: true } }
+        : { update: { name: `${root}/${w.create}`, fields: toFirestoreFields(w.data) }, currentDocument: { exists: false } });
+    return request('POST', `${DOCS_ROOT}:commit`, { ...opts, body: { writes, transaction: txId } });
+}
+
 /** 清空整個 emulator 資料庫（只有 emulator 有這個端點）。 */
 export async function clearFirestore() {
     await assertEmulator();

@@ -1,5 +1,24 @@
 # 版本紀錄 (Changelog)
 
+## [2026-11-11] 資安修補 v2.12b：驗收補強（firestore.rules，尚未部署）
+
+- **H-1** 近 1MB 文件：自我調課 `approvedAt` 套時間驗證；`pendingConsentTeacherIds`／private `allowedTeacherIds` 的每個元素限字串、長度、不含 `< > "`（`idList20`／`idList30`）；教師自改 `authProvider` 限 `google.com`／`password` 與 ISO `updatedAt`。
+- **H-2** 操作日誌 `details` 改為「單一限長 JSON 字串」（≤10000 字元；新增 `logDetails.js` 的 `packDetails`，超大內容截斷成摘要，日誌不會遺失）；舊資料的 map 仍可讀（日誌頁與 `filterLogsForCurrent` 同時相容）。
+- **M-1** approver 只能在對應狀態轉換時寫核准／駁回欄位（狀態不變時不得改任何欄位），時間須為近期 ISO。**M-2** 日誌 `actor.role` 須與教師檔 role 一致（`admin` 視同 `director`，白名單主任例外）。**M-3** approver 更新紀錄改欄位白名單＋安全字元＋限長。**M-4** 同意後名單長度須恰少一人。
+- **L** id／batchId 格式與型別；案件文字欄位 null 不再造成 evaluation error；時間欄位加絕對下界 2026-03-01；`swapConsents` 須為 map；`attemptedAt`／`userDirectory.createdAt` 限長。前端 `writeV2Record` 送出前先檢查 `< > "` 與長度，給明確繁中訊息。
+- **測試**：新增 `rules-hardening`（14 案，每項攻擊配前端形狀 ALLOW 對照）；`rules-workflows` 的核准改用真正的交易；`rules-identity` 撤銷斷言改為有效 payload 並配對照組。
+
+---
+
+## [2026-11-10] 資安修補 v2.12：身分與授權（firestore.rules，尚未部署）
+
+- 未驗證 email 不得綁定教師身分（白名單主任、成員資格、mapping 自建、emailIndex）；前端新增「email 尚未驗證」遮罩，註冊自動寄驗證信。
+- 成員資格綁定教師檔（刪除教師／改 email 後舊帳號立即失效），`deleteTeacher`／`updateTeacher` 一併刪除 mapping，新增 `scripts/cleanup-orphan-mappings.js`。
+- 同意人只能動自己那一筆；private/detail 歸屬與 docId 鎖定；稽核日誌 actor／時間戳；申請與自我調課欄位白名單；`users/{uid}/**` 收斂為 V1 備份單一文件；多項大小上限。
+- 測試：`rules-identity`／`consent`／`field-whitelist`／`workflows`／`v1-backup`。詳見 `docs/CHANGELOG.md`。
+
+---
+
 ## [2026-11-10] 帳單自動斷線（TWD 1000）與多層預算警報
 
 - 預算警報 TWD 250／300／500（只寄信）；新增 Cloud Function `billing-kill-switch`：當月實際花費達 TWD 1000 時自動解除 stsystem-9d5fe 的帳單綁定（全專案退回免費方案）。程式在 `cloud-functions/billing-kill-switch/`，運作與恢復步驟見 `docs/BILLING-KILL-SWITCH.md`。

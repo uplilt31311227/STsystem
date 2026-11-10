@@ -13,6 +13,8 @@
 
 import { seedAll } from './seed.mjs';
 import { getDoc, createDoc, updateDoc, mustSetDoc } from './emu-client.mjs';
+// 直接引用前端真正的實作（純函式，無瀏覽器依賴）：details 打包成 rules 接受的單一限長 JSON 字串
+import { packDetails } from '../../src/js/modules/v2/logDetails.js';
 
 export const SCHOOL = 'demo-alpha';
 
@@ -46,12 +48,13 @@ export async function setup() {
 export const as = (user) => ({ idToken: user.idToken });
 
 /* ===================== 日誌（operationLogger.log 的形狀） ===================== */
+// v2.12b：details 由 operationLogger 經 packDetails 打包（無內容 → {}；其餘 → JSON 字串）。
 
 export function logEntry(user, semesterId, action = 'create_request', targetType = 'pendingRequest', targetId = 'x', details = {}) {
     return {
         timestamp: iso(),
         actor: { uid: user.localId, email: user.email, name: user.name, role: user.role === 'admin' ? 'director' : user.role, teacherId: user.teacherId },
-        action, targetType, targetId, details, semesterId,
+        action, targetType, targetId, details: packDetails(details), semesterId,
     };
 }
 

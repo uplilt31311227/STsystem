@@ -15,6 +15,8 @@ tags:
 - **既有孤兒 mapping**：2026-11-10 備份的 6 筆 mapping 全部對得上教師檔且 email 相符（無孤兒）。上線前後仍可執行 `node scripts/cleanup-orphan-mappings.js`（預設只列印）確認；孤兒 mapping 在 v2.12 規則下本來就不賦予任何權限，清不清只影響資料整潔。
 - **既有文件帶白名單外欄位**：規則只在「寫入」時檢查欄位。`pendingRequests` 的 approver 更新只檢查 diff 的欄位，既有文件不受影響；`substituteRecords` 教師自建分支只影響新建。`userMappings` 的自建／更新（每次登入都會 merge 寫入）要求合併後文件只含 `linkedTeacherId／email／googleName／googlePhotoUrl／lastProviderId／lastLoginAt／updatedAt`，正式庫 6 筆皆符合；若日後有人手動加了其他欄位，該帳號登入時 mapping 更新會被拒（登入本身不受影響，走 S6 後備路徑）。
 - **案件文字欄位**：自我調課與申請的班級、科目、姓名、文號等欄位不得含 `<`、`>`、`"`，合計長度上限 1000 字元；課表若有含這三個字元的班級或科目名稱，該筆申請會被拒（需改課表資料）。
+- **v2.12b 日誌格式**：operationLogs.details 新寫入為 JSON 字串（舊資料為 map，兩者都能顯示）。新版 client 必須先於規則上線，否則舊 client 寫入非空 map 的日誌會被拒（日誌失敗不阻擋業務，但會漏記）。`actor.role` 須與教師檔 role 一致：主任若剛被改 role，在重新登入前的日誌 role 會不一致而被拒。
+- **v2.12b 已知未處理（低）**：案件文字含換行字元（R6-11）、已核准申請可由發起人事後補建 private（P4-4）、docNumber／subject 含 `"`／`<` 會被擋（R6-14/15，刻意保留）。
 - **日誌寫入與姓名**：稽核日誌的 actor.name 必須等於教師檔現行姓名；主任在某教師登入期間改了其姓名，該教師重新登入前的日誌寫入會被拒（失敗不阻擋業務流程，會在日誌頁籤顯示寫入失敗橫幅）。
 
 ## 2026-11-10 V1 個人雲端同步無限寫入迴圈，Firestore 帳單暴增（已修正並部署，V1 網址已停用）

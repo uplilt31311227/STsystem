@@ -1654,7 +1654,7 @@ async function renderLogsTab() {
                     <td data-label="角色"><span class="v2-role-tag ${l.actor?.role || ''}">${l.actor?.role || '—'}</span></td>
                     <td data-label="動作">${l.action}</td>
                     <td data-label="對象">${l.targetType || ''}${l.targetId ? ' / ' + l.targetId.slice(-6) : ''}</td>
-                    <td data-label="詳情"><code style="font-size:0.75rem;">${JSON.stringify(l.details).slice(0, 160)}</code></td>
+                    <td data-label="詳情"><code style="font-size:0.75rem;">${(typeof l.details === 'string' ? l.details : JSON.stringify(l.details)).slice(0, 160)}</code></td>
                 </tr>`).join('')}
             </tbody>
         </table>
@@ -3561,9 +3561,37 @@ function v2NeedsApproval(record) {
     return false;
 }
 
+/**
+ * v2.12b（L-2）：firestore.rules 對調代課案件的文字欄位有兩項限制——不得含 < > "（HTML 注入字元），
+ * 且所有案件文字合計 ≤ 1000 字元。送出前先在前端檢查，給明確的繁中訊息，而不是讓使用者看到
+ * 不明所以的「權限不足」。欄位清單須與 firestore.rules 的 hasSafeCaseText 對齊。
+ */
+const RULE_CASE_TEXT_FIELDS = {
+    className: '班級', subject: '科目', domain: '領域', originalTeacher: '原任課教師', substituteTeacher: '代課／調課教師',
+    swapTeacher: '對調教師', swapSubject: '對調科目', swapDomain: '對調領域', docNumber: '公文文號',
+    period: '節次', swapPeriod: '對調節次', weekday: '星期', swapWeekday: '對調星期',
+};
+function assertRuleSafeCaseText(record) {
+    let total = 0;
+    for (const [field, label] of Object.entries(RULE_CASE_TEXT_FIELDS)) {
+        const v = record[field];
+        if (typeof v !== 'string') continue;
+        if (/[<>"]/.test(v)) {
+            throw new Error(`「${label}」含有系統不允許的字元（< > "）：${v}
+請到課表資料或表單中移除這些字元後再送出。`);
+        }
+        total += v.length;
+    }
+    if (total > 900) {
+        throw new Error('班級、科目、教師姓名等欄位內容過長，無法送出。請檢查課表資料是否異常。');
+    }
+}
+
 async function writeV2Record(record) {
     const me = roleSvc.getCurrentIdentity();
     if (!me) throw new Error('尚未登入');
+    // approver 代發走 adminCreate（直接建立紀錄），規則不對該分支做字元檢查
+    if (!roleSvc.isAdmin()) assertRuleSafeCaseText(record);
 
     // 教師清單整個送出流程只抓一次，供 promptAdditionalConsentTeachers 與 resolveApproverInfo 共用
     const teachers = await dataSvc.listTeachers();
