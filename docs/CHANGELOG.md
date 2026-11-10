@@ -9,6 +9,16 @@ tags:
 
 ---
 
+## [2026-11-10] 帳單自動斷線（TWD 1000）與多層預算警報
+
+- **預算警報**（只寄信）：沿用 Firebase 自動建立的 TWD 250，新增帳單帳戶層級 TWD 300、500（實際 50%／90%／100%、預測 100%）。
+- **自動斷線**：新增 `cloud-functions/billing-kill-switch/`（Cloud Functions gen2、asia-east1、Node 20）。預算「STsystem 自動斷線 TWD 1000」→ Pub/Sub `billing-kill-switch` → 函式；當月實際花費 ≥ 1000 時呼叫 Cloud Billing API 解除 stsystem-9d5fe 的帳單綁定。只認指定的預算 ID 與帳單帳戶、只看實際花費不看預測。專屬 service account 只有 `billing.projectManager`、`browser`、`run.invoker`、`eventarc.eventReceiver`（`browser` 是 DRY_RUN 驗證時發現缺少後補上）。
+- stsystem-9d5fe 重新綁回帳單帳戶「STsystem」；啟用 Cloud Functions／Run／Build／Artifact Registry／Eventarc／Pub/Sub／Cloud Billing／Billing Budget API。
+- 文件：新增 `docs/BILLING-KILL-SWITCH.md`（運作、觸發後影響、恢復步驟、重新部署），`docs/DEPLOYMENT.md` 補帳單一節。
+- **驗證**：`decide.js` 單元測試 10/10；以 `DRY_RUN=true` 部署後送模擬訊息，見下方驗收紀錄。
+
+---
+
 ## [2026-11-10] 停用舊版（V1）網址：一律轉址到 V2
 
 - `index.html` `<head>` 最前面加同步轉址程式：沒帶 `?v2=1`、也不是預覽站時，用 `location.replace` 補上 `v2=1`（保留路徑、其他參數與 hash；判斷條件與 `envDetector.isV2Enabled()` 一致）。在任何 V1 程式載入前就轉走，V1 個人雲端同步不會再啟動。
