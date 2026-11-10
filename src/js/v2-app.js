@@ -87,6 +87,11 @@ let _v2GateError = false;
 // 分支，見 authGuardV2.js），讓遮罩顯示具體原因而不是永遠只有通用的「登入驗證時發生錯誤」。
 // null 時 renderAuthGate() 退回原本的通用文案（例如非 authGuard 拋出、訊息不明的例外）。
 let _v2GateErrorMessage = null;
+// v2.12（身分修補）：Email/密碼登入但 email 尚未驗證的使用者——firestore.rules 起要求
+// email_verified==true 才承認教師身分，未驗證帳號的所有讀寫都會 permission-denied。與其讓畫面
+// 靜默失敗，bootstrap 在解析身份「之前」就攔下，顯示說明 + 重寄驗證信 + 驗證後繼續的畫面。
+// null＝無此狀態；非 null 為 { email }。Google 登入的 email_verified 恆為 true，不會進入此狀態。
+let _v2UnverifiedState = null;
 
 /** 最小 HTML 逸出，避免 email 等外部值注入遮罩 innerHTML。 */
 function escapeHtml(s) {
@@ -158,6 +163,7 @@ function renderAuthGate() {
           `${_v2ApplyState.emailVerified}:${_v2ApplyState.application?.status || 'none'}`
         : '';
     const key = _v2GateError ? 'error:' + (_v2GateErrorMessage || '')
+              : _v2UnverifiedState ? 'unverified:' + _v2UnverifiedState.email
               : _v2ApplyState ? applyKey
               : 'default';
     if (gate.dataset.renderKey === key) return;   // 相同狀態免重繪 / 重綁監聽
@@ -172,6 +178,12 @@ function renderAuthGate() {
         return;
     }
 
+    if (_v2UnverifiedState) {
+        gate.innerHTML = renderUnverifiedGateContent(_v2UnverifiedState);
+        bindUnverifiedGateActions(gate);
+        return;
+    }
+
     if (_v2ApplyState) {
         gate.innerHTML = renderApplyGateContent(_v2ApplyState);
         bindApplyGateActions(gate);
@@ -182,6 +194,84 @@ function renderAuthGate() {
         `<p>本系統為全校共用，請先登入以使用。</p>` + renderGateSignInActions()
     );
     bindGateSignInActions(gate);
+}
+
+/**
+ * v2.12：Email/密碼登入但 email 尚未驗證 → 鎖住 app 並顯示驗證說明。刻意不登出（保留 session，
+ * 才能重寄驗證信與重新確認狀態）；唯一登出入口是畫面上的「登出，改用其他帳號」。
+ */
+async function enterUnverifiedFlow(user) {
+    _v2UnverifiedState = { email: (user.email || '').toLowerCase().trim() };
+    _v2ApplyState = null;
+    lockV2App();
+}
+
+function renderUnverifiedGateContent(state) {
+    return renderDefaultGateShell(`
+        <p class="v2-gate-denied">🔒 帳號 ${escapeHtml(state.email)} 的 email 尚未驗證</p>
+        <p>為了確認這個 email 真的是您本人的，系統要求先完成 email 驗證才能使用（用 Google 帳號登入則不需要這一步）。
+        請到信箱收信（也請檢查垃圾郵件匣），點擊信中的驗證連結；完成後回到這裡按「我已完成驗證，繼續」。</p>
+        <p>沒收到信？可以按「重新寄送驗證信」。驗證信由 Firebase 系統寄出，寄件人通常是 noreply@...firebaseapp.com。</p>
+        <div class="v2-auth-gate-actions">
+            <button id="v2-gate-unverified-resend" class="btn btn-primary btn-sm">重新寄送驗證信</button>
+            <button id="v2-gate-unverified-done" class="btn btn-secondary btn-sm">我已完成驗證，繼續</button>
+            <button id="v2-gate-unverified-logout" class="btn btn-ghost btn-sm">登出，改用其他帳號</button>
+        </div>
+    `);
+}
+
+function bindUnverifiedGateActions(gate) {
+    gate.querySelector('#v2-gate-unverified-logout')?.addEventListener('click', async () => {
+        try {
+            await authMod.signOutUser();
+        } catch (err) {
+            console.error('[v2] 登出失敗:', err);
+            notifyError(err, '登出');
+        }
+        // onAuthStateChanged(user=null) 的既有分支會清掉 _v2UnverifiedState 並重繪
+    });
+
+    gate.querySelector('#v2-gate-unverified-resend')?.addEventListener('click', async (e) => {
+        const btn = e.currentTarget;
+        btn.disabled = true;
+        try {
+            await authMod.sendVerificationEmail();
+            notify('驗證信已寄出，請至信箱點擊連結，完成後回來按「我已完成驗證，繼續」', 'success', 6000);
+        } catch (err) {
+            // Firebase 對短時間內重複寄信會回 auth/too-many-requests
+            if (err?.code === 'auth/too-many-requests') {
+                notify('寄信太頻繁，請稍等幾分鐘後再試（先檢查信箱與垃圾郵件匣是否已收到）', 'warning', 6000);
+            } else {
+                notifyError(err, '寄送驗證信');
+            }
+        } finally {
+            btn.disabled = false;
+        }
+    });
+
+    gate.querySelector('#v2-gate-unverified-done')?.addEventListener('click', async (e) => {
+        const btn = e.currentTarget;
+        btn.disabled = true;
+        try {
+            // 與申請流程的「我已完成驗證」同理（見 bindApplyGateActions 的 B2 註解）：reload() 更新
+            // 本機 emailVerified，getIdToken(true) 才會換發帶有 email_verified=true 的 token，
+            // 兩步都要做，之後的 Firestore 請求才會被規則承認。
+            const user = authMod.getCurrentUser();
+            await user?.reload?.();
+            await user?.getIdToken?.(true);
+            if (authMod.getCurrentUser()?.emailVerified) {
+                notify('驗證完成，重新載入中…', 'success', 2000);
+                // 比照 switchToNewSemester()／retry-login：用 reload 讓 bootstrap 從頭乾淨地跑一次
+                setTimeout(() => window.location.reload(), 600);
+                return;
+            }
+            notify('尚未偵測到驗證完成，請確認已點擊信件中的連結後再試一次', 'warning');
+        } catch (err) {
+            notifyError(err, '確認驗證狀態');
+        } finally {
+            btn.disabled = false;
+        }
+    });
 }
 
 function renderDefaultGateShell(bodyHtml) {
@@ -506,6 +596,7 @@ function lockV2App() {
 /** 解鎖 app（授權身份確認且初次渲染完成後）：清除拒絕/錯誤狀態並解除封鎖。 */
 function unlockV2App() {
     _v2ApplyState = null;
+    _v2UnverifiedState = null;
     _v2GateError = false;
     _v2GateErrorMessage = null;
     setAppLocked(false);
@@ -4863,9 +4954,13 @@ function openAuthModal(mode = 'signin') {
                 showMsg('已寄出密碼重設信，請至信箱收信。若未收到，請確認 email 正確且已被加入名單。', 'success');
                 btn.textContent = '已寄出';
             } else if (mode === 'register') {
-                await authMod.registerWithEmail(email, pwd);
+                const reg = await authMod.registerWithEmail(email, pwd);
                 closeAuthModal();
-                // onAuthStateChange 會接手；若 email 不在名單會被 authGuardV2 擋下並登出
+                // v2.12：註冊後已自動寄驗證信（失敗時在驗證畫面可重寄）；onAuthStateChange 會接手並
+                // 顯示「email 尚未驗證」畫面，驗證完成後才會進行名單配對。
+                notify(reg?.verificationSent
+                    ? '註冊成功，驗證信已寄到您的信箱，請先點擊信中連結完成驗證。'
+                    : '註冊成功，請在接下來的畫面按「重新寄送驗證信」並完成 email 驗證。', 'success', 8000);
             }
         } catch (e) {
             showMsg(e.message || '操作失敗');
@@ -4976,6 +5071,7 @@ async function bootstrap() {
             // Stage 4：登出（含申請流程遮罩內的「登出，改用其他帳號」）一併清空申請流程狀態，
             // 避免下一位登入者（不同 uid）短暫看到上一位使用者殘留的申請資訊。
             _v2ApplyState = null;
+            _v2UnverifiedState = null;
             // M4：登出重置為「尚未查過」（null），不是 false——下一位登入者可能是也可能不是
             // 平台管理者，false 會誤導成「已查過、確定不是」，導致設定頁永遠不再查詢。
             _v2IsPlatformAdmin = null;
@@ -4984,6 +5080,13 @@ async function bootstrap() {
             lockV2App();
             return;
         }
+        // v2.12：email 尚未驗證（只可能是 Email/密碼登入；Google 登入恆為已驗證）→ 在解析身份之前
+        // 就攔下，顯示說明畫面，不要讓使用者看到不明所以的 permission-denied。
+        if (user.emailVerified === false) {
+            await enterUnverifiedFlow(user);
+            return;
+        }
+        _v2UnverifiedState = null;
         try {
             // Phase 1.6.c：抓登入 provider（google.com / password），由 authGuardV2 寫入 teachers.authProvider
             const providerId = user.providerData?.[0]?.providerId || null;

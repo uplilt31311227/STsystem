@@ -47,6 +47,21 @@ npm run seed
 情境 2 與 4 各自在執行前重新種一次資料——它們會實際寫入與刪除文件，共用同一份資料會讓
 後跑的案例受前面影響。
 
+## 規則測試（v2.12 身分與授權修補）
+
+每支都會清空並重建 emulator 資料，**必須依序執行、不可並行**（`npm run test:rules-all` 已依序串接）。
+
+| 指令 | 案例數 | 內容 |
+|---|---|---|
+| `test:rules-identity` | 17 | 未驗證 email 搶註、白名單主任、mapping 撤銷（教師刪除／改 email）、跨校 get／list 隔離、joinAttempts／archives |
+| `test:rules-consent` | 7 | 多重調課同意人只能動自己那一筆、approver 不得繞過同意、申請刪除時機 |
+| `test:rules-field-whitelist` | 25 | 申請／自我調課欄位白名單、稽核日誌 actor／時間戳、private/detail 歸屬、大小上限 |
+| `test:rules-workflows` | 13 | 以前端實際寫入形狀走完全部審核流程（白名單完整性實證；改前端寫入欄位時必須同步更新 `kit.mjs`） |
+| `test:rules-v1-backup` | 5 | `users/{uid}/**` 收斂與舊 `data/{docId}` 路徑 |
+
+「未驗證／已驗證」帳號由 `emu-client.mjs` 的 `createTestUser(email, { emailVerified })` 與 `setEmailVerified()` 控制
+（測試 helper 專用，規則內沒有任何後門）。`kit.mjs` 的 payload 建構器逐函式對照前端來源，註解列出對應的檔案與函式。
+
 ## 假資料
 
 `test/fixtures/` 下的產生器一律使用固定 seed，同一份程式每次產生完全相同的資料，

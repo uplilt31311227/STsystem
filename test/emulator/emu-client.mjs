@@ -229,6 +229,37 @@ export async function listDocs(collectionPath, { pageSize = 300, ...opts } = {})
     return { ...res, docs };
 }
 
+/**
+ * 結構化查詢（等同 SDK 的 getDocs(query(collection, where(...))))，套用規則的 list 權限。
+ * parentPath 為父文件路徑（'' 代表根）；structuredQuery 為 REST 的 structuredQuery 物件。
+ * 回傳 { ok, status, docs:[{id, ...fields}] }。
+ */
+export async function runQuery(parentPath, structuredQuery, opts = {}) {
+    const base = parentPath ? `${DOCS_ROOT}/${parentPath}` : DOCS_ROOT;
+    const res  = await request('POST', `${base}:runQuery`, { ...opts, body: { structuredQuery } });
+    if (!res.ok) return res;
+    const rows = Array.isArray(res.raw) ? res.raw : [];
+    const docs = rows.filter(r => r.document).map(r => ({
+        id: r.document.name.split('/').pop(),
+        ...fromFirestoreFields(r.document.fields || {}),
+    }));
+    return { ...res, docs };
+}
+
+/**
+ * 原子批次寫入（等同 SDK 的 writeBatch().commit()），整批共用一次規則評估結果：任一筆被拒則整批失敗。
+ * writes: [{ delete: 'path' } | { set: 'path', data: {...} }]（set＝整份覆寫，不帶 precondition）。
+ */
+export function commitBatch(writes, opts = {}) {
+    const root = `projects/${PROJECT_ID}/databases/(default)/documents`;
+    const body = {
+        writes: writes.map(w => w.delete
+            ? { delete: `${root}/${w.delete}` }
+            : { update: { name: `${root}/${w.set}`, fields: toFirestoreFields(w.data) } }),
+    };
+    return request('POST', `${DOCS_ROOT}:commit`, { ...opts, body });
+}
+
 /** 清空整個 emulator 資料庫（只有 emulator 有這個端點）。 */
 export async function clearFirestore() {
     await assertEmulator();
@@ -276,6 +307,22 @@ export async function createTestUser(email, { password = 'test-password-1234', e
     }
 
     return { idToken: created.idToken, refreshToken: created.refreshToken, localId: created.localId, email };
+}
+
+/**
+ * 測試專用：改變 Auth emulator 內某帳號的 emailVerified，並重新登入換發 idToken（claim 要換發才生效）。
+ * 只存在於測試 helper——firestore.rules 內沒有任何「測試後門」，驗證與否完全取決於 token 的 email_verified。
+ */
+export async function setEmailVerified(email, verified, password = 'test-password-1234') {
+    await assertEmulator();
+    const before = await signIn(email, password);
+    const upd = await fetch(`${AUTH_ROOT}/accounts:update`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer owner' },
+        body: JSON.stringify({ localId: before.localId, emailVerified: !!verified }),
+    });
+    if (!upd.ok) throw new Error(`設定 emailVerified 失敗（${email}）：HTTP ${upd.status}`);
+    return signIn(email, password);
 }
 
 export async function signIn(email, password = 'test-password-1234') {

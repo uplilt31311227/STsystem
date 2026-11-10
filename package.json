@@ -9,7 +9,13 @@
     "test:rules-settlement": "node test/emulator/rules-settlement.mjs",
     "test:rules-role-guard": "node test/emulator/rules-role-guard.mjs",
     "test:rules-schedule-imports": "node test/emulator/rules-schedule-imports.mjs",
-    "test:rules-record-delete": "node test/emulator/rules-record-delete.mjs"
+    "test:rules-record-delete": "node test/emulator/rules-record-delete.mjs",
+    "test:rules-identity": "node test/emulator/rules-identity.mjs",
+    "test:rules-consent": "node test/emulator/rules-consent.mjs",
+    "test:rules-field-whitelist": "node test/emulator/rules-field-whitelist.mjs",
+    "test:rules-workflows": "node test/emulator/rules-workflows.mjs",
+    "test:rules-v1-backup": "node test/emulator/rules-v1-backup.mjs",
+    "test:rules-all": "npm run test:rules-identity && npm run test:rules-consent && npm run test:rules-field-whitelist && npm run test:rules-workflows && npm run test:rules-v1-backup && npm run test:rules-settlement && npm run test:rules-role-guard && npm run test:rules-schedule-imports && npm run test:rules-record-delete"
   },
   "devDependencies": {
     "firebase-tools": "^15.26.0",
