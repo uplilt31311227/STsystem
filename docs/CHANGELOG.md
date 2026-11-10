@@ -1,11 +1,23 @@
 ---
 created: 2026-03-12
-updated: 2026-11-05
+updated: 2026-11-10
 tags:
   - changelog
 ---
 
 # 版本紀錄
+
+---
+
+## [2026-11-10] 修正 V1 個人雲端即時同步無限寫入迴圈（正式站帳單事故）
+
+**起因**：[[ISSUES_LOG]] 2026-11-10。V1 頁面（未帶 `?v2=1`）登入後，收到 onSnapshot 快照（含自己剛寫入、伺服器確認後的回音）→ `loadFromCloud()` → `notifyDataChange()` → app.js 監聽回呼 `syncToCloud()` → 再寫入，無限循環。
+
+- `dataManager.loadFromCloud(data, { fromRealtime })`：即時同步來源帶 `fromRealtime: true`，`notifyDataChange(meta)` 把 meta 傳給監聽者。
+- `app.js enableRealtimeSyncAndListen()`：`meta.fromRealtime` 時只做九年級開關重繪，不回寫雲端。合併／衝突處理等非即時路徑行為不變。
+- 新增 `test/test-v1-realtime-loop.mjs`（已納入 `npm test`）：以 module hook stub 掉 Firebase，假 Firestore 每次 setDoc 後推回回音快照。
+
+**驗證**：新測試 4/4（總寫入 2 次）；同測試套在舊程式 0.4 秒內寫入 60 次、失敗 3 項（成功重現）；`npm test` 全數通過。
 
 ---
 
