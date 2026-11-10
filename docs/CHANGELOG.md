@@ -15,7 +15,8 @@ tags:
 - **自動斷線**：新增 `cloud-functions/billing-kill-switch/`（Cloud Functions gen2、asia-east1、Node 20）。預算「STsystem 自動斷線 TWD 1000」→ Pub/Sub `billing-kill-switch` → 函式；當月實際花費 ≥ 1000 時呼叫 Cloud Billing API 解除 stsystem-9d5fe 的帳單綁定。只認指定的預算 ID 與帳單帳戶、只看實際花費不看預測。專屬 service account 只有 `billing.projectManager`、`browser`、`run.invoker`、`eventarc.eventReceiver`（`browser` 是 DRY_RUN 驗證時發現缺少後補上）。
 - stsystem-9d5fe 重新綁回帳單帳戶「STsystem」；啟用 Cloud Functions／Run／Build／Artifact Registry／Eventarc／Pub/Sub／Cloud Billing／Billing Budget API。
 - 文件：新增 `docs/BILLING-KILL-SWITCH.md`（運作、觸發後影響、恢復步驟、重新部署），`docs/DEPLOYMENT.md` 補帳單一節。
-- **驗證**：`decide.js` 單元測試 10/10；以 `DRY_RUN=true` 部署後送模擬訊息，見下方驗收紀錄。
+- **code-review 修正**：設定缺漏時 fail-closed；`DRY_RUN` 只有明確 `false` 才斷線；只處理本月（太平洋時間）訊息；新增 `DISARMED_UNTIL` 暫停開關取代「調高預算再改回」的恢復流程；帳單 API 失敗改記 `CRITICAL` 結構化日誌；`.gcloudignore` 納入版控。
+- **驗證**：`decide.js` 單元測試 27/27；DRY_RUN 部署送模擬訊息（本月超標→本來會解除、上月→不動作），並收到真實預算通知（284.89 < 1000 不動作）。詳見 `docs/BILLING-KILL-SWITCH.md` 驗收紀錄。
 
 ---
 
