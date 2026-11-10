@@ -57,6 +57,7 @@ npm run seed
 | `test:rules-consent` | 7 | 多重調課同意人只能動自己那一筆、approver 不得繞過同意、申請刪除時機 |
 | `test:rules-field-whitelist` | 25 | 申請／自我調課欄位白名單、稽核日誌 actor／時間戳、private/detail 歸屬、大小上限 |
 | `test:rules-workflows` | 13 | 以前端實際寫入形狀走完全部審核流程（白名單完整性實證；改前端寫入欄位時必須同步更新 `kit.mjs`） |
+| `test:rules-hardening` | 14 | v2.12b 驗收補強：近 1MB 文件上限、日誌 details 字串化、approver 欄位轉換限制、actor.role、id 格式、時間下界等（案例編號對應 p3-verify 攻擊腳本） |
 | `test:rules-v1-backup` | 5 | `users/{uid}/**` 收斂與舊 `data/{docId}` 路徑 |
 
 「未驗證／已驗證」帳號由 `emu-client.mjs` 的 `createTestUser(email, { emailVerified })` 與 `setEmailVerified()` 控制

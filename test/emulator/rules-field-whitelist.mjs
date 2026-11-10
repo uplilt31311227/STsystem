@@ -17,6 +17,7 @@ import {
     setup, P, as, iso, DAY, logEntry, appSubstituteRecord, appSwapRecord, resolveApproverInfo, writeV2Payload,
     buildPendingRequestDocs, submitPending, submitRecord, nameToIdMap,
 } from './kit.mjs';
+import { packDetails } from '../../src/js/modules/v2/logDetails.js';
 
 const W = await setup();
 const { semesterId, fixture, dir, chief, t1, t2, t3, t4 } = W;
@@ -173,14 +174,14 @@ await suite.case('5-c 日誌：時間戳為未來（9999 年置頂）／非 ISO 
 });
 await suite.case('5-d 日誌：欄位白名單／長度上限（details 鍵數、action／targetId 字元集）→ DENY；上限內 → ALLOW', async () => {
     const keys = (n) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`k${i}`, 1]));
-    denied(await logA(t1, { details: keys(31) }), 'details 31 個鍵');
-    allowed(await logA(t1, { details: keys(30) }), 'details 30 個鍵');
+    denied(await logA(t1, { details: keys(31) }), 'details 為非空 map（v2.12b 起新寫入一律為 JSON 字串，見 rules-hardening H-2）');
+    allowed(await logA(t1, { details: packDetails(keys(30)) }), 'details 30 個鍵（經 packDetails 打包成 JSON 字串）');
     denied(await logA(t1, { evil: 'x' }), '多餘欄位');
     denied(await logA(t1, { action: 'DELETE<script>' }), 'action 含非法字元');
     denied(await logA(t1, { action: 'a'.repeat(65) }), 'action 超過 64');
     denied(await logA(t1, { targetId: 'x"><img src=x onerror=1>' }), 'targetId 帶 HTML');
     denied(await logA(t1, { targetType: 'x'.repeat(51) }), 'targetType 超過 50');
-    denied(await logA(t1, { details: 'string' }), 'details 非 map');
+    denied(await logA(t1, { details: 12345 }), 'details 為數字');
     allowed(await logA(t1, { targetId: null, details: null }), 'targetId／details 為 null（前端合法）');
 });
 await suite.case('5-e 日誌：非成員（外部人士）寫入 → DENY', async () => {

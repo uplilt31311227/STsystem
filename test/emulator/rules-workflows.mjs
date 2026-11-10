@@ -9,7 +9,7 @@
  *
  * 用法：先 npm run emu，再 node test/emulator/rules-workflows.mjs（會清空並重建 emulator 資料）
  */
-import { createDoc, updateDoc, deleteDoc, getDoc } from './emu-client.mjs';
+import { createDoc, updateDoc, deleteDoc, getDoc, runTransaction } from './emu-client.mjs';
 import { Suite, allowed, denied, eq, ok } from '../scenarios/harness.mjs';
 import {
     setup, P, as, iso, logEntry, appSubstituteRecord, appSwapRecord, resolveApproverInfo, writeV2Payload,
@@ -37,10 +37,13 @@ async function approve(approver, reqId) {
     record.fromRequestId = reqId; record.createdAt = record.createdAt || now;
     record.affectedTeacherIds = buildAffectedList({ reqId, ...snap });
     record.semesterId = semesterId;
-    allowed(await createDoc(P.records, recordId, record, as(approver)), `核准：建立紀錄（${reqId}）`);
-    allowed(await updateDoc(`${P.pending}/${reqId}`, {
-        status: 'approved', approvedAt: now, approvedBy: approver.teacherId, approvedByName: approver.name, statusUpdatedAt: now,
-    }, as(approver)), `核准：申請轉 approved（${reqId}）`);
+    // v2.12b（L-8）：改用真正的交易——tx.get(申請) → tx.set(新紀錄) ＋ tx.update(申請)，在單一 commit
+    // 內一起評估（與 pendingRequestService.approveRequest 相同），涵蓋規則在交易中的運算式／文件存取配額
+    allowed(await runTransaction([`${P.pending}/${reqId}`], () => [
+        { create: `${P.records}/${recordId}`, data: record },
+        { update: `${P.pending}/${reqId}`, data: {
+            status: 'approved', approvedAt: now, approvedBy: approver.teacherId, approvedByName: approver.name, statusUpdatedAt: now } },
+    ], as(approver)), `核准（交易）：建立紀錄＋申請轉 approved（${reqId}）`);
     return recordId;
 }
 

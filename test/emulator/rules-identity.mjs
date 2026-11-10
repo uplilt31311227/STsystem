@@ -18,7 +18,7 @@ import {
     createTestUser, setEmailVerified, runQuery, commitBatch,
 } from './emu-client.mjs';
 import { Suite, allowed, denied, eq, ok } from '../scenarios/harness.mjs';
-import { setup, P, as, iso, logEntry, buildPending, buildSelfSwap } from './kit.mjs';
+import { setup, P, as, iso, logEntry, buildPending, buildSelfSwap, seedPending } from './kit.mjs';
 
 const W = await setup();
 const { semesterId, dir, chief, t1, t2, t3, t4, beta, outsider } = W;
@@ -124,6 +124,10 @@ await suite.case('2-b 教師 email 被改掉 → 舊帳號立即失效（含 app
     // t4 先升為組長，才能證明「角色」也被撤銷
     await mergeDoc(`${P.teachers}/${t4.teacherId}`, { role: 'section_chief' });
     allowed(await listDocs(P.logs, as(t4)), '改 email 前：組長可讀日誌');
+    for (const id of ['zz_revoke_a', 'zz_revoke_b', 'zz_revoke_c']) {
+        await seedPending(id, { requestType: 'swap', status: 'pending_approval', pendingConsentTeacherIds: [], initiatedBy: t1.teacherId, initiatedByName: t1.name, semesterId });
+    }
+    allowed(await updateDoc(`${P.pending}/zz_revoke_c`, { status: 'approved', approvedBy: t4.teacherId, approvedByName: t4.name, approvedAt: iso(), statusUpdatedAt: iso() }, as(t4)), '改 email 前：同款 payload 由 t4（組長）核准成功');
     const newEmail = 'renamed4@alpha.demo.test';
     await mergeDoc(`${P.teachers}/${t4.teacherId}`, { email: newEmail });
     await mustSetDoc(`${P.emailIdx}/${newEmail}`, { teacherId: t4.teacherId });
@@ -132,7 +136,11 @@ await suite.case('2-b 教師 email 被改掉 → 舊帳號立即失效（含 app
     denied(await listDocs(P.teachers, as(t4)), '舊帳號讀名冊');
     denied(await listDocs(P.logs, as(t4)), '舊帳號讀日誌（原 approver 角色不再生效）');
     denied(await createDoc(P.logs, rid('log'), logEntry(t4, semesterId), as(t4)), '舊帳號寫日誌');
-    denied(await updateDoc(`${P.pending}/${W.fixture.pendingRequests[0].reqId}`, { status: 'rejected' }, as(t4)), '舊帳號駁回申請');
+    // v2.12b（L-8）：撤銷斷言必須用「有效 approver 送同樣 payload 會成功」的 payload，否則舊帳號被拒
+    // 可能只是 payload 本身不合法，證明不了撤銷。對照組：改 email 前的 t4、以及 chief 以同款 payload。
+    const approvePayload = (u) => ({ status: 'approved', approvedBy: u.teacherId, approvedByName: u.name, approvedAt: iso(), statusUpdatedAt: iso() });
+    denied(await updateDoc(`${P.pending}/zz_revoke_a`, approvePayload(t4), as(t4)), '舊帳號核准申請（payload 與有效組長相同）');
+    allowed(await updateDoc(`${P.pending}/zz_revoke_b`, approvePayload(chief), as(chief)), '對照：有效組長以同款 payload 核准同形申請');
     // 舊帳號想重新綁定回該教師檔 → email 不符
     denied(await setDoc(`${P.mappings}/${t4.localId}`, mappingBody(t4.teacherId, t4.email), as(t4)), '舊帳號重建 mapping');
     // 新 email 帳號：正常登入流程（emailIndex → mapping → 成員）
