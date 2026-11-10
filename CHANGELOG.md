@@ -1,5 +1,12 @@
 # 版本紀錄 (Changelog)
 
+## [2026-11-10] 修正 V1 個人雲端即時同步無限寫入迴圈（正式站帳單事故）
+
+- V1 頁面收到 onSnapshot 快照（含自己寫入的回音）後會再 `syncToCloud()`，形成無限寫入迴圈。`loadFromCloud` 新增 `fromRealtime` 標記並經 `notifyDataChange(meta)` 傳給監聽者，app.js 對即時來源不回寫。
+- 新增 `test/test-v1-realtime-loop.mjs`（納入 `npm test`），舊程式可重現迴圈、新程式通過。詳見 `docs/CHANGELOG.md`、`docs/ISSUES_LOG.md` 2026-11-10。
+
+---
+
 ## [2026-11-07] Firestore rules v2.11：開放組長刪除目前學期的調代課紀錄（已部署）
 
 - 使用者決定開放組長刪除。`substituteRecords` delete 由「僅 director」放寬為「director，或 approver 且紀錄屬目前學期」（無 semesterId 的舊紀錄比照 update 可刪）；歷史學期仍只有主任能刪。前端（adminDeleteRecord、紀錄頁刪除鈕）本就以 approver 判定，不需改。private/detail 的 delete 維持僅 director。
