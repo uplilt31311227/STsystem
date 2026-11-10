@@ -437,8 +437,9 @@ class SubstituteTeacherApp {
         if (this._dataChangeListenerBound) return;
         this._dataChangeListenerBound = true;
 
-        // 監聽資料變更（onSnapshot 已過濾本地寫入，僅他機雲端變更會觸發）
-        this.dataManager.onDataChange(async () => {
+        // 監聽資料變更。注意：onSnapshot 只過濾「尚未送達伺服器」的本地寫入，伺服器確認後
+        // 自己的寫入仍會以快照回來，故以 meta.fromRealtime 區分、不回寫。
+        this.dataManager.onDataChange(async (_data, meta = {}) => {
             // 偵測雲端是否翻轉了「九年級已畢業」開關 → 即時重繪相依 UI
             const current = this.dataManager.isGrade9Disabled();
             if (current !== this._syncedGrade9Disabled) {
@@ -447,7 +448,9 @@ class SubstituteTeacherApp {
                 this.refreshGrade9DependentUI();
             }
 
-            // 自動回寫雲端
+            // 自動回寫雲端——但雲端即時推來的資料（含自己剛寫入的回音）不可回寫，
+            // 否則形成無限寫入迴圈（見 dataManager.loadFromCloud 註解）
+            if (meta.fromRealtime) return;
             if (isSignedIn()) {
                 await this.dataManager.syncToCloud();
             }

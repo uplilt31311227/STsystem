@@ -815,7 +815,7 @@ export class DataManager {
      * 從雲端資料載入
      * @param {Object} data - 雲端資料物件
      */
-    loadFromCloud(data) {
+    loadFromCloud(data, { fromRealtime = false } = {}) {
         if (!data) return;
 
         if (data.schoolName !== undefined) this.schoolName = data.schoolName;
@@ -827,8 +827,10 @@ export class DataManager {
         if (data.lastModified) this.lastModified = data.lastModified;
         if (data.version !== undefined) this.version = data.version;
 
-        // 通知所有監聽者
-        this.notifyDataChange();
+        // 通知所有監聽者。fromRealtime=true 時告訴監聽者「這是雲端推來的，不要再回寫」——
+        // 否則會形成 寫入 → 自己的回音快照 → 再寫入 的無限迴圈（2026-11-09 正式站事故，
+        // 單一分頁約每秒 1–2 次整份 setDoc，兩天燒掉 76 GiB 對外流量）。
+        this.notifyDataChange({ fromRealtime });
     }
 
     /**
@@ -880,7 +882,7 @@ export class DataManager {
         // 啟用新的即時同步
         this.unsubscribeRealtimeSync = enableRealtimeSync((data) => {
             console.log('收到雲端資料更新');
-            this.loadFromCloud(data);
+            this.loadFromCloud(data, { fromRealtime: true });
         });
 
         return this.unsubscribeRealtimeSync;
@@ -939,10 +941,10 @@ export class DataManager {
     /**
      * 通知資料變更
      */
-    notifyDataChange() {
+    notifyDataChange(meta = {}) {
         this.onDataChangeCallbacks.forEach(callback => {
             try {
-                callback(this.exportForSync());
+                callback(this.exportForSync(), meta);
             } catch (error) {
                 console.error('資料變更回調執行錯誤:', error);
             }
