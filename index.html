@@ -2,6 +2,21 @@
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
+    <!-- 2026-11-10 停用舊版（V1）網址：未帶 ?v2=1 且非預覽站時，一律轉址到 V2。
+         V1 個人雲端即時同步曾造成無限寫入迴圈與帳單事故（docs/ISSUES_LOG.md 2026-11-10）。
+         判斷條件與 src/js/modules/v2/envDetector.js isV2Enabled() 一致；同步執行，
+         在任何 V1 程式載入前就轉走。保留原路徑、其他參數與 hash。 -->
+    <script>
+    (function () {
+        var l = window.location;
+        var p = new URLSearchParams(l.search);
+        if (p.get('v2') === '1') return;
+        if ((l.hostname || '').indexOf('preview') !== -1) return;
+        if (/(^|\/)[^/]*-preview(\/|$)/.test(l.pathname || '')) return;
+        p.set('v2', '1');
+        l.replace(l.pathname + '?' + p.toString() + l.hash);
+    })();
+    </script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>國中調代課自動化系統</title>
     <!-- Favicon - 使用 SVG 作為網站圖標 -->
