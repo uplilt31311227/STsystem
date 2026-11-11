@@ -25,6 +25,13 @@ import { notify, notifyError, setSyncStatus, resetSyncStatus } from './modules/v
 import * as semesterUtils from './modules/v2/semesterUtils.js';
 import { todayLocal } from './modules/localDate.js';
 import * as semesterState from './modules/v2/semesterState.js';
+import { escapeHtml, toNum, pickAllowed } from './modules/htmlEscape.js';
+import { assertRuleSafeCaseText } from './modules/v2/caseTextRule.js';
+import { filterSameBatch } from './modules/v2/batchGuard.js';
+import {
+    fmtDate, renderLogRow, renderRecordRow, renderPendingCard,
+    consentActions, approvalActions, mineActions, ROLE_CLASS_WHITELIST
+} from './modules/v2/htmlRows.js';
 import { pendingRequestsToOccupancyRecords, createShortTtlCache } from './modules/v2/assignmentConflict.js';
 
 /* ===== 樣式注入 ===== */
@@ -93,11 +100,7 @@ let _v2GateErrorMessage = null;
 // null＝無此狀態；非 null 為 { email }。Google 登入的 email_verified 恆為 true，不會進入此狀態。
 let _v2UnverifiedState = null;
 
-/** 最小 HTML 逸出，避免 email 等外部值注入遮罩 innerHTML。 */
-function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, c =>
-        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-}
+// HTML 逸出 escapeHtml() 已移到共用模組 modules/htmlEscape.js（全專案唯一實作）。
 
 /** 注入登入遮罩元素（只需一次）。實際顯隱由 body.v2-locked + .app-container[inert] 控制。 */
 function injectV2AuthGate() {
@@ -604,10 +607,7 @@ function unlockV2App() {
 
 /* ===== 渲染（待辦 / 教師管理 / 操作日誌） ===== */
 
-function fmtDate(iso) {
-    try { return new Date(iso).toLocaleString('zh-TW', { hour12: false }); }
-    catch { return iso || ''; }
-}
+// fmtDate 已移到 modules/v2/htmlRows.js（與列／卡片組字函式一起，供 node 單元測試）。
 
 /** 待辦清單頁籤上的紅點數量徽章：待我同意 + 待我審核 加總。 */
 /**
@@ -717,61 +717,16 @@ async function renderPendingTab() {
 
     updatePendingNavBadge(pendingSourceError ? null : (consentMine.length + approvalQueue.length));
 
-    const stageLabel = (r) => {
-        switch (r.status) {
-            case REQUEST_STATUS.PENDING_SWAP_CONSENT: return '<span class="v2-status-tag pending">⏳ 待同意</span>';
-            case REQUEST_STATUS.PENDING_APPROVAL:      return '<span class="v2-status-tag pending">📋 待核准</span>';
-            case REQUEST_STATUS.APPROVED:              return '<span class="v2-status-tag approved">✅ 已核准</span>';
-            case REQUEST_STATUS.REJECTED:              return '<span class="v2-status-tag rejected">❌ 被拒絕</span>';
-            default: return '';
-        }
-    };
-
-    const typeLabel = (r) => ({
-        [REQUEST_TYPES.SUBSTITUTE]: '代課',
-        [REQUEST_TYPES.SWAP]:       '調課',
-        [REQUEST_TYPES.MULTI_SWAP]: '多重調課',
-    }[r.requestType] || r.type || '調課');
-
     const consentRemainMeta = (r) => {
         const remain = Array.isArray(r.pendingConsentTeacherIds) ? r.pendingConsentTeacherIds.length : 0;
         return r.requestType === REQUEST_TYPES.MULTI_SWAP ? ` ・ 尚待 ${remain} 人同意` : '';
     };
 
-    const itemCard = (r, cls, actionsHtml, extraMeta = '') => `
-        <div class="list-item list-item-${cls}" data-id="${r.reqId}">
-            <div>
-                ${stageLabel(r)}
-                <strong>${typeLabel(r)}</strong> ・ ${escapeHtml(r.date || '')} ${escapeHtml(r.period || '?')} ・ ${escapeHtml(r.className || '')} ${escapeHtml(r.subject || '')}
-            </div>
-            <div class="v2-pending-meta">
-                發起：${escapeHtml(r.initiatedByName || r.initiatedBy || '')}${extraMeta} ・ ${fmtDate(r.createdAt)}
-                ${r.status === REQUEST_STATUS.REJECTED && r.rejectNote ? `<br>拒絕原因：${escapeHtml(r.rejectNote)}` : ''}
-            </div>
-            <div class="v2-pending-actions">${actionsHtml}</div>
-        </div>`;
-
     const renderList = (items, cls, emptyMsg, actionsFn, extraMetaFn) =>
         items.length
-            ? items.map(r => itemCard(r, cls, actionsFn(r), extraMetaFn ? extraMetaFn(r) : '')).join('')
-            : `<p class="muted">${emptyMsg}</p>`;
-
-    // 同意按鈕：文案改為純「同意」（Phase 3 前是「同意並產生 PDF」，PDF 現在改到 approver 核准後才產）
-    const consentActions = (r) =>
-        `<button class="btn btn-primary btn-sm v2-consent-btn" data-id="${r.reqId}">同意</button>
-         <button class="btn btn-secondary btn-sm v2-reject-btn" data-id="${r.reqId}">拒絕</button>`;
-
-    const approvalActions = (r) =>
-        `<button class="btn btn-primary btn-sm v2-final-approve-btn" data-id="${r.reqId}">核准並產生 PDF</button>
-         <button class="btn btn-secondary btn-sm v2-reject-btn" data-id="${r.reqId}">駁回</button>`;
-
-    const mineActions = (r) => {
-        if (r.status === REQUEST_STATUS.REJECTED) {
-            return `<button class="btn btn-secondary btn-sm v2-dismiss-btn" data-id="${r.reqId}">我知道了</button>`;
-        }
-        if (r.status === REQUEST_STATUS.APPROVED) return '';
-        return `<button class="btn btn-danger btn-sm v2-cancel-btn" data-id="${r.reqId}">撤回</button>`;
-    };
+            ? items.map(r => renderPendingCard(r, cls, actionsFn(r), extraMetaFn ? extraMetaFn(r) : '')).join('')
+            : `<p class="muted">${escapeHtml(emptyMsg)}</p>`;
+    // 卡片、同意／核准／撤回按鈕的組字已移到 modules/v2/htmlRows.js（data-id 皆已跳脫）。
 
     // 「我的申請」補對象資訊：multi_swap 顯示尚待同意人數，其餘顯示對象教師姓名
     const mineMeta = (r) => {
@@ -782,7 +737,7 @@ async function renderPendingTab() {
     // 驗收修復（中 #A）：pendingSourceError 非 null 時，「待我同意/待我審核」三個區塊統一
     // 顯示這張卡片，取代 renderList 的空狀態文字——避免使用者把「讀取失敗」誤讀成「沒有待辦」。
     const pendingErrorCard = (label) => `
-        <div class="v2-logs-failed-banner">⚠ ${label}目前讀取失敗，無法確認是否有待辦事項，不代表「沒有」。
+        <div class="v2-logs-failed-banner">⚠ ${escapeHtml(label)}目前讀取失敗，無法確認是否有待辦事項，不代表「沒有」。
             <button class="btn btn-secondary btn-sm v2-refresh-pending-source-btn" style="margin-left:0.5rem;">重新整理</button></div>`;
 
     if (isStaleRender(_gen)) return;   // 期間身份已切換 → 放棄回填，保持 reset 清空的狀態
@@ -869,10 +824,10 @@ async function renderPendingTab() {
             if (note === null) return;   // 取消：中止拒絕動作（留空但按「確定」仍會繼續執行）
             btn.disabled = true;
             try {
-                const batchId = (await dataSvc.getPendingRequest(btn.dataset.id).catch(() => null))?.batchId;
+                const batchReq = await dataSvc.getPendingRequest(btn.dataset.id).catch(() => null);
                 await requestSvc.rejectRequest(btn.dataset.id, note);
                 await renderPendingTab();
-                await finalizeBatchAfterClose(batchId);
+                await finalizeBatchAfterClose(batchReq);
             } catch (e) {
                 if (e.code === 'ALREADY_PROCESSED') {
                     window.app?.showToast?.(e.message || '此請求已被處理', 'warning', 4000);
@@ -890,10 +845,10 @@ async function renderPendingTab() {
             });
             if (!ok) return;
             try {
-                const batchId = (await dataSvc.getPendingRequest(btn.dataset.id).catch(() => null))?.batchId;
+                const batchReq = await dataSvc.getPendingRequest(btn.dataset.id).catch(() => null);
                 await requestSvc.cancelRequest(btn.dataset.id);
                 await renderPendingTab();
-                await finalizeBatchAfterClose(batchId);
+                await finalizeBatchAfterClose(batchReq);
             }
             catch (e) { notifyError(e, '撤回請求'); }
         }));
@@ -1109,7 +1064,7 @@ async function renderTeachersAdminTab() {
                 <span class="v2-badge" id="v2-missing-email-badge"
                       title="尚有教師未指派 email，無法登入"
                       style="${missingEmailCount > 0 ? '' : 'display:none;'}"
-                >${missingEmailCount > 0 ? `⚠ ${missingEmailCount} 位待指派 email` : ''}</span>
+                >${missingEmailCount > 0 ? `⚠ ${toNum(missingEmailCount)} 位待指派 email` : ''}</span>
             </h3>
             ${canRoster ? `
             <div>
@@ -1151,7 +1106,7 @@ async function renderTeachersAdminTab() {
                 const lockAttr = canRoster ? '' : 'disabled title="僅教務主任可修改"';
                 const isSelfRow = !!myTeacherId && t.teacherId === myTeacherId;
                 return `
-                <tr class="${rowClass}" data-id="${t.teacherId}" data-name="${escapeHtml(t.name)}">
+                <tr class="${rowClass}" data-id="${escapeHtml(t.teacherId)}" data-name="${escapeHtml(t.name)}">
                     <td data-label="姓名" class="cell-primary">${escapeHtml(t.name)}</td>
                     <td data-label="Email（登入帳號）">
                         <input type="email" class="v2-email-input" value="${escapeHtml(t.email || '')}"
@@ -1163,7 +1118,7 @@ async function renderTeachersAdminTab() {
                             <option value="section_chief" ${normRole === 'section_chief' ? 'selected' : ''}>組長</option>
                             <option value="director"      ${normRole === 'director' ? 'selected' : ''}>主任</option>
                         </select>
-                        <span class="v2-role-tag ${normRole}" style="margin-left:6px;">${roleLabel(t.role)}</span>
+                        <span class="v2-role-tag ${pickAllowed(normRole, ROLE_CLASS_WHITELIST)}" style="margin-left:6px;">${roleLabel(t.role)}</span>
                     </td>
                     <td data-label="任教領域">
                         <input type="text" class="v2-domains-input" value="${escapeHtml((t.domains || []).join(', '))}"
@@ -1426,6 +1381,10 @@ async function renderTeachersAdminTab() {
         const file = ev.target.files && ev.target.files[0];
         ev.target.value = ''; // 清空，允許使用者重新選同一檔案時仍觸發 change
         if (!file) return;
+        if (file.size > 5 * 1024 * 1024) {
+            notify('名冊 CSV 檔案太大（上限 5 MB），請確認是否選錯檔案', 'error');
+            return;
+        }
         try {
             const rows = await parseRosterCsvFile(file);
             const preview = await teacherMgr.importRosterCsv(rows, { dryRun: true });
@@ -1464,7 +1423,7 @@ function renderLegacyMigrationCard(info) {
     const rows = sources.map(s => {
         const label = LEGACY_SOURCE_LABELS[s.source] || s.source || '未知來源';
         const when  = s.lastModified ? fmtDate(s.lastModified) : '未知';
-        return `<li>${escapeHtml(label)}：<strong>${s.count}</strong> 筆｜最後修改：${escapeHtml(when)}</li>`;
+        return `<li>${escapeHtml(label)}：<strong>${toNum(s.count)}</strong> 筆｜最後修改：${escapeHtml(when)}</li>`;
     }).join('');
 
     const unionNote = sources.length > 1
@@ -1587,7 +1546,7 @@ function promptRosterImportPreview(preview) {
                 </div>
                 ${errors.length ? `
                 <div class="v2-roster-error-list">
-                    ${errors.map(e => `<div class="v2-roster-error-row">第 ${e.row} 列．${escapeHtml(e.name || '（無姓名）')}．${escapeHtml(e.reason)}</div>`).join('')}
+                    ${errors.map(e => `<div class="v2-roster-error-row">第 ${toNum(e.row)} 列．${escapeHtml(e.name || '（無姓名）')}．${escapeHtml(e.reason)}</div>`).join('')}
                 </div>` : ''}
                 ${!hasImportable ? '<p class="form-msg error" style="display:block;">沒有可匯入的資料，請修正 CSV 後重新上傳。</p>' : ''}
                 <div class="modal-actions">
@@ -1638,24 +1597,16 @@ async function renderLogsTab() {
 
     if (isStaleRender(_gen)) return;   // 期間身份已切換 → 放棄回填操作日誌
     host.innerHTML = `
-        ${failedCount > 0 ? `<div class="v2-logs-failed-banner">⚠ 本次工作階段有 ${failedCount} 筆稽核日誌寫入失敗</div>` : ''}
+        ${failedCount > 0 ? `<div class="v2-logs-failed-banner">⚠ 本次工作階段有 ${toNum(failedCount)} 筆稽核日誌寫入失敗</div>` : ''}
         <div class="v2-section-header">
-            <h3>操作日誌 <small style="color:#6b7280;font-weight:normal;">（${visible.length} 筆）</small></h3>
+            <h3>操作日誌 <small style="color:#6b7280;font-weight:normal;">（${toNum(visible.length)} 筆）</small></h3>
             <button class="btn btn-secondary btn-sm" id="v2-refresh-logs">重新整理</button>
         </div>
         <div class="table-wrap">
         <table class="data-table data-table-compact v2-log-table data-table-cards">
             <thead><tr><th>時間</th><th>操作者</th><th>角色</th><th>動作</th><th>對象</th><th>詳情</th></tr></thead>
             <tbody>
-            ${visible.map(l => `
-                <tr>
-                    <td data-label="時間">${fmtDate(l.timestamp)}</td>
-                    <td data-label="操作者">${l.actor?.name || l.actor?.email || '—'}</td>
-                    <td data-label="角色"><span class="v2-role-tag ${l.actor?.role || ''}">${l.actor?.role || '—'}</span></td>
-                    <td data-label="動作">${l.action}</td>
-                    <td data-label="對象">${l.targetType || ''}${l.targetId ? ' / ' + l.targetId.slice(-6) : ''}</td>
-                    <td data-label="詳情"><code style="font-size:0.75rem;">${(typeof l.details === 'string' ? l.details : JSON.stringify(l.details)).slice(0, 160)}</code></td>
-                </tr>`).join('')}
+            ${visible.map(l => renderLogRow(l)).join('')}
             </tbody>
         </table>
         </div>
@@ -1671,7 +1622,7 @@ async function renderLogsTab() {
                 ? '<tr><td colspan="3" style="color:#9ca3af;">目前沒有被拒絕的登入嘗試</td></tr>'
                 : joinAttempts.map(j => `
                 <tr>
-                    <td data-label="時間">${fmtDate(j.attemptedAt)}</td>
+                    <td data-label="時間">${escapeHtml(fmtDate(j.attemptedAt))}</td>
                     <td data-label="Email">${escapeHtml(j.email || '—')}</td>
                     <td data-label="原因">${escapeHtml(j.reason || '—')}</td>
                 </tr>`).join('')}
@@ -1744,7 +1695,6 @@ async function renderRecordsTab() {
 
     const visible   = roleSvc.filterRecordsForCurrent(all);
     const isApprover = roleSvc.isApprover();
-    const APPROVER_ROLES_FOR_BADGE = ['admin', 'director', 'section_chief'];
 
     // Phase 5：legacy 篩選（全部／僅新／僅舊）純前端過濾，不影響 visible 本身（PDF/刪除仍可對到完整紀錄）。
     const legacyFiltered = _v2RecordsLegacyFilter === 'legacy' ? visible.filter(r => r.isLegacy)
@@ -1758,7 +1708,7 @@ async function renderRecordsTab() {
     // 改成另外呼叫 listTeachers()：避免每次重繪都額外多打一次 Firestore 換取一個純顯示層的
     // 下拉選單完整度，且教師名字本來就能用「輸入日期篩選」間接查到。
     const teacherNames = Array.from(new Set(
-        visible.flatMap(r => [r.originalTeacher, r.substituteTeacher, r.swapTeacher]).filter(Boolean)
+        visible.flatMap(r => [r.originalTeacher, r.substituteTeacher, r.swapTeacher]).filter(Boolean).map(String)
     )).sort((a, b) => a.localeCompare(b, 'zh-TW'));
 
     // 起訖日已在資料來源層處理（v2GetRecordsInRange），這裡只再做教師姓名的純前端過濾。
@@ -1769,7 +1719,7 @@ async function renderRecordsTab() {
     if (isStaleRender(_gen)) return;   // 期間身份已切換 → 放棄回填全校紀錄
     host.innerHTML = `
         <div class="v2-section-header">
-            <h3>全校調代課紀錄 <small style="color:#6b7280;font-weight:normal;">（${displayed.length} 筆｜${isApprover ? '核准者視圖' : '個人相關'}）</small></h3>
+            <h3>全校調代課紀錄 <small style="color:#6b7280;font-weight:normal;">（${toNum(displayed.length)} 筆｜${isApprover ? '核准者視圖' : '個人相關'}）</small></h3>
             <div>
                 <label style="font-size:0.85rem;color:#6b7280;">顯示
                     <select id="v2-records-legacy-filter" class="v2-records-filter">
@@ -1793,11 +1743,11 @@ async function renderRecordsTab() {
                 </div>
                 <div class="form-group form-group-inline">
                     <label for="v2-record-start-date">起始</label>
-                    <input type="date" id="v2-record-start-date" value="${_v2RecordsFilterStart}" ${viewingHistorySemester ? 'disabled' : ''}>
+                    <input type="date" id="v2-record-start-date" value="${escapeHtml(_v2RecordsFilterStart)}" ${viewingHistorySemester ? 'disabled' : ''}>
                 </div>
                 <div class="form-group form-group-inline">
                     <label for="v2-record-end-date">結束</label>
-                    <input type="date" id="v2-record-end-date" value="${_v2RecordsFilterEnd}" ${viewingHistorySemester ? 'disabled' : ''}>
+                    <input type="date" id="v2-record-end-date" value="${escapeHtml(_v2RecordsFilterEnd)}" ${viewingHistorySemester ? 'disabled' : ''}>
                 </div>
                 <div class="form-group form-group-inline">
                     <label for="v2-record-teacher">教師</label>
@@ -1829,20 +1779,7 @@ async function renderRecordsTab() {
                 <th>操作</th>
             </tr></thead>
             <tbody>
-            ${displayed.map(r => `
-                <tr data-id="${r.recordId}">
-                    <td data-label="日期" class="cell-primary">${r.date || ''}</td>
-                    <td data-label="節次">${r.period || ''}</td>
-                    <td data-label="班級">${r.className || ''}</td>
-                    <td data-label="原教師">${r.originalTeacher || ''}</td>
-                    <td data-label="代/調對象">${r.substituteTeacher || r.swapTeacher || ''}</td>
-                    <td data-label="類型">${r.type || ''}${APPROVER_ROLES_FOR_BADGE.includes(r.initiatedByRole) ? ' <span class="v2-role-tag director">代發</span>' : ''}${r.isLegacy ? ' <span class="v2-legacy-badge" title="遷移自 V1 舊系統">舊系統</span>' : ''}</td>
-                    <td data-label="發起">${r.initiatedByName || ''}</td>
-                    <td class="cell-actions">
-                        <button class="btn btn-secondary btn-sm v2-download-pdf" data-id="${r.recordId}">下載 PDF</button>
-                        ${isApprover ? `<button class="btn btn-danger btn-sm v2-admin-delete" data-id="${r.recordId}">刪除</button>` : ''}
-                    </td>
-                </tr>`).join('')}
+            ${displayed.map(r => renderRecordRow(r, isApprover)).join('')}
             </tbody>
         </table>
         </div>
@@ -3457,6 +3394,9 @@ function promptAdditionalConsentTeachers(record, allTeachers) {
  *   - 確定（含留空）：resolve(該字串，可能是空字串)。
  * @returns {Promise<string|null>}
  */
+// firestore.rules 對 pendingRequests.rejectNote 的上限（isValidApproverUpdate：size() <= 500）
+const REJECT_NOTE_MAX = 500;
+
 function promptRejectReason() {
     return new Promise((resolve) => {
         const backdrop = document.createElement('div');
@@ -3467,7 +3407,8 @@ function promptRejectReason() {
                 <h3>拒絕原因</h3>
                 <div class="form-group">
                     <label for="v2-reject-reason-input">原因（可留空，對方會看到）</label>
-                    <textarea id="v2-reject-reason-input" rows="3"></textarea>
+                    <textarea id="v2-reject-reason-input" rows="3" maxlength="${REJECT_NOTE_MAX}"></textarea>
+                    <span class="hint" id="v2-reject-reason-hint">最多 ${REJECT_NOTE_MAX} 字</span>
                 </div>
                 <div class="modal-actions">
                     <button class="btn btn-secondary" id="v2-reject-reason-cancel">取消</button>
@@ -3482,7 +3423,17 @@ function promptRejectReason() {
 
         const cleanup = (result) => { backdrop.remove(); resolve(result); };
         backdrop.querySelector('#v2-reject-reason-cancel').addEventListener('click', () => cleanup(null));
-        backdrop.querySelector('#v2-reject-reason-confirm').addEventListener('click', () => cleanup(textarea.value || ''));
+        backdrop.querySelector('#v2-reject-reason-confirm').addEventListener('click', () => {
+            const value = textarea.value || '';
+            // maxlength 擋得住鍵入，擋不住所有貼上／輸入法情境；送出前再檢查一次，超過就留在對話框提示
+            if (value.length > REJECT_NOTE_MAX) {
+                const hint = backdrop.querySelector('#v2-reject-reason-hint');
+                if (hint) hint.textContent = `拒絕原因最多 ${REJECT_NOTE_MAX} 字（目前 ${value.length} 字），請縮短後再送出`;
+                textarea.focus();
+                return;
+            }
+            cleanup(value);
+        });
         backdrop.addEventListener('click', (e) => { if (e.target === backdrop) cleanup(null); });
     });
 }
@@ -3561,31 +3512,10 @@ function v2NeedsApproval(record) {
     return false;
 }
 
-/**
- * v2.12b（L-2）：firestore.rules 對調代課案件的文字欄位有兩項限制——不得含 < > "（HTML 注入字元），
- * 且所有案件文字合計 ≤ 1000 字元。送出前先在前端檢查，給明確的繁中訊息，而不是讓使用者看到
- * 不明所以的「權限不足」。欄位清單須與 firestore.rules 的 hasSafeCaseText 對齊。
- */
-const RULE_CASE_TEXT_FIELDS = {
-    className: '班級', subject: '科目', domain: '領域', originalTeacher: '原任課教師', substituteTeacher: '代課／調課教師',
-    swapTeacher: '對調教師', swapSubject: '對調科目', swapDomain: '對調領域', docNumber: '公文文號',
-    period: '節次', swapPeriod: '對調節次', weekday: '星期', swapWeekday: '對調星期',
-};
-function assertRuleSafeCaseText(record) {
-    let total = 0;
-    for (const [field, label] of Object.entries(RULE_CASE_TEXT_FIELDS)) {
-        const v = record[field];
-        if (typeof v !== 'string') continue;
-        if (/[<>"]/.test(v)) {
-            throw new Error(`「${label}」含有系統不允許的字元（< > "）：${v}
-請到課表資料或表單中移除這些字元後再送出。`);
-        }
-        total += v.length;
-    }
-    if (total > 900) {
-        throw new Error('班級、科目、教師姓名等欄位內容過長，無法送出。請檢查課表資料是否異常。');
-    }
-}
+// v2.12b（L-2）：firestore.rules 對調代課案件的文字欄位（hasSafeCaseText）限制——不得含 < > "，
+// 所有案件文字合計 ≤ 1000 字元（約 30 個欄位含分隔符，缺欄用預設值）。送出前先在前端檢查，給明確的
+// 繁中訊息，而不是讓使用者看到不明所以的「權限不足」。欄位清單與計算方式集中在
+// modules/v2/caseTextRule.js，並由 test/test-html-escape.mjs 讀取 firestore.rules 比對是否一致。
 
 async function writeV2Record(record) {
     const me = roleSvc.getCurrentIdentity();
@@ -3626,6 +3556,9 @@ async function writeV2Record(record) {
     // 已在 resolveApproverInfo 解析成 additionalConsentTeacherIds，不需再寫入文件。
     delete payload.__v2NeedsApproval;
     delete payload.additionalConsentTeachers;
+    // 以最終寫入文件的形狀（含 resolveApproverInfo 補上的 id／姓名欄位）再檢查一次，與 rules 的
+    // hasSafeCaseText 同一份欄位清單與計算方式——前端放行者 rules 必定放行。
+    if (!roleSvc.isAdmin()) assertRuleSafeCaseText(payload);
 
     if (roleSvc.isAdmin()) {
         payload.initiatedBy = ids.originalTeacherId || me.teacherId;
@@ -4629,7 +4562,7 @@ function showGoToTeacherAdminToast(count) {
     toast.innerHTML = `
         <span class="toast-icon">📧</span>
         <div class="toast-body">
-            <div><strong>${count}</strong> 位新教師待指派 email</div>
+            <div><strong>${toNum(count)}</strong> 位新教師待指派 email</div>
             <div class="v2-pending-meta">未指派 email 的教師無法登入系統</div>
             <div class="action-buttons">
                 <button id="v2-goto-teacher-admin" class="btn btn-primary btn-sm">前往教師管理</button>
@@ -4781,12 +4714,14 @@ function findBrokenSwapDependencies(records, scheduleData) {
  * 拒絕按鈕也供對方教師「拒絕同意」使用，不在教師端下載整批單；教師端觸發時改由 approver
  * 於紀錄頁重印補產（見 generateRecordPdf 重印模式）。
  */
-async function finalizeBatchAfterClose(batchId) {
+async function finalizeBatchAfterClose(batchReq) {
+    const batchId = batchReq?.batchId;
     if (!batchId || !roleSvc.isApprover()) return;
     try {
-        const open = await dataSvc.listOpenPendingRequestsByBatch(batchId);
+        // batchId 是可被指定的資料欄位：只認與被關閉申請同發起者的同批項目（見 modules/v2/batchGuard.js）
+        const open = filterSameBatch(batchReq, await dataSvc.listOpenPendingRequestsByBatch(batchId));
         if (open.length > 0) return;
-        const recs = await dataSvc.listSubstituteRecordsByBatch(batchId);
+        const recs = filterSameBatch(batchReq, await dataSvc.listSubstituteRecordsByBatch(batchId));
         const first = recs.find(r => !r.deleted && !r.isDeleted && (!r.status || r.status === 'approved'));
         if (!first) return;
         const result = await generateRecordPdf(first, { mode: 'approve' });
@@ -4810,7 +4745,7 @@ async function generateRecordPdf(record, { mode = 'reprint' } = {}) {
         // 在途申請查詢獨立容錯：讀不到（例如日後收緊 pendingRequests 讀取權限）不應讓重印整個失敗。
         // 核准模式讀不到時保守視為「仍有在途」而延後，避免提前產出不完整的整批單。
         let pendingUnknown = false;
-        const [siblings, openPending] = await Promise.all([
+        const [siblingsRaw, openPendingRaw] = await Promise.all([
             dataSvc.listSubstituteRecordsByBatch(record.batchId),
             dataSvc.listOpenPendingRequestsByBatch(record.batchId).catch(err => {
                 console.warn('[V2] 讀取同批在途申請失敗：', err);
@@ -4818,6 +4753,10 @@ async function generateRecordPdf(record, { mode = 'reprint' } = {}) {
                 return [];
             }),
         ]);
+        // batchId 是教師可寫入的資料欄位（自我調課紀錄可指定成他人的批次 id）：
+        // 只保留與這筆紀錄同發起者的同批項目，避免混入他人的紀錄／在途申請（modules/v2/batchGuard.js）。
+        const siblings = filterSameBatch(record, siblingsRaw);
+        const openPending = filterSameBatch(record, openPendingRaw);
         if (mode === 'approve' && pendingUnknown) {
             app.showToast?.('此筆已核准，但無法確認同批其他申請的狀態，暫不產生調課單；請稍後至「調代課紀錄」重印', 'warning', 8000);
             return 'deferred';
@@ -4919,7 +4858,7 @@ function openAuthModal(mode = 'signin') {
     backdrop.innerHTML = `
         <div class="modal-content">
             <div class="modal-body">
-            <h3>${titles[mode]}</h3>
+            <h3>${escapeHtml(titles[mode])}</h3>
             ${mode !== 'forgot' ? `
                 <div class="form-group">
                     <label>Email</label>
@@ -4936,7 +4875,7 @@ function openAuthModal(mode = 'signin') {
                 </div>
             `}
             <div class="form-msg" id="v2-modal-msg" style="display:none;"></div>
-            <p style="font-size:0.78rem; color:#6b7280; margin-top:0.6rem;">${helpText[mode]}</p>
+            <p style="font-size:0.78rem; color:#6b7280; margin-top:0.6rem;">${escapeHtml(helpText[mode])}</p>
             <div class="modal-actions">
                 <button class="btn btn-secondary" id="v2-modal-cancel">取消</button>
                 <button class="btn btn-primary" id="v2-modal-submit">
@@ -5171,7 +5110,12 @@ async function bootstrap() {
             const roleLabelMap = { director: '教務主任', section_chief: '教學組長', teacher: '教師' };
             const nameSpan = document.getElementById('user-name');
             if (nameSpan) {
-                nameSpan.innerHTML = `${identity.name} <span class="v2-role-tag ${identity.role}">${roleLabelMap[identity.role] || '教師'}</span>`;
+                // 姓名來自教師檔（組長可改、名冊 CSV／課表匯入也會寫入），不可走 innerHTML：
+                // 以 DOM API 建節點，姓名只當文字節點。
+                const roleTag = document.createElement('span');
+                roleTag.className = 'v2-role-tag ' + pickAllowed(identity.role, ROLE_CLASS_WHITELIST);
+                roleTag.textContent = Object.hasOwn(roleLabelMap, identity.role) ? roleLabelMap[identity.role] : '教師';
+                nameSpan.replaceChildren(document.createTextNode(String(identity.name ?? '') + ' '), roleTag);
             }
 
             // Stage 2（RESEARCH-multitenancy-semester.md §5/§8 Stage 2）：學期成為一級概念，

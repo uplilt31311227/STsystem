@@ -156,14 +156,14 @@ export async function listTeachers() {
     const fs   = await getV2Firestore();
     const col  = fs.collection(fs.db, SCHEMA_PATHS.teachersCol());
     const snap = await fs.getDocs(col);
-    return snap.docs.map(d => ({ teacherId: d.id, ...d.data() }));
+    return snap.docs.map(d => ({ ...d.data(), teacherId: d.id }));
 }
 
 export async function getTeacher(teacherId) {
     const fs   = await getV2Firestore();
     const ref  = fs.doc(fs.db, SCHEMA_PATHS.teacherDoc(teacherId));
     const snap = await fs.getDoc(ref);
-    return snap.exists() ? { teacherId: snap.id, ...snap.data() } : null;
+    return snap.exists() ? { ...snap.data(), teacherId: snap.id } : null;
 }
 
 export async function findTeacherByEmail(email) {
@@ -214,7 +214,7 @@ export async function createTeacher({ name, email = null, domains = [], homeroom
     }
     await batch.commit();
 
-    return { teacherId, ...data };
+    return { ...data, teacherId };
 }
 
 export async function updateTeacher(teacherId, patch) {
@@ -345,7 +345,7 @@ export async function listJoinAttempts() {
     const fs   = await getV2Firestore();
     const col  = fs.collection(fs.db, SCHEMA_PATHS.joinAttemptsCol());
     const snap = await fs.getDocs(col);
-    return snap.docs.map(d => ({ uid: d.id, ...d.data() }));
+    return snap.docs.map(d => ({ ...d.data(), uid: d.id }));
 }
 
 /* ===== Schedule（Stage 2：per-semester 文件，§5.3/§5.6） =====
@@ -508,7 +508,7 @@ export async function listSubstituteRecords() {
     const col  = fs.collection(fs.db, SCHEMA_PATHS.substituteCol());
     const q    = fs.query(col, fs.orderBy('createdAt', 'desc'));
     const snap = await fs.getDocs(q);
-    return snap.docs.map(d => ({ recordId: d.id, ...d.data() }));
+    return snap.docs.map(d => ({ ...d.data(), recordId: d.id }));
 }
 
 /**
@@ -522,7 +522,7 @@ export async function listAllSubstituteRecordsForClear() {
     const fs   = await getV2Firestore();
     const col  = fs.collection(fs.db, SCHEMA_PATHS.substituteCol());
     const snap = await fs.getDocs(col);
-    return snap.docs.map(d => ({ recordId: d.id, ...d.data() }));
+    return snap.docs.map(d => ({ ...d.data(), recordId: d.id }));
 }
 
 /**
@@ -553,7 +553,7 @@ export async function listSubstituteRecordsPage({ pageSize = DEFAULT_PAGE_SIZE, 
     constraints.push(fs.limit(pageSize));
     const q      = fs.query(col, ...constraints);
     const snap   = await fs.getDocs(q);
-    const records = snap.docs.map(d => ({ recordId: d.id, ...d.data() }));
+    const records = snap.docs.map(d => ({ ...d.data(), recordId: d.id }));
     return {
         records,
         nextCursor: snap.docs.length ? snap.docs[snap.docs.length - 1] : afterCursor,
@@ -579,7 +579,7 @@ export async function listSubstituteRecordsByBatch(batchId) {
     const fs   = await getV2Firestore();
     const col  = fs.collection(fs.db, SCHEMA_PATHS.substituteCol());
     const snap = await fs.getDocs(fs.query(col, fs.where('batchId', '==', String(batchId))));
-    return snap.docs.map(d => ({ recordId: d.id, ...d.data() }));
+    return snap.docs.map(d => ({ ...d.data(), recordId: d.id }));
 }
 
 /** 多重調課批次：同一 batchId 仍在途（待同意／待核准）的申請。 */
@@ -589,7 +589,7 @@ export async function listOpenPendingRequestsByBatch(batchId) {
     const col  = fs.collection(fs.db, SCHEMA_PATHS.pendingCol());
     const snap = await fs.getDocs(fs.query(col, fs.where('batchId', '==', String(batchId))));
     return snap.docs
-        .map(d => ({ reqId: d.id, ...d.data() }))
+        .map(d => ({ ...d.data(), reqId: d.id }))
         .filter(r => OPEN_REQUEST_STATUSES.includes(r.status));
 }
 
@@ -599,7 +599,7 @@ export async function listSubstituteRecordsBySemester(semesterId) {
     const col  = fs.collection(fs.db, SCHEMA_PATHS.substituteCol());
     const q    = fs.query(col, fs.where('semesterId', '==', semesterId), fs.orderBy('date', 'desc'));
     const snap = await fs.getDocs(q);
-    return snap.docs.map(d => ({ recordId: d.id, ...d.data() }));
+    return snap.docs.map(d => ({ ...d.data(), recordId: d.id }));
 }
 
 /**
@@ -616,7 +616,7 @@ export async function listSubstituteRecordsBySemesterForArchive(semesterId) {
     const col  = fs.collection(fs.db, SCHEMA_PATHS.substituteCol());
     const q    = fs.query(col, fs.where('semesterId', '==', semesterId));
     const snap = await fs.getDocs(q);
-    return snap.docs.map(d => ({ recordId: d.id, ...d.data() }));
+    return snap.docs.map(d => ({ ...d.data(), recordId: d.id }));
 }
 
 /**
@@ -630,7 +630,7 @@ export async function listPendingRequestsBySemesterForArchive(semesterId) {
     const col  = fs.collection(fs.db, SCHEMA_PATHS.pendingCol());
     const q    = fs.query(col, fs.where('semesterId', '==', semesterId));
     const snap = await fs.getDocs(q);
-    return snap.docs.map(d => ({ reqId: d.id, ...d.data() }));
+    return snap.docs.map(d => ({ ...d.data(), reqId: d.id }));
 }
 
 /**
@@ -645,7 +645,7 @@ export async function listLogsBySemesterForArchive(semesterId) {
     const col  = fs.collection(fs.db, SCHEMA_PATHS.logsCol());
     const q    = fs.query(col, fs.where('semesterId', '==', semesterId));
     const snap = await fs.getDocs(q);
-    return snap.docs.map(d => ({ logId: d.id, ...d.data() }));
+    return snap.docs.map(d => ({ ...d.data(), logId: d.id }));
 }
 
 /**
@@ -666,7 +666,7 @@ export async function queryRecordsByExactDate(date) {
     const col  = fs.collection(fs.db, SCHEMA_PATHS.substituteCol());
     const q    = fs.query(col, fs.where('date', '==', date));
     const snap = await fs.getDocs(q);
-    return snap.docs.map(d => ({ recordId: d.id, ...d.data() }));
+    return snap.docs.map(d => ({ ...d.data(), recordId: d.id }));
 }
 
 /**
@@ -682,7 +682,7 @@ export async function queryPendingRequestsByExactDate(date) {
     const col  = fs.collection(fs.db, SCHEMA_PATHS.pendingCol());
     const q    = fs.query(col, fs.where('date', '==', date));
     const snap = await fs.getDocs(q);
-    return snap.docs.map(d => ({ reqId: d.id, ...d.data() }));
+    return snap.docs.map(d => ({ ...d.data(), reqId: d.id }));
 }
 
 /** 今天的 YYYY-MM-DD（本機時區）。 */
@@ -780,7 +780,7 @@ export async function queryRecordsByDateRange({ startDate = null, endDate = null
         fs.orderBy('date', 'desc'),
     );
     const snap = await fs.getDocs(q);
-    return snap.docs.map(d => ({ recordId: d.id, ...d.data() }));
+    return snap.docs.map(d => ({ ...d.data(), recordId: d.id }));
 }
 
 /**
@@ -799,7 +799,7 @@ export async function queryRecordsBySwapDateRange({ startDate = null, endDate = 
         fs.where('swapDate', '<=', effectiveEnd),
     );
     const snap = await fs.getDocs(q);
-    return snap.docs.map(d => ({ recordId: d.id, ...d.data() }));
+    return snap.docs.map(d => ({ ...d.data(), recordId: d.id }));
 }
 
 /**
@@ -821,7 +821,7 @@ export async function getSubstituteRecord(recordId) {
     const fs   = await getV2Firestore();
     const ref  = fs.doc(fs.db, SCHEMA_PATHS.substituteDoc(recordId));
     const snap = await fs.getDoc(ref);
-    return snap.exists() ? { recordId: snap.id, ...snap.data() } : null;
+    return snap.exists() ? { ...snap.data(), recordId: snap.id } : null;
 }
 
 // Stage 2（§6.1）：substituteRecords 的建立規則會鎖 `semesterId == config.currentSemester`，
@@ -856,7 +856,7 @@ export async function createSubstituteRecord(record) {
     const ref = fs.doc(fs.db, SCHEMA_PATHS.substituteDoc(recordId));
     await fs.setDoc(ref, publicPart);
 
-    return { recordId, ...base };
+    return { ...base, recordId };
 }
 
 export async function updateSubstituteRecord(recordId, patch) {
@@ -1122,7 +1122,7 @@ export async function listPendingRequests() {
     const col  = fs.collection(fs.db, SCHEMA_PATHS.pendingCol());
     const q    = fs.query(col, fs.orderBy('createdAt', 'desc'));
     const snap = await fs.getDocs(q);
-    return snap.docs.map(d => ({ reqId: d.id, ...d.data() }));
+    return snap.docs.map(d => ({ ...d.data(), reqId: d.id }));
 }
 
 /** 清除流程專用：不帶 orderBy 讀取「全部」待審請求。理由同 listAllSubstituteRecordsForClear()。 */
@@ -1130,7 +1130,7 @@ export async function listAllPendingRequestsForClear() {
     const fs   = await getV2Firestore();
     const col  = fs.collection(fs.db, SCHEMA_PATHS.pendingCol());
     const snap = await fs.getDocs(col);
-    return snap.docs.map(d => ({ reqId: d.id, ...d.data() }));
+    return snap.docs.map(d => ({ ...d.data(), reqId: d.id }));
 }
 
 /**
@@ -1149,7 +1149,7 @@ export async function listOpenPendingRequests(semesterId = semesterState.getCurr
     if (semesterId) constraints.unshift(fs.where('semesterId', '==', semesterId));
     const q    = fs.query(col, ...constraints);
     const snap = await fs.getDocs(q);
-    return snap.docs.map(d => ({ reqId: d.id, ...d.data() }));
+    return snap.docs.map(d => ({ ...d.data(), reqId: d.id }));
 }
 
 /**
@@ -1171,14 +1171,14 @@ export async function listPendingRequestsByInitiator(teacherId) {
         fs.orderBy('createdAt', 'desc'),
     );
     const snap = await fs.getDocs(q);
-    return snap.docs.map(d => ({ reqId: d.id, ...d.data() }));
+    return snap.docs.map(d => ({ ...d.data(), reqId: d.id }));
 }
 
 export async function getPendingRequest(reqId) {
     const fs   = await getV2Firestore();
     const ref  = fs.doc(fs.db, SCHEMA_PATHS.pendingDoc(reqId));
     const snap = await fs.getDoc(ref);
-    return snap.exists() ? { reqId: snap.id, ...snap.data() } : null;
+    return snap.exists() ? { ...snap.data(), reqId: snap.id } : null;
 }
 
 // reqId 可選：pendingRequestService.createRequest 需要在寫入父文件「之前」先把 id 定下來，
@@ -1196,7 +1196,7 @@ export async function createPendingRequest(req, reqId = genId('req')) {
     }
     const data  = { ...req, semesterId, createdAt: req.createdAt || new Date().toISOString() };
     await fs.setDoc(ref, data);
-    return { reqId, ...data };
+    return { ...data, reqId };
 }
 
 export async function updatePendingRequest(reqId, patch) {
@@ -1383,7 +1383,7 @@ export async function appendLog(entry) {
     const fs  = await getV2Firestore();
     const col = fs.collection(fs.db, SCHEMA_PATHS.logsCol());
     const ref = await fs.addDoc(col, entry);
-    return { logId: ref.id, ...entry };
+    return { ...entry, logId: ref.id };
 }
 
 // Stage 1（§5.4）：日誌預設筆數從 200 降到 50——操作日誌本就是低頻查閱的稽核輔助資訊，
@@ -1395,7 +1395,7 @@ export async function listLogs({ limit: lim = DEFAULT_PAGE_SIZE, since = null } 
     if (since) constraints.unshift(fs.where('timestamp', '>=', since));
     const q    = fs.query(col, ...constraints);
     const snap = await fs.getDocs(q);
-    return snap.docs.map(d => ({ logId: d.id, ...d.data() }));
+    return snap.docs.map(d => ({ ...d.data(), logId: d.id }));
 }
 
 /* ===== 即時訂閱（onSnapshot） ===== */
@@ -1419,7 +1419,7 @@ export async function subscribePendingRequests(callback, onError, { semesterId =
     if (semesterId) constraints.unshift(fs.where('semesterId', '==', semesterId));
     const q = fs.query(col, ...constraints);
     return fs.onSnapshot(q, (snap) => {
-        callback(snap.docs.map(d => ({ reqId: d.id, ...d.data() })));
+        callback(snap.docs.map(d => ({ ...d.data(), reqId: d.id })));
     }, onError);
 }
 
@@ -1440,7 +1440,7 @@ export async function subscribeSubstituteRecords(callback, onError, { limit: lim
     const q = fs.query(col, ...constraints);
     return fs.onSnapshot(q, (snap) => {
         const lastDoc = snap.docs.length ? snap.docs[snap.docs.length - 1] : null;
-        callback(snap.docs.map(d => ({ recordId: d.id, ...d.data() })), { lastDoc });
+        callback(snap.docs.map(d => ({ ...d.data(), recordId: d.id })), { lastDoc });
     }, onError);
 }
 
@@ -1479,6 +1479,6 @@ export async function subscribeOperationLogs(callback, { limit: lim = DEFAULT_PA
     const col = fs.collection(fs.db, SCHEMA_PATHS.logsCol());
     const q   = fs.query(col, fs.orderBy('timestamp', 'desc'), fs.limit(lim));
     return fs.onSnapshot(q, (snap) => {
-        callback(snap.docs.map(d => ({ logId: d.id, ...d.data() })));
+        callback(snap.docs.map(d => ({ ...d.data(), logId: d.id })));
     }, onError);
 }

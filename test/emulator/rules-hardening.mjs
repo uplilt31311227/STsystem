@@ -203,5 +203,39 @@ await suite.case('L-7 joinAttempts.attemptedAt／userDirectory.createdAt 100KB�
     allowed(await setDoc(`userDirectory/${o.localId}`, { schoolId: fixture.schoolId, createdAt: iso() }, as(o)), 'createdAt ISO');
 });
 
+/* ===================== P4b：自我調課必帶 initiatedBy／actorRoleOk 缺 role／rejectNote 超長 ===================== */
+await suite.case('P4b-1 自我調課紀錄必須帶 initiatedBy == 本人：省略／別人 → DENY；帶本人（前端 writeV2Record 形狀）→ ALLOW', async () => {
+    denied(await self(d => { const { initiatedBy, ...rest } = d; return rest; }), '省略 initiatedBy（可繞過前端 batchGuard）');
+    denied(await self(d => ({ ...d, initiatedBy: t2.teacherId })), 'initiatedBy 為別人');
+    allowed(await self(d => d), '對照：前端形狀（initiatedBy = 本人）');
+});
+
+await suite.case('P4b-2 actorRoleOk：教師檔缺 role 欄位 → 日誌寫入不再 evaluation error（role 缺省視為 teacher）；role 偽造仍 DENY', async () => {
+    const cur = await getDoc(`${P.teachers}/${t5.teacherId}`);
+    const { role, ...noRole } = cur.data;
+    await mustSetDoc(`${P.teachers}/${t5.teacherId}`, noRole);
+    allowed(await log(t5, {}, { role: 'teacher' }), '教師檔缺 role、日誌 actor.role=teacher');
+    allowed(await log(t5, {}, { role: null }), '教師檔缺 role、日誌 actor.role=null');
+    denied(await log(t5, {}, { role: 'director' }), '教師檔缺 role 仍不可偽造 director');
+});
+
+await suite.case('P4b-3 approver 駁回 rejectNote 超長：501／100KB → 以一般權限拒絕（403，非運算式上限）；500 → ALLOW', async () => {
+    const mk = async (id) => seedPending(id, { requestType: 'swap', initiatedBy: t1.teacherId, semesterId, status: 'pending_approval' });
+    const rej = (note) => ({ status: 'rejected', rejectedAt: iso(), rejectedBy: chief.teacherId, rejectedByName: chief.name, rejectNote: note, statusUpdatedAt: iso() });
+    await mk('zz_lc1'); await mk('zz_lc2'); await mk('zz_lc3');
+    const r501 = await updateDoc(`${P.pending}/zz_lc1`, rej('x'.repeat(501)), as(chief));
+    denied(r501, '501 字');
+    const r100k = await updateDoc(`${P.pending}/zz_lc2`, rej('x'.repeat(100000)), as(chief));
+    denied(r100k, '100KB');
+    for (const [r, label] of [[r501, '501 字'], [r100k, '100KB']]) {
+        if (/expression|運算式|exceed|too many|limit/i.test(String(r.error))) throw new Error(`${label}：被拒原因是運算式上限而非規則本身：${r.error}`);
+    }
+    allowed(await updateDoc(`${P.pending}/zz_lc3`, rej('x'.repeat(500)), as(chief)), '500 字（邊界）');
+    // 同意階段（pending_swap_consent）的駁回超長：同樣必須拒絕（此階段兩個 update 函式都會評估，訊息可能是運算式上限，但結果仍是 DENY）
+    await seedPending('zz_lc4', { requestType: 'swap', initiatedBy: t1.teacherId, semesterId, status: 'pending_swap_consent', pendingConsentTeacherIds: [t2.teacherId] });
+    denied(await updateDoc(`${P.pending}/zz_lc4`, rej('x'.repeat(501)), as(chief)), '同意階段 501 字');
+    allowed(await updateDoc(`${P.pending}/zz_lc4`, rej('x'.repeat(500)), as(chief)), '同意階段 500 字（組長可駁回）');
+});
+
 suite.print();
 process.exit(suite.failed ? 1 : 0);

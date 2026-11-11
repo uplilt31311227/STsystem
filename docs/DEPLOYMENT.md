@@ -79,11 +79,27 @@ node scripts/firestore-deploy-rules.js --dry    # 只建立 ruleset 不發布
 ## 依賴
 
 ### 前端 CDN
-- PapaParse - CSV 解析
-- SheetJS (xlsx) - Excel 讀取
-- jsPDF - PDF 生成
-- jsPDF-AutoTable - PDF 表格
-- Firebase SDK - 雲端同步
+- PapaParse 5.4.1 - CSV 解析
+- SheetJS (xlsx) 0.20.3 - Excel 讀取（`cdn.sheetjs.com` 官方修補版；cdnjs 的 0.18.5 有 CVE-2023-30533／CVE-2024-22363 且已停止更新）
+- jsPDF 3.0.3 - PDF 生成
+- jsPDF-AutoTable 3.8.1 - PDF 表格
+- html2canvas 1.4.1 - HTML 轉圖（PDF 中文支援）
+- Firebase SDK 10.7.1 - 以動態 `import()` 自 `www.gstatic.com` 載入（無法加 SRI）
+
+### 內容安全政策（CSP）與 SRI 維護規則（2026-11 P4 起）
+
+`index.html` 以 `<meta http-equiv="Content-Security-Policy">` 限制可載入的來源，所有 CDN `<script>` 都鎖定確切版本並帶 `integrity="sha384-…"` 與 `crossorigin="anonymous"`。
+
+- **新增或更換任何外部來源（CDN、字型、API、iframe）前，必須先更新 meta CSP 對應的指令**（`script-src`／`connect-src`／`frame-src`／`img-src`…），否則瀏覽器會直接擋下。不要用 `'unsafe-inline'`／`'unsafe-eval'` 放寬 `script-src`；函式庫若需要 eval，先回報再決定。
+- 更換 CDN 函式庫版本時，要**實際下載該檔重新計算 sha384**（`openssl dgst -sha384 -binary 檔 | openssl base64 -A`），不可憑記憶填寫；版本號必須固定到 patch。
+- 不可有 inline `<script>` 與 `onclick="…"` 之類的 inline 事件處理器；程式放到 `src/js/` 的模組或外部檔（`v2-redirect.js` 即為一例）。`style-src` 保留 `'unsafe-inline'`（專案有大量 inline style 屬性）。
+- CSP 的 `connect-src` 內含 `http://127.0.0.1:9099`、`http://127.0.0.1:8080`：**這是本機 Firebase Emulator 專用**（`firebaseConfig.js` 只在 `localhost` + `?emu=1` 時連線），正式站不會用到，保留是為了讓同一份 `index.html` 能在本機跑 e2e；它們不會讓正式站多出攻擊面（只能連使用者本機）。
+- meta CSP 不支援 `frame-ancestors`、`report-uri`；GitHub Pages 也無法設定回應標頭。
+- 上線後第一次登入請檢查瀏覽器 console 有無 CSP 違規（Google 登入彈窗、App Check 的 reCAPTCHA、Firestore 長連線需連線才能驗證）。
+
+### 本站不可被嵌入 iframe（2026-11 起的行為）
+
+為了防範點擊劫持（審計 L4），`src/js/v2-redirect.js` 在頁面被嵌入 `<iframe>` 時會嘗試把最上層導回本頁，導不了就把整份文件隱藏（`display: none`）。因此**本站無法被其他網站（含自己的其他頁面）以 iframe 內嵌**；若日後有內嵌需求（例如儀表板），必須先修改該檔的框架偵測邏輯。
 
 ### 開發工具
 - Node.js (可選，用於本地開發)

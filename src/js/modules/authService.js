@@ -7,10 +7,15 @@
  * - 使用者資訊管理
  */
 
-import { initializeFirebase, getAuthInstance, isFirebaseInitialized } from './firebaseConfig.js';
+import { initializeFirebase, getAuthInstance, getDbInstance, isFirebaseInitialized } from './firebaseConfig.js';
+import { wipeLocalUserData, hasPendingWrites, LAST_UID_KEY } from './localDataCleanup.js';
 
 // 當前使用者
 let currentUser = null;
+// 本頁面曾經有人登入過（用來區分「啟動時本來就沒登入」與「登入後被登出／session 失效」）
+let hadSignedInUser = false;
+// 使用者主動按登出（signOutUser 執行中）：此時 onAuthStateChanged(null) 不走被動登出的清除流程
+let userInitiatedSignOut = false;
 
 // 認證狀態變更回調函數列表
 const authStateCallbacks = [];
@@ -70,6 +75,20 @@ async function initAuthService() {
         currentUser = user;
         console.log('認證狀態變更:', user ? user.email : '未登入');
 
+        // 切換帳號偵測：同一瀏覽器上次登入的 uid 與這次不同 → 先清掉前一人的本機快取再繼續，
+        // 不得讓 B 的畫面（離線快取、localStorage 課表鏡像）殘留 A 的資料。清完會整頁重新載入。
+        if (user) {
+            hadSignedInUser = true;
+            let lastUid = null;
+            try { lastUid = localStorage.getItem(LAST_UID_KEY); } catch { /* 忽略 */ }
+            if (lastUid && lastUid !== user.uid) {
+                console.warn('[auth] 偵測到切換帳號，清除前一位使用者的本機資料');
+                wipeLocalUserData({ db: getDbInstance(), keepUid: user.uid });
+                return;
+            }
+            try { if (lastUid !== user.uid) localStorage.setItem(LAST_UID_KEY, user.uid); } catch { /* 忽略 */ }
+        }
+
         // 通知所有監聽者
         authStateCallbacks.forEach(callback => {
             try {
@@ -78,6 +97,16 @@ async function initAuthService() {
                 console.error('認證狀態回調執行錯誤:', error);
             }
         });
+
+        // 曾登入、現在變成未登入（按登出、token 失效、其他分頁登出）：清除本機資料並重新載入。
+        // 啟動時本來就沒登入（hadSignedInUser=false）不處理，避免重新載入迴圈。
+        // 這是「被動」登出（不是使用者按了登出鈕——主動登出走 signOutUser，會先處理待寫入再自行清除）：
+        // 只清鏡像、保留 Firestore 離線快取（內含尚未送出的寫入，下次同一帳號登入可續送；
+        // 換成不同帳號登入時由上面的切換帳號偵測強制清除）。
+        if (!user && hadSignedInUser && !userInitiatedSignOut) {
+            hadSignedInUser = false;
+            wipeLocalUserData({ db: getDbInstance(), keepFirestoreCache: true });
+        }
     });
 
     return currentUser;
@@ -142,11 +171,28 @@ async function signOutUser() {
     const { signOut } = window.firebaseModules;
     const auth = getAuthInstance();
 
+    // 登出會清掉 Firestore 離線快取，其中尚未送出的離線寫入會一併丟失。在 signOut 之前（此時
+    // 仍是登入狀態、寫入還有機會送出）先等待待寫入；逾時代表仍有未同步的變更 → 讓使用者選擇。
+    if (await hasPendingWrites(getDbInstance())) {
+        const msg = '有尚未同步到雲端的變更（可能是離線時所做的修改），登出將放棄這些變更。確定要登出嗎？';
+        const confirmFn = window.app?.confirmDialog;
+        const proceed = confirmFn
+            ? await confirmFn.call(window.app, { title: '尚有未同步的變更', message: msg, confirmText: '放棄變更並登出', danger: true })
+            : window.confirm(msg);
+        if (!proceed) return false;   // 取消登出：什麼都不動
+    }
+
     try {
+        userInitiatedSignOut = true;
         await signOut(auth);
         currentUser = null;
         console.log('已登出');
+        // 清除本機殘留資料（Firestore 離線快取、localStorage 課表鏡像）並整頁重新載入。
+        hadSignedInUser = false;
+        await wipeLocalUserData({ db: getDbInstance() });
+        return true;
     } catch (error) {
+        userInitiatedSignOut = false;
         console.error('登出失敗:', error);
         throw error;
     }

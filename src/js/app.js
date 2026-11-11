@@ -10,6 +10,7 @@
 
 // 匯入模組
 import { DataManager } from './modules/dataManager.js';
+import { esc, toNum } from './modules/htmlEscape.js';
 import { formatLocalDate, parseLocalDate, todayLocal } from './modules/localDate.js';
 import {
     loadV1History, appendV1History, getRestorableSnapshot, makeSnapshot,
@@ -21,6 +22,7 @@ import { PDFGenerator } from './modules/pdfGenerator.js';
 import { SettlementCalculator } from './modules/settlementCalculator.js';
 import { importWeeksFromCalendar, calendarErrorMessage } from './modules/schoolCalendar.js';
 import { isV2Enabled } from './modules/v2/envDetector.js';
+import { filterSameBatch } from './modules/v2/batchGuard.js';
 
 // 匯入 Firebase 相關模組
 import {
@@ -41,21 +43,7 @@ import {
     SyncStatus
 } from './modules/cloudSyncService.js';
 
-/**
- * HTML 跳脫工具 — 將字串中的特殊字元轉為 HTML 實體，
- * 供 template literal 動態組 HTML 時防止 XSS / 破版。
- * @param {*} value - 任意值，會先轉成字串
- * @returns {string}
- */
-function esc(value) {
-    if (value === null || value === undefined) return '';
-    return String(value)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
-}
+// HTML 跳脫工具 esc() 已移到共用模組 modules/htmlEscape.js（全專案唯一實作）。
 
 /**
  * 代課推薦標記（順序即推薦優先順序；tag 對應 recommendationEngine 回傳的 tags）
@@ -327,7 +315,8 @@ class SubstituteTeacherApp {
             const avatarImg = document.getElementById('user-avatar');
             const userName = document.getElementById('user-name');
 
-            if (avatarImg && userInfo?.photoURL) {
+            // 只接受 https 圖片網址（img 不會執行 javascript:，這裡再多一層協定驗證）
+            if (avatarImg && userInfo?.photoURL && /^https:[/][/]/i.test(userInfo.photoURL)) {
                 avatarImg.src = userInfo.photoURL;
             }
             if (userName && userInfo?.displayName) {
@@ -2407,7 +2396,7 @@ class SubstituteTeacherApp {
 
         // 移除對應格子的選中狀態
         const grid = document.getElementById('original-schedule-grid');
-        const cell = grid.querySelector(`.schedule-course[data-weekday="${course.weekday}"][data-period="${course.period}"][data-class="${course.className}"]`);
+        const cell = grid.querySelector(`.schedule-course[data-weekday="${CSS.escape(String(course.weekday))}"][data-period="${CSS.escape(String(course.period))}"][data-class="${CSS.escape(String(course.className))}"]`);
         if (cell) {
             cell.classList.remove('multi-selected');
         }
@@ -3605,7 +3594,8 @@ class SubstituteTeacherApp {
 
         // 收集所有教師的移動：從哪個 date+period 移走，到哪個 date+period
         // key = "teacher", value = { vacate: [{date, period, class}], occupy: [{date, period, class}] }
-        const teacherMoves = {};
+        // 以教師姓名為 key（使用者可控字串）：用無原型物件，避免 '__proto__'／'constructor' 等姓名干擾
+        const teacherMoves = Object.create(null);
 
         const addMove = (teacher, vacateDate, vacatePeriod, vacateWeekday, vacateClass,
                          occupyDate, occupyPeriod, occupyWeekday, occupyClass) => {
@@ -3643,7 +3633,7 @@ class SubstituteTeacherApp {
 
             for (const period of affectedPeriods) {
                 // 原始排課：此 weekday+period 的所有教師 → 班級
-                const originalAssignments = {};
+                const originalAssignments = Object.create(null);
                 scheduleData.filter(c => c.weekday === weekday && c.period === period)
                     .forEach(c => {
                         if (!originalAssignments[c.teacher]) originalAssignments[c.teacher] = [];
@@ -3651,7 +3641,7 @@ class SubstituteTeacherApp {
                     });
 
                 // 建立「此 date+period 的教師指派」（深拷貝）
-                const assignments = {};
+                const assignments = Object.create(null);
                 for (const [teacher, classes] of Object.entries(originalAssignments)) {
                     assignments[teacher] = [...classes];
                 }
@@ -3829,9 +3819,9 @@ class SubstituteTeacherApp {
      * 重印多重調課紀錄：以整批計算最終結果，只印這筆所屬的對調組（連調不會印出中繼位置）
      */
     async reprintSwapBatchRecord(record) {
-        const batch = this.dataManager.substituteRecords
-            .filter(r => r.batchId === record.batchId)
-            .sort((a, b) => Number(a.id.split('_').pop()) - Number(b.id.split('_').pop()));
+        // batchId 可被教師寫入的自我調課紀錄指定成他人的批次 id：只保留與這筆同發起者的同批紀錄
+        const batch = filterSameBatch(record, this.dataManager.substituteRecords.filter(r => r.batchId === record.batchId))
+            .sort((a, b) => Number(String(a.id ?? '').split('_').pop()) - Number(String(b.id ?? '').split('_').pop()));
         await this.pdfGenerator.generateSwapFinalForms(batch, this.dataManager.getScheduleData(), this.dataManager.getTeachers(), record);
     }
 
@@ -4261,7 +4251,7 @@ class SubstituteTeacherApp {
         this._swTouched = {};
         const current = this.getCurrentAcademicYear();
         yearSel.innerHTML = [current + 1, current, current - 1, current - 2]
-            .map(y => `<option value="${y}"${y === current ? ' selected' : ''}>${y}</option>`).join('');
+            .map(y => `<option value="${toNum(y)}"${y === current ? ' selected' : ''}>${toNum(y)}</option>`).join('');
         yearSel.value = String(current);
         this._swShownYear = String(current);
 
@@ -4489,7 +4479,7 @@ class SubstituteTeacherApp {
         const years = [current + 1, current, current - 1, current - 2];
 
         select.innerHTML = years
-            .map(y => `<option value="${y}"${y === current ? ' selected' : ''}>${y}</option>`)
+            .map(y => `<option value="${toNum(y)}"${y === current ? ' selected' : ''}>${toNum(y)}</option>`)
             .join('');
         select.value = String(current);
     }
@@ -4567,22 +4557,22 @@ class SubstituteTeacherApp {
 
             // 數值欄位直接顯示（已為 number，無 XSS 風險）
             const substituteDisplay = row.substituteHours > 0
-                ? `<span class="settlement-increase">+${row.substituteHours}</span>`
+                ? `<span class="settlement-increase">+${toNum(row.substituteHours)}</span>`
                 : `<span class="settlement-no-change">-</span>`;
 
             const substitutedDisplay = row.substitutedHours > 0
-                ? `<span class="settlement-decrease">-${row.substitutedHours}</span>`
+                ? `<span class="settlement-decrease">-${toNum(row.substitutedHours)}</span>`
                 : `<span class="settlement-no-change">-</span>`;
 
             // esc() 防 XSS：teacherName 為使用者輸入資料
             return `
                 <tr class="${esc(rowClass)}" data-has-change="${hasChange}">
                     <td>${esc(row.teacherName)}</td>
-                    <td>${row.originalHours}</td>
+                    <td>${toNum(row.originalHours)}</td>
                     <td>${substituteDisplay}</td>
                     <td>${substitutedDisplay}</td>
-                    <td><strong>${row.actualHours}</strong></td>
-                    <td>${row.overtimeHours > 0 ? row.overtimeHours : '-'}</td>
+                    <td><strong>${toNum(row.actualHours)}</strong></td>
+                    <td>${row.overtimeHours > 0 ? toNum(row.overtimeHours) : '-'}</td>
                 </tr>
             `;
         }).join('');
@@ -4740,7 +4730,7 @@ class SubstituteTeacherApp {
         const subjects = this.dataManager.getSubjects();
 
         tbody.innerHTML = subjects.map(subject => {
-            const domains = (map[subject] || []).join('、');
+            const domains = (Object.hasOwn(map, subject) && Array.isArray(map[subject]) ? map[subject] : []).join('、');
             return `<tr>
                 <td>${esc(subject)}</td>
                 <td><input type="text" class="subject-domain-input" data-subject="${esc(subject)}"
@@ -4979,6 +4969,10 @@ class SubstituteTeacherApp {
             this.showToast('請選擇 JSON 格式的備份檔案', 'error');
             return;
         }
+        if (file.size > 20 * 1024 * 1024) {
+            this.showToast('備份檔案太大（上限 20 MB），請確認是否選錯檔案', 'error');
+            return;
+        }
 
         // 顯示檔案名稱
         document.getElementById(ctx.filename).textContent = file.name;
@@ -5007,7 +5001,7 @@ class SubstituteTeacherApp {
     validateAndPreviewImport(data) {
         // 驗證資料結構
         const requiredFields = ['scheduleData', 'teachers', 'classes', 'substituteRecords'];
-        const missingFields = requiredFields.filter(field => !data.hasOwnProperty(field));
+        const missingFields = requiredFields.filter(field => !Object.hasOwn(data, field));
 
         if (missingFields.length > 0) {
             this.showToast(`備份檔案格式不正確，缺少欄位：${missingFields.join(', ')}`, 'error');
@@ -5022,23 +5016,23 @@ class SubstituteTeacherApp {
         const statsHtml = `
             <div class="import-stat-item">
                 <span class="label">學校名稱</span>
-                <span class="value">${data.schoolName || '（未設定）'}</span>
+                <span class="value">${esc(data.schoolName || '（未設定）')}</span>
             </div>
             <div class="import-stat-item">
                 <span class="label">課表資料</span>
-                <span class="value">${data.scheduleData?.length || 0} 筆</span>
+                <span class="value">${toNum(data.scheduleData?.length)} 筆</span>
             </div>
             <div class="import-stat-item">
                 <span class="label">教師數量</span>
-                <span class="value">${data.teachers?.length || 0} 位</span>
+                <span class="value">${toNum(data.teachers?.length)} 位</span>
             </div>
             <div class="import-stat-item">
                 <span class="label">班級數量</span>
-                <span class="value">${data.classes?.length || 0} 班</span>
+                <span class="value">${toNum(data.classes?.length)} 班</span>
             </div>
             <div class="import-stat-item">
                 <span class="label">調代課紀錄</span>
-                <span class="value">${data.substituteRecords?.length || 0} 筆</span>
+                <span class="value">${toNum(data.substituteRecords?.length)} 筆</span>
             </div>
         `;
 
@@ -5272,12 +5266,12 @@ class SubstituteTeacherApp {
                         <div class="${courseCellClass}"
                              data-weekday="${dayName}"
                              data-period="${period}"
-                             data-class="${course.className}"
-                             data-subject="${course.subject}"
-                             data-domain="${course.domain || ''}"
-                             title="${courseTitle}">
-                            <span class="course-class">${course.className}</span>
-                            <span class="course-subject">${course.subject}</span>
+                             data-class="${esc(course.className)}"
+                             data-subject="${esc(course.subject)}"
+                             data-domain="${esc(course.domain || '')}"
+                             title="${esc(courseTitle)}">
+                            <span class="course-class">${esc(course.className)}</span>
+                            <span class="course-subject">${esc(course.subject)}</span>
                         </div>
                     `;
                 } else {
@@ -5870,7 +5864,7 @@ class SubstituteTeacherApp {
         toast.className = `toast toast-${type}`;
         // esc() 防 XSS：message 可能含使用者輸入資料（教師名、課程名等）
         toast.innerHTML = `
-            <span class="toast-icon">${icons[type] || icons.info}</span>
+            <span class="toast-icon">${Object.hasOwn(icons, type) ? icons[type] : icons.info}</span>
             <span class="toast-body">${esc(message).replace(/\n/g, '<br>')}</span>
             <button class="toast-close">&times;</button>
         `;

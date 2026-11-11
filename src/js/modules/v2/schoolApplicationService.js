@@ -96,7 +96,7 @@ export async function getApplication(uid) {
     const fs   = await getV2Firestore();
     const ref  = fs.doc(fs.db, SCHEMA_PATHS.schoolApplicationDoc(uid));
     const snap = await fs.getDoc(ref);
-    return snap.exists() ? { uid: snap.id, ...snap.data() } : null;
+    return snap.exists() ? { ...snap.data(), uid: snap.id } : null;
 }
 
 /**
@@ -151,7 +151,7 @@ export async function submitApplication({ uid, email, schoolName, desiredSchoolI
         updatedAt: new Date().toISOString(),
     };
     await fs.setDoc(ref, data);
-    return { uid, ...data };
+    return { ...data, uid };
 }
 
 /**
@@ -166,7 +166,7 @@ export async function listPendingApplications() {
     const col  = fs.collection(fs.db, SCHEMA_PATHS.schoolApplicationsCol());
     const q    = fs.query(col, fs.where('status', '==', APPLICATION_STATUS.PENDING));
     const snap = await fs.getDocs(q);
-    const list = snap.docs.map(d => ({ uid: d.id, ...d.data() }));
+    const list = snap.docs.map(d => ({ ...d.data(), uid: d.id }));
     list.sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
     return list;
 }
@@ -260,7 +260,7 @@ export async function listApprovedApplications() {
     const col  = fs.collection(fs.db, SCHEMA_PATHS.schoolApplicationsCol());
     const q    = fs.query(col, fs.where('status', '==', APPLICATION_STATUS.APPROVED));
     const snap = await fs.getDocs(q);
-    const list = snap.docs.map(d => ({ uid: d.id, ...d.data() }));
+    const list = snap.docs.map(d => ({ ...d.data(), uid: d.id }));
     list.sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
     return list;
 }
