@@ -79,7 +79,8 @@ async function loadFirebaseSDK() {
               signInWithEmailAndPassword, createUserWithEmailAndPassword, sendPasswordResetEmail,
               sendEmailVerification, connectAuthEmulator },
             { getFirestore, initializeFirestore, collection, doc, setDoc, getDoc, getDocs, deleteDoc, onSnapshot,
-              enableIndexedDbPersistence, connectFirestoreEmulator }
+              enableIndexedDbPersistence, connectFirestoreEmulator,
+              terminate, clearIndexedDbPersistence, waitForPendingWrites }
         ] = await Promise.all([
             import('https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js'),
             import('https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js'),
@@ -111,7 +112,11 @@ async function loadFirebaseSDK() {
             getDocs,
             deleteDoc,
             onSnapshot,
-            enableIndexedDbPersistence
+            enableIndexedDbPersistence,
+            // 登出／切換帳號時清除離線快取用（modules/localDataCleanup.js）
+            terminate,
+            clearIndexedDbPersistence,
+            waitForPendingWrites
         };
         // 也暴露 config 給 authService 建立 secondary app（用於主任建教師帳號）。
         // Emulator 模式下必須連同 projectId 一起換掉，否則 secondary app 會用正式

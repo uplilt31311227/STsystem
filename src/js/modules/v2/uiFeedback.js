@@ -15,6 +15,8 @@
  * 全部函式皆防禦式：DOM 未就緒或內部例外一律吞掉，絕不拋出中斷呼叫端主流程。
  */
 
+import { escapeHtml } from '../htmlEscape.js';
+
 const SYNC_BADGE_ID = 'v2-sync-status-badge';
 const VALID_TYPES    = new Set(['info', 'success', 'warning', 'error']);
 
@@ -34,9 +36,6 @@ const ERROR_CODE_MESSAGES = {
     'resource-exhausted':  '系統目前忙碌中，請稍後再試',
 };
 
-function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-}
 
 /** fallback 路徑：window.app.showToast 不可用時，仍共用 #toast-container 與 .toast class
  * （結構、show/hide 動畫皆比照 app.js 的 showToast，僅程式路徑獨立，視覺完全共用）。 */

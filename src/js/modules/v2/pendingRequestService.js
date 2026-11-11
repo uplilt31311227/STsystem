@@ -233,7 +233,7 @@ export async function consentRequest(reqId) {
     const result = await fs.runTransaction(fs.db, async (tx) => {
         const snap = await tx.get(ref);
         if (!snap.exists()) throw new Error('找不到此請求');
-        const normalized = normalizeLegacyRequest({ reqId, ...snap.data() });
+        const normalized = normalizeLegacyRequest({ ...snap.data(), reqId });
 
         if (normalized.status !== REQUEST_STATUS.PENDING_SWAP_CONSENT) {
             throw new RequestAlreadyProcessedError('此請求已不在待同意階段，可能已被他人處理或已被駁回');
@@ -336,7 +336,7 @@ export async function approveRequest(reqId) {
     await fs.runTransaction(fs.db, async (tx) => {
         const snap = await tx.get(reqRef);
         if (!snap.exists()) throw new Error('找不到此請求');
-        const data = normalizeLegacyRequest({ reqId, ...snap.data() });
+        const data = normalizeLegacyRequest({ ...snap.data(), reqId });
 
         if (data.status !== REQUEST_STATUS.PENDING_APPROVAL) {
             throw new RequestAlreadyProcessedError('此請求已被處理（可能已被其他核准人核准或駁回）');
@@ -346,7 +346,13 @@ export async function approveRequest(reqId) {
         const recordRef = fs.doc(fs.db, SCHEMA_PATHS.substituteDoc(recordId));
 
         const record = { ...data };
+        // 識別欄位一律以文件 ID 為準：申請內容是使用者可寫入的資料，可能夾帶 reqId／recordId
+        // 偽造欄位。reqId 為申請的文件 ID（紀錄改以 fromRequestId 記錄來源），recordId 是即將
+        // 建立的新紀錄 ID（只存在於文件路徑，不落在資料欄位）。
+        // 注意：不剔除 id——id 是 V1 紀錄 ID（`${baseId}_${index}`），多重調課同批排序
+        // （v2-app.js order()、app.js reprintSwapBatchRecord）與衝堂比對刻意依賴它。
         delete record.reqId;
+        delete record.recordId;
         delete record.pendingConsentTeacherIds;
         delete record.swapConsents;
         delete record.__legacyPending;
@@ -394,7 +400,7 @@ export async function approveRequest(reqId) {
         }
     );
 
-    return { recordId, ...reqSnapshot };
+    return { ...reqSnapshot, recordId };
 }
 
 /**
@@ -418,7 +424,7 @@ export async function rejectRequest(reqId, note = '') {
     const normalized = await fs.runTransaction(fs.db, async (tx) => {
         const snap = await tx.get(ref);
         if (!snap.exists()) throw new Error('找不到此請求');
-        const data = normalizeLegacyRequest({ reqId, ...snap.data() });
+        const data = normalizeLegacyRequest({ ...snap.data(), reqId });
 
         if (data.status !== REQUEST_STATUS.PENDING_SWAP_CONSENT
             && data.status !== REQUEST_STATUS.PENDING_APPROVAL) {

@@ -460,7 +460,9 @@ service cloud.firestore {
         && d.originalTeacherId == me && d.swapTeacherId == me && d.substituteTeacherId == me
         && hasSafeCaseText(d)
         && hasValidCaseIds(d)
-        && d.get('initiatedBy', me) == me
+        // P4b：initiatedBy 必帶且等於本人（前端 writeV2Record 的自我調課路徑一律寫入）。原本 get('initiatedBy', me)
+        // 允許省略，讓前端以「批次發起者」過濾同批紀錄（batchGuard.js）的防線可被繞過。
+        && 'initiatedBy' in d && d.initiatedBy == me
         && d.get('status', 'approved') == 'approved'
         && d.get('initiatedByRole', 'teacher') == 'teacher'
         && d.get('requestType', 'substitute') in ['substitute', 'swap']
@@ -638,7 +640,7 @@ service cloud.firestore {
     // normalizeRole 一致）；白名單主任在教師檔 role 尚未升級為 director 的空檔也可寫 'director'
     // （isInitialDirector 只在前面比對都不符時才會被評估，一般情況不增加運算式成本）。
     function actorRoleOk(schoolId, r) {
-      let docRole = myTeacherDoc(schoolId).role;
+      let docRole = myTeacherDoc(schoolId).get('role', 'teacher');
       return r == null || r == docRole
         || (r == 'director' && (docRole == 'admin' || isInitialDirector(schoolId)));
     }
@@ -1174,8 +1176,13 @@ service cloud.firestore {
         //   isValidConsenterUpdate：同意人只能把「自己」移出名單並新增「自己」那一筆 swapConsents，
         //     名單清空 ⇔ 轉 pending_approval；拒絕時不得觸碰同意欄位。
         //   兩者都要求時間欄位（statusUpdatedAt／rejectedAt）不得為未來。
-        allow update: if isValidApproverUpdate(schoolId)
-          || isValidConsenterUpdate(schoolId);
+        // P4b（L-C）：兩個函式各自要近 500 個運算式，引擎不會因前者為 false 就省下後者的成本，所以
+        // approver 對 pending_approval（最常見的核准／駁回）若被拒，兩者相加會撞上 1000 的上限才拒絕。
+        // pending_approval 階段不存在同意人更新（isValidConsenterUpdate 只接受 pending／pending_swap_consent），
+        // 用三元運算式只選一邊評估；語意與原本的 A || B 完全相同。
+        allow update: if resource.data.status == 'pending_approval'
+          ? isValidApproverUpdate(schoolId)
+          : (isValidApproverUpdate(schoolId) || isValidConsenterUpdate(schoolId));
 
         // 刪除：approver；發起人；被邀請人（同意後可清掉草稿）
         // v2.12（L3）：發起人／被邀請人只能刪除「尚未結案」或「已被駁回」的申請（撤回、關閉駁回通知）；

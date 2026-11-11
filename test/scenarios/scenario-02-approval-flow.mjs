@@ -253,6 +253,7 @@ export async function run(ctx) {
         allowed(await createDoc(P.records, 'zz_rec_self_swap', baseRecord({
             type: '調課',
             isSelfSwap: true,
+            initiatedBy: t1.teacherId,   // rules v2.12c 起自我調課必帶 initiatedBy（前端 writeV2Record 一律寫入）
             originalTeacherId: t1.teacherId,
             swapTeacherId: t1.teacherId,
             substituteTeacherId: t1.teacherId,
@@ -265,6 +266,7 @@ export async function run(ctx) {
         denied(await createDoc(P.records, 'zz_rec_fake_self_swap', baseRecord({
             type: '調課',
             isSelfSwap: true,
+            initiatedBy: t1.teacherId,
             originalTeacherId: t1.teacherId,
             swapTeacherId: t1.teacherId,
             substituteTeacherId: t2.teacherId,   // ← 三個 id 沒有全部指向自己

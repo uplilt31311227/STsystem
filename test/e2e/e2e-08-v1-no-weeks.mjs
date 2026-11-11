@@ -1,61 +1,55 @@
 /**
- * 全流程操作 8：V1 模式（不帶 ?v2=1、非 preview 網域）完全不碰「月結算上課週數」
+ * 全流程操作 8：V1 網址已停用——不帶 ?v2=1 且非預覽站時一律轉址到 V2
  *
- * 週數設定與日曆帶入只做在 V2。V1 要驗：卡片看不到、localStorage 沒有週數設定的 key、
- * 呼叫 applySettlementWeeksOverride 不會改動計算器（各月週數維持原本預設值）。
+ * 原本這支驗「V1 模式不顯示月結算週數設定」，但 2026-11-10 起 V1 網址由 src/js/v2-redirect.js
+ * （原 index.html 的 inline script，P4 為了 CSP 搬成外部檔）同步轉址到 ?v2=1，V1 模式在任何
+ * 網址都開不起來，舊測試的前提（能開 V1）已不成立。這裡改為斷言轉址行為本身：
+ *   1. 不帶參數 → 轉到 ?v2=1，V1 專屬狀態（沒有 V2 gate 以外的 V1 UI）不會出現
+ *   2. 保留其他查詢參數與 hash
+ *   3. 已帶 ?v2=1 → 不會再轉址（無迴圈）
+ * 不登入、不碰 emulator 資料，只看網址與頁面是否載入了 V2 登入遮罩。
  */
-import { newPage, realErrors } from './helpers.mjs';
+import { newPage } from './helpers.mjs';
 import { Suite, eq, ok } from '../scenarios/harness.mjs';
 
-const V1_URL = 'http://localhost:8000/';
+const BASE = 'http://localhost:8000/';
 
 export async function run(browser) {
-    const suite = new Suite('操作 8：V1 不顯示週數設定');
+    const suite = new Suite('操作 8：V1 網址轉址到 V2');
     const page = await newPage(browser);
     try {
-        await page.goto(V1_URL, { waitUntil: 'domcontentloaded' });
-        await page.waitForFunction(() => !!window.app?.settlementCalculator, null, { timeout: 30000 });
-        await page.waitForTimeout(1500);
-
-        await suite.case('V1：設定頁沒有週數卡片、不綁定、localStorage 無週數設定 key', async () => {
-            await page.click('.tab-btn[data-tab="settings"]');
-            await page.waitForTimeout(500);
-            const r = await page.evaluate(() => {
-                const card = document.getElementById('settlement-weeks-card');
-                const keys = Object.keys(localStorage).filter(k => /settlementConfig/i.test(k));
-                return {
-                    v2: document.body.classList.contains('v2-active'),
-                    visible: !!(card && card.offsetParent !== null),
-                    display: card ? getComputedStyle(card).display : 'none-found',
-                    yearOptions: document.getElementById('sw-year')?.options.length || 0,
-                    keys,
-                    store: !!window.app.settlementConfigStore,
-                    hasLocalFactory: typeof window.app.createLocalSettlementConfigStore,
-                };
+        await suite.case('不帶 ?v2=1 → 轉址到 V2（網址帶 v2=1，V2 登入遮罩出現）', async () => {
+            await page.goto(BASE, { waitUntil: 'domcontentloaded' });
+            await page.waitForFunction(() => new URLSearchParams(location.search).get('v2') === '1', null, { timeout: 30000 });
+            await page.waitForSelector('#v2-auth-gate, .app-container', { timeout: 30000 });
+            const u = new URL(page.url());
+            eq(u.searchParams.get('v2'), '1', '轉址後帶 v2=1');
+            eq(u.pathname, '/', '路徑不變');
+            const hasGate = await page.evaluate(async () => {
+                for (let i = 0; i < 60 && !document.getElementById('v2-auth-gate'); i++) await new Promise(r => setTimeout(r, 500));
+                return !!document.getElementById('v2-auth-gate') || document.body.classList.contains('v2-active');
             });
-            eq(r.v2, false, '應為 V1');
-            eq(r.visible, false, '週數卡片不可見');
-            eq(r.display, 'none', 'display none');
-            eq(r.yearOptions, 0, '未綁定（學年度選單未填）');
-            eq(r.keys, [], 'localStorage 無週數設定 key');
-            eq(r.store, false, '沒有 settlementConfigStore');
-            eq(r.hasLocalFactory, 'undefined', 'V1 localStorage store 已移除');
+            ok(hasGate, '轉址後載入的是 V2（有登入遮罩或 v2-active）');
         });
 
-        await suite.case('V1：月結算不套用週數覆寫，各月週數維持預設（1 月 2、2 月 3、7／8 月 0、其餘 4）', async () => {
-            const r = await page.evaluate(async () => {
-                await window.app.applySettlementWeeksOverride(115);
-                const c = window.app.settlementCalculator;
-                return {
-                    override: JSON.stringify(c.weeksOverride),
-                    weeks: [8, 9, 10, 11, 12, 1, 2, 3].map(m => c.getWeeksInMonth(m >= 8 ? 2026 : 2027, m)),
-                    keys: Object.keys(localStorage).filter(k => /settlementConfig/i.test(k)),
-                };
-            });
-            eq(r.override, '{}', '覆寫表為空');
-            eq(r.weeks, [0, 4, 4, 4, 4, 2, 3, 4], '預設週數');
-            eq(r.keys, [], '仍無 localStorage key');
-            eq(realErrors(page).filter(e => /未捕捉例外|TypeError|ReferenceError/.test(e)), [], 'V1 無未捕捉例外（資源載入類 console 噪音不計）');
+        await suite.case('轉址保留其他查詢參數與 hash', async () => {
+            await page.goto(`${BASE}?emu=1&x=1#settings`, { waitUntil: 'domcontentloaded' });
+            await page.waitForFunction(() => new URLSearchParams(location.search).get('v2') === '1', null, { timeout: 30000 });
+            const u = new URL(page.url());
+            eq(u.searchParams.get('emu'), '1', '保留 emu');
+            eq(u.searchParams.get('x'), '1', '保留 x');
+            eq(u.hash, '#settings', '保留 hash');
+        });
+
+        await suite.case('已帶 ?v2=1 不會再轉址（無迴圈）；V1 的週數設定 key 不會被寫入', async () => {
+            await page.goto(`${BASE}?v2=1&emu=1`, { waitUntil: 'domcontentloaded' });
+            await page.waitForTimeout(3000);
+            const r = await page.evaluate(() => ({
+                search: location.search,
+                keys: Object.keys(localStorage).filter(k => /settlementConfig/i.test(k)),
+            }));
+            eq(r.search, '?v2=1&emu=1', '網址維持原樣');
+            eq(r.keys, [], 'localStorage 沒有週數設定 key（週數設定存 Firestore config/settlement）');
         });
     } finally {
         await page.close();

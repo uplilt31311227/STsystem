@@ -12,24 +12,9 @@
  * 使用 html2canvas + jsPDF 實現中文支援
  */
 
-/** HTML 跳脫（教師姓名、課程、班級、校名皆來自課表匯入／Firestore，屬使用者可控字串） */
-function escapeHtml(s) {
-    return String(s)
-        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
-
-/** 深層複製並跳脫所有字串（陣列與一般物件遞迴；其他型別原樣）。不修改呼叫端資料。 */
-function escapeDeep(v) {
-    if (typeof v === 'string') return escapeHtml(v);
-    if (Array.isArray(v)) return v.map(escapeDeep);
-    if (v && typeof v === 'object' && Object.getPrototypeOf(v) === Object.prototype) {
-        const o = {};
-        for (const k of Object.keys(v)) o[k] = escapeDeep(v[k]);
-        return o;
-    }
-    return v;
-}
+// HTML 跳脫（教師姓名、課程、班級、校名皆來自課表匯入／Firestore，屬使用者可控字串）
+// 與 escapeDeep 統一由共用模組提供，全專案只有一份實作。
+import { escapeHtml, escapeDeep, safeFileName } from './htmlEscape.js';
 
 /**
  * 會以 innerHTML 組版面的公開產生函式。進入時把參數整份跳脫一次，內部各 HTML builder
@@ -155,7 +140,7 @@ export class PDFGenerator {
             doc.addImage(imgData2, 'JPEG', 0, 0, 297, 210);
 
             // 下載 PDF
-            const fileName = `調代課通知_${record.date.replace(/-/g, '')}_${record.originalTeacher}.pdf`;
+            const fileName = `調代課通知_${record.date.replace(/-/g, '')}_${safeFileName(record.originalTeacher)}.pdf`;
             doc.save(fileName);
 
         } finally {
@@ -218,7 +203,7 @@ export class PDFGenerator {
             const periodsText = courses.length > 3
                 ? `${courses.length}節`
                 : courses.map(c => c.period.replace('第', '').replace('節', '')).join('-') + '節';
-            const fileName = `調代課通知_${baseRecord.date.replace(/-/g, '')}_${baseRecord.originalTeacher}_${periodsText}.pdf`;
+            const fileName = `調代課通知_${baseRecord.date.replace(/-/g, '')}_${safeFileName(baseRecord.originalTeacher)}_${periodsText}.pdf`;
             doc.save(fileName);
 
         } finally {
@@ -931,9 +916,10 @@ export class PDFGenerator {
         };
 
         const adminAll = [...records].sort(cmp);
-        const byClass = {};
-        const byOriginalTeacher = {};
-        const bySubstituteTeacher = {};
+        // key 為班級／教師姓名（使用者可控字串）：用無原型物件避免 '__proto__' 等名稱干擾
+        const byClass = Object.create(null);
+        const byOriginalTeacher = Object.create(null);
+        const bySubstituteTeacher = Object.create(null);
 
         records.forEach(r => {
             if (r.className) {
@@ -1619,7 +1605,7 @@ export class PDFGenerator {
 
     /** 依教師分組（保留 computeSwapNetMoves 的排序） */
     groupNetMovesByTeacher(netMoves) {
-        const byTeacher = {};
+        const byTeacher = Object.create(null);
         netMoves.forEach(m => { (byTeacher[m.teacher] = byTeacher[m.teacher] || []).push(m); });
         return byTeacher;
     }
@@ -1908,7 +1894,7 @@ export class PDFGenerator {
             }
 
             const first = group.moves.map(m => m.from.date).sort()[0];
-            doc.save(`調課通知_${first.replace(/-/g, '')}_${group.className}_連調${group.moves.length}節.pdf`);
+            doc.save(`調課通知_${first.replace(/-/g, '')}_${safeFileName(group.className)}_連調${group.moves.length}節.pdf`);
         } finally {
             document.body.removeChild(container);
         }
@@ -2042,7 +2028,7 @@ export class PDFGenerator {
     createSettlementHTML(settlementData, year, month) {
         let tableRows = settlementData.map(row => `
             <tr>
-                <td style="padding: 8px; border: 1px solid #ddd;">${row.teacherName}</td>
+                <td style="padding: 8px; border: 1px solid #ddd;">${escapeHtml(row.teacherName)}</td>
                 <td style="padding: 8px; border: 1px solid #ddd; text-align: center;">${row.weeklyHours}</td>
                 <td style="padding: 8px; border: 1px solid #ddd; text-align: center;">${row.originalHours}</td>
                 <td style="padding: 8px; border: 1px solid #ddd; text-align: center; color: #16a34a;">${row.substituteHours > 0 ? '+' + row.substituteHours : '-'}</td>

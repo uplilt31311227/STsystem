@@ -2,21 +2,16 @@
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
+    <!-- 內容安全政策（CSP）。meta 版不支援 frame-ancestors／report-uri，故不寫。
+         script-src 不含 'unsafe-inline'／'unsafe-eval'；style-src 保留 'unsafe-inline'（大量 inline style 屬性）。
+         各來源用途：cdnjs＝PapaParse／jsPDF／AutoTable／html2canvas；cdn.sheetjs.com＝SheetJS（官方修補版）；
+         www.gstatic.com＝Firebase SDK 動態 import 與 reCAPTCHA；www.google.com／apis.google.com＝reCAPTCHA v3（App Check）
+         與 Auth 彈窗登入載入的 gapi；connect-src＝Firestore／Auth／App Check／Google Calendar API；
+         frame-src＝Auth 登入 iframe；127.0.0.1:9099/8080＝本機 emulator（僅 localhost?emu=1 使用）。 -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdnjs.cloudflare.com https://cdn.sheetjs.com https://www.gstatic.com https://www.google.com https://apis.google.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.googleusercontent.com; font-src 'self' data:; connect-src 'self' https://firestore.googleapis.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://www.googleapis.com https://content-firebaseappcheck.googleapis.com https://firebaseinstallations.googleapis.com http://127.0.0.1:9099 http://127.0.0.1:8080; frame-src https://stsystem-9d5fe.firebaseapp.com https://accounts.google.com https://apis.google.com https://content.googleapis.com https://www.google.com; object-src 'none'; base-uri 'self'; form-action 'self'">
     <!-- 2026-11-10 停用舊版（V1）網址：未帶 ?v2=1 且非預覽站時，一律轉址到 V2。
-         V1 個人雲端即時同步曾造成無限寫入迴圈與帳單事故（docs/ISSUES_LOG.md 2026-11-10）。
-         判斷條件與 src/js/modules/v2/envDetector.js isV2Enabled() 一致；同步執行，
-         在任何 V1 程式載入前就轉走。保留原路徑、其他參數與 hash。 -->
-    <script>
-    (function () {
-        var l = window.location;
-        var p = new URLSearchParams(l.search);
-        if (p.get('v2') === '1') return;
-        if ((l.hostname || '').indexOf('preview') !== -1) return;
-        if (/(^|\/)[^/]*-preview(\/|$)/.test(l.pathname || '')) return;
-        p.set('v2', '1');
-        l.replace(l.pathname + '?' + p.toString() + l.hash);
-    })();
-    </script>
+         邏輯移到外部檔 src/js/v2-redirect.js（CSP 不允許 inline script），同步執行、行為不變。 -->
+    <script src="src/js/v2-redirect.js"></script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>國中調代課自動化系統</title>
     <!-- Favicon - 使用 SVG 作為網站圖標 -->
@@ -24,15 +19,15 @@
 
     <!-- CDN 引入 -->
     <!-- PapaParse - CSV 解析 -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js" integrity="sha384-D/t0ZMqQW31H3az8ktEiNb39wyKnS82iFY52QPACM+IjKW3jDUhyIgh2PApRqJZs" crossorigin="anonymous"></script>
     <!-- jsPDF - PDF 生成 -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/3.0.3/jspdf.umd.min.js" integrity="sha384-GwHhSt8QjC7J+v0zZ0Flfho/T76YHEcCL9w4rvjTIUHauh6gWJeBSIi3vWXxNhtA" crossorigin="anonymous"></script>
     <!-- jsPDF AutoTable - PDF 表格 -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
-    <!-- SheetJS (xlsx) - Excel 讀取 -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js" integrity="sha384-b8MpgG2ZzWN6OPAtiB1JiBmDr9MpTt3NKK6KQf61hC/L7X4wJrvoTeVmMFPgp3nL" crossorigin="anonymous"></script>
+    <!-- SheetJS (xlsx) 0.20.3 - Excel 讀取（官方修補版，cdnjs 的 0.18.5 有 CVE-2023-30533／CVE-2024-22363 且已停止更新） -->
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js" integrity="sha384-EnyY0/GSHQGSxSgMwaIPzSESbqoOLSexfnSMN2AP+39Ckmn92stwABZynq1JyzdT" crossorigin="anonymous"></script>
     <!-- html2canvas - HTML 轉圖片（用於 PDF 中文支援） -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js" integrity="sha384-ZZ1pncU3bQe8y31yfZdMFdSpttDoPmOZg2wguVK9almUodir1PghgT0eY7Mrty8H" crossorigin="anonymous"></script>
 
     <link rel="stylesheet" href="src/css/tokens.css?v=2.6.2">
     <link rel="stylesheet" href="src/css/base.css?v=2.6.2">
@@ -1050,8 +1045,8 @@
          Firebase <script> 標籤——比照既有 Auth/Firestore SDK 的載入方式，見該檔
          initializeFirebase()、RECAPTCHA_V3_SITE_KEY 常數與 docs/STAGE4-DEPLOY.md
          「App Check 啟用步驟」。 -->
-    <script type="module" src="src/js/app.js?v=1.14.3"></script>
+    <script type="module" src="src/js/app.js?v=1.14.4"></script>
     <!-- V2 權限系統（?v2=1 或預覽站才啟用；對穩定版無影響） -->
-    <script type="module" src="src/js/v2-app.js?v=0.1.15"></script>
+    <script type="module" src="src/js/v2-app.js?v=0.1.16"></script>
 </body>
 </html>

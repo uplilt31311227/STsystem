@@ -12,6 +12,9 @@
  * - 若「語言別/校訂課程名稱」為空，則使用「科目」欄位值
  */
 
+/** 課表匯入檔案大小上限（位元組）。人力資源網課表通常 < 1MB；超大檔可能是惡意構造或誤選，拒絕以免卡死分頁。 */
+export const MAX_SCHEDULE_FILE_BYTES = 5 * 1024 * 1024;
+
 export class ScheduleParser {
     constructor() {
         // 標準欄位名稱對應
@@ -69,6 +72,11 @@ export class ScheduleParser {
 
         try {
             let rawData;
+
+            // 檔案大小上限（5MB）：在讀入記憶體、交給 SheetJS／PapaParse 之前先擋
+            if (file.size > MAX_SCHEDULE_FILE_BYTES) {
+                throw new Error(`檔案太大（${(file.size / 1024 / 1024).toFixed(1)} MB），課表檔上限為 ${MAX_SCHEDULE_FILE_BYTES / 1024 / 1024} MB，請確認是否選錯檔案`);
+            }
 
             if (extension === 'csv') {
                 rawData = await this.parseCSV(file);

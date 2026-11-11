@@ -199,19 +199,24 @@ export class DataManager {
      */
     buildSubjectDomainMap(merge = true) {
         // 統計 科目 → 各領域出現次數
-        const counts = {};
+        // 科目、領域字串來自課表檔／雲端課表（使用者可控），以 Map 統計，避免 '__proto__' 之類的
+        // 科目名稱讓 counts.__proto__ 指到 Object.prototype 而污染全域（審計 M6）。
+        const counts = new Map();
         this.scheduleData.forEach(c => {
             const subject = (c.subject || '').trim();
             const domain = (c.domain || '').trim();
             if (!subject) return;
-            if (!counts[subject]) counts[subject] = {};
-            if (domain) counts[subject][domain] = (counts[subject][domain] || 0) + 1;
+            if (!counts.has(subject)) counts.set(subject, new Map());
+            const dm = counts.get(subject);
+            if (domain) dm.set(domain, (dm.get(domain) || 0) + 1);
         });
 
         // 轉為 科目 → [領域依次數降序]
+        // built 會被序列化存檔，需維持一般物件；'__proto__' 科目直接略過（不可能是合法科目）。
         const built = {};
-        for (const [subject, domainCounts] of Object.entries(counts)) {
-            built[subject] = Object.entries(domainCounts)
+        for (const [subject, domainCounts] of counts) {
+            if (subject === '__proto__') continue;
+            built[subject] = [...domainCounts.entries()]
                 .sort((a, b) => b[1] - a[1])
                 .map(([d]) => d);
         }
@@ -220,7 +225,8 @@ export class DataManager {
         if (merge && this.settings.subjectDomainMap) {
             const existing = this.settings.subjectDomainMap;
             for (const [subject, domains] of Object.entries(existing)) {
-                if (!built[subject]) {
+                if (subject === '__proto__' || !Array.isArray(domains)) continue;
+                if (!Object.hasOwn(built, subject)) {
                     built[subject] = [...domains];
                 } else {
                     const merged = [...domains];
@@ -252,7 +258,10 @@ export class DataManager {
     /** 取得某科目對應的領域陣列（最常出現的在前）；無對應回傳空陣列 */
     getDomainsForSubject(subject) {
         if (!subject) return [];
-        return this.getSubjectDomainMap()[(subject + '').trim()] || [];
+        const map = this.getSubjectDomainMap();
+        const key = (subject + '').trim();
+        // Object.hasOwn：避免 'constructor'、'toString' 等科目名稱取到原型鏈上的函式
+        return Object.hasOwn(map, key) && Array.isArray(map[key]) ? map[key] : [];
     }
 
     /** 取得所有已知領域（標準領域 ∪ 對應表內出現過的領域） */
@@ -271,7 +280,7 @@ export class DataManager {
      */
     setSubjectDomains(subject, domains) {
         subject = (subject + '').trim();
-        if (!subject) return;
+        if (!subject || subject === '__proto__') return;
         if (!this.settings.subjectDomainMap) this.settings.subjectDomainMap = {};
         // domains 可為陣列或以「、」「,」「，」分隔的字串
         // 注意：不可用「/」分隔，領域名本身可能含斜線（如「統整性主題/專題/議題探究」）

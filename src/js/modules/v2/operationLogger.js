@@ -98,7 +98,7 @@ export async function logJoinAttempt(uid, details = {}) {
         });
     } catch (err) {
         console.error('[operationLogger] joinAttempts 寫入失敗:', err, { uid, details });
-        failedLogs.push({ entry: { uid, ...details }, error: (err && err.message) || String(err), at: new Date().toISOString() });
+        failedLogs.push({ entry: { ...details, uid }, error: (err && err.message) || String(err), at: new Date().toISOString() });
         return null;
     }
 }
