@@ -1,6 +1,6 @@
 ---
 created: 2026-11-10
-updated: 2026-11-10
+updated: 2026-11-12
 tags:
   - deployment
   - billing
@@ -10,16 +10,18 @@ tags:
 
 2026-11-10 起啟用。起因：[[ISSUES_LOG]] 2026-11-10 V1 寫入迴圈事故（11/8–11/9 燒掉約 TWD 277）。預算警報只寄信、不會擋下扣款，這支函式是唯一能自動止血的機制。
 
+> ⚠️ **2026-11-12 現況**：帳單綁定已手動解除（ISSUES_LOG 2026-11-12），本函式停止運作；重新綁定後才恢復保護。門檻已由 1000 調為 **TWD 500**。重新綁定時若當月花費已接近 500（11/12 為 414.01），請照「觸發後如何恢復」先設 `DISARMED_UNTIL` 或等下個月。
+
 ## 運作方式
 
 ```
-Budget「STsystem 自動斷線 TWD 1000」(b31a4d41-5fec-4da8-8d79-a837e0bcb0e5)
+Budget「STsystem 自動斷線 TWD 500」(b31a4d41-5fec-4da8-8d79-a837e0bcb0e5)
    │ 一天多次送出目前花費
    ▼
 Pub/Sub topic: projects/stsystem-9d5fe/topics/billing-kill-switch
    ▼
 Cloud Function (gen2) billing-kill-switch @ asia-east1
-   │ 當月「實際」花費 >= TWD 1000？（不看預測值）
+   │ 當月「實際」花費 >= TWD 500？（不看預測值）
    ▼
 解除 stsystem-9d5fe 與帳單帳戶 01A75D-93C4DE-69DE70 的綁定
 ```
@@ -44,7 +46,7 @@ Cloud Function (gen2) billing-kill-switch @ asia-east1
 ## 觸發後如何恢復
 
 1. 先找出費用來源並止血（Cloud Console 帳單報表依 SKU 分組；Cloud Monitoring 的 `firestore.googleapis.com/document/write_count`、`read_count`），處理方式參考 ISSUES_LOG 2026-11-10。
-2. ⚠️ **先暫停斷線，再重新綁定**。當月花費仍 >= 1000，不暫停的話預算下次送通知（一天多次）時會再度斷線。把 `DISARMED_UNTIL` 設到下個月 1 日（太平洋時間 00:00 = UTC 08:00；夏令時間為 07:00，取 08:00 較保守），到期後自動恢復保護，不用記得改回：
+2. ⚠️ **先暫停斷線，再重新綁定**。當月花費仍 >= 門檻，不暫停的話預算下次送通知（一天多次）時會再度斷線。把 `DISARMED_UNTIL` 設到下個月 1 日（太平洋時間 00:00 = UTC 08:00；夏令時間為 07:00，取 08:00 較保守），到期後自動恢復保護，不用記得改回：
    ```bash
    gcloud functions deploy billing-kill-switch --gen2 --region=asia-east1 \
      --update-env-vars=DISARMED_UNTIL=2026-12-01T08:00:00Z \
@@ -90,4 +92,4 @@ gcloud functions deploy billing-kill-switch --gen2 --region=asia-east1 --runtime
 
 ## 與架構前提的關係
 
-本專案原本是「無自建後端」（見 `docs/STAGE4-DEPLOY.md`「為何不做自動斷流」）。2026-11-10 事故後，使用者決定加上這支函式：它沒有業務邏輯、不接觸 Firestore 資料，只負責止血。門檻設在 TWD 1000，大約是平常月費的數百倍，正常使用不會誤觸。
+本專案原本是「無自建後端」（見 `docs/STAGE4-DEPLOY.md`「為何不做自動斷流」）。2026-11-10 事故後，使用者決定加上這支函式：它沒有業務邏輯、不接觸 Firestore 資料，只負責止血。門檻原設 TWD 1000；2026-11-12 第二次迴圈事故後調為 TWD 500（門檻就是預算金額，改預算即可，函式不必重新部署）。
