@@ -62,6 +62,7 @@ python start-server.py
 Firebase config 為前端公開設定（非機密），已包含在 `index.html` 中。
 
 ### 帳單與自動斷線（2026-11-10 起）
+- ⚠️ **2026-11-12 16:49（台灣）起帳單綁定已手動解除**，專案為免費方案、斷線函式停止運作（原因見 ISSUES_LOG 2026-11-12）。以下為解除前的設定，重新綁定後才生效。
 - stsystem-9d5fe 綁定帳單帳戶「STsystem」`01A75D-93C4DE-69DE70`（Blaze）。
 - 預算警報 TWD 250／300／500（只寄信）＋ **TWD 1000 自動斷線**：Cloud Function `billing-kill-switch`（gen2，asia-east1，程式在 `cloud-functions/billing-kill-switch/`），當月實際花費達 1000 即解除帳單綁定，全專案退回免費方案。觸發後的恢復步驟與重新部署指令見 [`BILLING-KILL-SWITCH.md`](./BILLING-KILL-SWITCH.md)。
 - 本專案第一個也是唯一的伺服器端元件；不接觸 Firestore 資料。
