@@ -1,11 +1,23 @@
 ---
 created: 2026-03-12
-updated: 2026-11-10
+updated: 2026-11-12
 tags:
   - changelog
 ---
 
 # 版本紀錄
+
+---
+
+## [2026-11-12] V1 寫入迴圈再發處置：帳單綁定解除、預覽站補修正、斷線門檻調為 TWD 500
+
+- **事故**：2026-11-11 08:05–21:44 UTC（台灣 11/11 16:05–11/12 05:44）`users/{uid}/data/substituteSystem` 再次被迴圈寫入（每 30 分鐘約 2,500 次，`version` 570,307 → 710,407），當月花費由 TWD 319.22 升到 414.01。帳單數字延遲約 5–7 小時，迴圈停止後費用仍持續入帳到 11/12 04:39 UTC。
+- **根因**：迴圈修正（`02c857a`）只上了正式站；預覽站 `STsystem-preview` 仍為 `7a215d4`，且 V1 轉址排除預覽站、兩站共用 Firestore。
+- **帳單**：2026-11-12 08:49 UTC 執行 `gcloud billing projects unlink stsystem-9d5fe`，專案退回免費方案、斷線函式停止；**尚未重新綁定**（當月花費已接近新門檻，本月重新綁定需先設 `DISARMED_UNTIL`）。
+- **預覽站**：快轉至 `1e38682`（= master），回朔分支 `backup-pre-preview-update-20261112`；Pages `built`，curl 確認線上 `app.js`／`dataManager.js` 含 `fromRealtime`。
+- **斷線門檻**：預算 `b31a4d41` 金額由 TWD 1000 調為 500 並改名「STsystem 自動斷線 TWD 500」；函式以預算金額為門檻，未重新部署。
+- **斷線函式檢查**：設定正確（`DRY_RUN=false`），11/10 起 111 次預算通知皆記錄 `未達門檻`、無 WARNING 以上日誌；未觸發屬設計內行為。
+- 文件：`docs/ISSUES_LOG.md`、`docs/DEPLOYMENT.md`、`docs/BILLING-KILL-SWITCH.md` 已更新。無程式碼變更。
 
 ---
 

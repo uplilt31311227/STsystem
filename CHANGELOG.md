@@ -1,5 +1,13 @@
 # 版本紀錄 (Changelog)
 
+## [2026-11-12] V1 寫入迴圈再發處置：帳單綁定解除、預覽站補修正、斷線門檻調為 TWD 500
+
+- **事故**：2026-11-11 16:05–11/12 05:44（台灣）V1 個人雲端備份文件又被迴圈寫入約 14 萬次，當月花費由 TWD 319.22 升到 414.01。來源是預覽站未部署 11/10 的迴圈修正且不受 V1 轉址限制。詳見 `docs/ISSUES_LOG.md` 2026-11-12。
+- **處置**：手動解除 stsystem-9d5fe 帳單綁定（專案退回免費方案，斷線函式停止，尚未重新綁定）；預覽站快轉至 `1e38682`（= master，回朔分支 `backup-pre-preview-update-20261112`）；自動斷線預算由 TWD 1000 調為 500。
+- 無程式碼變更；自動斷線函式經查運作正常（111 次通知皆判定未達門檻）。
+
+---
+
 ## [2026-11-11] 資安修補 v2.12b：驗收補強（firestore.rules，尚未部署）
 
 - **H-1** 近 1MB 文件：自我調課 `approvedAt` 套時間驗證；`pendingConsentTeacherIds`／private `allowedTeacherIds` 的每個元素限字串、長度、不含 `< > "`（`idList20`／`idList30`）；教師自改 `authProvider` 限 `google.com`／`password` 與 ISO `updatedAt`。
