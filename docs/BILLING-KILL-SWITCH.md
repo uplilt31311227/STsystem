@@ -10,7 +10,7 @@ tags:
 
 2026-11-10 起啟用。起因：[[ISSUES_LOG]] 2026-11-10 V1 寫入迴圈事故（11/8–11/9 燒掉約 TWD 277）。預算警報只寄信、不會擋下扣款，這支函式是唯一能自動止血的機制。
 
-> ⚠️ **2026-11-12 現況**：帳單綁定已手動解除（ISSUES_LOG 2026-11-12），本函式停止運作；重新綁定後才恢復保護。門檻已由 1000 調為 **TWD 500**。重新綁定時若當月花費已接近 500（11/12 為 414.01），請照「觸發後如何恢復」先設 `DISARMED_UNTIL` 或等下個月。
+> ⚠️ **2026-11-12 現況**：帳單於 16:49 手動解除、22:05（台灣）重新綁定（ISSUES_LOG 2026-11-12）。門檻已由 1000 調為 **TWD 500**。函式目前**暫停中**：`DISARMED_UNTIL=2026-12-01T08:00:00Z`（當月已花 414.01，接近門檻），**11 月剩餘期間沒有自動斷線保護**，12/1 起自動恢復。現行 revision `billing-kill-switch-00005-quk`（Node 22）。
 
 ## 運作方式
 
@@ -70,7 +70,7 @@ Cloud Function (gen2) billing-kill-switch @ asia-east1
 ## 重新部署
 
 ```bash
-gcloud functions deploy billing-kill-switch --gen2 --region=asia-east1 --runtime=nodejs20 \
+gcloud functions deploy billing-kill-switch --gen2 --region=asia-east1 --runtime=nodejs22 \
   --source=cloud-functions/billing-kill-switch --entry-point=billingKillSwitch \
   --trigger-topic=billing-kill-switch \
   --service-account=billing-kill-switch@stsystem-9d5fe.iam.gserviceaccount.com \
@@ -89,6 +89,11 @@ gcloud functions deploy billing-kill-switch --gen2 --region=asia-east1 --runtime
 - 第一次 DRY_RUN 發現 service account 缺 `roles/browser`（`getProjectBillingInfo` PERMISSION_DENIED），補上後通過。
 - 真實預算通知已實際送達：`未達門檻：284.89 < 1000 TWD`（2026-11-10 16:30）。
 - 正式模式 revision `billing-kill-switch-00004-lin`，`DRY_RUN=false`、只接受內部流量；部署後帳單仍綁定。
+
+### 2026-11-12 重新部署紀錄
+- Node 20 執行環境已被 GCP 停用：`gcloud functions deploy --update-env-vars`（不帶 `--runtime`）與 `gcloud run services update` 都被拒（`Runtime nodejs20 is decommissioned`）。改以 `--runtime=nodejs22` 完整重新部署，`package.json` 的 `engines.node` 同步改為 22；本機 `npm test` 27/27。**「觸發後如何恢復」第 2 步若再遇到執行環境停用，請改用下方完整部署指令並帶上 `DISARMED_UNTIL`。**
+- 驗證：送出低於門檻的模擬訊息（cost 1／budget 500），新 revision 記錄 `不動作：已暫停至 2026-12-01T08:00:00.000Z`；帳單仍綁定。
+- gcloud 預設配額專案的 Cloud Billing API 常回 `RESOURCE_EXHAUSTED`；`gcloud billing …` 指令加 `--billing-project=stsystem-9d5fe` 可避開（預算指令必須加）。
 
 ## 與架構前提的關係
 
