@@ -13,11 +13,12 @@ tags:
 
 - **事故**：2026-11-11 08:05–21:44 UTC（台灣 11/11 16:05–11/12 05:44）`users/{uid}/data/substituteSystem` 再次被迴圈寫入（每 30 分鐘約 2,500 次，`version` 570,307 → 710,407），當月花費由 TWD 319.22 升到 414.01。帳單數字延遲約 5–7 小時，迴圈停止後費用仍持續入帳到 11/12 04:39 UTC。
 - **根因**：迴圈修正（`02c857a`）只上了正式站；預覽站 `STsystem-preview` 仍為 `7a215d4`，且 V1 轉址排除預覽站、兩站共用 Firestore。
-- **帳單**：2026-11-12 08:49 UTC 執行 `gcloud billing projects unlink stsystem-9d5fe`，專案退回免費方案、斷線函式停止；**尚未重新綁定**（當月花費已接近新門檻，本月重新綁定需先設 `DISARMED_UNTIL`）。
+- **帳單**：2026-11-12 08:49 UTC 執行 `gcloud billing projects unlink stsystem-9d5fe`，專案退回免費方案、斷線函式停止。同日 14:05 UTC（台灣 22:05）重新綁定。
+- **斷線函式重新部署**：Node 20 執行環境已被 GCP 停用，無法只更新環境變數；改以 `--runtime=nodejs22` 重新部署（`engines.node` 20 → 22，revision `billing-kill-switch-00005-quk`），並設 `DISARMED_UNTIL=2026-12-01T08:00:00Z`。模擬訊息驗證回報 `已暫停至 2026-12-01`。**11 月剩餘期間無自動斷線**，12/1 起恢復。
 - **預覽站**：快轉至 `1e38682`（= master），回朔分支 `backup-pre-preview-update-20261112`；Pages `built`，curl 確認線上 `app.js`／`dataManager.js` 含 `fromRealtime`。
 - **斷線門檻**：預算 `b31a4d41` 金額由 TWD 1000 調為 500 並改名「STsystem 自動斷線 TWD 500」；函式以預算金額為門檻，未重新部署。
 - **斷線函式檢查**：設定正確（`DRY_RUN=false`），11/10 起 111 次預算通知皆記錄 `未達門檻`、無 WARNING 以上日誌；未觸發屬設計內行為。
-- 文件：`docs/ISSUES_LOG.md`、`docs/DEPLOYMENT.md`、`docs/BILLING-KILL-SWITCH.md` 已更新。無程式碼變更。
+- 文件：`docs/ISSUES_LOG.md`、`docs/DEPLOYMENT.md`、`docs/BILLING-KILL-SWITCH.md` 已更新。
 
 ---
 
