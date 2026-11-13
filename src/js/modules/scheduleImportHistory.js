@@ -3,11 +3,13 @@
  *
  * V1（localStorage）與 V2（Firestore imports 子集合）共用同一份紀錄形狀：
  *   {
- *     id, versionNo, importedAt(ISO), source: 'file' | 'restore',
+ *     id, versionNo, importedAt(ISO), source: 'file' | 'restore' | 'pre_import',
  *     restoredFromVersion?, fileName,
  *     counts: { entries, classes, teachers, skipped },
  *     fingerprint, importedBy: { name, teacherId } | null
  *   }
+ * source 'pre_import'：V2 匯入／還原覆寫課表前，由寫入 transaction 一併留下的「被覆寫的舊課表」
+ * 快照（versionNo 為 null，不佔版本號），確保任何一次覆寫都能還原。
  * 「中繼資料」不含快照；V1 的歷史清單與 V2 子集合的文件另外帶 snapshot
  * （{ scheduleData, teachers, classes }）供還原用。
  *
@@ -51,7 +53,7 @@ function genId() {
  * @param {string} [p.fileName]
  * @param {number} [p.skippedCount]
  * @param {number} [p.versionNo]   版本號（呼叫端以「上一版 + 1」算出）
- * @param {'file'|'restore'} [p.source]
+ * @param {'file'|'restore'|'pre_import'} [p.source]
  * @param {number} [p.restoredFromVersion]
  * @param {{name:string, teacherId:string|null}|null} [p.importedBy]
  * @param {Date} [p.now]
@@ -65,7 +67,7 @@ export function createImportRecord({
         id: genId(),
         versionNo,
         importedAt: now.toISOString(),
-        source: source === 'restore' ? 'restore' : 'file',
+        source: source === 'restore' ? 'restore' : (source === 'pre_import' ? 'pre_import' : 'file'),
         fileName: String(fileName || ''),
         counts: {
             entries:  Array.isArray(scheduleData) ? scheduleData.length : 0,
@@ -82,6 +84,36 @@ export function createImportRecord({
         rec.restoredFromVersion = Number(restoredFromVersion);
     }
     return rec;
+}
+
+/**
+ * 由「即將被覆寫的雲端課表文件」建立一筆匯入前備份（中繼資料 + 快照）。
+ * - versionNo 為 null：備份不是使用者匯入的一版，不佔版本號，也不影響 lastImport／下一版號。
+ * - importedAt 比觸發它的那一版早 1 毫秒，使清單（importedAt 由新到舊）中新匯入的版本仍排第一、
+ *   「目前版本」判斷（取第一筆）不受影響。
+ * @param {Object} existing 雲端現有課表文件 { scheduleData, teachers, classes, lastImport? }
+ * @param {{importedAt?:string, importedBy?:Object|null}} [opts]
+ * @returns {{record:Object, snapshot:Object}}
+ */
+export function buildPreImportBackup(existing, { importedAt = null, importedBy = null } = {}) {
+    const t = importedAt ? Date.parse(importedAt) : NaN;
+    const now = new Date(Number.isFinite(t) ? t - 1 : Date.now());
+    const snapshot = makeSnapshot({
+        scheduleData: existing?.scheduleData || [],
+        teachers: existing?.teachers || [],
+        classes: existing?.classes || [],
+    });
+    const record = createImportRecord({
+        scheduleData: snapshot.scheduleData,
+        teachers: snapshot.teachers,
+        classes: snapshot.classes,
+        fileName: existing?.lastImport?.fileName || '',
+        versionNo: null,
+        source: 'pre_import',
+        importedBy,
+        now,
+    });
+    return { record, snapshot };
 }
 
 /** 由目前最後一版算出下一個版本號 */
@@ -171,6 +203,7 @@ export function formatLastImport(lastImport) {
 
 /** 來源標籤 */
 export function formatSource(entry) {
+    if (entry?.source === 'pre_import') return '匯入前自動備份';
     if (entry?.source === 'restore') {
         return entry.restoredFromVersion != null
             ? `還原自 v${entry.restoredFromVersion}` : '還原';

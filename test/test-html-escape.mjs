@@ -446,10 +446,16 @@ check('(c) schoolApplicationService 映射 uid = doc id（原始碼）', !/\{ ui
     check('(g) hasPendingWrites：沒有 db／沒有 API → false', await cleanup.hasPendingWrites(null, {}, 30) === false && await cleanup.hasPendingWrites({}, {}, 30) === false);
 
     const authSrc = read('src/js/modules/authService.js');
+    // 2026-11（P5b）：signOutUser 加了重入旗標與 onSyncing（等待待寫入期間按鈕「同步中…」），原正規式的字面結構已過時；
+    // 斷言的意圖不變（signOut 之前先檢查待寫入；有未同步變更 → confirmDialog；取消 → return false 不登出），行為另由 test-session-cleanup.mjs 實測。
     check('(g) signOutUser：signOut 之前先 hasPendingWrites，有未同步變更 → confirmDialog，取消 → return false（不登出）',
-        /await hasPendingWrites\(getDbInstance\(\)\)[\s\S]*confirmFn\.call\(window\.app[\s\S]*if \(!proceed\) return false;[\s\S]*await signOut\(auth\)/.test(authSrc));
+        /await hasPendingWrites\(getDbInstance\(\)\)[\s\S]*confirmFn\.call\(window\.app[\s\S]*if \(!proceed\) \{[^}]*return false;[^}]*\}[\s\S]*await signOut\(auth\)/.test(authSrc));
     check('(g) signOutUser：signOut 後 wipeLocalUserData（含 Firestore 快取）', /await signOut\(auth\);[\s\S]*await wipeLocalUserData\(\{ db: getDbInstance\(\) \}\)/.test(authSrc));
-    check('(g) 被動登出：只清鏡像、keepFirestoreCache: true，且主動登出（userInitiatedSignOut）不重複走這條', /!user && hadSignedInUser && !userInitiatedSignOut[\s\S]*keepFirestoreCache: true/.test(authSrc));
+    // 2026-11（P5b）：被動登出改為「沒有待寫入就連 Firestore 離線快取一起清；有待寫入才保留」，
+    // 見 localDataCleanup.wipeAfterPassiveSignOut（行為由 test-session-cleanup.mjs 實測）。主動登出仍不重複走這條。
+    check('(g) 被動登出：先檢查待寫入再決定是否保留快取（wipeAfterPassiveSignOut），且主動登出（userInitiatedSignOut）不重複走這條',
+        /!user && hadSignedInUser && !userInitiatedSignOut[\s\S]*wipeAfterPassiveSignOut\(\{ db: getDbInstance\(\) \}\)/.test(authSrc)
+        && /keepFirestoreCache: pending/.test(read('src/js/modules/localDataCleanup.js')));
     check('(g) 切換帳號：lastUid !== user.uid → 強制清（含 Firestore 快取）', /lastUid !== user\.uid[\s\S]*wipeLocalUserData\(\{ db: getDbInstance\(\), keepUid: user\.uid \}\)/.test(authSrc));
     const fb = read('src/js/modules/firebaseConfig.js');
     check('(g) firebaseConfig 匯出 terminate、clearIndexedDbPersistence、waitForPendingWrites', /terminate, clearIndexedDbPersistence, waitForPendingWrites/.test(fb) && /clearIndexedDbPersistence,\s*\n\s*waitForPendingWrites\s*\n\s*};/.test(fb));

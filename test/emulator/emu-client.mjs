@@ -279,7 +279,15 @@ export async function runTransaction(readPaths, buildWrites, opts = {}) {
         if (!found) return { ok: false, status: 404, error: 'tx get: 文件不存在：' + p };
         reads.push(fromFirestoreFields(found.fields || {}));
     }
-    const writes = buildWrites(reads).map(w => w.update
+    // buildWrites 丟出例外（例如前端守門在交易內判定要中止）時必須 rollback，否則交易鎖會一直佔著文件，
+    // 後續對同一文件的寫入全部逾時（HTTP 409 Transaction lock timeout）。
+    let built;
+    try { built = buildWrites(reads); }
+    catch (e) {
+        await request('POST', `${DOCS_ROOT}:rollback`, { ...opts, body: { transaction: txId } });
+        throw e;
+    }
+    const writes = built.map(w => w.update
         ? { update: { name: `${root}/${w.update}`, fields: toFirestoreFields(w.data) },
             updateMask: { fieldPaths: Object.keys(w.data) }, currentDocument: { exists: true } }
         : { update: { name: `${root}/${w.create}`, fields: toFirestoreFields(w.data) }, currentDocument: { exists: false } });

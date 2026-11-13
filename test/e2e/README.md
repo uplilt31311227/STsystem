@@ -14,6 +14,36 @@ python start-server.py            # 終端機 B：本機網頁伺服器（port 8
 npm run seed && npm run test:e2e  # 終端機 C：種資料後跑操作測試
 ```
 
+## 網路防線：e2e 不得碰正式環境
+
+防線有兩層（所有 e2e 都經過 `newPage()`）：
+1. **阻擋**：一條窄範圍的 `page.route`（正規表示式，只比對 `googleapis.com`、`google.com`、`gstatic.com`、`firebaseapp.com`、`firebaseio.com`、`web.app`、`recaptcha.net` 及其子網域），命中就 abort 並記為違規；本機請求完全不經過它。
+   SDK 快取的 route（`www.gstatic.com/firebasejs/**`）與各測試自己的 mock route（例如 e2e-07 的日曆 API）都是後註冊，優先於這條，所以 firebasejs 與被 mock 的請求不會被當成違規。
+2. **偵測**：`page.on('request')`（只觀察）記錄「放行的外部主機」（cdnjs、cdn.sheetjs、www.gstatic.com firebasejs）。
+
+不使用全域 catch-all route 或 Chromium DNS 規則（`--host-resolver-rules`）：實測沒有它們的好處（本機 emulator 的延遲與防線無關，見下一節），
+全域攔截卻會讓每個本機請求都經過處理常式。
+
+本機 emulator 偶發的 30～60 秒延遲：在「完全不裝防線」、甚至還原成 HEAD 的 `firestore.rules` 的對照下，瀏覽器內第一次 `getDocs(schedules)`
+仍可能卡 30～60 秒（同一個 REST 讀取只要約 12 ms）。這是 emulator 環境問題（見下節 README 原有說明），不是 app 或防線的缺陷；
+受影響的 e2e 因此把備份／還原的等待上限放寬（e2e-04 與 e2e-09 為 7 分鐘）。
+
+分類如下：
+
+| 請求目標 | 處理 |
+|---|---|
+| `localhost`／`127.0.0.1`（網頁伺服器、emulator）、`data:`／`blob:` | 放行 |
+| `cdnjs.cloudflare.com`、`cdn.sheetjs.com`、`www.gstatic.com/firebasejs/`（SDK 本體，另有本機快取） | 放行 |
+| `*.googleapis.com`、`*.firebaseapp.com`、`*.firebaseio.com`、`www.google.com/recaptcha`、`recaptcha.net`、`www.gstatic.com/recaptcha`、其他 `*.google.com` | **記為違規**（請求同時被第 1 層的 `page.route` abort 擋下）：`Suite.case` 偵測到案例期間有違規請求就把該案例判為失敗 |
+| 其餘任何外部主機 | 只記錄（不判失敗）；命中封鎖清單網域者同樣被 abort |
+
+緣由：`e2e-08` 曾前往不帶 `emu=1` 的網址，`v2-redirect.js` 轉址後（保留查詢參數，但本來就沒有 `emu=1`）app 以正式設定初始化，
+向正式專案載入 reCAPTCHA、交換 App Check token。現在 e2e-08 所有案例的起始網址都帶 `emu=1`（轉址會保留它），
+且最後一案會印出「違規請求」「被攔截的其他外部請求」「放行的外部主機」三份清單並斷言違規為空。
+分類規則是純函式，`node test/test-e2e-netguard.mjs`（已掛進 `npm test`）離線驗證，
+含 `v2-redirect.js` 保留 `emu=1` 的單元測試。新增 e2e 時：一律用 `newPage()`／`loginStable()` 建分頁，
+網址一律帶 `?v2=1&emu=1`；不要自己 `browser.newPage()`，否則會繞過防線。
+
 ## 登入為什麼慢（根因已查明）
 
 一度以為「登入卡住、成功率只有兩成」，實際追查後是**兩個獨立問題**，都已處理：
@@ -68,6 +98,8 @@ Firestore，不是跑在本機的 Java emulator。不會拿正式站做這種驗
 | `e2e-02-substitute-flow.mjs` | 代課推薦正確性、公假必填字號、未選課不可送出、教師的原任課教師欄位未鎖定、申請→待辦→核准 | 可跑 |
 | `e2e-03-admin-flows.mjs` | 月結算（含暑假 0 週邊界）、學期切換（在途申請擋下）、課表匯入（缺欄位／空檔被拒且不影響既有課表、正常檔匯入並同步雲端）、組長看不到主任專用區塊 | 可跑 |
 | `e2e-04-pdf-and-clear.mjs` | 調代課單 PDF 實際下載並驗證檔頭與大小、週彙整入口、**清除所有資料的兩道確認閘門**（各自取消都不動資料；兩道都確認才真的清空） | 可跑（**破壞性**） |
+| `e2e-08-v1-no-weeks.mjs` | V1 網址轉址到 V2（保留 `emu=1`、其他參數與 hash，無轉址迴圈）；最後一案斷言整支期間沒有任何請求連到正式環境 | 可跑 |
+| `e2e-09-backup-restore.mjs` | 雲端完整備份與還原：角色可見性、匯出內容與筆數、V1 舊格式與別校備份被拒、刪紀錄後以備份還原（預覽→確認字樣→還原前自動備份） | 可跑（破壞性，排在最後） |
 
 `e2e-03` 的三組共用同一次主任登入（bootstrap 太慢，每案各登入一次不可行），
 順序刻意是「不改資料的先做」：月結算 → 學期切換（只驗證被擋，不真的切換）→

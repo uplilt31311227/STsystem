@@ -8,22 +8,28 @@
  *   2. 保留其他查詢參數與 hash
  *   3. 已帶 ?v2=1 → 不會再轉址（無迴圈）
  * 不登入、不碰 emulator 資料，只看網址與頁面是否載入了 V2 登入遮罩。
+ *
+ * ⚠ 所有案例的起始網址都帶 emu=1：轉址保留查詢參數，所以轉址後仍是 emulator 模式。
+ * 若不帶，轉址後 app 會以正式設定初始化、向正式專案載入 reCAPTCHA／交換 App Check token（曾發生）。
+ * 最後一案另外斷言：整支測試期間沒有任何請求連到正式環境（防線見 netGuard.mjs）。
  */
-import { newPage } from './helpers.mjs';
+import { newPage, APP_BASE } from './helpers.mjs';
+import { getGuardState } from './netGuard.mjs';
 import { Suite, eq, ok } from '../scenarios/harness.mjs';
 
-const BASE = 'http://localhost:8000/';
+const BASE = APP_BASE;
 
 export async function run(browser) {
     const suite = new Suite('操作 8：V1 網址轉址到 V2');
     const page = await newPage(browser);
     try {
-        await suite.case('不帶 ?v2=1 → 轉址到 V2（網址帶 v2=1，V2 登入遮罩出現）', async () => {
-            await page.goto(BASE, { waitUntil: 'domcontentloaded' });
+        await suite.case('不帶 ?v2=1（只帶 emu=1）→ 轉址到 V2（網址帶 v2=1、保留 emu=1，V2 登入遮罩出現）', async () => {
+            await page.goto(`${BASE}?emu=1`, { waitUntil: 'domcontentloaded' });
             await page.waitForFunction(() => new URLSearchParams(location.search).get('v2') === '1', null, { timeout: 30000 });
             await page.waitForSelector('#v2-auth-gate, .app-container', { timeout: 30000 });
             const u = new URL(page.url());
             eq(u.searchParams.get('v2'), '1', '轉址後帶 v2=1');
+            eq(u.searchParams.get('emu'), '1', '轉址後仍保留 emu=1（否則會以正式設定初始化）');
             eq(u.pathname, '/', '路徑不變');
             const hasGate = await page.evaluate(async () => {
                 for (let i = 0; i < 60 && !document.getElementById('v2-auth-gate'); i++) await new Promise(r => setTimeout(r, 500));
@@ -50,6 +56,14 @@ export async function run(browser) {
             }));
             eq(r.search, '?v2=1&emu=1', '網址維持原樣');
             eq(r.keys, [], 'localStorage 沒有週數設定 key（週數設定存 Firestore config/settlement）');
+        });
+
+        await suite.case('外部請求防線：整支期間沒有任何請求連到正式環境；被攔截清單只可能是非白名單雜訊', async () => {
+            const g = getGuardState();
+            console.log('      ↳ 違規請求（連到正式環境，已攔截）：' + (g.violations.length ? '\n        ' + g.violations.map(v => `${v.reason} ${v.url}`).join('\n        ') : '（無）'));
+            console.log('      ↳ 被攔截的其他外部請求：' + (g.blocked.length ? '\n        ' + g.blocked.map(v => `${v.reason} ${v.url}`).join('\n        ') : '（無）'));
+            console.log('      ↳ 放行的外部主機：' + ([...g.allowedExternal].join('、') || '（無）'));
+            eq(g.violations, [], '不得有任何違規請求');
         });
     } finally {
         await page.close();

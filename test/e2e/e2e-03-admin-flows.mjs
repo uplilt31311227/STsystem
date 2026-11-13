@@ -16,11 +16,22 @@ import { ALPHA, buildSchoolFixture } from '../fixtures/school-fixture.mjs';
 import { buildCsvVariants } from '../fixtures/csv-variants.mjs';
 import { rowsToCsv } from '../fixtures/schedule-builder.mjs';
 
-/** 把 CSV 字串當成檔案餵給 <input type="file">，不必落地成實體檔案。 */
-async function uploadCsv(page, csv, name = 'schedule.csv') {
+/**
+ * 把 CSV 字串當成檔案餵給 <input type="file">，不必落地成實體檔案。
+ *
+ * 課表匯入現在先跳出預覽對話框（2026-11 審計 ux H7）：解析成功的檔案要按「確認匯入」才會寫入。
+ * confirm:true 時自動處理預覽（目標學期與今天推算不一致時要先勾選確認）；解析失敗的檔案不會出現預覽。
+ */
+async function uploadCsv(page, csv, name = 'schedule.csv', { confirm = false } = {}) {
     await page.setInputFiles('#schedule-file', {
         name, mimeType: 'text/csv', buffer: Buffer.from(csv, 'utf-8'),
     });
+    if (confirm) {
+        await page.waitForSelector('.rich-dialog-content', { timeout: 30000 });
+        const ack = page.locator('.rich-dialog-content [data-rd="ack"]');
+        if (await ack.count()) await ack.check();
+        await page.click('.rich-dialog-content [data-rd="confirm"]');
+    }
     await page.waitForTimeout(2500);
 }
 
@@ -178,12 +189,32 @@ export async function run(browser) {
             eq(after, before, '匯入失敗不應更動既有課表');
         });
 
+        await suite.case('課表匯入預覽：顯示目標學期、與現有課表的差異；按取消後課表完全不動', async () => {
+            await openImportView(page);
+            const before = await scheduleState(page);
+            const rows = fixture.schedules[ALPHA.currentSemester].rows
+                .filter(r => ['7年1班', '7年2班', '7年3班'].includes(r.班級));
+            await page.setInputFiles('#schedule-file', {
+                name: 'preview-only.csv', mimeType: 'text/csv', buffer: Buffer.from(rowsToCsv(rows), 'utf-8'),
+            });
+            await page.waitForSelector('.rich-dialog-content', { timeout: 30000 });
+            const text = await page.innerText('.rich-dialog-content');
+            includes(text, `匯入到學期：${ALPHA.currentSemester}`, '預覽應醒目顯示目標學期');
+            includes(text, '現有課表', '預覽應顯示與現有課表的比較');
+            includes(text, '消失的班級', '預覽應列出將消失的班級（9 班 → 3 班）');
+            includes(text, '匯入前自動備份', '預覽應說明舊課表會自動備份');
+            await shot(page, '03-import-preview');
+            await page.click('.rich-dialog-content [data-rd="cancel"]');
+            await page.waitForTimeout(800);
+            eq(await scheduleState(page), before, '取消匯入後課表不應有任何變動');
+        });
+
         await suite.case('課表匯入：正常檔案匯入成功並更新統計', async () => {
             await openImportView(page);
             // 只取前 3 個班的課，讓匯入後的數字與原本明顯不同，才能確認真的換掉了
             const rows = fixture.schedules[ALPHA.currentSemester].rows
                 .filter(r => ['7年1班', '7年2班', '7年3班'].includes(r.班級));
-            await uploadCsv(page, rowsToCsv(rows), 'three-classes.csv');
+            await uploadCsv(page, rowsToCsv(rows), 'three-classes.csv', { confirm: true });
             await page.waitForTimeout(2500);
 
             const after = await scheduleState(page);
@@ -201,6 +232,18 @@ export async function run(browser) {
             });
             eq(cloud.classes, 3, '雲端課表的班級數應同步更新');
             ok(cloud.n > 0 && cloud.n < 306, `雲端課表節數應已更新（實際 ${cloud.n}）`);
+        });
+
+        await suite.case('課表匯入覆寫後，被覆寫的舊課表（306 節）已存成「匯入前自動備份」，可從匯入紀錄還原', async () => {
+            const r = await page.evaluate(async () => {
+                const fm = window.firebaseModules, db = fm.getFirestore();
+                const col = await fm.getDocs(fm.collection(db, 'schools/demo-alpha/schedules/115-1/imports'));
+                const pre = col.docs.map(d => d.data()).find(d => d.source === 'pre_import');
+                return pre ? { n: pre.snapshot?.scheduleData?.length ?? -1, versionNo: pre.versionNo } : null;
+            });
+            ok(r, '應有 source=pre_import 的備份紀錄');
+            eq(r.n, 306, '備份快照應是被覆寫前的完整課表（306 節）');
+            eq(r.versionNo, null, '備份不佔版本號');
         });
 
         await suite.case('課表匯入後，主文件帶 lastImport 且 imports 子集合多一版（含快照）', async () => {

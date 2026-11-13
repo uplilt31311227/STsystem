@@ -8,7 +8,7 @@
  */
 
 import { initializeFirebase, getAuthInstance, getDbInstance, isFirebaseInitialized } from './firebaseConfig.js';
-import { wipeLocalUserData, hasPendingWrites, LAST_UID_KEY } from './localDataCleanup.js';
+import { wipeLocalUserData, wipeAfterPassiveSignOut, hasPendingWrites, LAST_UID_KEY } from './localDataCleanup.js';
 
 // 當前使用者
 let currentUser = null;
@@ -16,6 +16,8 @@ let currentUser = null;
 let hadSignedInUser = false;
 // 使用者主動按登出（signOutUser 執行中）：此時 onAuthStateChanged(null) 不走被動登出的清除流程
 let userInitiatedSignOut = false;
+// signOutUser 進行中（等待離線待寫入、確認對話框、signOut）：重入的呼叫一律忽略
+let signOutInFlight = false;
 
 // 認證狀態變更回調函數列表
 const authStateCallbacks = [];
@@ -101,11 +103,12 @@ async function initAuthService() {
         // 曾登入、現在變成未登入（按登出、token 失效、其他分頁登出）：清除本機資料並重新載入。
         // 啟動時本來就沒登入（hadSignedInUser=false）不處理，避免重新載入迴圈。
         // 這是「被動」登出（不是使用者按了登出鈕——主動登出走 signOutUser，會先處理待寫入再自行清除）：
-        // 只清鏡像、保留 Firestore 離線快取（內含尚未送出的寫入，下次同一帳號登入可續送；
-        // 換成不同帳號登入時由上面的切換帳號偵測強制清除）。
+        // 先檢查有沒有尚未送出的離線寫入：沒有 → 連 Firestore 離線快取一起清（共用電腦不留全校資料）；
+        // 有 → 只清鏡像、保留快取（內含待送寫入，下次同一帳號登入可續送；換成不同帳號登入時由上面的
+        // 切換帳號偵測強制清除）。見 localDataCleanup.wipeAfterPassiveSignOut。
         if (!user && hadSignedInUser && !userInitiatedSignOut) {
             hadSignedInUser = false;
-            wipeLocalUserData({ db: getDbInstance(), keepFirestoreCache: true });
+            wipeAfterPassiveSignOut({ db: getDbInstance() }).catch(e => console.warn('[auth] 被動登出清除失敗:', e));
         }
     });
 
@@ -163,23 +166,36 @@ async function signInWithGoogle() {
  * 登出
  * @returns {Promise<void>}
  */
-async function signOutUser() {
+async function signOutUser({ onSyncing = null } = {}) {
     if (!isFirebaseInitialized()) {
         return;
     }
+    // 重入保護：離線時等待待寫入最久 5 秒，期間再按登出不應再開一輪（也不應跳出第二個確認框）
+    if (signOutInFlight) return false;
+    signOutInFlight = true;
 
     const { signOut } = window.firebaseModules;
     const auth = getAuthInstance();
 
     // 登出會清掉 Firestore 離線快取，其中尚未送出的離線寫入會一併丟失。在 signOut 之前（此時
     // 仍是登入狀態、寫入還有機會送出）先等待待寫入；逾時代表仍有未同步的變更 → 讓使用者選擇。
-    if (await hasPendingWrites(getDbInstance())) {
-        const msg = '有尚未同步到雲端的變更（可能是離線時所做的修改），登出將放棄這些變更。確定要登出嗎？';
-        const confirmFn = window.app?.confirmDialog;
-        const proceed = confirmFn
-            ? await confirmFn.call(window.app, { title: '尚有未同步的變更', message: msg, confirmText: '放棄變更並登出', danger: true })
-            : window.confirm(msg);
-        if (!proceed) return false;   // 取消登出：什麼都不動
+    // onSyncing(true/false)：呼叫端據此停用登出鈕並顯示「同步中…」（等待最久 5 秒，過去完全沒有回饋）。
+    try {
+        onSyncing?.(true);
+        let pending;
+        try { pending = await hasPendingWrites(getDbInstance()); }
+        finally { onSyncing?.(false); }
+        if (pending) {
+            const msg = '有尚未同步到雲端的變更（可能是離線時所做的修改），登出將放棄這些變更。確定要登出嗎？';
+            const confirmFn = window.app?.confirmDialog;
+            const proceed = confirmFn
+                ? await confirmFn.call(window.app, { title: '尚有未同步的變更', message: msg, confirmText: '放棄變更並登出', danger: true })
+                : window.confirm(msg);
+            if (!proceed) { signOutInFlight = false; return false; }   // 取消登出：什麼都不動
+        }
+    } catch (e) {
+        signOutInFlight = false;
+        throw e;
     }
 
     try {
@@ -193,8 +209,33 @@ async function signOutUser() {
         return true;
     } catch (error) {
         userInitiatedSignOut = false;
+        signOutInFlight = false;
         console.error('登出失敗:', error);
         throw error;
+    }
+}
+
+/** 登出是否進行中（測試與呼叫端用）。 */
+function isSignOutInFlight() {
+    return signOutInFlight;
+}
+
+/**
+ * 綁在登出按鈕上的包裝：等待期間停用按鈕並顯示「同步中…」，結束（取消、失敗）後還原；
+ * 成功登出時頁面會整頁重新載入，不需還原。重入由 signOutUser 的旗標擋下。
+ */
+async function signOutWithButton(btn) {
+    const label = btn ? btn.textContent : '';
+    try {
+        return await signOutUser({
+            onSyncing: (on) => {
+                if (!btn) return;
+                btn.disabled = on;
+                btn.textContent = on ? '同步中…' : label;
+            },
+        });
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = label; }
     }
 }
 
@@ -425,6 +466,8 @@ export {
     sendVerificationEmail,
     createTeacherAuthAndSendReset,
     signOutUser,
+    signOutWithButton,
+    isSignOutInFlight,
     getCurrentUser,
     isSignedIn,
     getUserInfo,

@@ -10,6 +10,9 @@
 import { getV2Firestore } from './firebaseV2.js';
 import { SCHEMA_PATHS, REQUEST_STATUS } from './schemaConstants.js';
 import * as semesterState from './semesterState.js';
+import {
+    assertScheduleWrite, scheduleVersionOf, nextScheduleVersion, isScheduleDocEmpty,
+} from './scheduleWriteGuard.js';
 
 // Stage 1（讀取成本止血，RESEARCH-multitenancy-semester.md §5.4）：即時訂閱的預設分頁大小。
 // 報告未給明確數字時的預設值（§8 路線圖 Stage 1 一列）。
@@ -379,16 +382,18 @@ function requireScheduleSemesterId(fnName, semesterId) {
     );
 }
 
-export async function getSchedule(semesterId) {
+export async function getSchedule(semesterId, { fromServer = false } = {}) {
     requireScheduleSemesterId('getSchedule', semesterId);
     const fs   = await getV2Firestore();
+    // fromServer：清除流程用，確保 schoolName 等取自伺服器現值，讀不到就丟錯（不退回快取）
+    const read = fromServer ? fs.getDocFromServer : fs.getDoc;
     const ref  = fs.doc(fs.db, SCHEMA_PATHS.scheduleDocForSemester(semesterId));
-    const snap = await fs.getDoc(ref);
+    const snap = await read(ref);
     if (snap.exists()) return snap.data();
 
     // Fallback：per-semester 文件尚未建立，退回讀舊版單一文件（見上方檔頭註解）。
     const legacyRef  = fs.doc(fs.db, SCHEMA_PATHS.scheduleDoc());
-    const legacySnap = await fs.getDoc(legacyRef);
+    const legacySnap = await read(legacyRef);
     return legacySnap.exists() ? legacySnap.data() : null;
 }
 
@@ -412,11 +417,78 @@ export async function getScheduleForSemesterStrict(semesterId) {
     return snap.exists() ? snap.data() : null;
 }
 
-export async function saveSchedule(semesterId, scheduleData) {
+/**
+ * 寫入全校課表（transaction）。
+ *
+ * 過去是無條件整份 setDoc（審計 logic-flow M-4／H-1、ux H7）：兩位 approver 先後編輯會互相蓋掉、
+ * 「開新學期」會以空殼覆寫既有學期、空資料可覆寫有內容的課表。現在在 transaction 內先讀雲端現值，
+ * 套用 scheduleWriteGuard 的兩道前置條件才寫入：
+ *   - opts.expected：呼叫端讀取當時的版本（見 scheduleWriteGuard.expectedFromDoc）。undefined＝不檢查；
+ *     null＝要求文件尚不存在；物件＝雲端必須仍是這一版，否則丟 ScheduleConflictError。
+ *   - opts.allowEmpty：明確允許以空內容覆寫非空課表（僅「清除所有資料」使用），否則丟
+ *     ScheduleEmptyOverwriteError。
+ *   - opts.backup：函式 (existingDoc) => { record, snapshot } | null。雲端現有課表非空時，在同一個
+ *     transaction 內把「被覆寫的舊課表」寫成一筆匯入紀錄（imports 子集合），主文件與備份一起成功或
+ *     一起失敗，確保任何一次覆寫都能從匯入紀錄還原。
+ * 每次寫入 version + 1（舊文件無 version 視為 0）。注意 transaction 需要連線，離線時會失敗並由呼叫端顯示
+ * 錯誤，不再像 setDoc 那樣把「可能已過期」的寫入排隊到恢復連線後才送出。
+ * @returns {Promise<{updatedAt:string, version:number, backupId:string|null}>}
+ */
+export async function saveSchedule(semesterId, scheduleData, opts = {}) {
     requireScheduleSemesterId('saveSchedule', semesterId);
     const fs  = await getV2Firestore();
     const ref = fs.doc(fs.db, SCHEMA_PATHS.scheduleDocForSemester(semesterId));
-    await fs.setDoc(ref, { ...scheduleData, updatedAt: new Date().toISOString() });
+    return fs.runTransaction(fs.db, async (tx) => {
+        const snap = await tx.get(ref);
+        const existing = snap.exists() ? snap.data() : null;
+        assertScheduleWrite({ existing, incoming: scheduleData, expected: opts.expected, allowEmpty: opts.allowEmpty === true });
+
+        let backupId = null;
+        if (typeof opts.backup === 'function' && existing && !isScheduleDocEmpty(existing)) {
+            const b = opts.backup(existing);
+            if (b && b.record && b.record.id) {
+                const impRef = fs.doc(fs.db, SCHEMA_PATHS.scheduleImportDoc(semesterId, b.record.id));
+                tx.set(impRef, { ...b.record, snapshot: b.snapshot });
+                backupId = b.record.id;
+            }
+        }
+        const updatedAt = new Date().toISOString();
+        const version = nextScheduleVersion(existing);
+        tx.set(ref, { ...scheduleData, updatedAt, version });
+        return { updatedAt, version, backupId };
+    });
+}
+
+/**
+ * 切換目前學期（transaction）：config.currentSemester 與（必要時）新學期的空課表文件一起提交。
+ *
+ * 審計 logic-flow H-1：舊流程先 upsertConfig、再對 toId 無條件 saveSchedule(空殼)，toId 已有課表時整份被清空；
+ * 且兩步之間失敗會留下「currentSemester 指向不存在的課表」。
+ *   - toId 的課表文件已存在 → 只更新 config，完全不碰該學期課表（「切換回去」）。
+ *   - 不存在 → 同一個 transaction 內更新 config 並建立空殼。
+ *   - transaction 內重新確認 config.currentSemester 仍是 fromId（別人搶先切換則中止）。
+ * ⚠ 第二種情況需要 firestore.rules 允許「同一次提交內 config 已指向該學期」時建立課表（getAfter），
+ * 規則尚未部署時會被拒絕（permission-denied）——此時呼叫端可改走 legacy 順序（先 config 再建立）。
+ * @param {{fromId:string, toId:string, shell:Object}} p
+ * @returns {Promise<{createdSchedule:boolean}>}
+ */
+export async function activateSemester({ fromId, toId, shell }) {
+    requireScheduleSemesterId('activateSemester', toId);
+    const fs = await getV2Firestore();
+    const cfgRef = fs.doc(fs.db, SCHEMA_PATHS.config());
+    const toRef  = fs.doc(fs.db, SCHEMA_PATHS.scheduleDocForSemester(toId));
+    return fs.runTransaction(fs.db, async (tx) => {
+        const [cfgSnap, toSnap] = await Promise.all([tx.get(cfgRef), tx.get(toRef)]);
+        const cur = cfgSnap.exists() ? cfgSnap.data().currentSemester : null;
+        if (fromId && cur !== fromId) {
+            throw new Error(`目前學期已被改為「${cur || '（未設定）'}」（不是「${fromId}」），為避免誤操作已中止，請重新整理頁面後再試。`);
+        }
+        const now = new Date().toISOString();
+        tx.set(cfgRef, { currentSemester: toId, updatedAt: now }, { merge: true });
+        if (toSnap.exists()) return { createdSchedule: false };
+        tx.set(toRef, { ...shell, updatedAt: now, version: 1 });
+        return { createdSchedule: true };
+    });
 }
 
 /* ===== 課表匯入版本紀錄（schedules/{semesterId}/imports/{importId}） ===== */
@@ -521,7 +593,8 @@ export async function listSubstituteRecords() {
 export async function listAllSubstituteRecordsForClear() {
     const fs   = await getV2Firestore();
     const col  = fs.collection(fs.db, SCHEMA_PATHS.substituteCol());
-    const snap = await fs.getDocs(col);
+    // 只讀伺服器：快取殘缺會讓清除漏刪（留下紀錄卻回報清除完成）；讀不到伺服器就丟錯、中止清除
+    const snap = await fs.getDocsFromServer(col);
     return snap.docs.map(d => ({ ...d.data(), recordId: d.id }));
 }
 
@@ -1129,7 +1202,8 @@ export async function listPendingRequests() {
 export async function listAllPendingRequestsForClear() {
     const fs   = await getV2Firestore();
     const col  = fs.collection(fs.db, SCHEMA_PATHS.pendingCol());
-    const snap = await fs.getDocs(col);
+    // 只讀伺服器，理由同 listAllSubstituteRecordsForClear()
+    const snap = await fs.getDocsFromServer(col);
     return snap.docs.map(d => ({ ...d.data(), reqId: d.id }));
 }
 
@@ -1456,13 +1530,15 @@ export async function subscribeSchedule(semesterId, callback, onError) {
     const ref = fs.doc(fs.db, SCHEMA_PATHS.scheduleDocForSemester(semesterId));
     let fallbackDone = false;
     return fs.onSnapshot(ref, async (snap) => {
-        if (snap.exists()) { callback(snap.data()); return; }
+        if (snap.exists()) { callback(snap.data(), { fromLegacy: false }); return; }
         if (!fallbackDone) {
             fallbackDone = true;
             try {
                 const legacyRef  = fs.doc(fs.db, SCHEMA_PATHS.scheduleDoc());
                 const legacySnap = await fs.getDoc(legacyRef);
-                if (legacySnap.exists()) { callback(legacySnap.data()); return; }
+                // 第二個參數標記「這份是舊版單一文件 fallback」——它不是 schedules/{semesterId} 本身的版本，
+                // 呼叫端據此把寫入前置條件設為「該學期文件尚不存在」（見 scheduleWriteGuard）。
+                if (legacySnap.exists()) { callback(legacySnap.data(), { fromLegacy: true }); return; }
             } catch (e) {
                 console.warn('[V2] 舊版課表 fallback 讀取失敗：', e);
             }

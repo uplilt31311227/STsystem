@@ -64,8 +64,16 @@ export class Suite {
      */
     async case(name, fn, opts = {}) {
         const started = Date.now();
+        // e2e 網路防線（test/e2e/netGuard.mjs）：案例期間若有請求打到正式 Firebase／reCAPTCHA 等違規目標，
+        // 該案例視為失敗（請求本身已被 abort，不會真的送出）。非 e2e 情境沒有這個全域物件，不受影響。
+        const guard = globalThis.__e2eNetGuard;
+        const violationsBefore = guard ? guard.violations.length : 0;
         try {
             await fn();
+            if (guard && guard.violations.length > violationsBefore) {
+                throw new AssertionError('案例期間有請求連向正式環境（已被攔截）：\n      ' +
+                    guard.violations.slice(violationsBefore).map(v => `${v.reason}  ${v.url}`).join('\n      '));
+            }
             this.cases.push({ name, status: 'pass', ms: Date.now() - started, knownGap: opts.knownGap });
         } catch (err) {
             this.cases.push({

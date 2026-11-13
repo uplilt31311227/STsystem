@@ -16,6 +16,8 @@ import {
     loadV1History, appendV1History, getRestorableSnapshot, makeSnapshot,
     computeFingerprint, formatImportDate, formatLastImport, formatSource, V1_HISTORY_KEY
 } from './modules/scheduleImportHistory.js';
+import { buildImportPreviewModel, truncateList } from './modules/scheduleImportPreview.js';
+import { openRichDialog, rdText, rdHeading, rdList, rdNotice, rdTable } from './modules/richDialog.js';
 import { ScheduleParser } from './modules/scheduleParser.js';
 import { RecommendationEngine, findSwapDateConflict, pendingTag } from './modules/recommendationEngine.js';
 import { PDFGenerator } from './modules/pdfGenerator.js';
@@ -33,6 +35,7 @@ import {
     initAuthService,
     signInWithGoogle,
     signOutUser,
+    signOutWithButton,
     onAuthStateChange,
     isSignedIn,
     getUserInfo
@@ -91,6 +94,16 @@ class SubstituteTeacherApp {
             onRecorded: ({ record, snapshot }) => { appendV1History(record, snapshot); },
             list: async () => loadV1History(),
             canRestore: () => true,
+        };
+
+        // 課表匯入預覽的情境提供者。V1 預設無目標學期；V2 在 v2-app.js patchDataManager() 覆寫：
+        //   isReady()    課表訂閱是否已送達第一次快照（未送達時本機課表是空的，預覽與寫入都不可信）
+        //   getTarget()  { semesterId, todaySemesterId }：匯入會寫入哪個學期、依今天日期推算的學期
+        //   backupNote   確認前顯示的「舊課表會怎麼保存」說明
+        this.scheduleImportContext = {
+            isReady: () => true,
+            getTarget: () => null,
+            backupNote: '',
         };
 
         // 統一 confirm 對話框（Stage 5）：目前開啟中的 confirmDialog() resolve callback，
@@ -160,8 +173,9 @@ class SubstituteTeacherApp {
         // 設定預設日期
         this.setDefaultDates();
 
-        // 從 localStorage 載入已儲存的資料
-        this.loadSavedData();
+        // 從 localStorage 載入已儲存的資料。V2 不在此讀：此時尚未登入、不知道 schoolId，讀到的只會是不帶後綴的
+        // V1 舊 key（凍結快照，只留給 legacy 遷移讀取）；V2 登入後由 v2-app 以 school-scoped key 回填。
+        if (!isV2Enabled()) this.loadSavedData();
 
         // 補視覺：loadSavedData() 只在「有課表資料」分支內呼叫過 updateTabLockStatus()，
         // 全新（無資料）載入時鎖定分頁從未套用 is-locked 灰化樣式（點擊攔截本來就有效，
@@ -216,7 +230,7 @@ class SubstituteTeacherApp {
 
         // 登出按鈕
         const signoutBtn = document.getElementById('signout-btn');
-        signoutBtn?.addEventListener('click', () => this.handleSignOut());
+        signoutBtn?.addEventListener('click', () => this.handleSignOut(signoutBtn));
 
         // 同步衝突對話框相關
         const conflictOptions = document.querySelectorAll('.conflict-option');
@@ -286,12 +300,13 @@ class SubstituteTeacherApp {
     /**
      * 處理登出
      */
-    async handleSignOut() {
+    async handleSignOut(btn = null) {
         try {
             // 停用即時同步
             this.dataManager.disableRealtimeSync();
 
-            await signOutUser();
+            // 離線時等待待寫入最久 5 秒：按鈕停用並顯示「同步中…」，重入由 signOutUser 擋下
+            await signOutWithButton(btn);
             console.log('已登出');
         } catch (error) {
             console.error('登出失敗:', error);
@@ -818,13 +833,33 @@ class SubstituteTeacherApp {
      * 處理課表檔案上傳
      */
     async handleScheduleFile(file) {
+        const fileInput = document.getElementById('schedule-file');
+        // 同一個檔案取消後要能再選一次（change 事件只在值改變時觸發）
+        const resetInput = () => { if (fileInput) fileInput.value = ''; };
+        const ctx = this.scheduleImportContext;
+        if (!ctx.isReady()) {
+            this.showToast('課表尚未載入完成，請稍候幾秒再匯入（避免用不完整的資料覆寫全校課表）', 'warning', 5000);
+            resetInput();
+            return;
+        }
+        let dismissParsing = null;
         try {
             console.log('正在處理檔案:', file.name);
+            dismissParsing = this.showToast('正在解析課表檔案…', 'info', 60000);
 
             // 使用 ScheduleParser 解析檔案
             const parseResult = await this.scheduleParser.parseFile(file);
+            dismissParsing?.();
+            dismissParsing = null;
 
             if (parseResult.success) {
+                // 審計 ux H7／logic-flow M-9：先預覽、確認後才寫入，不再選檔即覆寫全校課表
+                const confirmed = await this.confirmScheduleImport(parseResult, file.name);
+                if (!confirmed) {
+                    this.showToast('已取消匯入，課表沒有變動', 'info');
+                    return;
+                }
+
                 // 儲存解析後的資料到 DataManager
                 this.dataManager.setScheduleData(parseResult.scheduleData);
                 // 課表檔不含「兼課」資訊，依姓名從匯入前的教師資料帶回，避免重新匯入就被清掉
@@ -862,9 +897,83 @@ class SubstituteTeacherApp {
                 this.showError('課表解析失敗: ' + parseResult.error);
             }
         } catch (error) {
+            dismissParsing?.();
             console.error('檔案處理錯誤:', error);
             this.showError('檔案處理錯誤: ' + error.message);
+        } finally {
+            resetInput();
         }
+    }
+
+    /**
+     * 課表匯入預覽與確認。回傳 Promise<boolean>。
+     * 內容：目標學期（醒目）、節數／班級數／教師數、與現有課表的差異、解析警告；
+     * 目標學期與今天推算的學期不一致時要求勾選確認（「先開學期再匯入」防呆）。
+     * 所有文字經 richDialog 的 rd* helper 跳脫後才進 HTML。
+     */
+    async confirmScheduleImport(parseResult, fileName) {
+        const dm = this.dataManager;
+        const ctx = this.scheduleImportContext;
+        const model = buildImportPreviewModel({
+            current: { scheduleData: dm.getScheduleData(), teachers: dm.getTeachers(), classes: dm.getClasses() },
+            incoming: { scheduleData: parseResult.scheduleData, teachers: parseResult.teachers, classes: parseResult.classes },
+            warnings: parseResult.warnings,
+            skippedCount: parseResult.skippedCount,
+            fileName,
+            target: ctx.getTarget(),
+        });
+        const d = model.diff;
+        const parts = [];
+
+        if (model.blocked) parts.push(rdNotice('danger', model.blocked));
+        if (model.semester.mismatch) parts.push(rdNotice('warn', model.semester.message));
+
+        parts.push(rdText(`檔案：${model.fileName}`));
+        const delta = (n) => (n > 0 ? `+${n}` : String(n));
+        parts.push(rdTable(['項目', '現有課表', '這次匯入', '變化'], [
+            ['課程節數', String(d.entries.old), String(d.entries.new), delta(d.entries.delta)],
+            ['班級數', String(d.classes.old), String(d.classes.new), delta(d.classes.new - d.classes.old)],
+            ['教師數', String(d.teachers.old), String(d.teachers.new), delta(d.teachers.new - d.teachers.old)],
+        ]));
+
+        if (d.oldEmpty) {
+            parts.push(rdText('目前這個學期還沒有課表，這是第一次匯入。'));
+        } else if (d.identical) {
+            parts.push(rdNotice('warn', '這份課表與現有課表內容完全相同，匯入不會有任何變化。'));
+        } else {
+            const more = (x) => (x.more ? [`…另 ${x.more} 個`] : []);
+            const listBlock = (title, names) => {
+                if (!names.length) return;
+                const t = truncateList(names);
+                parts.push(rdHeading(`${title}（${names.length}）`));
+                parts.push(rdList([...t.shown, ...more(t)]));
+            };
+            listBlock('新增教師', d.teachers.added);
+            listBlock('消失的教師', d.teachers.removed);
+            listBlock('新增班級', d.classes.added);
+            listBlock('消失的班級', d.classes.removed);
+        }
+
+        if (model.warnings.total > 0) {
+            parts.push(rdHeading(`解析警告：略過 ${model.warnings.total} 列`));
+            parts.push(rdList(model.warnings.groups.map(g =>
+                `${g.reason}：${g.count} 列（第 ${g.rows.join('、')} 列${g.count > g.rows.length ? ' 等' : ''}）`)));
+        }
+
+        if (model.willReplace && !model.blocked) {
+            parts.push(rdText(ctx.backupNote || '確認後，現有課表會被這份檔案取代。'));
+        }
+
+        return openRichDialog({
+            title: '確認匯入課表',
+            target: model.targetSemesterId ? `匯入到學期：${model.targetSemesterId}` : '',
+            bodyHtml: parts.join(''),
+            checkboxLabel: model.needsSemesterAck ? `我確定要把這份課表匯入「${model.targetSemesterId}」` : '',
+            confirmText: '確認匯入',
+            cancelText: '取消',
+            danger: model.willReplace,
+            confirmDisabled: !!model.blocked,
+        });
     }
 
     /**
@@ -981,7 +1090,7 @@ class SubstituteTeacherApp {
                 action = `<button type="button" class="btn btn-secondary btn-sm" data-restore-index="${i}">還原成這一版</button>`;
             }
             return `<tr>
-                <td>v${esc(e.versionNo)}</td>
+                <td>${e.versionNo == null ? '—' : `v${esc(e.versionNo)}`}</td>
                 <td>${esc(formatImportDate(e.importedAt))}</td>
                 <td>${esc(e.importedBy?.name || '—')}</td>
                 <td class="import-history-file">${esc(e.fileName || '—')}</td>
@@ -1007,7 +1116,7 @@ class SubstituteTeacherApp {
         }
         const ok = await this.confirmDialog({
             title: '還原課表',
-            message: `確定要還原成第 ${entry.versionNo} 版嗎？\n\n匯入時間：${formatImportDate(entry.importedAt)}\n檔名：${entry.fileName || '—'}\n\n目前的課表會被這一版取代（之後的匯入與手動編輯都會被撤銷），並記錄為新的一版。`,
+            message: `確定要還原成${entry.versionNo == null ? '這份「匯入前自動備份」' : `第 ${entry.versionNo} 版`}嗎？\n\n匯入時間：${formatImportDate(entry.importedAt)}\n檔名：${entry.fileName || '—'}\n\n目前的課表會被這一版取代（之後的匯入與手動編輯都會被撤銷），並記錄為新的一版。`,
             confirmText: '還原',
             danger: true
         });
@@ -1035,7 +1144,7 @@ class SubstituteTeacherApp {
         this.updateTeacherTable();
         this.populateTeacherDropdowns();
         this.saveDataToStorage();
-        this.showToast(`已還原成第 ${entry.versionNo} 版`, 'success');
+        this.showToast(entry.versionNo == null ? '已還原成匯入前的課表' : `已還原成第 ${entry.versionNo} 版`, 'success');
         // 清單即時反映新的一版（V2 為非同步寫入，稍後重讀）
         setTimeout(() => {
             if (!document.getElementById('import-history-modal')?.classList.contains('hidden')) {

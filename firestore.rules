@@ -1,6 +1,6 @@
 rules_version = '2';
 
-// STsystem V2 權限系統 Firestore 規則（v2.12 — 身分與授權修補 + 三層角色 + 敏感欄位私有化 + 學期唯讀鎖 + 封存生命週期 + schoolId 反查目錄 + 多租戶開通 + 月結算設定開放 approver + 主任不可改自己的 role + 課表匯入版本紀錄 + 組長可刪除目前學期紀錄）
+// STsystem V2 權限系統 Firestore 規則（v2.13（含 v2.13-A／B，已納入本檔，P5 未部署）— 身分與授權修補 + 三層角色 + 敏感欄位私有化 + 學期唯讀鎖 + 封存生命週期 + schoolId 反查目錄 + 多租戶開通 + 月結算設定開放 approver + 主任不可改自己的 role + 課表匯入版本紀錄 + 組長可刪除目前學期紀錄 + 開新學期原子建立課表 + 課表版本號）
 //
 // 設計原則：
 //   1. 兩條根路徑物理隔離
@@ -138,6 +138,16 @@ rules_version = '2';
 //      approver 更新改白名單、id／batchId 格式、時間絕對下界 2026-03-01、教師自改 authProvider 限值。
 //      評估成本：規則引擎每次請求最多評估 1000 個運算式、函式不 memoize，熱路徑（isMember／isApprover）
 //      與驗證 helper 都刻意精簡；新增規則前務必跑 rules-workflows（涵蓋最壞路徑）。
+//
+//  14. v2.13（2026-11-11，資料遺失類修補；測試見 test/emulator/rules-backup-restore）：
+//      A. isCurrentSemesterAfter()（getAfter）：schedules create 改以「提交後」的 config.currentSemester 判斷，
+//         讓「開新學期」在同一個 transaction 內改 config 並建立空白課表（原子）；config 的寫入權限仍只有
+//         director，沒有改 config 的一般寫入 getAfter 等於 get，approver 無法藉此繞過學期鎖。
+//      B. schedules 課表 version：create 必須 version==1；update 必須 version==現值+1（舊文件無 version 視為 0）。
+//         前端 saveSchedule() 在 transaction 內讀現值、比對讀取時版本才寫入；本規則確保舊版頁面／console
+//         「不帶版本或以過期版本整份覆寫」一律被拒，兩位 approver 不會互相蓋掉（審計 logic-flow M-4）。
+//      ⚠ 部署順序：須先上線新前端（會寫 version）再部署本規則；舊版頁面在新規則下寫課表會 permission-denied，需重新整理。
+//         scripts/ 以 owner 憑證操作的腳本不受 rules 限制。
 //
 // 部署：透過 gcloud REST API 或 Firebase Console（見 docs/V2_PERMISSION_SYSTEM.md）
 
@@ -315,6 +325,18 @@ service cloud.firestore {
     // 且只在寫入端有意義——讀取不受學期限制，歷史學期資料仍可被全校成員唯讀查詢）。
     function isCurrentSemester(schoolId, sid) {
       return configDoc(schoolId).currentSemester == sid;
+    }
+
+    // v2.13-A（已納入本檔）：「這次提交（batch／transaction）完成後」config 的目前學期是否為 sid。
+    // 用途：「開新學期」要在同一個 transaction 內同時 (1) 把 config.currentSemester 改成新學期、
+    // (2) 建立新學期的空白課表文件。schedules create 規則若只看 isCurrentSemester（提交前狀態），
+    // 這兩件事無法原子完成（Stage 2 驗收「輕13」遇到的順序問題），舊流程只好分兩步，
+    // 中途失敗會留下「currentSemester 指向不存在的課表」。
+    // 安全性：config 的寫入權限仍只有 director（見 config/{docId}）；沒有 config 變更的一般寫入，
+    // getAfter 等於 get，行為與 isCurrentSemester 完全相同，approver 無法藉此繞過學期鎖。
+    // 成本：多 1 次文件存取呼叫（getAfter），schedules create 路徑最壞約 7~9 次，低於 20 次上限。
+    function isCurrentSemesterAfter(schoolId, sid) {
+      return getAfter(/databases/$(database)/documents/schools/$(schoolId)/config/main).data.currentSemester == sid;
     }
 
     // 教務主任：白名單 OR teacher.role in ['director', 'admin']（admin 為舊資料兼容）
@@ -966,7 +988,20 @@ service cloud.firestore {
         // semesterId 取自路徑本身（wildcard），不需讀 request.resource.data，成本同上方
         // isCurrentSemester() 的説明（相依文件 config/main 在同一請求的 isApprover() 判斷鏈
         // 中已被讀過一次，計費成本為 0）。
-        allow create, update: if isApprover(schoolId) && isCurrentSemester(schoolId, semesterId);
+        // v2.13-A（已納入本檔）：create 改用 isCurrentSemesterAfter（見其定義），允許「開新學期」在同一次提交內
+        // 改 config 並建立空白課表。
+        // v2.13-B（已納入本檔）：課表版本號。create 必須從 1 開始；update 必須剛好是「現值 + 1」（舊文件無 version
+        // 視為 0）。前端 saveSchedule() 在 transaction 內讀現值、比對讀取時的版本才寫入（schoolDataService／
+        // scheduleWriteGuard）；規則層再確保「不帶版本、或以過期版本整份覆寫」的寫入（舊版頁面、console 直接
+        // 呼叫）一律被拒，兩位 approver 先後編輯不會互相蓋掉（審計 logic-flow M-4）。
+        // ⚠ 部署順序：先部署新前端（會寫 version），再部署本規則；舊版頁面在新規則下寫課表會被拒
+        // （permission-denied），需重新整理。scripts/ 以 owner 憑證操作的腳本不受 rules 限制。
+        allow create: if isApprover(schoolId)
+          && isCurrentSemesterAfter(schoolId, semesterId)
+          && request.resource.data.get('version', 0) == 1;
+        allow update: if isApprover(schoolId)
+          && isCurrentSemester(schoolId, semesterId)
+          && request.resource.data.get('version', 0) == resource.data.get('version', 0) + 1;
         // 刪除：Stage 5（封存執行，RESEARCH-multitenancy-semester.md §6.2）專用——director 可
         // 刪除「非目前學期」的課表文件，供「匯出 → 驗證 → 刪除」流程使用；目前學期的課表
         // 不可被此規則刪除（防止封存流程誤刪還在使用中的課表，也避免全校教師端

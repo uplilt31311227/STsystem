@@ -21,7 +21,8 @@
  *   觸發                              | 離線待寫入 | 鏡像(localStorage) | Firestore 離線快取 | 重新載入
  *   使用者主動登出                    | 無         | 清                 | 清                 | 是
  *   使用者主動登出                    | 有         | 先 confirmDialog；繼續→清、取消→不登出（什麼都不動）
- *   session 失效／他分頁登出（被動）  | 不論       | 清                 | 保留（下次同帳號登入可續送） | 是
+ *   session 失效／他分頁登出（被動）  | 無         | 清                 | 清                 | 是
+ *   session 失效／他分頁登出（被動）  | 有         | 清                 | 保留（下次同帳號登入可續送） | 是
  *   登入者 uid 與上次不同（切換帳號） | 不論       | 清                 | 強制清             | 是
  */
 
@@ -31,6 +32,16 @@ export const LOCAL_KEY_PREFIXES = ['substituteSystemData:'];
 export const LOCAL_EXACT_KEYS = [];
 /** 永不清除的 key（clearLocalUserData 對這些 key 一律跳過）。 */
 export const NEVER_CLEAR_KEYS = ['substituteSystemData', 'substituteSystemScheduleImports', 'gasUrl'];
+
+/**
+ * V2 本機鏡像的 localStorage key（school-scoped）。
+ * 不帶後綴的舊 key（NEVER_CLEAR_KEYS 的 'substituteSystemData'）是 V1 時代的凍結快照，只給
+ * legacyMigrationService 讀取；V2 登入後既不從它複製、也不從它回填 dataManager（否則預設學校的使用者
+ * 每次登入——鏡像每次登出都被清空——都會從這份過期快照重新長出一份本機資料）。
+ */
+export function v2MirrorKey(schoolId) {
+    return `substituteSystemData:${schoolId}`;
+}
 
 /** 記錄「這個瀏覽器上次登入的 uid」，用來偵測切換帳號。僅存 uid（不透明 ID）。 */
 export const LAST_UID_KEY = 'stsystem:lastAuthUid';
@@ -122,6 +133,19 @@ export async function clearFirestoreCache(db, fm = globalThis.window?.firebaseMo
 let wiping = false;
 
 /**
+ * 被動登出（session 失效、他分頁登出）的清除：先看有沒有尚未送出的離線寫入——
+ *   沒有（hasPendingWrites=false）→ 與主動登出一樣連同 Firestore 離線快取一起清（快取內含全校課表與紀錄，
+ *     共用電腦上沒有保留的理由）；
+ *   有 → 只清鏡像，保留快取讓下次同一帳號登入可續送（換帳號時由切換帳號偵測強制清除）。
+ * @returns {Promise<{pending:boolean}>}
+ */
+export async function wipeAfterPassiveSignOut({ db = null, fm = undefined, timeoutMs = PENDING_WRITES_TIMEOUT_MS, reload = true } = {}) {
+    const pending = await hasPendingWrites(db, fm ?? globalThis.window?.firebaseModules, timeoutMs);
+    await wipeLocalUserData({ db, keepFirestoreCache: pending, reload, fm });
+    return { pending };
+}
+
+/**
  * 清除本機資料並整頁重新載入。重複呼叫只會執行一次。
  * @param {object} opts
  * @param {object} [opts.db] Firestore 實例
@@ -129,11 +153,11 @@ let wiping = false;
  * @param {boolean} [opts.keepFirestoreCache=false] true＝被動登出：只清鏡像，保留 Firestore 離線快取（含待送寫入）
  * @param {boolean} [opts.reload=true]
  */
-export async function wipeLocalUserData({ db = null, keepUid = null, keepFirestoreCache = false, reload = true } = {}) {
+export async function wipeLocalUserData({ db = null, keepUid = null, keepFirestoreCache = false, reload = true, fm = undefined } = {}) {
     if (wiping) return;
     wiping = true;
     clearLocalUserData(globalThis.localStorage, globalThis.sessionStorage, { keepLastUid: keepFirestoreCache });
-    if (!keepFirestoreCache) await clearFirestoreCache(db);
+    if (!keepFirestoreCache) await clearFirestoreCache(db, fm);
     try {
         if (keepUid) localStorage.setItem(LAST_UID_KEY, keepUid);
     } catch { /* 忽略 */ }

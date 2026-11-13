@@ -6,8 +6,13 @@
  */
 
 import { chromium } from 'playwright';
+import { installNetGuard, E2E_CHROMIUM_ARGS } from './netGuard.mjs';
 
-export const APP_URL   = 'http://localhost:8000/?v2=1&emu=1';
+// 本機網頁伺服器埠：預設 8000；該埠被其他程式佔用時可用環境變數 E2E_PORT 指到另一個埠
+// （例如 `python -m http.server 8765` 後 `E2E_PORT=8765 npm run test:e2e`）。
+export const E2E_PORT  = process.env.E2E_PORT || '8000';
+export const APP_BASE  = `http://localhost:${E2E_PORT}/`;
+export const APP_URL   = `${APP_BASE}?v2=1&emu=1`;
 export const PASSWORD  = 'test-password-1234';
 export const SHOT_DIR  = 'test/e2e-screenshots';
 
@@ -35,7 +40,7 @@ export const ACCOUNTS = {
 export const NO_ACCOUNT_TEACHERS = ['竇大俠', '宰大俠', '吉大俠'];
 
 export async function launchBrowser() {
-    return chromium.launch();
+    return chromium.launch({ args: E2E_CHROMIUM_ARGS });
 }
 
 /**
@@ -83,6 +88,8 @@ export async function newPage(browser) {
         if (m.type() === 'error') page.errors.push(m.text().slice(0, 200));
     });
     page.on('pageerror', e => page.errors.push('未捕捉例外：' + e.message.slice(0, 200)));
+    // 網路防線：連到正式 Firebase／reCAPTCHA 的請求會被記錄為違規並讓當下案例失敗（實際阻擋是 installNetGuard 內針對封鎖清單網域的窄範圍 page.route，不使用 DNS 規則）。
+    await installNetGuard(page);
     await installSdkCache(page);
     return page;
 }
@@ -305,10 +312,10 @@ export async function waitForText(page, pattern, timeout = 10000) {
 export async function assertEnvironment() {
     const problems = [];
     try {
-        const r = await fetch('http://localhost:8000/index.html', { method: 'HEAD' });
+        const r = await fetch(`${APP_BASE}index.html`, { method: 'HEAD' });
         if (!r.ok) problems.push(`本機網頁伺服器回應 ${r.status}`);
     } catch {
-        problems.push('本機網頁伺服器沒有在 http://localhost:8000 執行（請先跑 python start-server.py）');
+        problems.push(`本機網頁伺服器沒有在 ${APP_BASE} 執行（請先跑 python start-server.py；埠被佔用時改用 E2E_PORT）`);
     }
     try {
         const r = await fetch('http://127.0.0.1:8080/');

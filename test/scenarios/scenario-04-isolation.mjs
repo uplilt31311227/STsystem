@@ -118,8 +118,10 @@ export async function run(ctx) {
     /* ============ 學期唯讀鎖 ============ */
 
     await suite.case('組長可寫入目前學期的課表', async () => {
+        // 前端每次寫課表都帶 version（現值 + 1，見 schoolDataService.saveSchedule）；種子課表沒有 version 視為 0。
+        // 帶 version:1 在 rules v2.12 與 v2.13-B（要求 version 遞增）下皆合法。
         allowed(await updateDoc(`schools/${aId}/schedules/${curSem}`, {
-            updatedAt: '2026-09-30T00:00:00.000Z',
+            updatedAt: '2026-09-30T00:00:00.000Z', version: 1,
         }, { idToken: A.sectionChief.idToken }), '寫目前學期課表');
     });
 

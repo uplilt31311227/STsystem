@@ -30,6 +30,9 @@ async function loadExtraFirestore() {
         // 視 persistence 設定與網路狀態而定），有機會讀到一份過期的 config，讓「目前學期」判斷
         // 失真——這是刪除前的最後一道防線，必須保證看到的是伺服器當下的真實值。
         getDocFromServer: mod.getDocFromServer,
+        // P5 驗收修復：備份／清除流程「蒐集雲端現況」的集合讀取也必須只讀伺服器。SDK 在 stream 出錯、
+        // client 判定離線時，getDocs 會靜默回傳本機快取（可能是 0 筆或殘缺），備份檔就會殘缺卻不報錯。
+        getDocsFromServer: mod.getDocsFromServer,
         // Stage 1（讀取成本止血）：紀錄頁「載入更多」分頁用值游標（createdAt 值），
         // 不用 offset——offset 跳過的文件一樣計費讀取，見 RESEARCH-multitenancy-semester.md §5.4。
         startAfter:       mod.startAfter,

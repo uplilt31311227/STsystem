@@ -93,6 +93,9 @@ export async function run(browser) {
             const t = await dialogText(page);
             ok(t, '應跳出第一道確認對話框');
             includes(t, '無法復原', '第一道應警告無法復原');
+            // 2026-11：文案與實際備份能力一致——說明會先自動下載完整備份、失敗就不清除（不再建議先按舊的 V1 匯出）
+            includes(t, '自動下載一份完整雲端備份', '第一道應說明清除前會先自動備份');
+            ok(!t.includes('建議先使用「匯出完整備份」'), '不應再出現舊的備份建議文案');
             await clickDialog(page, 'cancel');
 
             const after = await cloudCounts();
@@ -127,7 +130,37 @@ export async function run(browser) {
             await gotoTab(page, 'settings', 1500);
             await page.click('#clear-local-data-btn');
             await clickDialog(page, 'confirm');   // 第一道
-            await clickDialog(page, 'confirm');   // 第二道
+
+            // 第二道確認後，系統會先讀取全校雲端資料並下載完整備份（強制，失敗就中止清除），
+            // 備份下載後再跳出「備份已下載，請確認」讓使用者確認已存檔，之後才真正清除。
+            let download;
+            try {
+                [download] = await Promise.all([
+                    page.waitForEvent('download', { timeout: 420000 }),
+                    clickDialog(page, 'confirm'),     // 第二道
+                ]);
+            } catch (e) {
+                // 診斷：逾時時把畫面上的確認框與 toast 文字帶進錯誤訊息（備份失敗會跳「備份失敗，已中止清除」）
+                const state = await page.evaluate(() => ({
+                    dialog: (document.getElementById('confirm-modal')?.innerText || '').replace(/\s+/g, ' ').slice(0, 300),
+                    toasts: [...document.querySelectorAll('.toast-body')].map(t => t.textContent.slice(0, 120)),
+                }));
+                throw new Error(`${e.message.split('\n')[0]}｜畫面：${JSON.stringify(state)}｜console：${JSON.stringify((page.errors || []).slice(-3))}`);
+            }
+            const name = download.suggestedFilename();
+            includes(name, 'STsystem_雲端備份_demo-alpha_', `備份檔名（實際：${name}）`);
+            const backup = JSON.parse(readFileSync(await download.path(), 'utf8'));
+            eq(backup.format, 'stsystem-cloud-backup', '備份檔格式');
+            eq(backup.meta.schoolId, 'demo-alpha', '備份檔學校');
+            eq(backup.meta.counts.substituteRecords, before.records, '備份內的紀錄筆數應等於清除前雲端筆數');
+            eq(backup.meta.counts.pendingRequests, before.pending, '備份內的待審申請筆數');
+            ok(backup.meta.counts.substituteRecordDetails > 0, '備份應含 private/detail（假別事由）');
+
+            // 備份完成後的確認閘門：在使用者按「已確認備份，繼續清除」之前，雲端資料不應被動到
+            const gate = await waitForText(page, /備份已下載，請確認/, 420000);
+            ok(gate, '備份下載後應跳出「請確認已存檔」的確認框');
+            eq(await cloudCounts(), before, '確認備份前雲端資料不應被清除');
+            await clickDialog(page, 'confirm');   // 已確認備份，繼續清除
 
             // 清除是逐批刪除（每筆紀錄還要連同 private/detail 子文件一起刪），完成後才 reload。
             // 固定等一段時間不夠可靠——筆數與當下 emulator 的負載都會影響耗時，實測在整組

@@ -33,6 +33,12 @@ import {
     consentActions, approvalActions, mineActions, ROLE_CLASS_WHITELIST
 } from './modules/v2/htmlRows.js';
 import { pendingRequestsToOccupancyRecords, createShortTtlCache } from './modules/v2/assignmentConflict.js';
+import {
+    ScheduleConflictError, ScheduleEmptyOverwriteError, expectedFromDoc, scheduleVersionOf,
+} from './modules/v2/scheduleWriteGuard.js';
+import { buildPreImportBackup } from './modules/scheduleImportHistory.js';
+import { renderBackupAdmin, exportCloudBackup, exportBackupBeforeClear } from './modules/v2/backupController.js';
+import { v2MirrorKey } from './modules/localDataCleanup.js';
 
 /* ===== 樣式注入 ===== */
 
@@ -226,7 +232,7 @@ function renderUnverifiedGateContent(state) {
 function bindUnverifiedGateActions(gate) {
     gate.querySelector('#v2-gate-unverified-logout')?.addEventListener('click', async () => {
         try {
-            await authMod.signOutUser();
+            await authMod.signOutWithButton(gate.querySelector('#v2-gate-unverified-logout'));
         } catch (err) {
             console.error('[v2] 登出失敗:', err);
             notifyError(err, '登出');
@@ -434,7 +440,7 @@ function renderApplyGateContent(state) {
 function bindApplyGateActions(gate) {
     gate.querySelector('#v2-gate-logout')?.addEventListener('click', async () => {
         try {
-            await authMod.signOutUser();
+            await authMod.signOutWithButton(gate.querySelector('#v2-gate-logout'));
         } catch (err) {
             console.error('[v2] 登出失敗:', err);
             notifyError(err, '登出');
@@ -1888,7 +1894,7 @@ async function renderSemesterAdminTab() {
         </div>
         <div class="data-management-section danger-zone">
             <strong>開新學期</strong>
-            <p class="hint">切換後，「${escapeHtml(cur || '目前學期')}」立即變為唯讀（不可再新增/編輯調代課紀錄與課表，歷史資料仍可查詢），新學期需重新上傳課表才能開始使用。此操作會寫入操作日誌並重新整理頁面。</p>
+            <p class="hint">切換後，「${escapeHtml(cur || '目前學期')}」立即變為唯讀（不可再新增/編輯調代課紀錄與課表，歷史資料仍可查詢）。輸入全新的學期會建立空白課表，需重新上傳課表才能開始使用；輸入已存在的學期（例如切回先前的學期）只會切換，該學期原有的課表與紀錄不會被改動。課表一律匯入「目前作用中的學期」，新學期的課表請先開完學期再匯入。此操作會寫入操作日誌並重新整理頁面。</p>
             <div style="display:flex;gap:0.5rem;align-items:center;margin-top:0.4rem;flex-wrap:wrap;">
                 <input type="text" id="v2-new-semester-input" placeholder="例如 115-1" value="${escapeHtml(suggestion)}" style="max-width:140px;">
                 <button class="btn btn-danger btn-sm" id="v2-open-new-semester-btn">開新學期</button>
@@ -1929,16 +1935,61 @@ async function renderSemesterAdminTab() {
             return;
         }
 
+        // 目標學期若已存在課表文件 → 這次操作只是「切換回去」，不會寫入任何課表（審計 logic-flow H-1：
+        // 舊流程對既有學期寫入空殼，整份課表被清空）。用 Strict 讀取（不含 legacy fallback），讀取失敗
+        // 就中止：不確定目標學期有沒有課表時，寧可不動。
+        let targetSchedule = null;
+        let archivedTarget = null;
+        try {
+            [targetSchedule, archivedTarget] = await Promise.all([
+                dataSvc.getScheduleForSemesterStrict(newId),
+                dataSvc.getArchiveRecord(newId),
+            ]);
+        } catch (err) {
+            console.warn('[V2] 開新學期：讀取目標學期現況失敗，為安全起見暫停切換：', err);
+            notify('無法確認「' + newId + '」目前是否已有課表，請稍後再試（為安全起見已暫停本次切換）', 'error');
+            return;
+        }
+        if (archivedTarget) {
+            notify(`「${newId}」已於 ${archivedTarget.archivedAt || '先前'} 封存並從雲端刪除，不能重新開啟為作用中學期`, 'warning', 7000);
+            return;
+        }
+        const targetExists = !!targetSchedule;
+        const targetEntries = Array.isArray(targetSchedule?.scheduleData) ? targetSchedule.scheduleData.length : 0;
+        const earlier = semesterUtils.compareSemesterId(newId, cur) < 0;
+
+        const lines = [];
+        if (targetExists) {
+            lines.push(
+                `「${newId}」已存在（目前課表 ${targetEntries} 節），將切換回去，課表不會變動。`,
+                '',
+                '切換後：',
+                `・「${cur}」立即變為唯讀，不可再新增或編輯調代課紀錄與課表（歷史資料仍可查詢）`,
+                `・「${newId}」會恢復為作用中學期，它原有的課表與調代課紀錄維持原樣`,
+                '・此操作會寫入操作日誌，且系統會重新整理頁面以套用新學期設定',
+            );
+        } else {
+            lines.push(
+                `確定要把作用中學期從「${cur}」切換到「${newId}」嗎？`,
+                '',
+                '切換後：',
+                `・「${cur}」立即變為唯讀，不可再新增或編輯調代課紀錄與課表（歷史資料仍可查詢）`,
+                `・「${newId}」是全新學期，系統會建立一份空白課表；需要重新上傳課表才能開始使用`,
+                '・此操作會寫入操作日誌，且系統會重新整理頁面以套用新學期設定',
+            );
+        }
+        if (earlier) {
+            lines.push('', `⚠ 「${newId}」比目前學期「${cur}」更早，通常是輸入錯誤，請再確認。`);
+        }
+        lines.push(
+            '',
+            `復原方式：若切換錯了，再執行一次「開新學期」輸入「${cur}」即可切回；切換不會清除或覆寫任何學期的課表與紀錄。`,
+        );
+
         const ok = await window.app?.confirmDialog?.({
-            title: '開新學期',
-            message:
-                `確定要把作用中學期從「${cur}」切換到「${newId}」嗎？\n\n` +
-                `切換後：\n` +
-                `・「${cur}」立即變為唯讀，不可再新增或編輯調代課紀錄與課表（歷史資料仍可查詢）\n` +
-                `・「${newId}」需要重新上傳課表才能開始使用\n` +
-                `・此操作會寫入操作日誌，且系統會重新整理頁面以套用新學期設定\n\n` +
-                `此操作無法一鍵復原（需再開一次學期才能切回原值），請確認。`,
-            confirmText: '確認開新學期',
+            title: targetExists ? '切換回既有學期' : '開新學期',
+            message: lines.join('\n'),
+            confirmText: targetExists ? '確認切換回去' : '確認開新學期',
             danger: true,
         });
         if (!ok) return;
@@ -1946,7 +1997,7 @@ async function renderSemesterAdminTab() {
         const btn = document.getElementById('v2-open-new-semester-btn');
         if (btn) { btn.disabled = true; btn.textContent = '切換中…'; }
         try {
-            await switchToNewSemester(cur, newId);
+            await switchToNewSemester(cur, newId, { targetExists });
         } catch (err) {
             console.error('[V2] 開新學期失敗:', err);
             notifyError(err, '開新學期');
@@ -1978,6 +2029,12 @@ function showSemesterChangedBanner(newSemesterId) {
 }
 
 /**
+ * 2026-11 修正（審計 logic-flow H-1，資料遺失類）：以下 Stage 2 的步驟 2、3 已合併為
+ * dataSvc.activateSemester() 的單一 transaction——toId 已有課表時只改 config、完全不寫課表（切換回去
+ * 不會再把該學期課表清成空殼）；全新學期才在同一次提交內建立空殼。舊順序（先 config 再建立）只在
+ * 「規則尚未部署 getAfter 版本」被拒絕時作為相容路徑保留，且建立時一律 expected:null（不覆寫既有）。
+ * 下方 Stage 2 / 輕13 的註解描述的是舊順序的取捨，保留作為歷史說明。
+ *
  * Stage 2（§6.1 SOP）：把作用中學期從 fromId 切到 toId。
  *   1. 驗收修復（中 5，R1 訂正安全性）：確保 schedules/{fromId} 存在——若 fromId 從未透過
  *      本函式或課表上傳建立過 per-semester 文件（例如 Stage 2 上線後第一次切換），補一份
@@ -2021,7 +2078,7 @@ function showSemesterChangedBanner(newSemesterId) {
  * 呼叫端（renderSemesterAdminTab 的按鈕 handler）已先做過「無在途申請」檢查（驗收修復 中 4，
  * 見該處），這裡不重複檢查——避免同一份業務規則分散在兩處、日後改動漏改一邊。
  */
-async function switchToNewSemester(fromId, toId) {
+async function switchToNewSemester(fromId, toId, { targetExists = false } = {}) {
     const me = roleSvc.getCurrentIdentity();
     const buildMeta = (action) => ({
         lastAction:  action,
@@ -2061,52 +2118,65 @@ async function switchToNewSemester(fromId, toId) {
             `這次不會繼續切換。請確認網路連線後重試。（原始錯誤：${(e && e.message) || e}）`
         );
     }
+    const shell = {
+        scheduleData: [], teachers: [], classes: [], subjectDomainMap: {}, schoolName: '',
+        meta: buildMeta('semester_opened'),
+    };
     if (!existingFromSchedule) {
-        await dataSvc.saveSchedule(fromId, {
-            scheduleData: [], teachers: [], classes: [], subjectDomainMap: {}, schoolName: '',
-            meta: buildMeta('semester_closed_placeholder'),
-        });
+        // expected:null＝只在該學期文件仍不存在時建立；已被別人建立就不覆寫（ScheduleConflictError 視為已存在）
+        try {
+            await dataSvc.saveSchedule(fromId, {
+                scheduleData: [], teachers: [], classes: [], subjectDomainMap: {}, schoolName: '',
+                meta: buildMeta('semester_closed_placeholder'),
+            }, { expected: null });
+        } catch (e) {
+            if (!(e instanceof ScheduleConflictError)) throw e;
+        }
     }
 
-    // 驗收修復（輕13）：config 更新提前到 schedules/{toId} 建立之前——見函式頭註解的完整
-    // 理由。本機快取（semesterState）同步更新：config 已在雲端生效，即使下一步失敗，
-    // 也不該讓本機繼續認為目前學期還是 fromId。
-    await dataSvc.upsertConfig({ currentSemester: toId });
-    semesterState.setCurrentSemesterId(toId);
-
+    // 2026-11 修正（審計 H-1）：config 與新學期課表改在同一個 transaction 提交（dataSvc.activateSemester）：
+    //   - 目標學期已有課表 → 只改 config，課表完全不碰（單純切換回去）；
+    //   - 沒有 → 同一次提交建立空殼，不會留下「currentSemester 指向不存在的課表」。
+    // 本機快取（semesterState）在 config 已生效後同步更新，理由同下方舊版註解。
+    let createdSchedule = false;
     try {
-        await dataSvc.saveSchedule(toId, {
-            scheduleData: [], teachers: [], classes: [], subjectDomainMap: {}, schoolName: '',
-            meta: buildMeta('semester_opened'),
-        });
+        ({ createdSchedule } = await dataSvc.activateSemester({ fromId, toId, shell }));
+        semesterState.setCurrentSemesterId(toId);
     } catch (e) {
-        // 學期切換本身（config.currentSemester）已經生效，只是新學期的空白課表建立失敗——
-        // 如實描述目前狀態，不要讓錯誤訊息聽起來像「整個操作都沒發生」（見函式頭註解）。
-        //
-        // Stage 5 驗收修復（輕6，opus 二輪驗收）：這條分支不會走到函式尾端的
-        // `setTimeout(() => window.location.reload(), 1200)`（那段只在成功路徑執行），但
-        // `semesterState.setCurrentSemesterId(toId)` 已經在上面（config 更新後）執行過——
-        // 本機記憶體已經認定「目前學期」是 toId，但 bootstrap 當時建立的即時訂閱
-        // （subscribeSubstituteRecords／subscribePendingRequests／subscribeSchedule）仍是
-        // 綁定 fromId 查詢條件的舊訂閱，不會自動跟著換——這正是「semesterState 已切、訂閱
-        // 還綁舊學期」的半套狀態，寫入會因為規則已認 toId 而通過、但畫面讀到的仍是 fromId
-        // 的即時資料，兩者不一致。呼叫 showSemesterChangedBanner()（既有機制，設計目的
-        // 就是「本機學期狀態已改變，需要使用者重新整理才能讓訂閱跟上」，見該函式定義處，
-        // 平常用於偵測「別的分頁切換了學期」）在這裡同樣適用，強制要求使用者重新整理，
-        // 不留給使用者在半套狀態下繼續操作的機會。
-        showSemesterChangedBanner(toId);
-        await logger.log(LOG_ACTIONS.SEMESTER_SWITCH, LOG_TARGET_TYPES.SYSTEM, null, {
-            from: fromId, to: toId, scheduleCreateFailed: true, error: (e && e.message) || String(e),
-        });
-        throw new Error(
-            `已切換到「${toId}」（學期本身已生效），但建立空白課表文件失敗：${(e && e.message) || e}。` +
-            `請依畫面上方橫幅重新整理頁面（本機顯示的即時資料在重新整理前仍綁定舊學期，` +
-            `不會自動更新），並盡快在「課表管理」重新上傳「${toId}」的課表。`
-        );
+        // 只有「全新學期 + 規則尚未部署 getAfter 版本」才退回舊順序（先改 config、再建立空殼）；
+        // 其他錯誤（含 config 已被別人改走）一律中止、不寫入任何東西。
+        if (e?.code !== 'permission-denied' || targetExists) throw e;
+        console.warn('[V2] activateSemester 被規則拒絕，改用相容順序（先 config 再建立課表）:', e);
+        await dataSvc.upsertConfig({ currentSemester: toId });
+        semesterState.setCurrentSemesterId(toId);
+        try {
+            await dataSvc.saveSchedule(toId, shell, { expected: null });
+            createdSchedule = true;
+        } catch (e2) {
+            if (e2 instanceof ScheduleConflictError) {
+                createdSchedule = false;   // 別人剛建立了：保留對方的內容，不覆寫
+            } else {
+                // 學期切換本身（config.currentSemester）已經生效，只是新學期的空白課表建立失敗——
+                // 如實描述目前狀態；本機訂閱仍綁舊學期，用橫幅強制重新整理。
+                showSemesterChangedBanner(toId);
+                await logger.log(LOG_ACTIONS.SEMESTER_SWITCH, LOG_TARGET_TYPES.SYSTEM, null, {
+                    from: fromId, to: toId, scheduleCreateFailed: true, error: (e2 && e2.message) || String(e2),
+                });
+                throw new Error(
+                    `已切換到「${toId}」（學期本身已生效），但建立空白課表文件失敗：${(e2 && e2.message) || e2}。` +
+                    `請依畫面上方橫幅重新整理頁面（本機顯示的即時資料在重新整理前仍綁定舊學期，` +
+                    `不會自動更新），並盡快在「課表管理」重新上傳「${toId}」的課表。`
+                );
+            }
+        }
     }
 
-    await logger.log(LOG_ACTIONS.SEMESTER_SWITCH, LOG_TARGET_TYPES.SYSTEM, null, { from: fromId, to: toId });
-    notify(`已切換到「${toId}」，即將重新整理頁面…`, 'success', 2500);
+    await logger.log(LOG_ACTIONS.SEMESTER_SWITCH, LOG_TARGET_TYPES.SYSTEM, null, {
+        from: fromId, to: toId, createdSchedule,
+    });
+    notify(createdSchedule
+        ? `已切換到「${toId}」（已建立空白課表），即將重新整理頁面…`
+        : `已切換回「${toId}」，課表維持原樣，即將重新整理頁面…`, 'success', 2500);
     setTimeout(() => window.location.reload(), 1200);
 }
 
@@ -3029,6 +3099,7 @@ function bindV2TabSwitches() {
             if (tab === 'settings') {
                 await renderSemesterAdminTab();
                 await renderArchiveAdminTab();
+                renderBackupAdmin(window.app);
                 // opus 驗收 M3/M4：平台管理者審核卡片改在設定頁每次開啟時重繪（列表可能在
                 // 離開/回來之間變動），且 renderPlatformAdminReviewTab() 內部會惰性判斷
                 // `_v2IsPlatformAdmin === null` 時才去查一次身份，不在 bootstrap 無條件查。
@@ -3076,7 +3147,7 @@ function forceActivateTab(dataTab) {
 
 // 所有「由登入身份動態渲染、含個資」的容器 id。切換身份時必須全部清空。
 // 集中一處列舉：日後新增受限頁籤只需在此補一個 id，避免遺漏造成殘留外洩。
-const V2_IDENTITY_CONTENT_HOSTS = ['v2-teachers-admin', 'v2-logs', 'v2-pending-list', 'v2-records-section', 'v2-semester-admin', 'v2-archive-admin', 'v2-platform-admin-review'];
+const V2_IDENTITY_CONTENT_HOSTS = ['v2-teachers-admin', 'v2-logs', 'v2-pending-list', 'v2-records-section', 'v2-semester-admin', 'v2-archive-admin', 'v2-backup-admin', 'v2-platform-admin-review'];
 
 /**
  * 身份切換 / 登出時重置 V2 視圖狀態（資安）。僅在身份「實際改變」時呼叫
@@ -3164,6 +3235,7 @@ function resetV2ViewState() {
     // syncScheduleToV2() 會把這份空的 dm.scheduleData 當作「本機完整快照」回寫，用空課表
     // 覆蓋掉全校雲端資料。清空這個簽章快取，讓下一次真正的快照必定被判定為「新的」而套用。
     _v2LastAppliedScheduleSig = null;
+    _v2ScheduleBase = null;
     // Stage 3 opus 驗收 輕7：清空上一位使用者（可能屬於不同學校）殘留的寫入失敗計數，
     // 見 operationLogger.clearFailedLogs() 定義處的完整說明。
     logger.clearFailedLogs();
@@ -3839,6 +3911,16 @@ let _v2ScheduleSyncInFlight = false;
 let _v2ScheduleSyncPending = false;
 // 已套用的遠端課表簽章（updatedAt|長度），用來略過重複快照（含 approver 自己的 echo）。
 let _v2LastAppliedScheduleSig = null;
+// 課表寫入的版本前置條件（審計 logic-flow M-4）：最近一次從雲端收到（或自己寫入成功）的
+// schedules/{目前學期} 版本 { exists, version, updatedAt }。syncScheduleToV2() 寫入時帶上它，
+// 雲端若已被別人更新就拒寫（ScheduleConflictError），不再靜默蓋掉對方。null＝尚未收到任何快照。
+// 舊版單一文件 fallback（data/schedule）不是 schedules/{semesterId} 本身，視為「該學期文件不存在」。
+let _v2ScheduleBase = null;
+function setScheduleBase(doc, fromLegacy = false) {
+    if (!doc || fromLegacy) { _v2ScheduleBase = { exists: false, version: 0, updatedAt: null }; return; }
+    const v = scheduleVersionOf(doc);
+    _v2ScheduleBase = { exists: true, version: v.version, updatedAt: v.updatedAt };
+}
 // Stage 3 opus 驗收 中4：「目前這所學校（getActiveSchoolId()）的課表訂閱是否已經送達過至少
 // 一次真正的快照」。false 時 queueScheduleSync() 一律不回寫（見該函式），不論觸發它的是哪個
 // mutator、也不論本機 scheduleData 是空是滿——這與既有的 requireSchedule（只擋「空」）是兩件
@@ -3868,9 +3950,13 @@ let _v2PendingImport = null;
  * 所有角色登入 / 收到即時推播時呼叫；教師端因此看到與 approver 同一份課表。
  * 直接寫欄位（不走 setter / loadFromCloud），避免觸發 notifyDataChange → 個人雲端回寫。
  */
-function applyRemoteSchedule(doc) {
+function applyRemoteSchedule(doc, meta = {}) {
     const dm = window.app?.dataManager;
-    if (!dm || !doc || !Array.isArray(doc.scheduleData)) return;
+    if (!dm || !doc) return;
+    // 版本前置條件的基準：不論下面是否因簽章相同而略過重繪、或 scheduleData 不是陣列而不套用，
+    // 都要先記住雲端目前的版本；否則基準停在舊值，之後的寫入會以過期版本被誤拒。
+    setScheduleBase(doc, meta.fromLegacy === true);
+    if (!Array.isArray(doc.scheduleData)) return;
     // 相同快照（含自己剛寫入的 echo）不重複套用 / 重繪
     const sig = (doc.updatedAt || '') + '|' + doc.scheduleData.length;
     if (sig === _v2LastAppliedScheduleSig) return;
@@ -3888,6 +3974,40 @@ function applyRemoteSchedule(doc) {
     try { window.app?.saveDataToStorage?.(); } catch (e) { console.warn('[V2] 課表本機儲存失敗:', e); }
     // 沿用雲端同步後的既有刷新流程（課表狀態 / 教師表 / 下拉 / 頁籤鎖等）
     try { window.app?.refreshUIAfterSync?.(); } catch (e) { console.warn('[V2] 課表 UI 刷新失敗:', e); }
+}
+
+/** 課表管理頁的「匯入目標學期」提示（審計 logic-flow M-9：先開學期再匯入）。 */
+function updateImportTargetHint() {
+    const el = document.getElementById('v2-import-target-hint');
+    if (!el) return;
+    const sid = semesterState.getCurrentSemesterId();
+    el.textContent = sid
+        ? `課表會匯入到目前作用中的學期「${sid}」。新學期的課表請先到「設定 › 學期管理」開新學期，再匯入。`
+        : '';
+}
+
+/**
+ * 課表寫入被擋下（雲端版本已前進，或本機快照是空的）後的善後：重新讀取雲端課表、套用到本機並
+ * 更新版本基準，再用對話框明確告知「這次修改沒有儲存」——寫入被拒只是保護雲端，若本機仍留著未儲存的
+ * 編輯，使用者會以為已經存好（審計要求：不可靜默蓋掉，也不可靜默丟掉）。
+ */
+async function recoverScheduleFromCloud(message) {
+    try {
+        const sid = semesterState.getCurrentSemesterId();
+        const doc = await dataSvc.getScheduleForSemesterStrict(sid);
+        _v2LastAppliedScheduleSig = null;   // 強制套用，即使簽章相同
+        if (doc) applyRemoteSchedule(doc, { fromLegacy: false });
+        else setScheduleBase(null);
+    } catch (e) {
+        console.warn('[V2] 重新載入雲端課表失敗（請使用者手動重新整理）:', e);
+        message += '\n\n自動重新載入雲端課表失敗，請按 F5 重新整理頁面。';
+    }
+    await window.app?.confirmDialog?.({
+        title: '課表沒有儲存',
+        message,
+        confirmText: '我知道了',
+        cancelText: '關閉',
+    });
 }
 
 /**
@@ -3917,7 +4037,18 @@ async function syncScheduleToV2(opts = {}) {
             const scheduleData = dm.getScheduleData?.() || dm.scheduleData || [];
             if (!Array.isArray(scheduleData)) break;
             const me = roleSvc.getCurrentIdentity();
-            await dataSvc.saveSchedule(semesterState.getCurrentSemesterId(), {
+            const sidForWrite = semesterState.getCurrentSemesterId();
+            // 版本前置條件 + 匯入／還原前自動備份（見 dataSvc.saveSchedule 說明）。
+            const writeOpts = {
+                expected: _v2ScheduleBase ? (_v2ScheduleBase.exists ? { version: _v2ScheduleBase.version, updatedAt: _v2ScheduleBase.updatedAt } : null) : undefined,
+            };
+            if (pendingImport) {
+                writeOpts.backup = (existing) => buildPreImportBackup(existing, {
+                    importedAt: pendingImport.record.importedAt,
+                    importedBy: pendingImport.record.importedBy || null,
+                });
+            }
+            const written = await dataSvc.saveSchedule(sidForWrite, {
                 scheduleData,
                 teachers:         dm.getTeachers?.() || dm.teachers || [],
                 classes:          dm.classes || [],
@@ -3935,7 +4066,9 @@ async function syncScheduleToV2(opts = {}) {
                     byTeacherId: me?.teacherId || null,
                     at:          new Date().toISOString(),
                 },
-            });
+            }, writeOpts);
+            // 自己寫入成功：版本基準前進，連續編輯不會被自己上一次的寫入擋下
+            _v2ScheduleBase = { exists: true, version: written.version, updatedAt: written.updatedAt };
             if (pendingImport) {
                 const sid = semesterState.getCurrentSemesterId();
                 const rec = pendingImport.record;
@@ -3976,9 +4109,19 @@ async function syncScheduleToV2(opts = {}) {
         }
     } catch (err) {
         console.error('[V2] 全校課表同步失敗:', err);
-        notifyError(err, '全校課表同步');
-        // 主文件沒寫成功：把尚未寫入的匯入紀錄放回，下次 sync 再帶上
-        if (pendingImport && !_v2PendingImport) _v2PendingImport = pendingImport;
+        if (err instanceof ScheduleConflictError || err instanceof ScheduleEmptyOverwriteError) {
+            // 雲端已被別人更新（或本機快照是空的）：不重試、不留待寫的匯入紀錄（它建立在過期的基準上），
+            // 改為重新載入雲端課表並明確告知使用者這次修改沒有儲存。
+            const lostImport = !!pendingImport || !!_v2PendingImport;
+            pendingImport = null;
+            _v2PendingImport = null;
+            _v2ScheduleSyncPending = false;
+            await recoverScheduleFromCloud(err.message + (lostImport ? '\n\n你剛才匯入／還原的課表也沒有寫入，請確認最新課表後再匯入一次。' : ''));
+        } else {
+            notifyError(err, '全校課表同步');
+            // 主文件沒寫成功：把尚未寫入的匯入紀錄放回，下次 sync 再帶上
+            if (pendingImport && !_v2PendingImport) _v2PendingImport = pendingImport;
+        }
     } finally {
         _v2ScheduleSyncInFlight = false;
     }
@@ -4251,6 +4394,17 @@ function patchDataManager() {
     ['updateTeacher', 'addTeacher', 'removeTeacher']
         .forEach(n => wrapScheduleMutator(n, { requireSchedule: true, silent: true }));
 
+    // 課表匯入預覽的情境（審計 ux H7／logic-flow M-9）：目標學期、依今天推算的學期、是否已載入雲端課表。
+    window.app.scheduleImportContext = {
+        isReady: () => _v2ScheduleReady,
+        getTarget: () => ({
+            semesterId: semesterState.getCurrentSemesterId() || null,
+            todaySemesterId: semesterUtils.todaySemesterId() || null,
+        }),
+        backupNote: '確認後，現有課表會被這份檔案取代。系統會先把現有課表自動存成一筆「匯入前自動備份」，' +
+            '之後可從「課表管理 › 匯入紀錄」還原。',
+    };
+
     // 課表匯入紀錄改走 Firestore（覆寫 app.js 預設的 V1 localStorage provider）。
     // 清單預設只撈最近 20 版（orderBy importedAt desc, limit；單欄位排序不需複合索引）。
     window.app.importHistoryProvider = {
@@ -4292,8 +4446,10 @@ async function clearAllSchoolData() {
     //    getSchedule() 讀取失敗（網路瞬斷、權限問題等）刻意不 catch：此時尚未寫入任何東西，
     //    直接中止最安全；若吞成 null 會把讀取失敗誤判為「雲端本來就沒有課表」，用空字串
     //    覆蓋掉雲端現有 schoolName，讓一般教師端卡在「請先設定學校名稱」（驗收缺陷 #3）。
-    const cloudSchedule = await dataSvc.getSchedule(currentSemesterId);
+    const cloudSchedule = await dataSvc.getSchedule(currentSemesterId, { fromServer: true });
     const me = roleSvc.getCurrentIdentity();
+    // allowEmpty：這是唯一被明確允許「以空內容覆寫非空課表」的呼叫點（呼叫端已強制先下載完整備份）。
+    // 不帶 expected：清除是破壞性的蓄意操作，以使用者當下的意圖為準，不因他人剛編輯而中止。
     await dataSvc.saveSchedule(currentSemesterId, {
         scheduleData:     [],
         teachers:         [],
@@ -4308,7 +4464,7 @@ async function clearAllSchoolData() {
             byTeacherId: me?.teacherId || null,
             at:          new Date().toISOString(),
         },
-    });
+    }, { allowEmpty: true });
 
     // 2) 刪除全部已成立調代課紀錄：先用不帶 orderBy 的清除專用列表函式讀出全部（驗收缺陷
     //    #4：orderBy('createdAt') 會排除缺該欄位的舊文件，清除必須刪光每一筆），再用
@@ -4344,12 +4500,9 @@ let _v2ClearAllDataInFlight = false;
  * 鏡像互相覆蓋——改為 `substituteSystemData:{schoolId}`。
  *
  * 這裡做兩件事：
- *   1. 一次性遷移（僅對 DEFAULT_SCHOOL_ID＝'inhu'）：新 key 不存在、舊 key 存在時，把舊 key
- *      的內容「複製」一份到新 key——刻意用複製不用搬移／不刪除舊 key，讓使用者之後若切回
- *      V1 模式（無 ?v2=1 access，例如同瀏覽器另開分頁不帶參數）時，舊 key 仍完整保留，
- *      行為與 Stage 3 之前一致（任務規格明文要求「V1 模式維持舊 key 不動」）。其他 schoolId
- *      目前尚不存在（Stage 4 才會開放），且新學校不可能在舊的無前綴 key 底下留有屬於自己的
- *      資料，故跳過遷移。
+ *   1.（2026-11 已移除）原本對預設學校做「舊 key → 新 key」一次性複製；鏡像每次登出都被清，
+ *      導致每次登入都從凍結的 V1 舊快照重新複製並回填。現在 V2 不再讀寫舊 key，舊 key 只給
+ *      legacyMigrationService 讀取。
  *   2. 覆寫 `window.app.getLocalStorageKey`，讓之後所有 `saveDataToStorage()`/
  *      `loadSavedData()` 呼叫改用新 key。
  *
@@ -4366,21 +4519,10 @@ let _v2ClearAllDataInFlight = false;
  */
 function applyV2LocalStorageKey(schoolId) {
     if (!window.app) return;
-    const LEGACY_KEY = 'substituteSystemData';
-    const newKey = `substituteSystemData:${schoolId}`;
-    try {
-        if (schoolId === DEFAULT_SCHOOL_ID) {
-            const oldRaw = localStorage.getItem(LEGACY_KEY);
-            const newRaw = localStorage.getItem(newKey);
-            if (oldRaw !== null && newRaw === null) {
-                localStorage.setItem(newKey, oldRaw);
-                console.log(`[V2] localStorage 一次性遷移：已將「${LEGACY_KEY}」內容複製到「${newKey}」（舊 key 保留不動，供 V1 模式使用）`);
-            }
-        }
-    } catch (e) {
-        // 僅影響本機離線鏡像（V2 真相來源是 Firestore），失敗不阻擋登入或任何雲端功能。
-        console.warn('[V2] localStorage key 遷移失敗（不影響雲端資料）:', e);
-    }
+    // 2026-11 修正：不再把不帶後綴的舊 key 複製到新 key。鏡像每次登出都會被清空（localDataCleanup），
+    // 若每次登入都從那份凍結的 V1 快照重新複製，預設學校的使用者每次登入都會用過期資料回填 dataManager。
+    // 舊 key 只留給 legacyMigrationService 讀取（偵測與遷移 V1 遺留資料），V2 不讀也不寫。
+    const newKey = v2MirrorKey(schoolId);
     window.app.getLocalStorageKey = () => newKey;
 }
 
@@ -4395,6 +4537,26 @@ function patchClearLocalData() {
     if (!window.app || typeof window.app.clearLocalData !== 'function') return;
     if (window.app.__v2_clearLocalDataPatched) return;
     window.app.__v2_clearLocalDataPatched = true;
+
+    // V2 下 V1 的「匯出完整備份／匯入還原」只處理本機資料、不含雲端紀錄（審計 ux C1／H8）。
+    // UI 已改由 backupController 渲染（V1 區塊在 V2 下隱藏）；這裡再把仍可能被呼叫到的舊入口接到
+    // 正確行為，避免任何殘留路徑又產出「看似備份、其實沒有雲端紀錄」的檔案或假的還原成功訊息。
+    window.app.exportLocalData = async function () {
+        if (!roleSvc.isSignedIn() || !roleSvc.isApprover()) {
+            this.showToast?.('只有教務主任與教學組長可以匯出全校備份', 'error');
+            return;
+        }
+        try {
+            await exportCloudBackup({ reason: 'legacy_entry' });
+            this.showToast?.('完整備份已匯出，請確認檔案已存到電腦', 'success', 6000);
+        } catch (err) {
+            notifyError(err, '匯出完整備份');
+        }
+    };
+    window.app.confirmImport = async function () {
+        this.cancelImport?.();
+        this.showToast?.('雲端模式請使用「設定 › 資料管理 › 匯入還原（雲端）」；舊版備份檔請用「教師管理」的 V1 資料遷移。', 'warning', 8000);
+    };
 
     window.app.clearLocalData = async function () {
         // 權限防禦：UI 上此按鈕僅 director 看得到（.v2-director-only），但仍在執行前重新
@@ -4423,11 +4585,14 @@ function patchClearLocalData() {
                 `將清除全校雲端資料：\n` +
                 `・課表：僅「目前學期（${curSid}）」的課表會被歸零，其他學期的課表不受影響\n` +
                 `・調代課紀錄與待審請求：所有學期的資料都會被清除（不分學期）\n\n` +
+                `關於備份與還原：歷史學期的調代課紀錄與待審申請，清除後只會留在備份檔中，無法由「匯入還原」寫回雲端` +
+                `（還原只補回目前學期的調代課紀錄，且不還原待審申請與歷史學期課表）。請妥善保管下載的備份檔。\n\n` +
                 `舊版課表副本（data/schedule，Stage 2 之前的單一文件）不受此操作影響。\n\n` +
                 '教師帳號與權限設定會保留，不受影響。\n\n' +
                 '你個人的 V1 雲端備份也會一併刪除；其他使用者的個人備份不受影響。\n\n' +
                 '此操作影響全校所有使用者，且無法復原！\n\n' +
-                '建議先使用「匯出完整備份」進行備份。',
+                '按「繼續」後，系統會先自動下載一份完整雲端備份（含所有學期的課表、調代課紀錄與假別事由、待審申請、教師名冊、學校設定）；' +
+                '備份失敗就不會清除。',
             confirmText: '繼續',
             danger: true,
         });
@@ -4440,6 +4605,15 @@ function patchClearLocalData() {
             danger: true,
         });
         if (!secondOk) return;
+
+        // 強制先備份（審計 ux C1）：下載雲端完整備份並請使用者確認已存檔；失敗或不確認一律中止清除。
+        // 放在重入旗標之前——備份可能要跑一分鐘，期間旗標由 exportCloudBackup 自己的 busy 鎖負責擋連點。
+        if (_v2ClearAllDataInFlight) return;
+        const backedUp = await exportBackupBeforeClear(this);
+        if (!backedUp) {
+            this.showToast?.('已取消清除，雲端資料沒有任何變動', 'info');
+            return;
+        }
 
         // 兩個 confirm 都是 await，期間使用者仍可能連點按鈕或另開 console 呼叫，
         // 故重入旗標的設置點放在「確定要執行」之後、真正動手之前，且要在 try 前設。
@@ -5237,8 +5411,10 @@ async function bootstrap() {
             // 之後任何 approver 上傳/編輯都即時套用到本機並重繪。
             // Stage 2：訂閱路徑改為 schools/{schoolId}/schedules/{目前學期}（見 subscribeSchedule
             // 簽章變動），故需帶入 semesterState 目前快取的學期 id。
-            const scheduleUnsub = await safeBootstrapStep('課表即時同步', () => dataSvc.subscribeSchedule(semesterState.getCurrentSemesterId(), (sched) => {
-                if (sched) applyRemoteSchedule(sched);
+            const scheduleUnsub = await safeBootstrapStep('課表即時同步', () => dataSvc.subscribeSchedule(semesterState.getCurrentSemesterId(), (sched, meta) => {
+                if (sched) applyRemoteSchedule(sched, meta);
+                else setScheduleBase(null);
+                updateImportTargetHint();
                 // Stage 3 opus 驗收 中4：不論 sched 是否存在（null 代表這所學校/這個學期目前
                 // 真的還沒有課表文件，也是一個確定的答案），都代表「已經真正確認過目前這所
                 // 學校的課表狀態」，queueScheduleSync() 的旗標守門從這一刻起解除。見

@@ -202,6 +202,9 @@ export const LOG_ACTIONS = Object.freeze({
     SEMESTER_SWITCH:    'semester_switch',
     // Stage 5（§6.2 SOP）：director 完成「匯出 → 驗證 → 刪除」封存流程後寫入。
     SEMESTER_ARCHIVE:   'semester_archive',
+    // 雲端完整備份的匯出／還原（2026-11）。rules 對 action 只限 ^[a-z0-9_]{1,64}$，不需改規則。
+    EXPORT_BACKUP:      'export_backup',
+    RESTORE_BACKUP:     'restore_backup',
 });
 
 export const LOG_TARGET_TYPES = Object.freeze({

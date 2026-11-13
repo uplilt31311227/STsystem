@@ -98,6 +98,7 @@
                                 <button type="button" class="btn btn-secondary btn-sm" id="schedule-import-history-btn">📜 匯入紀錄</button>
                             </div>
                         </div>
+                        <p class="hint v2-only v2-approver-only" id="v2-import-target-hint"></p>
                         <div class="upload-area upload-area-compact v2-approver-only" id="schedule-upload">
                             <div class="upload-icon-compact">📅</div>
                             <p>拖放課表檔案或<label for="schedule-file" class="upload-link">點擊選擇</label></p>
@@ -777,13 +778,17 @@
                 <div class="card v2-approver-only">
                     <h3>資料管理</h3>
 
-                    <div class="data-management-section">
+                    <!-- V2（雲端）：由 v2-app.js 渲染（src/js/modules/v2/backupController.js）。
+                         下面兩塊 .v1-only 是 V1 本機版的備份／還原，V2 下隱藏（它們只處理本機資料，不含雲端紀錄）。 -->
+                    <div id="v2-backup-admin" class="v2-only"></div>
+
+                    <div class="data-management-section v1-only">
                         <strong>匯出備份</strong>
                         <p class="hint">匯出為 JSON 檔案，可備份或轉移至其他裝置</p>
                         <button class="btn btn-secondary btn-sm" id="export-local-data-btn">匯出完整備份</button>
                     </div>
 
-                    <div class="data-management-section">
+                    <div class="data-management-section v1-only">
                         <strong>匯入還原</strong>
                         <p class="hint">從備份檔案還原，將覆蓋目前所有資料</p>
                         <div class="import-area">
