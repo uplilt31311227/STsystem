@@ -842,6 +842,8 @@ body.v2-locked #v2-auth-gate {
 .v2-roster-error-row:last-child { border-bottom: none; }
 
 .v2-legacy-badge { display: inline-block; padding: 1px 6px; border-radius: var(--r-sm); font-size: var(--fs-2xs); margin-left: 4px; background: var(--c-n-200); color: var(--c-n-600); }
+.v2-impact-badge { display: inline-block; padding: 1px 6px; border-radius: var(--r-sm); font-size: var(--fs-2xs); margin-left: 4px; background: #fef3c7; color: #92400e; }
+.v2-impact-note { color: #92400e; font-size: var(--fs-xs, 0.8rem); }
 .v2-records-filter { font-size: var(--fs-sm); padding: 3px 6px; border-radius: var(--r-sm); border: 1px solid var(--color-border); margin-left: var(--sp-2); }
 
 /* uiFeedback.js 的同步中斷徽章（原 CSS-in-JS 注入，現與其餘 V2 樣式一併靜態化） */

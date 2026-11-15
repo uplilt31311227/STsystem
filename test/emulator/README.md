@@ -58,6 +58,8 @@ npm run seed
 | `test:rules-field-whitelist` | 25 | 申請／自我調課欄位白名單、稽核日誌 actor／時間戳、private/detail 歸屬、大小上限 |
 | `test:rules-workflows` | 13 | 以前端實際寫入形狀走完全部審核流程（白名單完整性實證；改前端寫入欄位時必須同步更新 `kit.mjs`） |
 | `test:rules-hardening` | 14 | v2.12b 驗收補強：近 1MB 文件上限、日誌 details 字串化、approver 欄位轉換限制、actor.role、id 格式、時間下界等（案例編號對應 p3-verify 攻擊腳本） |
+| `test:rules-records-lock` | 12 | v2.14（P6）成立紀錄序號鎖 `config/recordsLock`：seq 只能建立為 1、之後剛好加 1；欄位白名單；教師不可寫；與紀錄建立同一次提交（核准形狀、6 筆批次）的規則文件存取在上限內 |
+| `test:p6-concurrency` | 8 | P6 併發案例（經真實規則與交易隔離）：同節雙核准、同一張申請雙核准、組長代發連點、核准與代發同搶、時段 B 班級時段、組長批次全有或全無；含一則「修前流程會成立兩筆」的對照案例。前端 SDK 無法在 Node 載入，交易內容以 REST 重現，衝堂重驗與序號協定用正式程式碼 |
 | `test:rules-v1-backup` | 5 | `users/{uid}/**` 收斂與舊 `data/{docId}` 路徑 |
 
 「未驗證／已驗證」帳號由 `emu-client.mjs` 的 `createTestUser(email, { emailVerified })` 與 `setEmailVerified()` 控制

@@ -20,6 +20,9 @@ import { buildImportPreviewModel, truncateList } from './modules/scheduleImportP
 import { openRichDialog, rdText, rdHeading, rdList, rdNotice, rdTable } from './modules/richDialog.js';
 import { ScheduleParser } from './modules/scheduleParser.js';
 import { RecommendationEngine, findSwapDateConflict, pendingTag } from './modules/recommendationEngine.js';
+import { withBusyButton } from './modules/busyGuard.js';
+import { findScheduleImpact, describeImpactItem } from './modules/scheduleImpact.js';
+import { findClassSlotConflict, describeClassSlotConflict, describeExistingRecord, applySwapsToSchedule, isEstablishedRecord } from './modules/slotOccupancy.js';
 import { PDFGenerator } from './modules/pdfGenerator.js';
 import { SettlementCalculator } from './modules/settlementCalculator.js';
 import { importWeeksFromCalendar, calendarErrorMessage } from './modules/schoolCalendar.js';
@@ -876,6 +879,8 @@ class SubstituteTeacherApp {
                     fileName: file.name,
                     skippedCount: parseResult.skippedCount || 0
                 });
+                // 重新匯入後，標示受影響的在途申請與未來紀錄（P6）；稍後執行，不擋匯入流程
+                setTimeout(() => this.checkScheduleImpact('import'), 0);
 
                 // 從課表自動擷取「科目→領域」對應表（合併既有手動編輯）
                 this.dataManager.buildSubjectDomainMap(true);
@@ -1002,6 +1007,47 @@ class SubstituteTeacherApp {
                 <ul>${items}${more}</ul>
             </details>`;
         el.classList.remove('hidden');
+    }
+
+    /**
+     * 課表重新匯入或刪除教師之後，檢查在途申請與未來紀錄是否受影響並列出（P6）。
+     * 只提示、不改動資料；讀取失敗只記錄，不阻擋匯入或刪除本身。
+     * @param {'import'|'teacher-removed'} trigger
+     * @param {string} [detail] - 例如被刪除的教師姓名
+     */
+    async checkScheduleImpact(trigger, detail = '') {
+        try {
+            const today = todayLocal();
+            const inputs = await this.dataManager.getScheduleImpactInputs(today);
+            const impact = findScheduleImpact({
+                scheduleData: this.dataManager.getScheduleData(),
+                teachers: this.dataManager.getTeachers(),
+                requests: inputs.requests, records: inputs.records, today,
+            });
+            const total = impact.requests.length + impact.records.length;
+            this._scheduleImpact = impact;
+            if (total === 0) return impact;
+            const lines = [...impact.requests, ...impact.records].slice(0, 12).map(describeImpactItem);
+            const NL = String.fromCharCode(10);
+            const more = total > 12 ? `${NL}…另有 ${total - 12} 筆未列出` : '';
+            const head = trigger === 'teacher-removed'
+                ? `已刪除教師「${detail}」，以下在途申請與未來紀錄需要重新確認：`
+                : '課表已重新匯入，以下在途申請與未來紀錄需要重新確認：';
+            await this.confirmDialog({
+                title: `有 ${total} 筆申請或紀錄受影響`,
+                message: `${head}
+
+${lines.join(NL)}${more}
+
+系統不會自動修改這些資料。請聯絡申請人重新送出，或到調代課紀錄由組長更正。`,
+                confirmText: '我知道了',
+                cancelText: '關閉',
+            });
+            return impact;
+        } catch (err) {
+            console.warn('課表異動後的影響檢查失敗：', err);
+            return null;
+        }
     }
 
     /**
@@ -1134,6 +1180,7 @@ class SubstituteTeacherApp {
             source: 'restore',
             restoredFromVersion: entry.versionNo
         });
+        setTimeout(() => this.checkScheduleImpact('import'), 0);
         dm.buildSubjectDomainMap(true);
         this.renderSubjectDomainTable();
         this.updateScheduleStatus({
@@ -1501,9 +1548,11 @@ class SubstituteTeacherApp {
         tbody.querySelectorAll('.delete-teacher-btn').forEach(btn => {
             btn.addEventListener('click', (e) => {
                 const index = parseInt(e.target.dataset.index);
+                const removedName = this.dataManager.getTeachers()[index]?.name || '';
                 this.dataManager.removeTeacher(index);
                 this.updateTeacherTable();
                 this.saveDataToStorage();
+                setTimeout(() => this.checkScheduleImpact('teacher-removed', removedName), 0);
             });
         });
     }
@@ -1599,8 +1648,10 @@ class SubstituteTeacherApp {
         });
 
         // 多重調課批次按鈕
-        document.getElementById('batch-submit-btn')?.addEventListener('click', () => {
-            this.submitSwapBatch();
+        document.getElementById('batch-submit-btn')?.addEventListener('click', (e) => {
+            // 防連點（P6）：處理中停用並顯示「處理中…」，同一動作不重複送出
+            withBusyButton(e.currentTarget, 'submit-swap-batch', () => this.submitSwapBatch())
+                .finally(() => this.checkBatchConflicts());
         });
         document.getElementById('batch-clear-btn')?.addEventListener('click', () => {
             this.clearSwapBatch();
@@ -1623,11 +1674,12 @@ class SubstituteTeacherApp {
 
         // 確認調課按鈕（多重調課批次模式下改顯示「加入批次」鈕，語意不同但共用同一個
         // confirmSubstitute()——內部已依 isMultiSwapMode 分流，見 confirmSubstitute() 尾端）
-        document.getElementById('confirm-substitute-btn').addEventListener('click', () => {
-            this.confirmSubstitute();
+        document.getElementById('confirm-substitute-btn').addEventListener('click', (e) => {
+            // 防連點（P6）：處理中停用並顯示「處理中…」，同一動作不重複送出
+            withBusyButton(e.currentTarget, 'confirm-substitute', () => this.confirmSubstitute());
         });
-        document.getElementById('add-to-batch-btn')?.addEventListener('click', () => {
-            this.confirmSubstitute();
+        document.getElementById('add-to-batch-btn')?.addEventListener('click', (e) => {
+            withBusyButton(e.currentTarget, 'confirm-substitute', () => this.confirmSubstitute());
         });
 
         // 取消按鈕
@@ -1657,6 +1709,8 @@ class SubstituteTeacherApp {
         this.resetStepsAfterBasic();
 
         if (!teacher || !date) {
+            // 作廢先前送出、尚未回來的當日課表查詢，避免它回來後又打開步驟三
+            this._scheduleDateGen = (this._scheduleDateGen || 0) + 1;
             document.getElementById('step-select-course').classList.add('hidden');
             document.getElementById('selected-course-info').classList.add('hidden');
             return;
@@ -1710,13 +1764,30 @@ class SubstituteTeacherApp {
     /**
      * 根據日期顯示課表，僅高亮該日課程
      */
-    showScheduleForDate(teacherName, date) {
-        // 取得該教師的週課表
-        const weekSchedule = this.dataManager.getTeacherWeekSchedule(teacherName);
-
+    async showScheduleForDate(teacherName, date) {
         // 取得選定日期的星期
         const selectedWeekday = this.getDateWeekday(date);
         document.getElementById('selected-weekday').textContent = selectedWeekday;
+
+        // 當日有效課表（P6）：該日已成立的調課會改變誰上哪一節，請假與派代要以調課後的課為準
+        const gen = (this._scheduleDateGen = (this._scheduleDateGen || 0) + 1);
+        // 等待查詢期間先清空課表格並隱藏步驟三，避免點到舊格子而組出「新教師、新日期＋舊格子」的選課
+        const grid = document.getElementById('original-schedule-grid');
+        if (grid) grid.innerHTML = '';
+        document.getElementById('step-select-course').classList.add('hidden');
+        let weekSchedule = this.dataManager.getTeacherWeekSchedule(teacherName);
+        try {
+            const effective = await this.dataManager.getEffectiveScheduleForDate(date);
+            if (gen !== this._scheduleDateGen) return;   // 期間使用者已改選其他教師或日期
+            weekSchedule = [
+                ...weekSchedule.filter(c => c.weekday !== selectedWeekday),
+                ...effective.filter(c => c.teacher === teacherName && c.weekday === selectedWeekday),
+            ];
+        } catch (err) {
+            if (gen !== this._scheduleDateGen) return;
+            console.error('讀取當日調課紀錄失敗，課表改以原週課表顯示：', err);
+            this.showToast('讀取該日的調課紀錄失敗，目前顯示原週課表，已調課的節次可能與實際不同', 'warning', 6000);
+        }
 
         // 渲染課表並高亮該日
         this.renderTeacherScheduleWithHighlight(weekSchedule, teacherName, selectedWeekday);
@@ -1875,7 +1946,7 @@ class SubstituteTeacherApp {
         const swapHint = document.getElementById('swap-hint');
         const swapPreview = document.getElementById('swap-preview');
         // 使用有效課表：九年級已畢業時，其課程不再造成調課衝堂誤判
-        const scheduleData = this.dataManager.getActiveScheduleData();
+        let scheduleData = this.dataManager.getActiveScheduleData();
         // 每次呼叫都先取得新世代，任何提早 return 的路徑也會作廢先前仍在查詢中的呼叫
         const gen = (this._swapListGen = (this._swapListGen || 0) + 1);
 
@@ -1893,20 +1964,6 @@ class SubstituteTeacherApp {
         const originalPeriod = this.selectedCourse.period;
         const originalTeacher = this.selectedCourse.originalTeacher;
 
-        // 篩選同班級、時段 B 星期的課程
-        const sameclassCourses = scheduleData.filter(course =>
-            course.className === targetClass &&
-            course.weekday === swapWeekday &&
-            !(course.weekday === originalWeekday && course.period === originalPeriod)
-        );
-
-        if (sameclassCourses.length === 0) {
-            swapCourseSelect.innerHTML = `<option value="">${esc(swapWeekday)} ${esc(targetClass)} 沒有課程可調換</option>`;
-            swapHint.innerHTML = `調課說明：選擇同班級的另一時段課程進行互換`;
-            swapHint.style.color = '#6b7280';
-            return;
-        }
-
         // 日期層級衝堂需要兩個實際日期附近的紀錄（V2 不可用訂閱快取，須按需查詢）；
         // 查詢失敗時退回只看週課表，並提示（送出前仍會再攔一次）
         const dateA = document.getElementById('sub-date')?.value || '';
@@ -1920,6 +1977,34 @@ class SubstituteTeacherApp {
                 this.showToast('讀取該日期的調代課紀錄失敗，互換課程清單未檢查日期佔用（送出前會再檢查）', 'warning', 6000);
             }
             if (gen !== this._swapListGen) return; // 期間使用者已改選其他日期，放棄本輪結果
+        }
+
+        // 當日有效課表（P6）：時段 A、時段 B 兩天各自套用已成立的調課；兩天星期相同時以時段 B 為準
+        if (dateRecords) {
+            const established = dateRecords.filter(isEstablishedRecord);
+            const wdA = this.getDateWeekday(dateA);
+            const effA = applySwapsToSchedule(scheduleData, established, dateA);
+            const effB = applySwapsToSchedule(scheduleData, established, dateB);
+            scheduleData = [
+                ...scheduleData.filter(c => c.weekday !== wdA && c.weekday !== swapWeekday),
+                ...(wdA !== swapWeekday ? effA.filter(c => c.weekday === wdA) : []),
+                ...effB.filter(c => c.weekday === swapWeekday),
+            ];
+        }
+        this._swapEffectiveSchedule = scheduleData;
+
+        // 篩選同班級、時段 B 星期的課程
+        const sameclassCourses = scheduleData.filter(course =>
+            course.className === targetClass &&
+            course.weekday === swapWeekday &&
+            !(course.weekday === originalWeekday && course.period === originalPeriod)
+        );
+
+        if (sameclassCourses.length === 0) {
+            swapCourseSelect.innerHTML = `<option value="">${esc(swapWeekday)} ${esc(targetClass)} 沒有課程可調換</option>`;
+            swapHint.innerHTML = `調課說明：選擇同班級的另一時段課程進行互換`;
+            swapHint.style.color = '#6b7280';
+            return;
         }
 
         // 檢查每堂課是否會造成衝堂
@@ -2098,6 +2183,7 @@ class SubstituteTeacherApp {
             console.error('調課送出前讀取紀錄失敗：', err);
             return '讀取既有調代課紀錄失敗，無法確認教師當日是否已被指派，請稍後重試';
         }
+        const weekSchedule = this.dataManager.getActiveScheduleData();
         for (const r of swaps) {
             const hit = findSwapDateConflict({
                 teacherA: r.originalTeacher, dateA: r.date, periodA: r.period,
@@ -2105,6 +2191,12 @@ class SubstituteTeacherApp {
                 records: existing, excludeRecordId: r.id
             });
             if (hit) return this.describeSwapDateConflict(hit);
+            // 班級時段（P6）：時段 A、時段 B 這兩節的任課者是否已被其他紀錄異動
+            const slotHit = findClassSlotConflict({ className: r.className, date: r.date, period: r.period,
+                    teacher: r.originalTeacher, records: existing, excludeRecordId: r.id, scheduleData: weekSchedule })
+                || findClassSlotConflict({ className: r.className, date: r.swapDate, period: r.swapPeriod,
+                    teacher: r.swapTeacher, records: existing, excludeRecordId: r.id, scheduleData: weekSchedule });
+            if (slotHit) return describeClassSlotConflict(slotHit);
         }
         return null;
     }
@@ -2126,7 +2218,8 @@ class SubstituteTeacherApp {
 
         // 解析課程 ID
         const [weekday, period, teacher] = courseId.split('_');
-        const scheduleData = this.dataManager.getScheduleData();
+        // 優先用互換清單建立時的有效課表（含已成立調課），找不到才退回週課表
+        const scheduleData = this._swapEffectiveSchedule || this.dataManager.getScheduleData();
         const swapCourse = scheduleData.find(course =>
             course.weekday === weekday &&
             course.period === period &&
@@ -2291,7 +2384,7 @@ class SubstituteTeacherApp {
                              data-domain="${esc(course.domain)}"
                              data-selectable="${isSelectable}">
                             <span class="course-class">${esc(course.className)}</span>
-                            <span class="course-subject">${esc(course.subject)}</span>
+                            <span class="course-subject">${esc(course.subject)}</span>${course.__swapped ? '<span class="course-subject">（調課後）</span>' : ''}
                         </div>
                     `;
                 } else {
@@ -2669,23 +2762,20 @@ class SubstituteTeacherApp {
                 color: #991b1b;
             `;
 
-            const recordType = existingRecord.type || '代課';
-            const substituteInfo = existingRecord.type === '調課'
-                ? (existingRecord.isSelfSwap ? `教師自行調課` : `調課教師：${existingRecord.swapTeacher || existingRecord.substituteTeacher}`)
-                : `代課教師：${existingRecord.substituteTeacher}`;
+            const info = describeExistingRecord(existingRecord, date, course.period, course.className, course.originalTeacher);
 
             warningDiv.innerHTML = `
                 <div style="display: flex; align-items: flex-start; gap: 10px;">
                     <span style="font-size: 18px;">⚠️</span>
                     <div>
-                        <div style="font-weight: bold; margin-bottom: 4px;">此課堂已有調代課紀錄</div>
+                        <div style="font-weight: bold; margin-bottom: 4px;">${info.pending ? '此課堂已有待審的調代課申請' : '此課堂已有調代課紀錄'}</div>
                         <div style="font-size: 13px; color: #7f1d1d;">
-                            ${esc(existingRecord.date)} ${esc(existingRecord.weekday)} ${esc(existingRecord.period)}<br>
-                            ${esc(existingRecord.className)} ${esc(existingRecord.subject)}（${esc(recordType)}）<br>
-                            ${esc(substituteInfo)}
+                            ${esc(info.when)}<br>
+                            ${esc(info.what)}<br>
+                            ${esc(info.who)}
                         </div>
                         <div style="font-size: 12px; margin-top: 8px; color: #b91c1c;">
-                            如需重新安排，請先至「調代課紀錄」刪除該筆紀錄
+                            ${esc(info.advice)}
                         </div>
                     </div>
                 </div>
@@ -2922,16 +3012,13 @@ class SubstituteTeacherApp {
         }
 
         if (existingRecord) {
-            const recordType = existingRecord.type || '代課';
-            const substituteInfo = existingRecord.type === '調課'
-                ? (existingRecord.isSelfSwap ? `教師自行調課` : `調課教師：${existingRecord.swapTeacher || existingRecord.substituteTeacher}`)
-                : `代課教師：${existingRecord.substituteTeacher}`;
+            const info = describeExistingRecord(existingRecord, date, this.selectedCourse.period, this.selectedCourse.className, this.selectedCourse.originalTeacher);
 
-            this.showToast(`此課堂已有調代課紀錄，無法重複申請！\n` +
-                `${existingRecord.date} ${existingRecord.weekday} ${existingRecord.period}\n` +
-                `${existingRecord.className} ${existingRecord.subject}（${recordType}）\n` +
-                `${substituteInfo}\n` +
-                `如需重新安排，請先至「調代課紀錄」刪除該筆紀錄。`, 'error', 6000);
+            this.showToast(`${info.pending ? '此課堂已有待審的調代課申請，無法重複申請。' : '此課堂已有調代課紀錄，無法重複申請。'}\n` +
+                `${info.when}\n` +
+                `${info.what}\n` +
+                `${info.who}\n` +
+                `${info.advice}。`, 'error', 6000);
             return;
         }
 
@@ -3694,6 +3781,7 @@ class SubstituteTeacherApp {
         if (this.swapBatch.length === 0) {
             conflictPanel.classList.add('hidden');
             submitBtn.disabled = true;
+            this._batchBlocked = true;
             return;
         }
 
@@ -3803,6 +3891,7 @@ class SubstituteTeacherApp {
                     整批 ${this.swapBatch.length} 筆調課無衝突，可以送出
                 </div>`;
             submitBtn.disabled = false;
+            this._batchBlocked = false;
         } else {
             let html = `
                 <div class="batch-conflict-error">
@@ -3816,6 +3905,7 @@ class SubstituteTeacherApp {
             html += '</ul>';
             conflictContent.innerHTML = html;
             submitBtn.disabled = true;
+            this._batchBlocked = true;
         }
     }
 
@@ -3845,7 +3935,8 @@ class SubstituteTeacherApp {
 
         // 最終衝突檢查
         this.checkBatchConflicts();
-        if (document.getElementById('batch-submit-btn').disabled) {
+        // 以 _batchBlocked 判斷（不看按鈕 disabled：送出期間按鈕會因防連點而停用）
+        if (this._batchBlocked) {
             this.showToast('批次中仍有衝突，無法送出', 'error');
             return;
         }
@@ -3876,24 +3967,10 @@ class SubstituteTeacherApp {
         // batchSize：V2 每筆各自核准成立，產整批調課單時用來判斷同批是否有筆數未成立／已刪除
         records.forEach(r => { r.batchId = batchId; r.batchSize = records.length; });
 
-        // 儲存所有紀錄：逐筆 await，比照單筆／多節代課路徑。V2 寫入可能被 adminCreate 衝堂重驗擋下
-        // 而回傳 false（錯誤訊息已由 V2 顯示）；V1 為同步寫入、回傳 undefined。失敗即中止、不產 PDF。
-        const savedRecords = [];
-        for (const record of records) {
-            const ok = await this.dataManager.addSubstituteRecord(record);
-            if (ok === false) {
-                if (savedRecords.length > 0) {
-                    this.saveDataToStorage();
-                    const label = r => `${r.date} ${r.period}`;
-                    const unsaved = records.slice(savedRecords.length);
-                    this.showToast(
-                        `部分調課未儲存。已成立：${savedRecords.map(label).join('、')}；未成立：${unsaved.map(label).join('、')}。請至紀錄查詢確認後，再為未成立的調課另行申請`,
-                        'warning', 10000);
-                }
-                return;
-            }
-            savedRecords.push(record);
-        }
+        // 儲存整批紀錄：V2 組長代發為「全有或全無」（驗證全部通過、同一個交易寫入，任何一筆衝堂或失敗整批都不成立）；
+        // 一般教師的批次逐筆送出申請，中途失敗會自動撤回已建立的申請。失敗訊息已由 V2 顯示，這裡不產 PDF。
+        const allSaved = await this.dataManager.addSubstituteRecordsBatch(records);
+        if (allSaved === false) return;
         this.saveDataToStorage();
 
         // V2 待同意的申請（一般教師發起）：等對方同意後由核准流程產生，這裡不產 PDF。

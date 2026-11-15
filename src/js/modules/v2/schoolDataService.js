@@ -179,7 +179,9 @@ export async function findTeacherByEmail(email) {
 export async function findTeacherByName(name) {
     if (!name) return null;
     const teachers = await listTeachers();
-    return teachers.find(t => t.name === name) || null;
+    // P6：同名教師不再默默取第一筆——有多位同名時回傳 null，呼叫端須改用 teacherId 或讓使用者明確選擇
+    const hits = teachers.filter(t => t.name === name);
+    return hits.length === 1 ? hits[0] : null;
 }
 
 /* ===== Email Index（首登 email → teacherId 配對，Stage 0 §3.4a） =====
@@ -655,6 +657,15 @@ export async function listSubstituteRecordsByBatch(batchId) {
     return snap.docs.map(d => ({ ...d.data(), recordId: d.id }));
 }
 
+/** 多重調課批次：同一 batchId 的全部申請（任何狀態；批次依賴檢查用）。 */
+export async function listPendingRequestsByBatch(batchId) {
+    if (!batchId) return [];
+    const fs   = await getV2Firestore();
+    const col  = fs.collection(fs.db, SCHEMA_PATHS.pendingCol());
+    const snap = await fs.getDocs(fs.query(col, fs.where('batchId', '==', String(batchId))));
+    return snap.docs.map(d => ({ ...d.data(), reqId: d.id }));
+}
+
 /** 多重調課批次：同一 batchId 仍在途（待同意／待核准）的申請。 */
 export async function listOpenPendingRequestsByBatch(batchId) {
     if (!batchId) return [];
@@ -755,6 +766,28 @@ export async function queryPendingRequestsByExactDate(date) {
     const col  = fs.collection(fs.db, SCHEMA_PATHS.pendingCol());
     const q    = fs.query(col, fs.where('date', '==', date));
     const snap = await fs.getDocs(q);
+    return snap.docs.map(d => ({ ...d.data(), reqId: d.id }));
+}
+
+/**
+ * P6（審計 L1）：調課會改變「時段 B」（swapDate／swapPeriod）的任課者，但紀錄只以 date 索引。
+ * 送出前檢查除了 queryRecordsByExactDate(date)，另以 swapDate 單欄位相等查詢補上時段 B
+ * （自動索引，不需複合索引）。只比對 date 會讓同一班同一節被先調課、再代課，兩位老師排進同一節。
+ */
+export async function queryRecordsBySwapExactDate(date) {
+    if (!date) return [];
+    const fs   = await getV2Firestore();
+    const col  = fs.collection(fs.db, SCHEMA_PATHS.substituteCol());
+    const snap = await fs.getDocs(fs.query(col, fs.where('swapDate', '==', date)));
+    return snap.docs.map(d => ({ ...d.data(), recordId: d.id }));
+}
+
+/** P6：pendingRequests 版（在途調課同樣會佔用時段 B）。 */
+export async function queryPendingRequestsBySwapExactDate(date) {
+    if (!date) return [];
+    const fs   = await getV2Firestore();
+    const col  = fs.collection(fs.db, SCHEMA_PATHS.pendingCol());
+    const snap = await fs.getDocs(fs.query(col, fs.where('swapDate', '==', date)));
     return snap.docs.map(d => ({ ...d.data(), reqId: d.id }));
 }
 
@@ -890,6 +923,25 @@ export async function queryRecordsOccupyingRange({ startDate = null, endDate = n
     return [...map.values()];
 }
 
+/**
+ * 某一天的已成立紀錄 = date == D ∪ swapDate == D（兩個等值查詢，單一欄位自動索引即可，不需複合索引），
+ * 依 recordId 去重。給「當日有效課表」用：只需要這一天，不必讀前後數十天的範圍。
+ * 任一查詢失敗即丟出（呼叫端不可默默當作沒有調課）。
+ */
+export async function queryRecordsOnDate(date) {
+    if (!date) return [];
+    const fs  = await getV2Firestore();
+    const col = fs.collection(fs.db, SCHEMA_PATHS.substituteCol());
+    const run = async (field) => {
+        const snap = await fs.getDocs(fs.query(col, fs.where(field, '==', date)));
+        return snap.docs.map(d => ({ ...d.data(), recordId: d.id }));
+    };
+    const [byDate, bySwap] = await Promise.all([run('date'), run('swapDate')]);
+    const map = new Map();
+    for (const r of [...byDate, ...bySwap]) map.set(r.recordId, r);
+    return [...map.values()];
+}
+
 export async function getSubstituteRecord(recordId) {
     const fs   = await getV2Firestore();
     const ref  = fs.doc(fs.db, SCHEMA_PATHS.substituteDoc(recordId));
@@ -903,8 +955,11 @@ export async function getSubstituteRecord(recordId) {
 // 的當下」所屬學期，不是「課會在哪天上」所屬學期）。呼叫端已明確帶 semesterId 時尊重原值——
 // 目前唯一的例外呼叫端是 legacyMigrationService（歷史資料，semesterId 依 date 反推，且
 // isLegacy=true 於規則層豁免此鎖，見 firestore.rules 與 legacyMigrationService.js）。
-export async function createSubstituteRecord(record) {
-    const fs       = await getV2Firestore();
+/**
+ * 組出一筆成立紀錄要寫入的內容（不寫入）：recordId、父文件、私有明細。
+ * createSubstituteRecord 與交易式的成立流程（核准、組長代發、組長批次）共用，欄位處理只有一份。
+ */
+export function buildSubstituteRecordWrite(record) {
     const recordId = genId('rec');
     const now      = new Date().toISOString();
     const semesterId = record.semesterId || semesterState.getCurrentSemesterId();
@@ -918,6 +973,12 @@ export async function createSubstituteRecord(record) {
 
     const allowedTeacherIds = deriveAllowedTeacherIds(base);
     const { publicPart, privatePart, hasSensitive } = splitSensitive(base, allowedTeacherIds);
+    return { recordId, base, publicPart, privatePart, hasSensitive };
+}
+
+export async function createSubstituteRecord(record) {
+    const fs       = await getV2Firestore();
+    const { recordId, base, publicPart, privatePart, hasSensitive } = buildSubstituteRecordWrite(record);
 
     // 先寫 private 再寫父文件：private 寫入失敗就中止，不會留下「父文件存在但假別／事由
     // 遺失」的狀態（假別遺失會讓月結算把不扣減的假別誤算為扣減）。沒有敏感欄位時（例如
@@ -930,6 +991,13 @@ export async function createSubstituteRecord(record) {
     await fs.setDoc(ref, publicPart);
 
     return { ...base, recordId };
+}
+
+/** P6：讀取成立紀錄序號鎖目前的 seq（文件不存在視為 0）。讀取失敗直接丟出，呼叫端 fail-closed。 */
+export async function getRecordsLockSeq() {
+    const fs   = await getV2Firestore();
+    const snap = await fs.getDoc(fs.doc(fs.db, SCHEMA_PATHS.recordsLock()));
+    return snap.exists() ? (Number(snap.data()?.seq) || 0) : 0;
 }
 
 export async function updateSubstituteRecord(recordId, patch) {

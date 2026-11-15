@@ -20,6 +20,7 @@ import {
 import { isSignedIn } from './authService.js';
 import { formatLocalDate, parseLocalDate } from './localDate.js';
 import { findTeacherConflict, findSwapInConflict, pendingTag } from './recommendationEngine.js';
+import { matchesRecordSlot, applySwapsToSchedule, isEstablishedRecord } from './slotOccupancy.js';
 import { createImportRecord, nextVersionNo, makeSnapshot } from './scheduleImportHistory.js';
 
 export class DataManager {
@@ -496,6 +497,17 @@ export class DataManager {
      */
     addSubstituteRecord(record) {
         this.substituteRecords.push(record);
+        this.invalidateDayRecordsCache();
+    }
+
+    /**
+     * 新增一批調代課紀錄（多重調課批次）。V1／離線寫入本機陣列，不會中途失敗，所以天然全有或全無；
+     * V2 由 v2-app.js 覆寫為交易式寫入（組長代發全有或全無）。
+     * @returns {Promise<boolean>} 是否全部成立
+     */
+    async addSubstituteRecordsBatch(records) {
+        for (const record of records) this.addSubstituteRecord(record);
+        return true;
     }
 
     /**
@@ -507,6 +519,7 @@ export class DataManager {
         if (index !== -1) {
             this.substituteRecords.splice(index, 1);
         }
+        this.invalidateDayRecordsCache();
     }
 
     /**
@@ -613,6 +626,76 @@ export class DataManager {
     }
 
     /**
+     * 「當日有效課表」（P6，審計 L3）：週課表套用該日已成立的調課後的結果。
+     * 被調進來的節次，原任課教師請假時才看得到、才能派代；被調走的節次不再算他的課。
+     * 讀取失敗會丟出例外，由呼叫端決定如何提示（不可默默當作沒有調課）。
+     * @param {string} date - YYYY-MM-DD
+     * @param {{activeOnly?:boolean}} [opts] - activeOnly：以排除已畢業九年級的有效課表為底
+     * @returns {Promise<Array>}
+     */
+    async getEffectiveScheduleForDate(date, { activeOnly = false } = {}) {
+        const base = activeOnly ? this.getActiveScheduleData() : this.scheduleData;
+        if (!date) return base;
+        const records = await this.getOccupancyRecordsOnDate(date);
+        return applySwapsToSchedule(base, records.filter(isEstablishedRecord), date);
+    }
+
+    /**
+     * 設定「單日已成立紀錄」的雲端讀取函式（V2 由 v2-app.js 掛上）。fetcher(date) 只做 date==D 與 swapDate==D
+     * 兩個等值查詢；結果以（學期, 日期）為鍵快取在記憶體，紀錄有新增、刪除、修改或即時訂閱更新時失效。
+     * 未設定時（V1／離線）直接從本機紀錄取，沒有任何讀取。
+     * @param {((date:string)=>Promise<Array>)|null} fetcher
+     * @param {(()=>string)|null} [scopeFn] - 回傳目前學期代碼（納入快取鍵）
+     */
+    setDayRecordsFetcher(fetcher, scopeFn = null) {
+        this._dayRecordsFetcher = typeof fetcher === 'function' ? fetcher : null;
+        this._dayRecordsScope = typeof scopeFn === 'function' ? scopeFn : null;
+        this.invalidateDayRecordsCache();
+    }
+
+    /** 清空「單日紀錄」快取；進行中的讀取結果也不再寫入快取。 */
+    invalidateDayRecordsCache() {
+        this._dayRecordsCache = new Map();
+    }
+
+    /**
+     * 取得「某一天」的佔用紀錄（date==D 或 swapDate==D）。調課會佔用兩天，所以兩個欄位都要查。
+     * 讀取失敗會丟出例外且不快取。
+     * @param {string} date - YYYY-MM-DD
+     * @returns {Promise<Array>}
+     */
+    async getOccupancyRecordsOnDate(date) {
+        const fetcher = this._dayRecordsFetcher;
+        if (!fetcher) {
+            return (this.substituteRecords || []).filter(r => r && (r.date === date || r.swapDate === date));
+        }
+        if (!this._dayRecordsCache) this._dayRecordsCache = new Map();
+        const key = `${this._dayRecordsScope ? this._dayRecordsScope() : ''}|${date}`;
+        const cached = this._dayRecordsCache.get(key);
+        if (cached) return cached;
+        // 讀取期間若發生 invalidate，快取物件會被整個換掉，這筆舊結果只會留在舊物件裡，不影響新快取
+        const cache = this._dayRecordsCache;
+        const p = Promise.resolve().then(() => fetcher(date));
+        cache.set(key, p);
+        try {
+            return await p;
+        } catch (err) {
+            if (cache.get(key) === p) cache.delete(key);
+            throw err;
+        }
+    }
+
+    /**
+     * 課表／教師名單異動後的影響檢查所需資料（P6）：在途申請與今天起的已成立紀錄。
+     * V1／離線只有本機紀錄、沒有在途申請；V2 由 v2-app.js 覆寫為雲端資料。
+     * @param {string} today - YYYY-MM-DD
+     * @returns {Promise<{requests:Array, records:Array}>}
+     */
+    async getScheduleImpactInputs(today) {
+        return { requests: [], records: (this.substituteRecords || []).filter(r => r && r.date >= today || r && r.swapDate >= today) };
+    }
+
+    /**
      * 標準化日期格式為 YYYY-MM-DD
      * @param {string} dateStr - 日期字串
      * @returns {string} 標準化後的日期
@@ -652,11 +735,9 @@ export class DataManager {
      * @returns {Object|null} 若有衝堂則回傳該紀錄，否則回傳 null
      */
     checkExistingRecord(date, period, className, originalTeacher) {
+        // 含調課的時段 B（P6）：該教師的這一節若已被調課換走，也算已有紀錄
         return this.substituteRecords.find(record =>
-            record.date === date &&
-            record.period === period &&
-            record.className === className &&
-            record.originalTeacher === originalTeacher
+            matchesRecordSlot(record, date, period, className, originalTeacher)
         ) || null;
     }
 
@@ -691,7 +772,8 @@ export class DataManager {
             date,
             weekday,
             period,
-            scheduleData: this.getActiveScheduleData(),
+            // 有效課表：套用已成立的調課（被調走的節次不算有課、被調進來的節次算有課）
+            scheduleData: applySwapsToSchedule(this.getActiveScheduleData(), records, date),
             records,
             excludeRecordId
         });
@@ -761,7 +843,7 @@ export class DataManager {
         if (data.scheduleData) this.scheduleData = data.scheduleData;
         if (data.teachers) this.teachers = data.teachers;
         if (data.classes) this.classes = data.classes;
-        if (data.substituteRecords) this.substituteRecords = data.substituteRecords;
+        if (data.substituteRecords) { this.substituteRecords = data.substituteRecords; this.invalidateDayRecordsCache(); }
         if (data.settings) this.settings = { ...this.settings, ...data.settings };
         if (data.lastImport && typeof data.lastImport === 'object') this.lastImport = data.lastImport;
     }
@@ -792,6 +874,7 @@ export class DataManager {
         this.teachers = [];
         this.classes = [];
         this.substituteRecords = [];
+        this.invalidateDayRecordsCache();
         this.settings = { grade9Disabled: false, subjectDomainMap: {} };
         this.lastModified = null;
         this.version = 0;
@@ -832,7 +915,7 @@ export class DataManager {
         if (data.scheduleData) this.scheduleData = data.scheduleData;
         if (data.teachers) this.teachers = data.teachers;
         if (data.classes) this.classes = data.classes;
-        if (data.substituteRecords) this.substituteRecords = data.substituteRecords;
+        if (data.substituteRecords) { this.substituteRecords = data.substituteRecords; this.invalidateDayRecordsCache(); }
         if (data.settings) this.settings = { ...this.settings, ...data.settings };
         if (data.lastModified) this.lastModified = data.lastModified;
         if (data.version !== undefined) this.version = data.version;

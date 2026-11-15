@@ -50,6 +50,8 @@ export const SCHEMA_PATHS = {
     config:            ()    => `schools/${getActiveSchoolId()}/config/main`,
     // 月結算上課週數與日曆設定：與 config/main 分開存放，避免觸發 config/main 的學期切換訂閱。
     settlementConfig:  ()    => `schools/${getActiveSchoolId()}/config/settlement`,
+    // P6：成立紀錄的序號鎖（見 recordsGuard.js）。放在 config 底下，規則限 approver 且 seq 只能加 1。
+    recordsLock:       ()    => `schools/${getActiveSchoolId()}/config/recordsLock`,
     teachersCol:       ()    => `schools/${getActiveSchoolId()}/teachers`,
     teacherDoc:        (id)  => `schools/${getActiveSchoolId()}/teachers/${id}`,
     // 舊：單一文件、整份覆寫，換學期即蓋掉舊課表（RESEARCH-multitenancy-semester.md §5.1）。

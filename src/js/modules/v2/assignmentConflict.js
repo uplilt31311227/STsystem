@@ -19,6 +19,7 @@ import {
     pendingTag,
 } from '../recommendationEngine.js';
 import { REQUEST_STATUS } from './schemaConstants.js';
+import { findClassSlotConflict, describeClassSlotConflict } from '../slotOccupancy.js';
 
 /** 在途狀態 → 訊息標示。legacy 'pending'（alpha 期單簽）讀取時等同「待同意」。 */
 const PENDING_LABELS = Object.freeze({
@@ -96,30 +97,40 @@ export async function fetchRecordsAroundDates(dates, queryRange, days = 31) {
  *   - 代課：substituteTeacher 當日當節是否已代課／調課（findTeacherConflict）或被調課移入（findSwapInConflict）
  *   - 調課（非自我調課）：findSwapDateConflict（兩個方向）
  * 不看週課表（申請送出時已檢查過；核准時只需補「紀錄層級」的缺口）。
+ * 例外：scheduleData 有提供時，班級時段判斷會排除協同教學（同班同節兩位以上教師）的其他教師。
  *
  * @returns {{teacher:string,date:string,period:string,role:string,detail:Object}|null}
  */
-export function findAssignmentConflict(req, records, excludeRecordId = null) {
+export function findAssignmentConflict(req, records, excludeRecordId = null, scheduleData = null) {
     if (!req || req.isSelfSwap) return null;
     if (req.type === '調課') {
         if (!req.originalTeacher || !req.swapTeacher) return null;
-        return findSwapDateConflict({
+        const teacherHit = findSwapDateConflict({
             teacherA: req.originalTeacher, dateA: req.date, periodA: req.period,
             teacherB: req.swapTeacher, dateB: req.swapDate, periodB: req.swapPeriod,
             records, excludeRecordId,
         });
+        if (teacherHit) return teacherHit;
+        // 班級時段（P6）：時段 A、時段 B 這兩個班級時段是否已被其他紀錄改過任課者
+        return findClassSlotConflict({ className: req.className, date: req.date, period: req.period,
+                teacher: req.originalTeacher, records, excludeRecordId, anchor: req, scheduleData })
+            || findClassSlotConflict({ className: req.className, date: req.swapDate, period: req.swapPeriod,
+                teacher: req.swapTeacher, records, excludeRecordId, anchor: req, scheduleData });
     }
     if (req.type === '代課' && req.substituteTeacher) {
         const args = { teacherName: req.substituteTeacher, date: req.date, period: req.period, records, excludeRecordId };
         const hit = findTeacherConflict(args) || findSwapInConflict(args);
-        if (!hit) return null;
-        return { teacher: String(req.substituteTeacher).trim(), date: req.date, period: req.period, role: hit.role, detail: hit.detail };
+        if (hit) return { teacher: String(req.substituteTeacher).trim(), date: req.date, period: req.period, role: hit.role, detail: hit.detail };
+        // 班級時段（P6）：同一班同一節已有代課，或這一節已被調課換了任課者
+        return findClassSlotConflict({ className: req.className, date: req.date, period: req.period,
+            teacher: req.originalTeacher, records, excludeRecordId, anchor: req, scheduleData });
     }
     return null;
 }
 
 /** 把衝突命中描述成一句話（不含前綴），例：王大明 2026-10-20 第三節已被指派為801的代課（待核准中） */
 export function describeAssignmentConflict(hit) {
+    if (hit.kind === 'classSlot') return describeClassSlotConflict(hit);
     const d = hit.detail || {};
     const where = hit.role === '調課' && d.swapDate === hit.date && d.swapPeriod === hit.period && d.originalTeacher === hit.teacher
         ? `已調課移入${d.className || ''}`
@@ -127,8 +138,12 @@ export function describeAssignmentConflict(hit) {
     return `${hit.teacher} ${hit.date} ${hit.period}${where}${pendingTag(d)}`;
 }
 
+/** 需要課表才能判斷是否為協同教學，但課表讀不到或為空：仍然擋下，但訊息明確區分，避免被當成真的衝堂而誤駁回 */
+export const SCHEDULE_UNAVAILABLE_MESSAGE = '無法確認當日課表（需判斷是否為協同教學），請稍後再試一次；這不是衝堂，請勿駁回';
+
 /** 核准失敗訊息（拋給使用者看）。呼叫端 UI 對此訊息不得再加「核准失敗：」類前綴。 */
 export function buildApprovalConflictMessage(hit) {
+    if (hit && hit.scheduleUnavailable) return SCHEDULE_UNAVAILABLE_MESSAGE;
     return `核准失敗：${describeAssignmentConflict(hit)}，請駁回或請申請人改選`;
 }
 
@@ -138,6 +153,7 @@ export function buildApprovalConflictMessage(hit) {
  * @param {Object} [req] - 原 payload；調課類型提示改選互換課程或日期
  */
 export function buildAdminCreateConflictMessage(hit, req = null) {
+    if (hit && hit.scheduleUnavailable) return SCHEDULE_UNAVAILABLE_MESSAGE;
     const advice = req?.type === '調課' ? '請重新選擇互換課程或日期' : '請改選代課教師';
     return `無法成立：${describeAssignmentConflict(hit)}，${advice}`;
 }
@@ -150,9 +166,11 @@ export function buildAdminCreateConflictMessage(hit, req = null) {
  *
  * @param {Object} req - 申請（或直接成立的 payload）
  * @param {(range:{startDate:string,endDate:string})=>Promise<Array>} queryRange
+ * @param {()=>Promise<Array>} [loadSchedule] - 讀週課表；只有班級時段命中且申請方既非換走也非換進的教師（可能是協同教學）時才呼叫，
+ *        讀取失敗維持原命中（fail-closed）
  * @returns {Promise<{teacher,date,period,role,detail}|null>} 有衝突回傳命中，無衝突回傳 null
  */
-export async function verifyNoAssignmentConflict(req, queryRange) {
+export async function verifyNoAssignmentConflict(req, queryRange, loadSchedule = null) {
     if (!req || req.isSelfSwap) return null;
     let records;
     try {
@@ -163,7 +181,18 @@ export async function verifyNoAssignmentConflict(req, queryRange) {
         err.cause = cause;
         throw err;
     }
-    return findAssignmentConflict(req, records);
+    const hit = findAssignmentConflict(req, records);
+    if (hit && hit.kind === 'classSlot' && hit.needsSchedule && typeof loadSchedule === 'function') {
+        try {
+            const scheduleData = await loadSchedule();
+            if (Array.isArray(scheduleData) && scheduleData.length > 0) return findAssignmentConflict(req, records, null, scheduleData);
+        } catch (e) {
+            console.warn('[V2] 核准重驗讀取課表失敗，維持擋下：', e);
+        }
+        // 課表讀不到或為空：無法判斷是否為協同教學，仍擋下，但標記為「課表不可用」而非一般衝堂
+        return { ...hit, scheduleUnavailable: true };
+    }
+    return hit;
 }
 
 /**

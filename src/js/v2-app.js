@@ -30,9 +30,13 @@ import { assertRuleSafeCaseText } from './modules/v2/caseTextRule.js';
 import { filterSameBatch } from './modules/v2/batchGuard.js';
 import {
     fmtDate, renderLogRow, renderRecordRow, renderPendingCard,
-    consentActions, approvalActions, mineActions, ROLE_CLASS_WHITELIST
+    consentActions, approvalActions, mineActions, ROLE_CLASS_WHITELIST, impactMetaHtml
 } from './modules/v2/htmlRows.js';
+import { findScheduleImpact } from './modules/scheduleImpact.js';
 import { pendingRequestsToOccupancyRecords, createShortTtlCache } from './modules/v2/assignmentConflict.js';
+import { matchesRecordSlot } from './modules/slotOccupancy.js';
+import { withBusyButton } from './modules/busyGuard.js';
+import { resolveTeacherIds, describeTeacherCandidate } from './modules/v2/teacherIdentity.js';
 import {
     ScheduleConflictError, ScheduleEmptyOverwriteError, expectedFromDoc, scheduleVersionOf,
 } from './modules/v2/scheduleWriteGuard.js';
@@ -728,9 +732,12 @@ async function renderPendingTab() {
         return r.requestType === REQUEST_TYPES.MULTI_SWAP ? ` ・ 尚待 ${remain} 人同意` : '';
     };
 
+    // 課表／教師異動後受影響的在途申請（P6）：以目前課表與教師名單即時比對，只提示不改資料
+    const impactMapPending = computeImpactMap({ requests: openAll });
     const renderList = (items, cls, emptyMsg, actionsFn, extraMetaFn) =>
         items.length
-            ? items.map(r => renderPendingCard(r, cls, actionsFn(r), extraMetaFn ? extraMetaFn(r) : '')).join('')
+            ? items.map(r => renderPendingCard(r, cls, actionsFn(r),
+                (extraMetaFn ? extraMetaFn(r) : '') + impactMetaHtml(impactNoteFor(impactMapPending, r)))).join('')
             : `<p class="muted">${escapeHtml(emptyMsg)}</p>`;
     // 卡片、同意／核准／撤回按鈕的組字已移到 modules/v2/htmlRows.js（data-id 皆已跳脫）。
 
@@ -775,7 +782,7 @@ async function renderPendingTab() {
         btn.addEventListener('click', retryPendingSource));
 
     host.querySelectorAll('.v2-consent-btn').forEach(btn =>
-        btn.addEventListener('click', async () => {
+        btn.addEventListener('click', () => withBusyButton(btn, `consent:${btn.dataset.id}`, async () => {
             btn.disabled = true;
             try {
                 await requestSvc.consentRequest(btn.dataset.id);
@@ -790,10 +797,10 @@ async function renderPendingTab() {
                     btn.disabled = false;
                 }
             }
-        }));
+        })));
 
     host.querySelectorAll('.v2-final-approve-btn').forEach(btn =>
-        btn.addEventListener('click', async () => {
+        btn.addEventListener('click', () => withBusyButton(btn, `approve:${btn.dataset.id}`, async () => {
             btn.disabled = true;
             try {
                 const saved = await requestSvc.approveRequest(btn.dataset.id);
@@ -822,7 +829,7 @@ async function renderPendingTab() {
                     btn.disabled = false;
                 }
             }
-        }));
+        })));
 
     host.querySelectorAll('.v2-reject-btn').forEach(btn =>
         btn.addEventListener('click', async () => {
@@ -845,19 +852,28 @@ async function renderPendingTab() {
             }
         }));
     host.querySelectorAll('.v2-cancel-btn').forEach(btn =>
-        btn.addEventListener('click', async () => {
+        btn.addEventListener('click', () => withBusyButton(btn, `cancel:${btn.dataset.id}`, async () => {
+            const batchReq0 = await dataSvc.getPendingRequest(btn.dataset.id).catch(() => null);
             const ok = await window.app?.confirmDialog?.({
-                title: '撤回請求', message: '確定撤回此調課請求？', confirmText: '撤回', danger: true,
+                title: '撤回請求',
+                message: batchReq0?.batchId ? '這是多重調課批次的一部分，撤回會連同同批其餘在途申請一起撤回。確定撤回？' : '確定撤回此調課請求？',
+                confirmText: '撤回', danger: true,
             });
             if (!ok) return;
             try {
-                const batchReq = await dataSvc.getPendingRequest(btn.dataset.id).catch(() => null);
+                const batchReq = batchReq0;
                 await requestSvc.cancelRequest(btn.dataset.id);
                 await renderPendingTab();
                 await finalizeBatchAfterClose(batchReq);
             }
-            catch (e) { notifyError(e, '撤回請求'); }
-        }));
+            catch (e) {
+                if (e.code === 'ALREADY_PROCESSED') {
+                    // 撤回前申請已被核准或處理：不顯示成功、不刪任何東西，重新整理讓畫面反映實際狀態
+                    window.app?.showToast?.(e.message || '此申請已被處理，無法撤回', 'warning', 5000);
+                    await renderPendingTab();
+                } else { notifyError(e, '撤回請求'); }
+            }
+        })));
     host.querySelectorAll('.v2-dismiss-btn').forEach(btn =>
         btn.addEventListener('click', async () => {
             try { await requestSvc.dismissRejectedRequest(btn.dataset.id); await renderPendingTab(); }
@@ -1267,6 +1283,8 @@ async function renderTeachersAdminTab() {
                 await teacherMgr.deleteTeacher(id);
                 if (cascade) {
                     deleteLegacyTeacher(name);
+                    // 標示受影響的在途申請與未來紀錄（P6）；稍後執行，不擋刪除流程
+                    setTimeout(() => window.app?.checkScheduleImpact?.('teacher-removed', name), 0);
                 } else {
                     notify(`已刪除「${name}」的重複帳號檔，課表資料保留給另一筆`, 'success');
                 }
@@ -1722,6 +1740,9 @@ async function renderRecordsTab() {
         .filter(r => !_v2RecordsFilterTeacher ||
             [r.originalTeacher, r.substituteTeacher, r.swapTeacher].includes(_v2RecordsFilterTeacher));
 
+    // 課表／教師異動後受影響的未來紀錄（P6）：以目前課表與教師名單即時比對，只提示不改資料
+    const impactMapRecords = computeImpactMap({ records: displayed });
+
     if (isStaleRender(_gen)) return;   // 期間身份已切換 → 放棄回填全校紀錄
     host.innerHTML = `
         <div class="v2-section-header">
@@ -1785,7 +1806,7 @@ async function renderRecordsTab() {
                 <th>操作</th>
             </tr></thead>
             <tbody>
-            ${displayed.map(r => renderRecordRow(r, isApprover)).join('')}
+            ${displayed.map(r => renderRecordRow(r, isApprover, impactNoteFor(impactMapRecords, r))).join('')}
             </tbody>
         </table>
         </div>
@@ -1860,7 +1881,7 @@ async function renderRecordsTab() {
                     // 篩選查到的一筆），subscribeSubstituteRecords 的 onSnapshot 不會被觸發，
                     // _v2DateRangeQueryCache 裡快取的日期範圍查詢結果會繼續回傳「已刪除但快取
                     // 仍在」的舊資料，直接清空最保險。
-                    _v2DateRangeQueryCache.clear();
+                    clearV2RecordCaches();
                     await renderRecordsTab();
                 }
                 catch (e) { notifyError(e, '刪除紀錄'); }
@@ -3182,7 +3203,7 @@ function resetV2ViewState() {
     _v2RecordsTabCursor   = null;
     _v2RecordsTabHasMore  = null;
     _v2RecordsLiveLastDoc = null;
-    _v2DateRangeQueryCache.clear();
+    clearV2RecordCaches();
     _v2PendingSourceError = null; // 驗收修復（中 #A）：不帶前一身份的錯誤狀態到下一個登入者
     // Stage 2：歷史學期檢視狀態同屬「含個資的畫面狀態」，身份切換必須一併清空（同上理由）。
     _v2RecordsSemesterFilter = '';
@@ -3363,21 +3384,45 @@ function patchOwnTeacherLock() {
     }
 }
 
+/** 課表／教師名單異動後，哪些在途申請或未來紀錄受影響（P6）：key = reqId／recordId／id，value = 原因文字。 */
+function computeImpactMap({ requests = [], records = [] }) {
+    const map = new Map();
+    try {
+        const dm = window.app?.dataManager;
+        if (!dm || !dm.getScheduleData().length) return map;
+        const impact = findScheduleImpact({
+            scheduleData: dm.getScheduleData(), teachers: dm.getTeachers(),
+            requests, records, today: todayLocal(),
+        });
+        for (const e of [...impact.requests, ...impact.records]) {
+            map.set(e.item.reqId || e.item.recordId || e.item.id, e.reasons.join('；'));
+        }
+    } catch (err) { console.warn('[V2] 計算課表異動影響失敗:', err); }
+    return map;
+}
+function impactNoteFor(map, r) { return map.get(r.reqId || r.recordId || r.id) || ''; }
+
 /* ===== dataManager patch：V2 模式下改走 V2 寫入 ===== */
 
-async function resolveApproverInfo(record, teachers = null) {
+async function resolveApproverInfo(record, teachers = null, chooser = promptSelectTeacher) {
     // 呼叫端（writeV2Record）已抓過教師清單時直接沿用，避免同一次送出重複 listTeachers
     if (!teachers) teachers = await dataSvc.listTeachers();
-    const findId   = (n) => teachers.find(t => t.name === n)?.teacherId || null;
+    // P6：同名教師不再取第一筆。登入者本人優先（發起人就是原任課教師時），否則要求使用者明確選擇。
+    const me = roleSvc.getCurrentIdentity();
+    const extraNames = Array.isArray(record.additionalConsentTeachers) ? record.additionalConsentTeachers : [];
+    const resolved = await resolveTeacherIds(teachers, [
+        { key: 'original',   name: record.originalTeacher,   preferTeacherId: me?.teacherId },
+        { key: 'substitute', name: record.substituteTeacher },
+        { key: 'swap',       name: record.swapTeacher },
+        ...extraNames.map((n, i) => ({ key: `extra${i}`, name: n })),
+    ], chooser);
 
-    const originalTeacherId   = findId(record.originalTeacher);
-    const substituteTeacherId = findId(record.substituteTeacher);
-    const swapTeacherId       = findId(record.swapTeacher);
+    const originalTeacherId   = resolved.original;
+    const substituteTeacherId = resolved.substitute;
+    const swapTeacherId       = resolved.swap;
     // Phase 3：使用者若在多重調課提示框額外勾選教師（見 promptAdditionalConsentTeachers），
     // record.additionalConsentTeachers 是姓名陣列，這裡一併解析成 teacherId。
-    const additionalConsentTeacherIds = Array.isArray(record.additionalConsentTeachers)
-        ? record.additionalConsentTeachers.map(findId).filter(Boolean)
-        : [];
+    const additionalConsentTeacherIds = extraNames.map((_, i) => resolved[`extra${i}`]).filter(Boolean);
 
     let requiredApproverId   = null;
     let requiredApproverName = null;
@@ -3408,6 +3453,47 @@ async function resolveApproverInfo(record, teachers = null) {
         requiredApproverName,
         requestType,
     };
+}
+
+/**
+ * P6：同名教師時要求使用者明確選擇（原本取名單第一筆）。回傳選定的 teacherId；取消回 null。
+ */
+function promptSelectTeacher(name, candidates) {
+    return new Promise((resolve) => {
+        const backdrop = document.createElement('div');
+        backdrop.id = 'v2-select-teacher-modal';
+        backdrop.className = 'modal';
+        backdrop.setAttribute('role', 'dialog');
+        backdrop.innerHTML = `
+            <div class="modal-content" style="max-width:460px;">
+                <div class="modal-body">
+                <h3>有多位同名教師：${escapeHtml(name)}</h3>
+                <p style="font-size:0.85rem;color:#6b7280;margin-top:-0.4rem;">
+                    系統需要知道是哪一位，才能把同意、核准與紀錄記到正確的人。請選擇。
+                </p>
+                <div style="margin:0.6rem 0;">
+                    ${candidates.map((t, i) => `
+                        <label style="display:block;padding:6px 0;font-size:0.9rem;">
+                            <input type="radio" name="v2-select-teacher" value="${escapeHtml(t.teacherId)}" ${i === 0 ? '' : ''}>
+                            ${escapeHtml(describeTeacherCandidate(t))}
+                        </label>`).join('')}
+                </div>
+                <p class="form-msg" id="v2-select-teacher-msg" style="display:none;color:#b91c1c;">請先選擇一位教師</p>
+                <div class="modal-actions">
+                    <button class="btn btn-secondary" id="v2-select-teacher-cancel">取消送出</button>
+                    <button class="btn btn-primary" id="v2-select-teacher-confirm">確定</button>
+                </div>
+                </div>
+            </div>`;
+        document.body.appendChild(backdrop);
+        const cleanup = (result) => { backdrop.remove(); resolve(result); };
+        backdrop.querySelector('#v2-select-teacher-cancel').addEventListener('click', () => cleanup(null));
+        backdrop.querySelector('#v2-select-teacher-confirm').addEventListener('click', () => {
+            const picked = backdrop.querySelector('input[name="v2-select-teacher"]:checked');
+            if (!picked) { backdrop.querySelector('#v2-select-teacher-msg').style.display = 'block'; return; }
+            cleanup(picked.value);
+        });
+    });
 }
 
 /**
@@ -3589,6 +3675,67 @@ function v2NeedsApproval(record) {
 // 繁中訊息，而不是讓使用者看到不明所以的「權限不足」。欄位清單與計算方式集中在
 // modules/v2/caseTextRule.js，並由 test/test-html-escape.mjs 讀取 firestore.rules 比對是否一致。
 
+/** 把表單 record 與解析出的 id 組成最終寫入文件的 payload（writeV2Record 與批次寫入共用）。 */
+function composeV2Payload(record, ids, me) {
+    const payload = {
+        ...record,
+        ...ids,
+        requestType: ids.requestType,
+        // 多重調課才帶 consentTeacherIds；createRequest 未收到此欄位時會退回 swapTeacherId 單簽。
+        ...(ids.requestType === REQUEST_TYPES.MULTI_SWAP
+            ? { consentTeacherIds: [ids.swapTeacherId, ...ids.additionalConsentTeacherIds].filter(Boolean) }
+            : {}),
+        initiatedByName: record.originalTeacher || me.name,
+    };
+    // 同步已標記於 record.__v2NeedsApproval，避免傳到 Firestore；additionalConsentTeachers 是姓名陣列，
+    // 已在 resolveApproverInfo 解析成 additionalConsentTeacherIds，不需再寫入文件。
+    delete payload.__v2NeedsApproval;
+    delete payload.additionalConsentTeachers;
+    return payload;
+}
+
+/**
+ * 多筆調課批次寫入（P6，審計 L5）。
+ *   - 組長代發：全部驗證通過後在同一個交易內成立，任何一筆失敗整批都不成立（adminCreateBatch）。
+ *   - 一般教師：逐筆送出申請；中途失敗時把已建立的在途申請撤回，不留下前幾筆。
+ *     （自我調課會直接成立、教師端無法刪除，若批次內有自我調課且在它之後失敗，已成立的自我調課會保留，
+ *      這一點由呼叫端的訊息說明。）
+ * 回傳 { ok:true } 或丟出錯誤（呼叫端 addSubstituteRecordsBatch 轉成 boolean）。
+ */
+async function writeV2RecordsBatch(records) {
+    const me = roleSvc.getCurrentIdentity();
+    if (!me) throw new Error('尚未登入');
+    if (roleSvc.isAdmin()) {
+        const teachers = await dataSvc.listTeachers();
+        const payloads = [];
+        for (const record of records) {
+            const ids = await resolveApproverInfo(record, teachers);
+            const payload = composeV2Payload(record, ids, me);
+            payload.initiatedBy = ids.originalTeacherId || me.teacherId;
+            payloads.push(payload);
+        }
+        await requestSvc.adminCreateBatch(payloads);
+        return;
+    }
+    const created = [];
+    try {
+        for (const record of records) {
+            const saved = await writeV2Record(record);
+            created.push(saved);
+        }
+    } catch (err) {
+        let undone = 0;
+        for (const saved of created.reverse()) {
+            if (saved && saved.reqId) {
+                try { await requestSvc.cancelRequest(saved.reqId, '批次送出失敗，自動撤回'); undone++; } catch (_) { /* 已被連帶撤回或無法撤回 */ }
+            }
+        }
+        err.batchUndone = undone;
+        err.batchCreated = created.length;
+        throw err;
+    }
+}
+
 async function writeV2Record(record) {
     const me = roleSvc.getCurrentIdentity();
     if (!me) throw new Error('尚未登入');
@@ -3614,20 +3761,7 @@ async function writeV2Record(record) {
     }
 
     const ids = await resolveApproverInfo(record, teachers);
-    const payload = {
-        ...record,
-        ...ids,
-        requestType: ids.requestType,
-        // 多重調課才帶 consentTeacherIds；createRequest 未收到此欄位時會退回 swapTeacherId 單簽。
-        ...(ids.requestType === REQUEST_TYPES.MULTI_SWAP
-            ? { consentTeacherIds: [ids.swapTeacherId, ...ids.additionalConsentTeacherIds].filter(Boolean) }
-            : {}),
-        initiatedByName: record.originalTeacher || me.name,
-    };
-    // 同步已標記於 record.__v2NeedsApproval，避免傳到 Firestore；additionalConsentTeachers 是姓名陣列，
-    // 已在 resolveApproverInfo 解析成 additionalConsentTeacherIds，不需再寫入文件。
-    delete payload.__v2NeedsApproval;
-    delete payload.additionalConsentTeachers;
+    const payload = composeV2Payload(record, ids, me);
     // 以最終寫入文件的形狀（含 resolveApproverInfo 補上的 id／姓名欄位）再檢查一次，與 rules 的
     // hasSafeCaseText 同一份欄位清單與計算方式——前端放行者 rules 必定放行。
     if (!roleSvc.isAdmin()) assertRuleSafeCaseText(payload);
@@ -3712,6 +3846,12 @@ let _v2RecordsLiveLastDoc = null;
 // 即時訂閱視窗是否已涵蓋整段範圍（視窗按 createdAt 排序，無法用「視窗內最舊日期」可靠推算
 // 涵蓋範圍，寧可多查一次 Firestore 也不要讓月結算這種金額計算漏資料）。
 const _v2DateRangeQueryCache = new Map();
+
+// 紀錄有任何異動（本機寫入、刪除、即時訂閱更新、身份切換）時，一併清掉「單日有效課表」的記憶體快取（dataManager）
+function clearV2RecordCaches() {
+    _v2DateRangeQueryCache.clear();
+    try { window.app?.dataManager?.invalidateDayRecordsCache?.(); } catch (_) { /* 快取失效失敗不影響主流程 */ }
+}
 
 // Stage 2（§5.4「歷史學期」列，§6.1）：紀錄頁的學期選擇器狀態。''＝當前學期（即時訂閱＋
 // 分頁，既有 Stage 1 行為不變）；非空字串＝使用者選了某個歷史學期，改走一次性查詢
@@ -3859,11 +3999,8 @@ async function loadMoreRecordsTabPage() {
 }
 
 function conflictMatches(item, date, period, className, originalTeacher) {
-    return item
-        && item.date === date
-        && item.period === period
-        && item.className === className
-        && item.originalTeacher === originalTeacher;
+    // 時段 A 全等，或調課時段 B 的任課者就是申請人（P6，見 slotOccupancy.matchesRecordSlot）
+    return !!matchesRecordSlot(item, date, period, className, originalTeacher);
 }
 
 /**
@@ -3887,13 +4024,16 @@ function conflictMatches(item, date, period, className, originalTeacher) {
 async function v2CheckExistingRecord(date, period, className, originalTeacher) {
     if (!date) return null;
     const args = [date, period, className, originalTeacher];
-    const [dayRecords, dayPending] = await Promise.all([
+    // P6：另以調課日期（時段 B）為條件各查一次——只查 date 會漏掉「被調課換走」的那一節
+    const [dayRecords, dayPending, swapRecords, swapPending] = await Promise.all([
         dataSvc.queryRecordsByExactDate(date),
         dataSvc.queryPendingRequestsByExactDate(date),
+        dataSvc.queryRecordsBySwapExactDate(date),
+        dataSvc.queryPendingRequestsBySwapExactDate(date),
     ]);
-    const r = dayRecords.find(x => conflictMatches(x, ...args));
+    const r = [...dayRecords, ...swapRecords].find(x => conflictMatches(x, ...args));
     if (r) return r;
-    const p = dayPending
+    const p = [...dayPending, ...swapPending]
         .map(requestSvc.normalizeLegacyRequest)
         .find(x => {
             if (!conflictMatches(x, ...args)) return false;
@@ -4157,10 +4297,13 @@ function patchDataManager() {
                 try {
                     await writeV2Record(record);
                 } catch (err) {
-                    console.error('[V2] 寫入失敗:', err);
+                    // 使用者在同名教師選擇視窗按取消不是寫入失敗，不記 console.error
+                    if (err?.code !== 'AMBIGUOUS_TEACHER_CANCELLED') console.error('[V2] 寫入失敗:', err);
                     _swallowPdfSummaryToast = false;   // 寫入失敗不會有「PDF 已生成」訊息，別讓旗標殘留吞掉下一則
                     if (err?.code === 'ASSIGNMENT_CONFLICT') {
                         notify(err.message, 'error');   // 訊息已自帶「無法成立：…」，不再加前綴
+                    } else if (err?.code === 'AMBIGUOUS_TEACHER_CANCELLED') {
+                        notify(err.message, 'info');
                     } else {
                         notifyError(err, '寫入調代課紀錄');
                     }
@@ -4169,7 +4312,7 @@ function patchDataManager() {
                 try {
                     // 驗收修復（中 #4）：同上（adminDeleteRecord），寫入的紀錄不論是直接成立
                     // 或先進 pendingRequests，都可能讓已快取的日期範圍查詢結果過期。
-                    _v2DateRangeQueryCache.clear();
+                    clearV2RecordCaches();
                     _openPendingOccupancyCache.invalidate();
                     await renderPendingTab();
                     await renderRecordsTab();
@@ -4180,6 +4323,44 @@ function patchDataManager() {
             })();
         }
         return origAdd(record);
+    };
+
+    // P6：多筆調課批次（app.js submitSwapBatch）。組長代發全有或全無；V1／離線逐筆寫入（同步，不會中途失敗）。
+    dm.addSubstituteRecordsBatch = async function(records) {
+        if (!roleSvc.isSignedIn()) {
+            for (const r of records) origAdd(r);
+            return true;
+        }
+        for (const r of records) {
+            r.__v2NeedsApproval = v2NeedsApproval(r);
+        }
+        if (records.some(r => r.__v2NeedsApproval)) _swallowPdfSummaryToast = true;
+        try {
+            await writeV2RecordsBatch(records);
+        } catch (err) {
+            if (err?.code !== 'AMBIGUOUS_TEACHER_CANCELLED') console.error('[V2] 批次寫入失敗:', err);
+            _swallowPdfSummaryToast = false;
+            if (err?.code === 'ASSIGNMENT_CONFLICT') {
+                notify(`${err.message}（整批都沒有成立）`, 'error');
+            } else if (err?.code === 'AMBIGUOUS_TEACHER_CANCELLED') {
+                notify(err.message, 'info');
+            } else {
+                notifyError(err, '寫入調代課紀錄');
+            }
+            if (err?.batchCreated > 0) {
+                notify(`批次中已建立 ${err.batchCreated} 筆申請，其中 ${err.batchUndone || 0} 筆已自動撤回；請至「待辦」確認是否有殘留的申請`, 'warning', 8000);
+            }
+            return false;
+        }
+        try {
+            clearV2RecordCaches();
+            _openPendingOccupancyCache.invalidate();
+            await renderPendingTab();
+            await renderRecordsTab();
+        } catch (err) {
+            console.error('[V2] 批次寫入後重繪失敗:', err);
+        }
+        return true;
     };
 
     // 衝堂檢查：V2 下改按需查 Firestore（見 v2CheckExistingRecord 註解，阻斷 #1）。
@@ -4312,6 +4493,25 @@ function patchDataManager() {
             { startDate, endDate }
         );
         return [...established, ...inFlight];
+    };
+
+    // 當日有效課表：只查 date==D 與 swapDate==D 兩個等值查詢並快取（見 dataManager.getOccupancyRecordsOnDate）；
+    // 未登入時 fetcher 取本機紀錄，不碰 Firestore
+    dm.setDayRecordsFetcher(
+        (date) => roleSvc.isSignedIn()
+            ? dataSvc.queryRecordsOnDate(date)
+            : Promise.resolve((dm.substituteRecords || []).filter(r => r && (r.date === date || r.swapDate === date))),
+        () => semesterState.getCurrentSemesterId() || ''
+    );
+
+    // P6：課表／教師異動後的影響檢查資料來源：雲端在途申請 ＋ 今天起（含調課時段 B 落在今天之後）的已成立紀錄
+    dm.getScheduleImpactInputs = async function(today) {
+        if (!roleSvc.isSignedIn()) return { requests: [], records: [] };
+        const [open, records] = await Promise.all([
+            dataSvc.listOpenPendingRequests(),
+            dataSvc.queryRecordsOccupyingRange({ startDate: today, endDate: null }),
+        ]);
+        return { requests: open.map(requestSvc.normalizeLegacyRequest), records };
     };
 
     /**
@@ -5206,7 +5406,7 @@ async function bootstrap() {
             _v2RecordsTabCursor   = null;
             _v2RecordsTabHasMore  = null;
             _v2RecordsLiveLastDoc = null;
-            _v2DateRangeQueryCache.clear();
+            clearV2RecordCaches();
             _v2PendingSourceError = null; // 驗收修復（中 #A）：同上
             resetSyncStatus();
             // Stage 4：登出（含申請流程遮罩內的「登出，改用其他帳號」）一併清空申請流程狀態，
@@ -5401,7 +5601,7 @@ async function bootstrap() {
                 _v2RecordsLiveLastDoc = meta?.lastDoc ?? null; // 輕 #10：更新「載入更多」的原生 cursor 起點
                 // 驗收修復（中 #4）：即時視窗有變動（新增/更新/刪除都會觸發這個 callback），
                 // 已快取的日期範圍查詢結果可能已經過期，直接清空最保險（成本極低，Map.clear()）。
-                _v2DateRangeQueryCache.clear();
+                clearV2RecordCaches();
                 renderRecordsTab();
                 setSyncStatus('records', true);
             }, makeSyncErrorHandler('records'), { limit: V2_RECORDS_PAGE_SIZE }));

@@ -1,6 +1,6 @@
 rules_version = '2';
 
-// STsystem V2 權限系統 Firestore 規則（v2.13（含 v2.13-A／B，已納入本檔，P5 未部署）— 身分與授權修補 + 三層角色 + 敏感欄位私有化 + 學期唯讀鎖 + 封存生命週期 + schoolId 反查目錄 + 多租戶開通 + 月結算設定開放 approver + 主任不可改自己的 role + 課表匯入版本紀錄 + 組長可刪除目前學期紀錄 + 開新學期原子建立課表 + 課表版本號）
+// STsystem V2 權限系統 Firestore 規則（v2.14（含 v2.13-A／B、v2.14 成立紀錄序號鎖，皆已納入本檔，P5／P6 未部署）— 身分與授權修補 + 三層角色 + 敏感欄位私有化 + 學期唯讀鎖 + 封存生命週期 + schoolId 反查目錄 + 多租戶開通 + 月結算設定開放 approver + 主任不可改自己的 role + 課表匯入版本紀錄 + 組長可刪除目前學期紀錄 + 開新學期原子建立課表 + 課表版本號）
 //
 // 設計原則：
 //   1. 兩條根路徑物理隔離
@@ -148,6 +148,24 @@ rules_version = '2';
 //         「不帶版本或以過期版本整份覆寫」一律被拒，兩位 approver 不會互相蓋掉（審計 logic-flow M-4）。
 //      ⚠ 部署順序：須先上線新前端（會寫 version）再部署本規則；舊版頁面在新規則下寫課表會 permission-denied，需重新整理。
 //         scripts/ 以 owner 憑證操作的腳本不受 rules 限制。
+//
+//  15. v2.14（2026-11-14，P6 衝堂與申請流程；測試見 test/emulator/rules-records-lock）：
+//      config/recordsLock：「成立紀錄」的序號鎖，只有 approver 可建立／更新，欄位只有 seq（整數）與 updatedAt，
+//      create 必須 seq==1、update 必須剛好 seq==現值+1。前端核准、組長代發與組長批次在同一個 transaction 內
+//      把 seq 加 1（recordsGuard.js），兩筆併發的成立動作必有一筆因序號已被改而重新驗證衝堂，只成立一筆。
+//      運算式成本：本條只在 config 寫入時評估（isApprover 與 substituteRecords 寫入共用同一批文件讀取），
+//      未動到熱路徑；substituteRecords／pendingRequests 的規則一字未改。
+//      序號鎖涵蓋範圍與例外（據實記載）：
+//        - 涵蓋：核准（approveRequest）、組長代發（adminCreate）、組長批次這三條「成立紀錄」路徑，由前端在同一個
+//          transaction 內把 seq 加 1；rules 只保證 seq 的值只能剛好加 1、只有 approver 能寫。
+//        - 不遞增 seq 的成立路徑：教師自我調課（rules 的 isSelfSwap 快速路徑直接成立，教師也不能寫 recordsLock）、
+//          備份還原、舊資料遷移、adminEditRecord（目前 UI 未使用）。這些路徑不受序號鎖保護，也沒有伺服器端衝堂重驗。
+//        - rules 並不強制「新增 substituteRecords 必須同交易遞增 seq」，這是前端協定；director 依 config 既有規則
+//          可寫或刪 recordsLock。因此序號鎖是防止正常操作下的併發雙重成立，不是防止刻意繞過前端的授權機制。
+//        - 自我調課改走伺服器端重驗、或由 rules 強制序號，留待後續階段。
+//      ⚠ 部署順序（修正）：舊 rules 的 config/{docId} 只允許 director 寫入，新前端在舊 rules 下，教學組長（section_chief）
+//        的核准與代發會因寫 recordsLock 全部 permission-denied；而 v2.13 又要求前端先上線。兩者合起來的結論是：
+//        前端與 rules（v2.13＋v2.14）必須同時上線，不可任何一方單獨先上。步驟見 docs/DEPLOYMENT.md。
 //
 // 部署：透過 gcloud REST API 或 Firebase Console（見 docs/V2_PERMISSION_SYSTEM.md）
 
@@ -814,6 +832,18 @@ service cloud.firestore {
         // 僅 director 可改學校名稱、白名單（不含 settlement，settlement 走下方有欄位驗證的規則）
         allow create, update: if isDirector(schoolId) && docId != 'settlement';
         allow delete: if isDirector(schoolId);
+        // v2.14（P6）：成立紀錄的序號鎖（見檔頭第 15 點，含涵蓋範圍與例外）。approver 可寫；seq 只能從無到 1、之後每次剛好加 1。
+        // 本規則不檢查「新增紀錄是否同交易遞增 seq」，那是前端協定；教師自我調課、備份還原、舊資料遷移不遞增 seq。
+        allow create, update: if docId == 'recordsLock'
+          && isApprover(schoolId)
+          && request.resource.data.keys().hasOnly(['seq', 'updatedAt'])
+          && request.resource.data.keys().hasAll(['seq', 'updatedAt'])
+          && request.resource.data.seq is int
+          && request.resource.data.updatedAt is string
+          && request.resource.data.updatedAt.size() <= 40
+          && (resource == null
+              ? request.resource.data.seq == 1
+              : request.resource.data.seq == resource.data.seq + 1);
         // v2.8：月結算週數設定（config/settlement）開放 approver（含 section_chief、director）
         // 建立與更新，含欄位白名單、型別與大小檢查；不含 delete。
         // updatedBy 須為本人 email 或 uid（client 寫 email || uid）；updatedAt 為 ISO 字串。

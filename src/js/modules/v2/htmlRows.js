@@ -47,7 +47,7 @@ export function renderLogRow(l) {
 const APPROVER_ROLES_FOR_BADGE = ['admin', 'director', 'section_chief'];
 
 /** 全校調代課紀錄表格的一列（renderRecordsTab）。 */
-export function renderRecordRow(r, isApprover) {
+export function renderRecordRow(r, isApprover, impactNote = '') {
     const id = escapeHtml(r.recordId);
     return `
                 <tr data-id="${id}">
@@ -56,7 +56,7 @@ export function renderRecordRow(r, isApprover) {
                     <td data-label="班級">${escapeHtml(r.className || '')}</td>
                     <td data-label="原教師">${escapeHtml(r.originalTeacher || '')}</td>
                     <td data-label="代/調對象">${escapeHtml(r.substituteTeacher || r.swapTeacher || '')}</td>
-                    <td data-label="類型">${escapeHtml(r.type || '')}${APPROVER_ROLES_FOR_BADGE.includes(r.initiatedByRole) ? ' <span class="v2-role-tag director">代發</span>' : ''}${r.isLegacy ? ' <span class="v2-legacy-badge" title="遷移自 V1 舊系統">舊系統</span>' : ''}</td>
+                    <td data-label="類型">${escapeHtml(r.type || '')}${APPROVER_ROLES_FOR_BADGE.includes(r.initiatedByRole) ? ' <span class="v2-role-tag director">代發</span>' : ''}${r.isLegacy ? ' <span class="v2-legacy-badge" title="遷移自 V1 舊系統">舊系統</span>' : ''}${impactNote ? ` <span class="v2-impact-badge" title="${escapeHtml(impactNote)}">課表已變更</span>` : ''}</td>
                     <td data-label="發起">${escapeHtml(r.initiatedByName || '')}</td>
                     <td class="cell-actions">
                         <button class="btn btn-secondary btn-sm v2-download-pdf" data-id="${id}">下載 PDF</button>
@@ -90,6 +90,11 @@ export function typeLabel(r) {
  * actionsHtml / extraMeta 是呼叫端以本檔 consent/approval/mine 動作函式或常數產生的受信任 HTML
  * （其中 data-id 已跳脫；extraMeta 內的資料值已跳脫）。
  */
+/** 課表／教師異動後受影響的提示（純文字，呼叫端已算好）；回傳可直接接在 extraMeta 後的 HTML。 */
+export function impactMetaHtml(note) {
+    return note ? `<br><span class="v2-impact-note">⚠ 課表已變更：${escapeHtml(note)}</span>` : '';
+}
+
 export function renderPendingCard(r, cls, actionsHtml, extraMeta = '') {
     return `
         <div class="list-item list-item-${pickAllowed(cls, ['incoming', 'outgoing'])}" data-id="${escapeHtml(r.reqId)}">

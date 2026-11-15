@@ -193,7 +193,7 @@ check('(b) 待辦卡片：cls 不在白名單時被清空（屬性集合不變�
 {
     const v2 = read('src/js/v2-app.js');
     check('(b2) v2-app.js 以 renderLogRow 輸出日誌列', /visible\.map\(l => renderLogRow\(l\)\)/.test(v2));
-    check('(b2) v2-app.js 以 renderRecordRow 輸出紀錄列', /displayed\.map\(r => renderRecordRow\(r, isApprover\)\)/.test(v2));
+    check('(b2) v2-app.js 以 renderRecordRow 輸出紀錄列', /displayed\.map\(r => renderRecordRow\(r, isApprover(, [^)]*\([^)]*\))?\)\)/.test(v2));
     check('(b2) v2-app.js 以 renderPendingCard 輸出待辦卡片', /renderPendingCard\(r, cls,/.test(v2));
     check('(b2) v2-app.js 不再有 `${l.actor`／`${l.action}`／`${r.className ||` 之類未跳脫插值',
         !/\$\{l\.(actor|action|targetType|targetId|details)/.test(v2) && !/<td[^>\n]*>\$\{r\./.test(v2) && !/data-id="\$\{r\.reqId\}"/.test(v2));

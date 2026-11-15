@@ -15,6 +15,8 @@
  * （公平性 tie-break，不改分數、不會壓過上述任何一層），最後依姓名排序以保持穩定。
  */
 
+import { applySwapsToSchedule } from './slotOccupancy.js';
+
 /**
  * 衝堂訊息用的「在途」標示：V2 把待同意／待核准的申請轉成佔用紀錄（帶 __pendingLabel）後，
  * 與已成立紀錄一起丟進衝堂判斷；訊息組裝時用本函式補上「（待核准中）」或「（待同意中）」。
@@ -158,7 +160,9 @@ export class RecommendationEngine {
      */
     getRecommendations(targetCourse, scheduleData, teachers, date, substituteRecords = [], monthRecords = null) {
         const { weekday, period, className, domain, originalTeacher } = targetCourse;
-        scheduleData = scheduleData || [];
+        // 當日有效課表（P6）：先套用已成立的調課，再判斷誰有課、誰空堂（被調走的節次不再算有課，
+        // 被調進來的節次算有課）。只影響「有課」判斷；導師、同科目等評分仍以呼叫端傳入的課表為準。
+        scheduleData = applySwapsToSchedule(scheduleData || [], substituteRecords, date);
 
         console.log('===== 智慧推薦引擎開始運算 =====');
         console.log('目標課程:', { weekday, period, className, domain, originalTeacher });

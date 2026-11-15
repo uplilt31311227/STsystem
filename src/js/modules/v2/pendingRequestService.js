@@ -25,6 +25,9 @@ import * as roleSvc        from './roleService.js';
 import * as semesterState  from './semesterState.js';
 import { getV2Firestore }  from './firebaseV2.js';
 import { verifyNoAssignmentConflict, buildApprovalConflictMessage, buildAdminCreateConflictMessage } from './assignmentConflict.js';
+import { runWithRecordsGuard, assertSeqUnchanged } from './recordsGuard.js';
+import { checkBatchApprovable, checkBatchWithdrawable } from './batchDependency.js';
+import { filterSameBatch } from './batchGuard.js';
 import {
     LOG_ACTIONS,
     LOG_TARGET_TYPES,
@@ -61,19 +64,21 @@ export class AssignmentConflictError extends Error {
  * 核准前（交易之外）以「當下」的已成立紀錄重新檢查衝堂；有衝突就寫操作日誌並丟
  * AssignmentConflictError，查詢失敗丟 APPROVAL_VERIFY_FAILED（fail-closed，不核准）。
  *
- * 為什麼放在交易「之前」且非交易性：交易內的 rules 文件存取有共用配額（見 approveRequest 內
- * 註解），日期範圍查詢也無法放進 Firestore 交易。代價是「驗證通過 → 交易提交」之間有極短的
- * 競態窗口（毫秒級，期間另一位組長剛好成立了同教師同節的紀錄）；此窗口刻意接受——
- * 本檢查要堵的是「申請擱置數小時～數天」的主要缺口，且最終仍由人工核准把關。
+ * 為什麼放在交易「之前」且非交易性：日期範圍查詢無法放進 Firestore 交易，交易內的 rules 文件存取
+ * 也有共用配額（見 approveRequest 內註解）。「驗證通過 → 交易提交」之間的競態窗口由序號鎖補上
+ * （P6，recordsGuard.js）：呼叫端在驗證前先讀 config/recordsLock 的 seq，交易內再確認 seq 沒變才寫入，
+ * 期間若有別筆紀錄成立就會重新驗證，因此連點或兩位組長同時核准只會成立一筆。
  */
 async function assertNoAssignmentConflict(req, { logTargetType, logTargetId, logContext, forAdminCreate = false }) {
     // 含 swapDate 索引的查詢：遠距調課（date 與 swapDate 相差 >31 天）的「移入」也要抓到；每次都讀當下資料，不吃快取
-    const hit = await verifyNoAssignmentConflict(req, (range) => dataSvc.queryRecordsOccupyingRange(range));
+    // 週課表只在「可能是協同教學」時才讀（命中且申請方既非換走也非換進的教師），一般核准不增加讀取
+    const loadSchedule = async () => (await dataSvc.getSchedule(req.semesterId || semesterState.getCurrentSemesterId()))?.scheduleData || [];
+    const hit = await verifyNoAssignmentConflict(req, (range) => dataSvc.queryRecordsOccupyingRange(range), loadSchedule);
     if (!hit) return;
     const message = forAdminCreate ? buildAdminCreateConflictMessage(hit, req) : buildApprovalConflictMessage(hit);
     try {
         await logger.log(LOG_ACTIONS.APPROVE_BLOCKED_CONFLICT, logTargetType, logTargetId, {
-            reason:             'assignment_conflict',
+            reason:             hit.scheduleUnavailable ? 'schedule_unavailable' : 'assignment_conflict',
             context:            logContext,
             conflictTeacher:    hit.teacher,
             conflictDate:       hit.date,
@@ -101,6 +106,37 @@ function buildAffectedList(req) {
     if (Array.isArray(req.consentTeacherIds))        list.push(...req.consentTeacherIds);
     if (req.swapConsents && typeof req.swapConsents === 'object') list.push(...Object.keys(req.swapConsents));
     return [...new Set(list.filter(Boolean))];
+}
+
+/**
+ * 批次依賴（P6，審計 L5）：核准多重調課批次中的一筆之前，同批其他筆必須仍在途或已核准，且筆數完整。
+ * 讀取失敗一律中止（fail-closed）。非批次申請直接放行。
+ */
+async function assertBatchApprovable(req, reqId) {
+    if (!req || !req.batchId) return;
+    let requests, records;
+    try {
+        [requests, records] = await Promise.all([
+            dataSvc.listPendingRequestsByBatch(req.batchId),
+            dataSvc.listSubstituteRecordsByBatch(req.batchId),
+        ]);
+    } catch (cause) {
+        const err = new Error('核准前無法確認同批調課的狀態（讀取失敗），已中止，請稍後再試');
+        err.code = 'APPROVAL_VERIFY_FAILED';
+        err.cause = cause;
+        throw err;
+    }
+    const res = checkBatchApprovable({ ...req, reqId: req.reqId || reqId }, requests, records);
+    if (res.ok) return;
+    try {
+        await logger.log(LOG_ACTIONS.APPROVE_BLOCKED_CONFLICT, LOG_TARGET_TYPES.PENDING_REQUEST, reqId, {
+            reason: 'batch_dependency', context: 'approve_request', batchCode: res.code,
+            affectedTeacherIds: buildAffectedList(req),
+        });
+    } catch (e) { console.warn('[V2] 寫入批次依賴攔截日誌失敗：', e); }
+    const err = new AssignmentConflictError(res.message, null);
+    err.code = 'ASSIGNMENT_CONFLICT';
+    throw err;
 }
 
 /**
@@ -296,20 +332,20 @@ export async function approveRequest(reqId) {
     const fs  = await getV2Firestore();
     const reqRef = fs.doc(fs.db, SCHEMA_PATHS.pendingDoc(reqId));
 
-    // 雙重指派防線（P0-1）：申請擱置期間，代課／調課教師可能已被另一筆紀錄佔走同日同節。
-    // 在任何寫入（含下方先寫的 private/detail）之前，用當下的已成立紀錄重驗；有衝突就中止。
-    // 先非交易性讀一次請求內容（只為取得 type／日期／教師）；狀態不對交給交易內原有檢查
-    // 與 RequestAlreadyProcessedError，這裡不重複判斷，避免行為改變。
+    // 雙重指派防線（P0-1）＋序號鎖（P6）：申請擱置期間，代課／調課教師或班級時段可能已被另一筆紀錄佔走。
+    // 核准前以「當下」的已成立紀錄重驗；重驗是範圍查詢、放不進交易，所以交易內另讀 config/recordsLock 的 seq，
+    // 與重驗前讀到的 seq 不同代表重驗之後又有別筆紀錄成立，會丟 RECORDS_STALE 回到重驗（見 recordsGuard.js）。
+    // 先非交易性讀一次請求內容（只為取得 type／日期／教師，供衝堂重驗）。預讀不到或狀態已不是在途時
+    // 直接中止：不可在沒有重驗的情況下進交易成立紀錄（交易內的狀態檢查只擋狀態，不做衝堂重驗）。
     const preReq = await dataSvc.getPendingRequest(reqId);
-    if (preReq) {
-        const normalizedPre = normalizeLegacyRequest(preReq);
-        if (normalizedPre.status === REQUEST_STATUS.PENDING_APPROVAL) {
-            await assertNoAssignmentConflict(normalizedPre, {
-                logTargetType: LOG_TARGET_TYPES.PENDING_REQUEST,
-                logTargetId:   reqId,
-                logContext:    'approve_request',
-            });
-        }
+    if (!preReq) {
+        const nf = new Error('找不到此請求，可能已被撤回或處理，請重新整理列表');
+        nf.code = 'REQUEST_NOT_FOUND';
+        throw nf;
+    }
+    const normalizedPre = normalizeLegacyRequest(preReq);
+    if (normalizedPre.status !== REQUEST_STATUS.PENDING_APPROVAL) {
+        throw new RequestAlreadyProcessedError('此請求已被處理（可能已被其他核准人核准或駁回）');
     }
 
     // Firestore 對單一 transaction 的 rules document access 有共用配額限制（約 20 次，
@@ -317,76 +353,102 @@ export async function approveRequest(reqId) {
     // 已各自觸發 isApprover(schoolId) 判斷鏈，若再把「新紀錄 private/detail」的 create 規則
     // 判斷也塞進同一個交易，會逼近甚至超過共用配額。因此改為：交易「之前」非交易性地把
     // recordId 定下來、讀出 request 的 private/detail 內容並先寫好新紀錄的 private/detail；
-    // 交易本身維持現狀不變，只讀寫兩個父文件（request 與新 record）。
+    // 交易本身只讀寫三個父文件（request、新 record、序號鎖）。
     const recordId  = dataSvc.genId('rec');
-    const reqDetail = await dataSvc.getRequestDetail(reqId);
-
-    if (reqDetail) {
-        // 複製請求的私有明細到新紀錄底下（同一批當事人，approver 本來就不受 ACL 限制，
-        // 不需要因為核准動作而擴增名單）。
-        const { allowedTeacherIds, ...sensitiveFields } = reqDetail;
-        await fs.setDoc(fs.doc(fs.db, SCHEMA_PATHS.substituteDetailDoc(recordId)), {
-            ...sensitiveFields,
-            allowedTeacherIds: Array.isArray(allowedTeacherIds) ? allowedTeacherIds : [],
-        });
-    }
-
     let reqSnapshot = null;
+    let detailWritten = false;
+    const lockRef = fs.doc(fs.db, SCHEMA_PATHS.recordsLock());
 
-    await fs.runTransaction(fs.db, async (tx) => {
-        const snap = await tx.get(reqRef);
-        if (!snap.exists()) throw new Error('找不到此請求');
-        const data = normalizeLegacyRequest({ ...snap.data(), reqId });
+    try {
+        await runWithRecordsGuard({
+            readSeq: () => dataSvc.getRecordsLockSeq(),
+            verify: async () => {
+                await assertNoAssignmentConflict(normalizedPre, {
+                    logTargetType: LOG_TARGET_TYPES.PENDING_REQUEST,
+                    logTargetId:   reqId,
+                    logContext:    'approve_request',
+                });
+                await assertBatchApprovable(normalizedPre, reqId);
+            },
+            commit: async (seq) => {
+                if (!detailWritten) {
+                    const reqDetail = await dataSvc.getRequestDetail(reqId);
+                    if (reqDetail) {
+                        // 複製請求的私有明細到新紀錄底下（同一批當事人，approver 本來就不受 ACL 限制，
+                        // 不需要因為核准動作而擴增名單）。
+                        const { allowedTeacherIds, ...sensitiveFields } = reqDetail;
+                        await fs.setDoc(fs.doc(fs.db, SCHEMA_PATHS.substituteDetailDoc(recordId)), {
+                            ...sensitiveFields,
+                            allowedTeacherIds: Array.isArray(allowedTeacherIds) ? allowedTeacherIds : [],
+                        });
+                    }
+                    detailWritten = true;
+                }
+                await fs.runTransaction(fs.db, async (tx) => {
+                    const snap = await tx.get(reqRef);
+                    if (!snap.exists()) throw new Error('找不到此請求');
+                    const data = normalizeLegacyRequest({ ...snap.data(), reqId });
 
-        if (data.status !== REQUEST_STATUS.PENDING_APPROVAL) {
-            throw new RequestAlreadyProcessedError('此請求已被處理（可能已被其他核准人核准或駁回）');
-        }
+                    if (data.status !== REQUEST_STATUS.PENDING_APPROVAL) {
+                        throw new RequestAlreadyProcessedError('此請求已被處理（可能已被其他核准人核准或駁回）');
+                    }
+                    const nextSeq = assertSeqUnchanged(await tx.get(lockRef), seq);
 
-        const now       = new Date().toISOString();
-        const recordRef = fs.doc(fs.db, SCHEMA_PATHS.substituteDoc(recordId));
+                    const now       = new Date().toISOString();
+                    const recordRef = fs.doc(fs.db, SCHEMA_PATHS.substituteDoc(recordId));
 
-        const record = { ...data };
-        // 識別欄位一律以文件 ID 為準：申請內容是使用者可寫入的資料，可能夾帶 reqId／recordId
-        // 偽造欄位。reqId 為申請的文件 ID（紀錄改以 fromRequestId 記錄來源），recordId 是即將
-        // 建立的新紀錄 ID（只存在於文件路徑，不落在資料欄位）。
-        // 注意：不剔除 id——id 是 V1 紀錄 ID（`${baseId}_${index}`），多重調課同批排序
-        // （v2-app.js order()、app.js reprintSwapBatchRecord）與衝堂比對刻意依賴它。
-        delete record.reqId;
-        delete record.recordId;
-        delete record.pendingConsentTeacherIds;
-        delete record.swapConsents;
-        delete record.__legacyPending;
-        // 敏感欄位一律不落父文件（已於上方複製到新紀錄的 private/detail）；新流程的
-        // request 父文件本就不含這三欄位，這裡刪除純屬防禦性寫法。
-        for (const field of dataSvc.SENSITIVE_RECORD_FIELDS) delete record[field];
-        record.status          = REQUEST_STATUS.APPROVED;
-        record.approvedAt      = now;
-        record.approvedBy      = me.teacherId;
-        record.approvedByName  = me.name;
-        record.fromRequestId   = reqId;
-        record.createdAt       = record.createdAt || now;
-        record.affectedTeacherIds = buildAffectedList(data);
-        // Stage 2（§6.1）：this bypasses dataSvc.createSubstituteRecord()（直接 tx.set），
-        // 故不會經過該函式的「semesterId 未帶時自動蓋目前學期」邏輯——必須在這裡手動蓋。
-        // 刻意用「核准當下」的目前學期，不沿用申請（data）建立當時的 semesterId：若申請
-        // 在途期間跨過學期切換，申請當時的學期可能已不是 currentSemester，沿用舊值會被
-        // substituteRecords 的建立規則（semesterId == config.currentSemester）擋下。
-        // 已知限制：這代表「核准時間」而非「申請時間」決定紀錄歸屬的學期，多數情況下兩者
-        // 相同（申請與核准通常在同一學期內完成），只有「申請在途、期間學期切換」這種邊界
-        // 情境才會有差異，見報告與本次驗收報告的取捨說明。
-        record.semesterId = semesterState.getCurrentSemesterId();
+                    const record = { ...data };
+                    // 識別欄位一律以文件 ID 為準：申請內容是使用者可寫入的資料，可能夾帶 reqId／recordId
+                    // 偽造欄位。reqId 為申請的文件 ID（紀錄改以 fromRequestId 記錄來源），recordId 是即將
+                    // 建立的新紀錄 ID（只存在於文件路徑，不落在資料欄位）。
+                    // 注意：不剔除 id——id 是 V1 紀錄 ID（`${baseId}_${index}`），多重調課同批排序
+                    // （v2-app.js order()、app.js reprintSwapBatchRecord）與衝堂比對刻意依賴它。
+                    delete record.reqId;
+                    delete record.recordId;
+                    delete record.pendingConsentTeacherIds;
+                    delete record.swapConsents;
+                    delete record.__legacyPending;
+                    // 敏感欄位一律不落父文件（已於上方複製到新紀錄的 private/detail）；新流程的
+                    // request 父文件本就不含這三欄位，這裡刪除純屬防禦性寫法。
+                    for (const field of dataSvc.SENSITIVE_RECORD_FIELDS) delete record[field];
+                    record.status          = REQUEST_STATUS.APPROVED;
+                    record.approvedAt      = now;
+                    record.approvedBy      = me.teacherId;
+                    record.approvedByName  = me.name;
+                    record.fromRequestId   = reqId;
+                    record.createdAt       = record.createdAt || now;
+                    record.affectedTeacherIds = buildAffectedList(data);
+                    // Stage 2（§6.1）：this bypasses dataSvc.createSubstituteRecord()（直接 tx.set），
+                    // 故不會經過該函式的「semesterId 未帶時自動蓋目前學期」邏輯——必須在這裡手動蓋。
+                    // 刻意用「核准當下」的目前學期，不沿用申請（data）建立當時的 semesterId：若申請
+                    // 在途期間跨過學期切換，申請當時的學期可能已不是 currentSemester，沿用舊值會被
+                    // substituteRecords 的建立規則（semesterId == config.currentSemester）擋下。
+                    // 已知限制：這代表「核准時間」而非「申請時間」決定紀錄歸屬的學期，多數情況下兩者
+                    // 相同（申請與核准通常在同一學期內完成），只有「申請在途、期間學期切換」這種邊界
+                    // 情境才會有差異。
+                    record.semesterId = semesterState.getCurrentSemesterId();
 
-        tx.set(recordRef, record);
-        tx.update(reqRef, {
-            status:          REQUEST_STATUS.APPROVED,
-            approvedAt:      now,
-            approvedBy:      me.teacherId,
-            approvedByName:  me.name,
-            statusUpdatedAt: now,
+                    tx.set(recordRef, record);
+                    tx.set(lockRef, { seq: nextSeq, updatedAt: now });
+                    tx.update(reqRef, {
+                        status:          REQUEST_STATUS.APPROVED,
+                        approvedAt:      now,
+                        approvedBy:      me.teacherId,
+                        approvedByName:  me.name,
+                        statusUpdatedAt: now,
+                    });
+
+                    reqSnapshot = record;
+                });
+            },
         });
-
-        reqSnapshot = record;
-    });
+    } catch (err) {
+        // 沒有成立紀錄時，先寫好的私有明細是孤兒；盡力清掉（失敗不影響原本的錯誤）
+        if (detailWritten && !reqSnapshot) {
+            try { await dataSvc.deleteSubstituteRecordDetail(recordId); } catch (_) { /* 孤兒明細無害，忽略 */ }
+        }
+        throw err;
+    }
 
     await logger.log(
         LOG_ACTIONS.APPROVE,
@@ -414,7 +476,7 @@ export async function approveRequest(reqId) {
  * status 仍是 pending_swap_consent / pending_approval，否則丟
  * RequestAlreadyProcessedError（防止把已 approved 的請求覆寫成 rejected）。
  */
-export async function rejectRequest(reqId, note = '') {
+export async function rejectRequest(reqId, note = '', { cascade = true } = {}) {
     const me = roleSvc.getCurrentIdentity();
     if (!me) throw new Error('尚未登入');
 
@@ -468,6 +530,23 @@ export async function rejectRequest(reqId, note = '') {
             note,
         }
     );
+
+    // 多重調課批次以批次為單位駁回（P6，審計 L5）：組長／主任駁回其中一筆時，同批其餘在途申請一併駁回，
+    // 不留下半套調課。同意人只能駁回自己那一筆（rules），其餘由核准端的批次依賴檢查擋下單獨核准。
+    const cascaded = [];
+    if (cascade && normalized.batchId && roleSvc.isApprover()) {
+        try {
+            const open = filterSameBatch({ ...normalized, reqId }, await dataSvc.listOpenPendingRequestsByBatch(normalized.batchId));
+            for (const sib of open) {
+                if (!sib.reqId || sib.reqId === reqId) continue;
+                try {
+                    await rejectRequest(sib.reqId, note ? `${note}（同批調課一併駁回）` : '同批調課一併駁回', { cascade: false });
+                    cascaded.push(sib.reqId);
+                } catch (e) { console.warn('[V2] 同批申請駁回失敗：', sib.reqId, e); }
+            }
+        } catch (e) { console.warn('[V2] 讀取同批申請失敗，未連帶駁回：', e); }
+    }
+    return { cascaded };
 }
 
 /**
@@ -485,7 +564,12 @@ export async function dismissRejectedRequest(reqId) {
     await dataSvc.deletePendingRequest(reqId);
 }
 
-/** 發起人撤回：刪除 pending。 */
+/**
+ * 發起人撤回：刪除 pending。
+ * P6（審計 Medium「撤回不檢查狀態」）：交易內確認申請仍在途才刪；已核准成立的申請不可撤回
+ * （舊流程只憑畫面上的按鈕，核准與撤回同時發生時會刪掉剛被核准的申請，留下沒有來源的紀錄）。
+ * 多重調課批次以批次為單位撤回：同批已有核准成立者不可單獨撤回；其餘在途的同批申請一併撤回。
+ */
 export async function cancelRequest(reqId, note = '') {
     const req = await dataSvc.getPendingRequest(reqId);
     if (!req) throw new Error('找不到此請求');
@@ -496,7 +580,25 @@ export async function cancelRequest(reqId, note = '') {
         });
         throw new Error('您不是發起人，無法撤回');
     }
-    await dataSvc.deletePendingRequest(reqId);
+
+    // 批次：先看同批狀態，再一併撤回其餘在途的申請
+    let siblings = [];
+    if (normalized.batchId) {
+        const [requests, records] = await Promise.all([
+            dataSvc.listPendingRequestsByBatch(normalized.batchId),
+            dataSvc.listSubstituteRecordsByBatch(normalized.batchId),
+        ]);
+        const res = checkBatchWithdrawable({ ...normalized, reqId }, requests, records);
+        if (!res.ok) throw new Error(res.message);
+        siblings = res.openSiblings.filter(r => r.reqId && r.reqId !== reqId);
+    }
+
+    await deleteRequestIfOpen(reqId);
+    const cascaded = [];
+    for (const sib of siblings) {
+        try { await deleteRequestIfOpen(sib.reqId); cascaded.push(sib.reqId); }
+        catch (e) { console.warn('[V2] 同批申請撤回失敗：', sib.reqId, e); }
+    }
     await logger.log(
         LOG_ACTIONS.CANCEL,
         LOG_TARGET_TYPES.PENDING_REQUEST,
@@ -506,54 +608,141 @@ export async function cancelRequest(reqId, note = '') {
             requestType:        normalized.requestType,
             affectedTeacherIds: buildAffectedList(normalized),
             note,
+            ...(cascaded.length ? { batchCascade: cascaded } : {}),
         }
     );
+    return { cascaded };
 }
 
-/** 組長/主任代發起：直接成立 substituteRecord，不經 pending。 */
+/** 交易內確認仍在途才刪除申請；已核准或已被處理丟 RequestAlreadyProcessedError。 */
+async function deleteRequestIfOpen(reqId) {
+    const fs  = await getV2Firestore();
+    const ref = fs.doc(fs.db, SCHEMA_PATHS.pendingDoc(reqId));
+    await fs.runTransaction(fs.db, async (tx) => {
+        const snap = await tx.get(ref);
+        if (!snap.exists()) throw new Error('找不到此請求（可能已被撤回）');
+        const data = normalizeLegacyRequest({ ...snap.data(), reqId });
+        if (data.status === REQUEST_STATUS.APPROVED) {
+            throw new RequestAlreadyProcessedError('此申請已核准成立，無法撤回；如需更正請洽教學組');
+        }
+        if (data.status !== REQUEST_STATUS.PENDING_SWAP_CONSENT && data.status !== REQUEST_STATUS.PENDING_APPROVAL) {
+            throw new RequestAlreadyProcessedError('此申請已被處理，無法撤回，請重新整理列表');
+        }
+        tx.delete(ref);
+    });
+}
+
+/**
+ * 組長/主任代發起：直接成立 substituteRecord，不經 pending。
+ * P6：衝堂重驗與寫入以序號鎖串起來（見 recordsGuard.js），連點或與核准同時發生時只會成立一筆。
+ */
 export async function adminCreate(payload) {
+    const saved = await commitAdminRecords([payload], { batch: false });
+    return saved[0];
+}
+
+/**
+ * 組長/主任代發的多重調課批次：全有或全無。
+ * 全部各筆先逐一重驗（含對既有紀錄的班級時段與教師衝堂），通過後在「同一個交易」寫入全部紀錄；
+ * 任何一筆衝堂或寫入失敗，整批都不成立（舊流程逐筆寫入，中途失敗會留下前幾筆）。
+ * @param {Array<Object>} payloads - 各筆的 payload（每筆帶同一個 batchId）
+ * @returns {Promise<Array<Object>>} 成立的紀錄
+ */
+export async function adminCreateBatch(payloads) {
+    if (!Array.isArray(payloads) || payloads.length === 0) throw new Error('沒有要成立的調課');
+    return commitAdminRecords(payloads, { batch: true });
+}
+
+async function commitAdminRecords(payloads, { batch }) {
     if (!roleSvc.isAdmin()) {
         await logger.log(LOG_ACTIONS.PERMISSION_DENIED, LOG_TARGET_TYPES.SUBSTITUTE_RECORD, null, {
             reason: 'admin_create_not_admin',
         });
         throw new Error('僅組長可代發起');
     }
+    const me  = roleSvc.getCurrentIdentity();
+    const fs  = await getV2Firestore();
+    const now = new Date().toISOString();
+    const lockRef = fs.doc(fs.db, SCHEMA_PATHS.recordsLock());
 
-    // 雙重指派防線（P0-1）：直接成立也要以當下紀錄重驗，衝突則不寫入。
-    await assertNoAssignmentConflict(payload, {
-        logTargetType: LOG_TARGET_TYPES.SUBSTITUTE_RECORD,
-        logTargetId:   null,
-        logContext:    'admin_create',
-        forAdminCreate: true,
+    // 組出各筆要寫入的內容（recordId 與私有明細在此定下，重試時沿用同一份）
+    const writes = payloads.map(payload => {
+        const record = {
+            ...payload,
+            status:           REQUEST_STATUS.APPROVED,
+            initiatedBy:      payload.initiatedBy,
+            initiatedByName:  payload.initiatedByName,
+            initiatedByRole:  'admin',
+            adminOperatorId:  me.teacherId,
+            adminOperatorName: me.name,
+            createdAt:        now,
+            approvedAt:       now,
+        };
+        return { payload, ...dataSvc.buildSubstituteRecordWrite(record) };
     });
 
-    const me  = roleSvc.getCurrentIdentity();
-    const now = new Date().toISOString();
-    const record = {
-        ...payload,
-        status:           REQUEST_STATUS.APPROVED,
-        initiatedBy:      payload.initiatedBy,
-        initiatedByName:  payload.initiatedByName,
-        initiatedByRole:  'admin',
-        adminOperatorId:  me.teacherId,
-        adminOperatorName: me.name,
-        createdAt:        now,
-        approvedAt:       now,
-    };
-    const saved = await dataSvc.createSubstituteRecord(record);
-
-    await logger.log(
-        LOG_ACTIONS.ADMIN_CREATE,
-        LOG_TARGET_TYPES.SUBSTITUTE_RECORD,
-        saved.recordId,
-        {
-            onBehalfOf: payload.initiatedBy,
-            affectedTeacherIds: buildAffectedList(payload),
-            summary: {
-                type: saved.type, date: saved.date, period: saved.period, className: saved.className,
+    let committed = false;
+    let detailsWritten = false;
+    try {
+        await runWithRecordsGuard({
+            readSeq: () => dataSvc.getRecordsLockSeq(),
+            verify: async () => {
+                // 雙重指派防線（P0-1）：直接成立也要以當下紀錄重驗，衝突則不寫入。
+                // 批次內各筆互相的衝突不在此檢查（批次內連調會重複使用班級時段，由送出前的整批模擬負責）。
+                for (const w of writes) {
+                    await assertNoAssignmentConflict({ ...w.payload, adminOperatorId: me.teacherId }, {
+                        logTargetType: LOG_TARGET_TYPES.SUBSTITUTE_RECORD,
+                        logTargetId:   null,
+                        logContext:    batch ? 'admin_create_batch' : 'admin_create',
+                        forAdminCreate: true,
+                    });
+                }
             },
+            commit: async (seq) => {
+                if (!detailsWritten) {
+                    for (const w of writes) {
+                        if (w.hasSensitive) {
+                            await fs.setDoc(fs.doc(fs.db, SCHEMA_PATHS.substituteDetailDoc(w.recordId)), w.privatePart);
+                        }
+                    }
+                    detailsWritten = true;
+                }
+                await fs.runTransaction(fs.db, async (tx) => {
+                    const nextSeq = assertSeqUnchanged(await tx.get(lockRef), seq);
+                    for (const w of writes) {
+                        tx.set(fs.doc(fs.db, SCHEMA_PATHS.substituteDoc(w.recordId)), w.publicPart);
+                    }
+                    tx.set(lockRef, { seq: nextSeq, updatedAt: new Date().toISOString() });
+                });
+                committed = true;
+            },
+        });
+    } catch (err) {
+        if (detailsWritten && !committed) {
+            for (const w of writes) {
+                if (w.hasSensitive) {
+                    try { await dataSvc.deleteSubstituteRecordDetail(w.recordId); } catch (_) { /* 孤兒明細無害 */ }
+                }
+            }
         }
-    );
+        throw err;
+    }
+
+    const saved = writes.map(w => ({ ...w.base, recordId: w.recordId }));
+    for (const w of writes) {
+        await logger.log(
+            LOG_ACTIONS.ADMIN_CREATE,
+            LOG_TARGET_TYPES.SUBSTITUTE_RECORD,
+            w.recordId,
+            {
+                onBehalfOf: w.payload.initiatedBy,
+                affectedTeacherIds: buildAffectedList(w.payload),
+                summary: {
+                    type: w.base.type, date: w.base.date, period: w.base.period, className: w.base.className,
+                },
+            }
+        );
+    }
     return saved;
 }
 

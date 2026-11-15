@@ -102,6 +102,16 @@ node scripts/firestore-deploy-rules.js --dry    # 只建立 ruleset 不發布
 
 為了防範點擊劫持（審計 L4），`src/js/v2-redirect.js` 在頁面被嵌入 `<iframe>` 時會嘗試把最上層導回本頁，導不了就把整份文件隱藏（`display: none`）。因此**本站無法被其他網站（含自己的其他頁面）以 iframe 內嵌**；若日後有內嵌需求（例如儀表板），必須先修改該檔的框架偵測邏輯。
 
+### 部署順序：前端與 rules 同時上線（rules v2.13＋v2.14，P6 起）
+
+舊 rules 的 `config/{docId}` 只允許主任（director）寫入；P6 的新前端在核准與組長代發時會寫 `config/recordsLock`，所以新前端遇到舊 rules 時，教學組長的核准與代發全部被拒。另一方面，rules v2.13 要求前端先上線（舊頁面寫課表會被新規則拒絕）。結論是兩者不能有先後，必須同時上線：
+
+1. 部署前備份正式庫與現行 rules 原文（`backups/firestore/`、`backups/rules/`）。
+2. 選上課日以外的時段。先把新前端 push 到 GitHub Pages 並等建置完成，**不要在中間停留**，緊接著發布 `firestore.rules`（`node scripts/firestore-deploy-rules.js`），兩個動作間隔以分鐘計。
+3. 兩者之間的空窗期內，組長的核准與代發會暫時失敗（可重試），教師自行調課與其他功能不受影響；舊頁面寫課表會被拒，請教務人員重新整理頁面。
+4. 部署後確認：組長核准一筆測試申請成功、`config/recordsLock` 的 `seq` 有遞增、教師自我調課仍可成立。
+5. 序號鎖的涵蓋範圍與例外見 `firestore.rules` 檔頭第 15 點。
+
 ### 開發工具
 - Node.js (可選，用於本地開發)
 - Python (可選，用於 HTTP server)

@@ -35,13 +35,24 @@ export const doc = (db, path) => ({ kind: 'doc', path, id: idOf(path) });
 // 查詢：保留 constraints，getDocs 目前支援 orderBy('__name__')、limit、startAfter（游標分頁測試用）；
 // where 維持被忽略（既有測試的前提）。
 export const query = (col, ...constraints) => ({ ...col, constraints });
-export const where = () => ({});
+// where：保留條件供測試斷言（__fake.queries 記錄每次 getDocs 的集合與條件）；預設不套用篩選（既有測試的前提），
+// 設 __fake.applyWhere = true 才依 ==、>=、<= 篩選。
+export const where = (field, op, value) => ({ type: 'where', field, op, value });
 export const orderBy = (field) => ({ type: 'orderBy', field });
 export const limit = (n) => ({ type: 'limit', n });
 export const startAfter = (snap) => ({ type: 'startAfter', snap });
 export const serverTimestamp = () => '<<ts>>';
 export const Timestamp = { now: () => ({}) };
-export const getDoc = async (ref) => (F().serverDown ? { id: idOf(ref.path), exists: () => false, data: () => undefined } : mkSnap(ref.path));
+// 測試用：__fake.getDocOnce = { [path]: data|null } 讓該路徑的「下一次」getDoc 回傳指定內容（null＝不存在），用完即清，交易內 tx.get 不受影響
+export const getDoc = async (ref) => {
+    const once = F().getDocOnce;
+    if (once && Object.prototype.hasOwnProperty.call(once, ref.path)) {
+        const v = once[ref.path]; delete once[ref.path];
+        return { id: idOf(ref.path), exists: () => v !== null, data: () => (v === null ? undefined : structuredClone(v)) };
+    }
+    return getDocBase(ref);
+};
+const getDocBase = async (ref) => (F().serverDown ? { id: idOf(ref.path), exists: () => false, data: () => undefined } : mkSnap(ref.path));
 // 模擬「client 判定離線／stream 出錯」：F().serverDown = true 時，伺服器讀取（*FromServer）丟 unavailable，
 // 一般 getDoc／getDocs 則靜默回傳「殘缺的快取」（每個集合只剩第一筆、文件讀取回傳不存在），與真實 SDK 行為一致。
 const serverDownError = () => { const e = new Error('Failed to get document because the client is offline.'); e.code = 'unavailable'; return e; };
@@ -56,6 +67,16 @@ async function getDocsImpl(q, partialCache) {
         if (path.startsWith(prefix) && !path.slice(prefix.length).includes('/')) docs.push(mkSnap(path));
     }
     const cs = q.constraints || [];
+    (F().queries ||= []).push({ path: q.path, where: cs.filter(c => c.type === 'where').map(c => ({ field: c.field, op: c.op, value: c.value })) });
+    if (F().applyWhere) {
+        for (const c of cs.filter(c => c.type === 'where')) {
+            docs = docs.filter(d => {
+                const v = d.data()?.[c.field];
+                if (v === undefined) return false;
+                return c.op === '==' ? v === c.value : c.op === '>=' ? v >= c.value : c.op === '<=' ? v <= c.value : true;
+            });
+        }
+    }
     if (cs.some(c => c.type === 'orderBy' && c.field === '__name__')) docs.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
     const after = cs.find(c => c.type === 'startAfter');
     if (after) { const i = docs.findIndex(d => d.id === after.snap.id); docs = i >= 0 ? docs.slice(i + 1) : docs; }
@@ -101,10 +122,12 @@ export const runTransaction = async (db, fn) => {
         get: async (ref) => mkSnap(ref.path),
         set: (ref, data, opts) => { pending.push({ op: 'tx.set', ref, data, opts }); },
         update: (ref, patch) => { pending.push({ op: 'tx.update', ref, patch }); },
+        delete: (ref) => { pending.push({ op: 'tx.delete', ref }); },
     });
     if (F().beforeTxCommit) { const h = F().beforeTxCommit; F().beforeTxCommit = null; h(); }
     for (const o of pending) {
         if (o.op === 'tx.set') { F().writes.push({ op: 'tx.set', path: o.ref.path, data: o.data }); applySet(o.ref, o.data, o.opts); }
+        else if (o.op === 'tx.delete') { F().writes.push({ op: 'tx.delete', path: o.ref.path }); F().docs.delete(o.ref.path); }
         else { F().writes.push({ op: 'tx.update', path: o.ref.path, data: o.patch }); F().docs.set(o.ref.path, { ...(F().docs.get(o.ref.path) || {}), ...o.patch }); }
     }
     return result;
