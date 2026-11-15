@@ -40,6 +40,14 @@ async function installGoldenWorld() {
         teachers: Object.values(GOLDEN_NAME).map(name => ({ name, domains: ['數學領域'], homeroomClass: '' })),
     });
 
+    // 1.2) 114-1（2025-08～2026-01）課表：用同一份黃金課表，讓「114 學年度 10 月」以所屬學期（114-1）的課表計算。
+    //      emulator 的 seed 只有 115-1 與 114-2，沒有 114-1，結算會依規則中止（不退回其他學期）。
+    await mustSetDoc(`schools/${SCHOOL}/schedules/114-1`, {
+        ...sched.data,
+        scheduleData: buildGoldenSchedule(),
+        teachers: Object.values(GOLDEN_NAME).map(name => ({ name, domains: ['數學領域'], homeroomClass: '' })),
+    });
+
     // 1.5) 清掉 seed 的已成立紀錄與待審請求（fixture 的 2026-09 紀錄會污染 9 月的手算值）
     for (const col of ['substituteRecords', 'pendingRequests']) {
         for (const d of (await listDocs(`schools/${SCHOOL}/${col}`)).docs) {
@@ -95,6 +103,27 @@ async function installGoldenWorld() {
         allowedTeacherIds: [idOf(ro), idOf(rs), chief.id].filter(Boolean),
     });
     return { reqId, delId: del };
+}
+
+/** 產生報表但預期中止：回傳畫面狀態（結果區是否隱藏、表格列數、來源標示、警示列、匯出鈕是否停用）。 */
+async function generateExpectAbort(page, year, month) {
+    await gotoTab(page, 'settlement', 1500);
+    await page.selectOption('#settle-year', String(year));
+    await page.selectOption('#settle-month', String(month));
+    await page.click('#generate-settlement-btn');
+    await page.waitForFunction(() => {
+        const btn = document.getElementById('generate-settlement-btn');
+        return btn && !btn.disabled;
+    }, null, { timeout: 90000 });
+    await page.waitForTimeout(500);
+    return page.evaluate(() => ({
+        resultHidden: document.getElementById('settlement-result').classList.contains('hidden'),
+        rows: document.querySelectorAll('#settlement-tbody tr').length,
+        source: document.getElementById('settlement-source').textContent.trim(),
+        warnHidden: document.getElementById('settlement-warnings').classList.contains('hidden'),
+        exportDisabled: document.getElementById('export-settlement-btn').disabled,
+        toast: [...document.querySelectorAll('.toast')].map(t => t.innerText).join('|'),
+    }));
 }
 
 /** 產生報表並讀回表格：{ 姓名: { original, sub, subbed, actual, overtime, changed } }。 */
@@ -194,8 +223,69 @@ export async function run(browser) {
                 eq(rows[name].actual, e.actualHours, `${name} 實際時數`);
             }
         });
+
+        await suite.case('歷史學期用「該學期自己的」課表：113-2 的巫阿福每週 7 節（目前學期是 6 節），113 學年度 3 月隨之變動', async () => {
+            // 另建一份只有這個案例用的歷史學期 113-2（2025-02～07）：課表＝黃金課表再加巫阿福週二第二節，共 7 節。
+            // 用沒被其他案例讀過的學期，因為頁面對歷史學期課表有工作階段快取，已讀過的學期改了內容也不會重讀。
+            // 紀錄：2025-03-10 婁某事假、巫阿福代課 1 節（只此一筆在 2025-03）。3 月預設 4 週。
+            // 手算：巫阿福 A = 7×4 + 代課 1 = 29（若誤用目前學期 115-1 的 6 節會是 6×4+1=25）
+            //       王大明 B = 5×4 = 20；婁某 C = 3×4 − 1 = 11（誤用也相同，只有 A 能分辨）
+            const teachers = (await listDocs(`schools/${SCHOOL}/teachers`)).docs;
+            const idOf = (name) => teachers.find(t => t.name === name)?.id;
+            const chief = teachers.find(t => t.role === 'section_chief');
+            const cur = await getDoc(`schools/${SCHOOL}/schedules/${SEMESTER}`);
+            const A = GOLDEN_NAME.A, C = GOLDEN_NAME.C;
+            const extra = { weekday: '週二', period: '第二節', className: '8年1班', teacher: A,
+                domain: '數學領域', subject: '數學', rawSubject: '數學', courseName: '', category: '' };
+            const rid = 'rec_hist_113_2';
+            await mustSetDoc(`schools/${SCHOOL}/schedules/113-2`, { ...cur.data, scheduleData: [...buildGoldenSchedule(), extra] });
+            await mustSetDoc(`schools/${SCHOOL}/substituteRecords/${rid}`, {
+                id: rid, type: '代課', date: '2025-03-10', weekday: '週一', period: '第一節', className: '7年1班',
+                subject: '數學', domain: '數學領域', originalTeacher: C, originalTeacherId: idOf(C),
+                substituteTeacher: A, substituteTeacherId: idOf(A), docNumber: '', semesterId: '113-2', isSelfSwap: false,
+                approvedBy: chief.id, approvedByName: chief.name,
+                approvedAt: '2025-03-10T10:00:00.000Z', createdAt: '2025-03-10T08:00:00.000Z',
+            });
+            await mustSetDoc(`schools/${SCHOOL}/substituteRecords/${rid}/private/detail`, {
+                leaveType: '事假', leaveTypeName: '事假', reason: '歷史學期案例',
+                allowedTeacherIds: [idOf(C), idOf(A), chief.id].filter(Boolean),
+            });
+            try {
+                const hist = (await generateAndRead(page, 113, 3)).rows;
+                eq([hist[A].actual, hist[GOLDEN_NAME.B].actual, hist[C].actual], [29, 20, 11], '113-2 自己的課表');
+                eq(hist[A].original, 28, '巫阿福原定 7×4=28');
+            } finally {
+                await deleteDoc(`schools/${SCHOOL}/substituteRecords/${rid}/private/detail`);
+                await deleteDoc(`schools/${SCHOOL}/substituteRecords/${rid}`);
+                await deleteDoc(`schools/${SCHOOL}/schedules/113-2`);
+            }
+        });
+
+        await suite.case('所屬學期沒有課表（不存在、空殼）：結算中止，畫面不留舊表、匯出鈕停用', async () => {
+            // 先產生一份成功的表（115 學年度 10 月），確認畫面上有舊表與來源標示
+            const okRes = await generateAndRead(page, 115, 10);
+            ok(Object.keys(okRes.rows).length === 5, '前置：先有一份成功的表');
+            // 113 學年度 10 月（2024-10，屬 113-1）：emulator 沒有 113-1 課表 → 中止
+            const miss = await generateExpectAbort(page, 113, 10);
+            eq([miss.resultHidden, miss.rows, miss.source, miss.warnHidden, miss.exportDisabled], [true, 0, '', true, true], '不存在：結果區隱藏、表格清空、來源與警示清空、匯出停用');
+            ok(miss.toast.includes('歷史學期的課表無法補匯入'), '提示如實說明歷史學期無法補匯入（實際：' + miss.toast + '）');
+            // 重新成功產生後，匯出鈕恢復
+            await generateAndRead(page, 115, 10);
+            eq(await page.evaluate(() => document.getElementById('export-settlement-btn').disabled), false, '成功後匯出鈕恢復');
+            // 114-2 改成空殼（scheduleData: []，「開新學期」的產物）；114 學年度 3 月（2026-03，屬 114-2）→ 中止
+            const s114 = await getDoc(`schools/${SCHOOL}/schedules/114-2`);
+            ok(s114.ok, '前置：114-2 課表 doc 存在');
+            await mustSetDoc(`schools/${SCHOOL}/schedules/114-2`, { ...s114.data, scheduleData: [] });
+            try {
+                const empty = await generateExpectAbort(page, 114, 3);
+                eq([empty.resultHidden, empty.rows, empty.source, empty.warnHidden, empty.exportDisabled], [true, 0, '', true, true], '空殼：同樣中止、不留舊表');
+            } finally {
+                await mustSetDoc(`schools/${SCHOOL}/schedules/114-2`, s114.data);
+            }
+        });
     } finally {
         await page.close();
+        await deleteDoc(`schools/${SCHOOL}/schedules/114-1`);
     }
     return suite;
 }

@@ -30,6 +30,52 @@
  * - deleted 或 isDeleted 為真者排除（目前專案資料層尚無此欄位，屬預防性防線）。
  */
 
+import { noDeductCodesAndLabels, LEAVE_TYPES } from './leaveTypes.js';
+
+/** 姓名比對用正規化（與 v2/teacherIdentity.normalizeTeacherName 相同規則：全形空白轉半形、去前後空白）。 */
+function normName(name) {
+    return String(name == null ? '' : name).replace(/\u3000/g, ' ').trim();
+}
+
+/** 同一節次的隔週列以班級去重：完全重複（同班同節）只算 1 列，不同班輪替才各算 0.5。 */
+function slotUnits(v) {
+    return v.weekly ? 1 : Math.min(1, 0.5 * v.half.size);
+}
+function courseClass(course) {
+    return String((course && course.className) == null ? '' : course.className).trim();
+}
+
+/** 課表列的每週權重：每週上課 1；上課頻率為隔週（2）算 0.5。 */
+function rowWeight(course) {
+    const f = course && (course.frequency ?? course.biweekly);
+    if (f === true || f === 2 || f === '2') return 0.5;
+    return 1;
+}
+
+/**
+ * 逐人基本節數的文字格式（設定頁的文字框）：每行「姓名,每週節數」。
+ * @returns {{map:Object<string,number>, errors:string[]}}
+ */
+export function parseBaseMapText(text) {
+    const map = {};
+    const errors = [];
+    String(text || '').split(/\r?\n/).forEach((line, i) => {
+        const t = line.trim();
+        if (!t) return;
+        const m = /^(.+?)\s*[,，、\t]\s*(\d+(?:\.\d+)?)$/.exec(t);
+        if (!m) { errors.push(`第 ${i + 1} 行「${t.slice(0, 20)}」`); return; }
+        const n = Number(m[2]);
+        const name = normName(m[1]);
+        if (!name || !Number.isFinite(n) || n < 0 || n > 40) { errors.push(`第 ${i + 1} 行「${t.slice(0, 20)}」`); return; }
+        map[name] = n;
+    });
+    return { map, errors };
+}
+
+export function formatBaseMapText(map) {
+    return Object.entries(map || {}).map(([k, v]) => `${k},${v}`).join('\n');
+}
+
 export class SettlementCalculator {
     constructor() {
         // 每週基本授課時數（可依學校規定調整）
@@ -44,10 +90,8 @@ export class SettlementCalculator {
 
         // 不扣時數的假別（公付假別由學校支付，調課為互換）
         // 支援中文和英文代碼
-        this.noDeductLeaveTypes = [
-            'official', 'longsick', 'funeral', 'swap',  // 英文代碼
-            '公假', '長期病假', '喪假', '調課'           // 中文名稱
-        ];
+        // 清單由 leaveTypes.js 的對照表產生（唯一定義處）
+        this.noDeductLeaveTypes = noDeductCodesAndLabels();
     }
 
     /**
@@ -59,35 +103,219 @@ export class SettlementCalculator {
      * @param {Array} teachers - 教師資料
      * @returns {Array} 結算資料陣列
      */
-    calculate(year, month, scheduleData, substituteRecords, teachers) {
-        // 計算該月的上課週數（可以根據行事曆調整）
+    calculate(year, month, scheduleData, substituteRecords, teachers, opts = {}) {
         const weeksInMonth = this.getWeeksInMonth(year, month);
-
-        // 篩選該月份的調代課紀錄
         const monthlyRecords = this.filterMonthlyRecords(substituteRecords, year, month);
 
-        // 計算每位教師的結算資料
-        const settlementData = teachers.map(teacher => {
-            // 1. 計算原定授課時數（每週節數 × 週數）
-            const weeklyHours = this.getTeacherWeeklyHours(scheduleData, teacher.name);
-            const originalHours = weeklyHours * weeksInMonth;
+        // 分段：每段各自帶課表、名冊、週數（跨學期的月份用各自學期的資料）。未指定則整月一段。
+        const segments = Array.isArray(opts.segments) && opts.segments.length
+            ? opts.segments
+            : [{ schedule: scheduleData, teachers, weeks: weeksInMonth }];
+        for (const seg of segments) {
+            if (!Array.isArray(seg.schedule) || !Array.isArray(seg.teachers)) {
+                throw Object.assign(new Error(`找不到${seg.semesterId ? ' ' + seg.semesterId + ' 學期' : '該月所屬學期'}的課表或名冊`),
+                    { name: 'SettlementScheduleMissing', semesterId: seg.semesterId || null });
+            }
+        }
+        // 課表明顯殘缺（課表上的教師數不到名冊一半）：只警示，不中止、不改數字
+        const sparseWarnings = [];
+        for (const seg of segments) {
+            const rosterN = new Set(seg.teachers.map(t => normName(t && t.name)).filter(Boolean)).size;
+            const schedN = new Set(seg.schedule.map(c => normName(c && c.teacher)).filter(Boolean)).size;
+            if (rosterN > 0 && schedN * 2 < rosterN) {
+                sparseWarnings.push(`${seg.semesterId ? seg.semesterId + ' ' : ''}該學期課表的教師數明顯少於名冊，原定時數可能不完整，請確認課表（課表 ${schedN} 位、名冊 ${rosterN} 位）`);
+            }
+        }
+        const segWeeks = seg => (Number.isFinite(seg.weeks) ? seg.weeks : weeksInMonth);
+        const totalWeeks = segments.reduce((n, seg) => n + segWeeks(seg), 0);
 
-            // 2. 計算代課增加時數（該教師為他人代課）
-            const substituteHours = this.countSubstituteHours(monthlyRecords, teacher.name);
+        // ---- 人員集合：名冊 ∪ 課表出現者 ∪ 紀錄出現者；有 teacherId 以 id 為主鍵，否則以正規化姓名 ----
+        const people = new Map();      // key → { key, name, teacherId, inRoster, ambiguous }
+        const warnings = [...sparseWarnings];
+        const order = [];
+        const addPerson = (key, name, teacherId, inRoster) => {
+            let p = people.get(key);
+            if (!p) {
+                p = { key, name, teacherId: teacherId || null, inRoster: !!inRoster, ambiguous: false };
+                people.set(key, p);
+                order.push(key);
+            } else if (inRoster) p.inRoster = true;
+            return p;
+        };
+        const nameIndex = new Map();   // 正規化姓名 → [key]（跨段合併的名冊）
+        const segIndex = [];           // 每段：正規化姓名 → [key]
+        for (const seg of segments) {
+            const idx = new Map();
+            for (const t of seg.teachers) {
+                const n = normName(t && t.name);
+                if (!n) continue;
+                const id = t.teacherId || null;
+                let key = id ? 'id:' + id : 'n:' + n;
+                if (!id) {
+                    // 沒有 id 的名冊列，若同名已有帶 id 的列就視為同一人（不重複）
+                    const withId = (idx.get(n) || []).find(k => k.startsWith('id:'));
+                    if (withId) key = withId;
+                }
+                addPerson(key, t.name, id, true);
+                const list = idx.get(n) || [];
+                if (!list.includes(key)) list.push(key);
+                idx.set(n, list);
+                const g = nameIndex.get(n) || [];
+                if (!g.includes(key)) g.push(key);
+                nameIndex.set(n, g);
+            }
+            segIndex.push(idx);
+        }
+        for (const [n, keys] of nameIndex) {
+            if (keys.length > 1) {
+                keys.forEach(k => { people.get(k).ambiguous = true; });
+                warnings.push(`名冊內有 ${keys.length} 位同名教師「${n}」：課表只記姓名，無法依人區分節數，兩人都暫以課表上該姓名的節數計，請人工確認；代課紀錄依 teacherId 分開計算`);
+            }
+        }
 
-            // 3. 計算被代課減少時數（他人為該教師代課）
-            const substitutedHours = this.countSubstitutedHours(monthlyRecords, teacher.name);
+        // 每個姓名已知的不同 teacherId（名冊 ∪ 本月紀錄兩側）。兩個以上＝同名兩位以上；
+        // 此時沒有 teacherId 的同名紀錄無法判斷是哪一位，不歸給任何人（與紀錄出現順序無關，故先全部掃一遍）。
+        const idsByName = new Map();
+        const noteId = (name, id) => {
+            const n = normName(name);
+            if (!n || !id) return;
+            if (!idsByName.has(n)) idsByName.set(n, new Set());
+            idsByName.get(n).add(String(id));
+        };
+        for (const seg of segments) for (const t of seg.teachers) noteId(t && t.name, t && t.teacherId);
+        for (const r of monthlyRecords) {
+            noteId(r.originalTeacher, r.originalTeacherId);
+            noteId(r.substituteTeacher, r.substituteTeacherId);
+        }
 
-            // 4. 計算實際授課時數
-            // 以 0 為下限（寒暑假週數 0 時被代者不會出現負時數）；substitutedHours 維持原計數
+        // 紀錄一側的人 → key
+        const resolveRecordSide = (name, id) => {
+            const n = normName(name);
+            if (id) {
+                const key = 'id:' + id;
+                if (aliasId.has(key)) return aliasId.get(key);
+                if (people.has(key)) return key;
+                // 名冊（來自課表）只有姓名沒有 teacherId：同名只有一位時，第一個遇到的 id 綁到該名冊人員上
+                const nk = 'n:' + n;
+                const base = n ? people.get(nk) : null;
+                if (base && base.inRoster && !base.teacherId) {
+                    base.teacherId = id;
+                    aliasId.set(key, nk);
+                    return nk;
+                }
+                const sameNameInRoster = !!base && base.inRoster;
+                const p = addPerson(key, n || String(id), id, sameNameInRoster);
+                if (sameNameInRoster && (nameIndex.get(n) || []).length === 1) {
+                    // 名冊只有一筆、紀錄卻出現第二個 teacherId：可能是同一位教師重新建檔。
+                    // 課表節數（原定時數）只留在名冊那一筆，這一列不掛課表，避免原定時數與超鐘點重複計算；警示在紀錄歸人後統一加。
+                } else if (sameNameInRoster) {
+                    // 名冊有兩位以上同名：課表節數無法區分，兩人都暫用該姓名的節數
+                    base.ambiguous = true;
+                    p.ambiguous = true;
+                    segIndex.forEach(idx => { const l = idx.get(n); if (l && l.includes(nk) && !l.includes(key)) l.push(key); });
+                    warnings.push(`「${n}」在紀錄中對應到不同的 teacherId（同名兩位教師）：課表只記姓名，兩人都暫以課表上該姓名的節數計，請人工確認；代課紀錄已依 teacherId 分開計算`);
+                }
+                return key;
+            }
+            if (!n) return null;
+            const cands = nameIndex.get(n) || [];
+            const multiIds = (idsByName.get(n) || new Set()).size >= 2;
+            if (cands.length === 1 && !multiIds) return cands[0];
+            if (cands.length > 1 || (cands.length === 1 && multiIds)) {
+                const key = 'amb:' + n;
+                const p = addPerson(key, n, null, false);
+                p.ambiguous = true;
+                p.unresolved = true;
+                return key;
+            }
+            return addPerson('n:' + n, n, null, false).key;
+        };
+
+        // ---- 紀錄歸人 ----
+        const aliasId = new Map();
+        const subCount = new Map();
+        const subdCount = new Map();
+        const bump = (m, k) => { if (k) m.set(k, (m.get(k) || 0) + 1); };
+        for (const r of monthlyRecords) {
+            const isSwap = r.type === 'swap' || r.type === '調課';
+            const subKey = resolveRecordSide(r.substituteTeacher, r.substituteTeacherId);
+            const origKey = resolveRecordSide(r.originalTeacher, r.originalTeacherId);
+            if (!isSwap) bump(subCount, subKey);
+            if (this.isDeductedFromOriginal(r)) bump(subdCount, origKey);
+        }
+
+        // 名冊只有一筆、紀錄中卻有兩個以上 teacherId 的姓名：課表節數只掛在名冊那一筆（nameIndex 第一個 key），
+        // 其餘列原定時數為 0；全部列標示並警示一次（名冊有兩筆以上同名者維持原行為，不在此處理）。
+        for (const [n, ids] of idsByName) {
+            const rosterKeys = nameIndex.get(n) || [];
+            if (ids.size < 2 || rosterKeys.length !== 1) continue;
+            for (const p of people.values()) {
+                if (normName(p.name) === n) p.multiId = true;
+            }
+            people.get(rosterKeys[0]).scheduleHolder = true;
+            warnings.push(`「${n}」在本月紀錄中有多個教師編號，可能是同一位教師重新建檔。原定時數只計入其中一列，請確認並合併後再發放。`);
+        }
+
+        // ---- 每段每週節數（依 星期＋節次 去重；隔週課算 0.5）----
+        const classesByKey = new Map();   // key → 任教班級（供 Excel 備註辨識同名教師）
+        const weeklyBySeg = segments.map((seg, i) => {
+            const idx = segIndex[i];
+            const slots = new Map();   // key → Map(slot → { weekly, half:Set(班級) })
+            for (const course of seg.schedule) {
+                const n = normName(course && course.teacher);
+                if (!n) continue;
+                const keys = (idx.get(n) && idx.get(n).length) ? idx.get(n) : [addPerson('n:' + n, course.teacher, null, false).key];
+                const slot = `${course.weekday}|${course.period}`;
+                for (const key of keys) {
+                    if (!slots.has(key)) slots.set(key, new Map());
+                    const m = slots.get(key);
+                    const cur = m.get(slot) || { weekly: false, half: new Set() };
+                    if (rowWeight(course) === 1) cur.weekly = true; else cur.half.add(courseClass(course));
+                    m.set(slot, cur);
+                    const cn = courseClass(course);
+                    if (cn) {
+                        if (!classesByKey.has(key)) classesByKey.set(key, new Set());
+                        classesByKey.get(key).add(cn);
+                    }
+                }
+            }
+            const out = new Map();
+            for (const [key, m] of slots) {
+                let total = 0;
+                for (const v of m.values()) total += slotUnits(v);
+                out.set(key, total);
+            }
+            return out;
+        });
+
+        const baseOf = (p) => {
+            const map = opts.weeklyBaseByTeacher || {};
+            let v = p.teacherId ? map[p.teacherId] : undefined;
+            if (v === undefined || v === null || v === '') v = map[p.name];
+            if (v === undefined || v === null || v === '') v = map[normName(p.name)];
+            const n = Number(v);
+            return (v === undefined || v === null || v === '' || !Number.isFinite(n) || n < 0) ? this.baseWeeklyHours : n;
+        };
+
+        const rows = order.map(key => {
+            const p = people.get(key);
+            let originalHours = 0;
+            let weeklyHours = 0;
+            let topWeeks = -1;
+            segments.forEach((seg, i) => {
+                const w = weeklyBySeg[i].get(key) || 0;
+                const wk = segWeeks(seg);
+                originalHours += w * wk;
+                if (wk > topWeeks) { topWeeks = wk; weeklyHours = w; }
+            });
+            const substituteHours = subCount.get(key) || 0;
+            const substitutedHours = subdCount.get(key) || 0;
             const actualHours = Math.max(0, originalHours + substituteHours - substitutedHours);
-
-            // 5. 計算超鐘點時數
-            const baseMonthlyHours = this.baseWeeklyHours * weeksInMonth;
+            const baseWeekly = baseOf(p);
+            const baseMonthlyHours = baseWeekly * totalWeeks;
             const overtimeHours = Math.max(0, actualHours - baseMonthlyHours);
-
-            return {
-                teacherName: teacher.name,
+            const row = {
+                teacherName: p.name,
                 weeklyHours,
                 originalHours,
                 substituteHours,
@@ -96,11 +324,31 @@ export class SettlementCalculator {
                 overtimeHours,
                 baseMonthlyHours
             };
+            if (!p.inRoster) {
+                row.notInRoster = true;
+                // 「無法判斷是哪一位」那列的人其實在名冊內，只有另有警示，不再說他不在名冊
+                if ((substituteHours || substitutedHours) && !p.unresolved) {
+                    warnings.push(`「${p.name}」不在名冊內，但當月有代課或被代課紀錄，已列入結算`);
+                }
+            }
+            if (p.unresolved) {
+                warnings.push(`紀錄中的「${p.name}」有同名教師且紀錄沒有 teacherId，無法判斷是哪一位，已另列一行，請人工確認`);
+            }
+            if (p.ambiguous) row.ambiguousName = true;
+            if (p.unresolved) row.unresolved = true;
+            if (p.multiId && !p.unresolved) { row.multiId = true; if (p.scheduleHolder) row.scheduleHolder = true; }
+            // 供 Excel 備註辨識：只有特殊列（名冊外、同名、無法判斷）才帶，一般列欄位維持不變
+            if (!p.inRoster || p.ambiguous || row.multiId) {
+                row.teacherId = p.teacherId || null;
+                row.classNames = [...(classesByKey.get(key) || [])].sort();
+            }
+            if (baseWeekly !== this.baseWeeklyHours) row.baseWeeklyHours = baseWeekly;
+            return row;
         });
-
-        // 按照實際授課時數排序（降序）
+        // 教師集合＝名冊 ∪ 課表 ∪ 紀錄（P7 規格）：名冊外但有課或有紀錄的人一律列入，不可從結算表消失。
+        const settlementData = rows;
         settlementData.sort((a, b) => b.actualHours - a.actualHours);
-
+        Object.defineProperty(settlementData, 'warnings', { value: warnings, enumerable: false });
         return settlementData;
     }
 
@@ -144,8 +392,8 @@ export class SettlementCalculator {
             8: 0,   // 8 月（暑假）
         };
 
-        if (specialMonths.hasOwnProperty(month)) {
-            return specialMonths[month];
+        if (Object.prototype.hasOwnProperty.call(specialMonths, Number(month))) {
+            return specialMonths[Number(month)];
         }
 
         return this.defaultWeeksPerMonth;
@@ -222,7 +470,19 @@ export class SettlementCalculator {
      * @returns {number} 每週授課節數
      */
     getTeacherWeeklyHours(scheduleData, teacherName) {
-        return scheduleData.filter(course => course.teacher === teacherName).length;
+        // 依 星期＋節次 去重（完全重複列、合班只算 1 節）；隔週課（frequency 為 2）算 0.5
+        const n = normName(teacherName);
+        const slots = new Map();
+        for (const course of scheduleData) {
+            if (normName(course.teacher) !== n) continue;
+            const slot = `${course.weekday}|${course.period}`;
+            const cur = slots.get(slot) || { weekly: false, half: new Set() };
+            if (rowWeight(course) === 1) cur.weekly = true; else cur.half.add(courseClass(course));
+            slots.set(slot, cur);
+        }
+        let total = 0;
+        for (const v of slots.values()) total += slotUnits(v);
+        return total;
     }
 
     /**
@@ -312,16 +572,20 @@ export class SettlementCalculator {
             swap: asOriginal.filter(r => r.type === 'swap' || r.type === '調課').length
         };
 
+        // 新增假別（婚假、產假…）另外計數，不放進 substitutedByLeaveType（維持該物件的既有欄位）
+        const newTypeCount = t => asOriginal.filter(r => r.leaveType === t.code || r.leaveType === t.label).length;
         // 實際扣減時數（排除公付假別和調課）
         const deductedHours = substitutedByLeaveType.personal +
                               substitutedByLeaveType.sick +
                               substitutedByLeaveType.rest +
-                              substitutedByLeaveType.other;
+                              substitutedByLeaveType.other +
+                              LEAVE_TYPES.filter(t => t.isNew && t.deduct).reduce((n, t) => n + newTypeCount(t), 0);
 
         // 公付假別總次數（不扣時數）
         const paidLeaveCount = substitutedByLeaveType.official +
                                substitutedByLeaveType.longsick +
-                               substitutedByLeaveType.funeral;
+                               substitutedByLeaveType.funeral +
+                               LEAVE_TYPES.filter(t => t.isNew && !t.deduct).reduce((n, t) => n + newTypeCount(t), 0);
 
         return {
             teacherName,
@@ -361,14 +625,31 @@ export class SettlementCalculator {
     buildWorkbook(settlementData, year, month, records = [], xlsxLib = globalThis.XLSX) {
         const XLSX = xlsxLib;
         // 建立工作表資料
+        // 備註欄：只有出現名冊外、同名、無法判斷的列時才加（一般情況的表維持原樣）
+        const noteOf = (row) => {
+            const parts = [];
+            if (row.unresolved) parts.push('無法判斷是哪一位（同名教師，紀錄沒有 teacherId）');
+            else if (row.notInRoster) parts.push('名冊外');
+            if (row.multiId) parts.push(row.scheduleHolder ? '多個教師編號（原定時數只計入此列）' : '多個教師編號（原定時數 0，已計入另一列）');
+            if (row.ambiguousName && !row.unresolved) {
+                const id = row.teacherId ? `teacherId 尾碼 ${String(row.teacherId).slice(-4)}` : '無 teacherId';
+                const cls = (row.classNames || []).length ? `任教班級 ${row.classNames.join('、')}` : '';
+                parts.push(`同名（${[id, cls].filter(Boolean).join('；')}）`);
+            }
+            return parts.join('；');
+        };
+        const notes = settlementData.map(noteOf);
+        const hasNotes = notes.some(n => n);
+        const warnings = settlementData.warnings || [];
         const wsData = [
             [`${year} 學年度 ${month} 月 教師授課時數結算表`],
             [],
             ['教師姓名', '每週節數', '原定授課時數', '代課增加', '被代課減少', '實際授課時數', '超鐘點時數']
         ];
+        if (hasNotes) wsData[2].push('備註');
 
-        settlementData.forEach(row => {
-            wsData.push([
+        settlementData.forEach((row, i) => {
+            const line = [
                 row.teacherName,
                 row.weeklyHours,
                 row.originalHours,
@@ -376,7 +657,9 @@ export class SettlementCalculator {
                 row.substitutedHours,
                 row.actualHours,
                 row.overtimeHours
-            ]);
+            ];
+            if (hasNotes) line.push(notes[i]);
+            wsData.push(line);
         });
 
         // 加入合計列
@@ -389,6 +672,7 @@ export class SettlementCalculator {
             settlementData.reduce((sum, r) => sum + r.actualHours, 0),
             settlementData.reduce((sum, r) => sum + r.overtimeHours, 0)
         ];
+        if (hasNotes) totalRow.push('');
         wsData.push(totalRow);
 
         // 下限註記：實際授課時數最低以 0 計（見檔頭說明）。任何一列「原定 + 增加 − 減少 ≠ 實際」
@@ -416,6 +700,7 @@ export class SettlementCalculator {
             { wch: 14 },  // 實際授課時數
             { wch: 12 }   // 超鐘點時數
         ];
+        if (hasNotes) ws['!cols'].push({ wch: 40 });   // 備註
 
         // 合併標題儲存格
         ws['!merges'] = [
@@ -443,6 +728,17 @@ export class SettlementCalculator {
         wsDetail['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 9 } }];
         XLSX.utils.book_append_sheet(wb, wsDetail, '明細');
 
+        // 第三分頁：畫面上的警示列（同名教師、名冊外等），交給會計時一併可見
+        if (warnings.length) {
+            const wsWarn = XLSX.utils.aoa_to_sheet([
+                [`${year} 學年度 ${month} 月 結算警示`],
+                [],
+                ...warnings.map(w => [w])
+            ]);
+            wsWarn['!cols'] = [{ wch: 100 }];
+            XLSX.utils.book_append_sheet(wb, wsWarn, '警示');
+        }
+
         return wb;
     }
 
@@ -456,10 +752,7 @@ export class SettlementCalculator {
      * @returns {Array<Object>} 依日期、節次排序的明細列
      */
     getMonthlyDetailRows(records, year, month) {
-        const leaveLabels = {
-            official: '公假', longsick: '長期病假', funeral: '喪假', personal: '事假',
-            sick: '病假', rest: '休假', other: '其他', swap: '調課'
-        };
+        const leaveLabels = Object.fromEntries([...LEAVE_TYPES.map(t => [t.code, t.label]), ['swap', '調課']]);
         const periodOrder = ['第一節', '第二節', '第三節', '第四節', '第五節', '第六節', '第七節', '第八節'];
         const weekdayLabels = ['日', '一', '二', '三', '四', '五', '六'];
         const periodIdx = p => { const i = periodOrder.indexOf(p); return i < 0 ? 99 : i; };

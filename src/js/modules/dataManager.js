@@ -580,8 +580,18 @@ export class DataManager {
      * 月結算／週彙整 PDF 這類「明確帶日期範圍」的呼叫端一律改走這支，不再用同步版本。
      * @returns {Promise<Array>}
      */
-    async getSubstituteRecordsAsync(startDate = '', endDate = '', teacherFilter = '') {
+    async getSubstituteRecordsAsync(startDate = '', endDate = '', teacherFilter = '', opts = {}) {
         return this.getSubstituteRecords(startDate, endDate, teacherFilter);
+    }
+
+    /**
+     * 月結算取「指定學期」的課表與名冊（P7）。V1／離線沒有學期概念，一律回傳本機資料；
+     * V2 由 v2-app.js patchDataManager() 覆寫（目前學期用本機資料，其他學期讀該學期課表並快取）。
+     * 該學期沒有課表時回傳 null。
+     * @returns {Promise<{semesterId:string, schedule:Array, teachers:Array}|null>}
+     */
+    async getSettlementSemesterData(semesterId) {
+        return { semesterId, schedule: this.scheduleData, teachers: this.teachers };
     }
 
     /**

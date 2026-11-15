@@ -109,7 +109,7 @@ export async function upsertConfig(patch) {
 }
 
 /**
- * 月結算設定（config/settlement）：{ calendarId, calendarApiKey, weeksByYear, updatedAt, updatedBy }。
+ * 月結算設定（config/settlement）：{ calendarId, calendarApiKey, weeksByYear, weeklyBaseByTeacher?, updatedAt, updatedBy }。
  * 規則：僅 approver（director 與 section_chief）可讀可寫（一般教師讀取會 permission-denied，client 端不讀）。
  * 整份覆寫（不 merge），由呼叫端先讀後改，確保清空的月份真的被移除。
  */
@@ -132,10 +132,26 @@ export async function getSettlementConfig() {
     throw lastErr;
 }
 
-export async function saveSettlementConfig({ calendarId = '', calendarApiKey = '', weeksByYear = {} }, updatedBy = null) {
+export async function saveSettlementConfig({ calendarId = '', calendarApiKey = '', weeksByYear = {}, weeklyBaseByTeacher = null }, updatedBy = null) {
     const fs  = await getV2Firestore();
     const ref = fs.doc(fs.db, SCHEMA_PATHS.settlementConfig());
-    await fs.setDoc(ref, { calendarId, calendarApiKey, weeksByYear, updatedAt: new Date().toISOString(), updatedBy });
+    const doc = { calendarId, calendarApiKey, weeksByYear, updatedAt: new Date().toISOString(), updatedBy };
+    // P7：逐人超鐘點門檻（可選欄位；整份覆寫，呼叫端須先讀後改，沒改的不可丟）
+    if (weeklyBaseByTeacher && typeof weeklyBaseByTeacher === 'object') doc.weeklyBaseByTeacher = weeklyBaseByTeacher;
+    await fs.setDoc(ref, doc);
+}
+
+/** 九年級畢業設定（config/grade9）；不存在回 null。所有成員可讀。 */
+export async function getGrade9Config() {
+    const fs   = await getV2Firestore();
+    const snap = await fs.getDoc(fs.doc(fs.db, SCHEMA_PATHS.grade9Config()));
+    return snap.exists() ? snap.data() : null;
+}
+
+export async function saveGrade9Config({ semesterId, enabled, effectiveDate = '' }, updatedBy = null) {
+    const fs  = await getV2Firestore();
+    const ref = fs.doc(fs.db, SCHEMA_PATHS.grade9Config());
+    await fs.setDoc(ref, { semesterId: String(semesterId || ''), enabled: !!enabled, effectiveDate: String(effectiveDate || ''), updatedAt: new Date().toISOString(), updatedBy: updatedBy || '' });
 }
 
 /**
@@ -1403,6 +1419,18 @@ export async function getRequestDetail(reqId) {
     } catch (_) {
         return null;
     }
+}
+
+/**
+ * 核准專用：讀取請求的私有明細，「讀不到」與「沒有」要分開（P7，審計 logic-flow M-2）。
+ * 文件不存在回 null；任何錯誤（網路、逾時、權限）都丟出，不吞掉。核准流程若把讀取失敗當成
+ * 「沒有明細」，新紀錄會缺假別，公假、喪假等不扣時數的假別在月結算被誤扣。
+ */
+export async function getRequestDetailStrict(reqId) {
+    const fs   = await getV2Firestore();
+    const ref  = fs.doc(fs.db, SCHEMA_PATHS.pendingDetailDoc(reqId));
+    const snap = await fs.getDoc(ref);
+    return snap.exists() ? snap.data() : null;
 }
 
 /**

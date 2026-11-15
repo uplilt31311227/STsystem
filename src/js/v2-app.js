@@ -24,6 +24,7 @@ import * as cloudSyncSvc from './modules/cloudSyncService.js';
 import { notify, notifyError, setSyncStatus, resetSyncStatus } from './modules/v2/uiFeedback.js';
 import * as semesterUtils from './modules/v2/semesterUtils.js';
 import { todayLocal } from './modules/localDate.js';
+import { isGrade9GraduationActive, buildGrade9Config } from './modules/grade9Graduation.js';
 import * as semesterState from './modules/v2/semesterState.js';
 import { escapeHtml, toNum, pickAllowed } from './modules/htmlEscape.js';
 import { assertRuleSafeCaseText } from './modules/v2/caseTextRule.js';
@@ -804,6 +805,7 @@ async function renderPendingTab() {
             btn.disabled = true;
             try {
                 const saved = await requestSvc.approveRequest(btn.dataset.id);
+                clearV2RecordCaches();   // P7：核准後清掉日期範圍查詢快取，避免月結算讀到核准前的資料
                 // 核准成功後才產生 PDF（Phase 3：PDF 產生時機從「同意時」移到「核准後」）；
                 // PDF 與兩個列表重繪互不相依，並行執行縮短等待。
                 // 多重調課批次：同批全部處理完才產生整批調課單與通知單（見 generateRecordPdf）。
@@ -820,6 +822,9 @@ async function renderPendingTab() {
                     // 兩位 approver 並發核准：後到者顯示「已被處理」並刷新列表
                     window.app?.showToast?.(e.message || '此請求已被處理', 'warning', 4500);
                     await renderPendingTab();
+                } else if (e.code === 'DETAIL_READ_FAILED') {
+                    notify(e.message, 'error');   // P7：讀不到假別明細，已中止核准
+                    btn.disabled = false;
                 } else if (e.code === 'ASSIGNMENT_CONFLICT') {
                     // 衝堂訊息已自帶「核准失敗：…」，直接顯示，不再套 notifyError 的情境前綴（避免「核准請求失敗：核准失敗：…」）
                     notify(e.message, 'error');
@@ -3107,6 +3112,38 @@ function installSettlementConfigStore() {
     };
 }
 
+/* ===== 九年級已畢業設定（雲端 config/grade9，依學期重置） ===== */
+
+function installGrade9ConfigStore() {
+    if (!window.app) return;
+    window.app.grade9ConfigStore = {
+        // 寫入雲端後回傳「目前是否生效」，供呼叫端套用到 dataManager
+        save: async (enabled, effectiveDate) => {
+            if (!roleSvc.isApprover()) throw new Error('僅教務主任或教學組長可設定');
+            const sid = semesterState.getCurrentSemesterId();
+            const cfg = buildGrade9Config(sid, enabled, effectiveDate);
+            const who = roleSvc.getCurrentIdentity();
+            await dataSvc.saveGrade9Config(cfg, who?.email || who?.uid || '');
+            return isGrade9GraduationActive(cfg, sid, todayLocal());
+        },
+    };
+}
+
+/** 啟動時讀雲端設定套用到 dataManager（所有成員都讀，推薦與衝突判斷要用）。其他學期的設定一律視為未啟用。 */
+async function applyGrade9FromCloud() {
+    const dm = window.app?.dataManager;
+    if (!dm) return;
+    const cfg = await dataSvc.getGrade9Config();
+    const sid = semesterState.getCurrentSemesterId();
+    dm.setGrade9Disabled(isGrade9GraduationActive(cfg, sid, todayLocal()));
+    const sameSemester = !!cfg && cfg.semesterId === sid;
+    const toggle = document.getElementById('grade9-disabled-toggle');
+    if (toggle) toggle.checked = sameSemester && cfg.enabled === true;
+    const dateEl = document.getElementById('grade9-effective-date');
+    if (dateEl) dateEl.value = sameSemester ? (cfg.effectiveDate || '') : '';
+    try { window.app.refreshGrade9DependentUI?.(); } catch (_) { /* 畫面刷新失敗不影響設定套用 */ }
+}
+
 /* ===== 頁籤切換偵測 ===== */
 
 function bindV2TabSwitches() {
@@ -3208,6 +3245,7 @@ function resetV2ViewState() {
     // Stage 2：歷史學期檢視狀態同屬「含個資的畫面狀態」，身份切換必須一併清空（同上理由）。
     _v2RecordsSemesterFilter = '';
     _v2SemesterHistoryCache.clear();
+    _v2SettlementSemesterCache.clear();
     _v2KnownSemesterIds = null;
     // Stage 5：封存流程的匯出/驗證狀態同屬「含個資的畫面狀態」（雜湊/筆數綁定特定一次匯出），
     // 身份切換一律清空——不同 director 不該沿用前一位的匯出狀態解鎖刪除按鈕。
@@ -3846,10 +3884,13 @@ let _v2RecordsLiveLastDoc = null;
 // 即時訂閱視窗是否已涵蓋整段範圍（視窗按 createdAt 排序，無法用「視窗內最舊日期」可靠推算
 // 涵蓋範圍，寧可多查一次 Firestore 也不要讓月結算這種金額計算漏資料）。
 const _v2DateRangeQueryCache = new Map();
+// P7：清快取時遞增；查詢進行中遇到清除，舊結果不可寫回快取（否則清掉後又被舊資料蓋回）。
+let _v2DateRangeCacheGen = 0;
 
 // 紀錄有任何異動（本機寫入、刪除、即時訂閱更新、身份切換）時，一併清掉「單日有效課表」的記憶體快取（dataManager）
 function clearV2RecordCaches() {
     _v2DateRangeQueryCache.clear();
+    _v2DateRangeCacheGen++;
     try { window.app?.dataManager?.invalidateDayRecordsCache?.(); } catch (_) { /* 快取失效失敗不影響主流程 */ }
 }
 
@@ -3861,6 +3902,8 @@ let _v2RecordsSemesterFilter = '';
 // 歷史學期查詢結果的記憶體快取，key 為 semesterId——歷史學期在規則層已鎖唯讀，同一 session
 // 內查過一次的結果不會再變動，不需要每次切換回同一個歷史學期都重打 Firestore。
 const _v2SemesterHistoryCache = new Map();
+// P7：月結算用的「非目前學期」課表與名冊，key 為 semesterId。歷史學期在 rules 層唯讀，同一工作階段內不會變；身份切換時清空。
+const _v2SettlementSemesterCache = new Map();
 // 學期選擇器下拉選單的選項清單快取（dataSvc.listKnownSemesterIds() 的結果），null 表示
 // 尚未查過。這份清單變動頻率極低（只有「開新學期」會新增一筆），不需要每次重繪都重查。
 let _v2KnownSemesterIds = null;
@@ -3923,12 +3966,14 @@ async function hydrateRecordsWithDetail(records) {
  * 重打 Firestore。快取在身份切換／登出時清空（見 resetV2ViewState）。
  * @returns {Promise<Array>} 已補齊 private/detail 的紀錄陣列
  */
-async function v2GetRecordsInRange(startDate, endDate) {
+async function v2GetRecordsInRange(startDate, endDate, { fresh = false } = {}) {
     const key = `${startDate || ''}|${endDate || ''}`;
-    if (_v2DateRangeQueryCache.has(key)) return _v2DateRangeQueryCache.get(key);
+    // P7：月結算一律 fresh（金額計算不吃可能過期的快取；他人刪除或核准舊申請都不會觸發即時視窗更新）
+    if (!fresh && _v2DateRangeQueryCache.has(key)) return _v2DateRangeQueryCache.get(key);
+    const gen = _v2DateRangeCacheGen;
     const raw = await dataSvc.queryRecordsByDateRange({ startDate: startDate || null, endDate: endDate || null });
     const hydrated = await hydrateRecordsWithDetail(raw);
-    _v2DateRangeQueryCache.set(key, hydrated);
+    if (gen === _v2DateRangeCacheGen) _v2DateRangeQueryCache.set(key, hydrated);
     return hydrated;
 }
 
@@ -4447,20 +4492,39 @@ function patchDataManager() {
     // YYYY-MM-DD）。呼叫端必須確保傳入值也是 YYYY-MM-DD（settlementCalculator.getMonthDateRange()
     // 與 pdfGenerator.getWeekRange() 皆已是此格式），傳入其他格式（例如 MM/DD/YYYY）會讓字典序
     // 比對得出錯誤結果且不會拋錯，需呼叫端自行保證，這裡不做防禦性轉換。
-    dm.getSubstituteRecordsAsync = async function(startDate = '', endDate = '', teacherFilter = '') {
+    dm.getSubstituteRecordsAsync = async function(startDate = '', endDate = '', teacherFilter = '', opts = {}) {
         if (!roleSvc.isSignedIn()) {
             return origGet(startDate, endDate, teacherFilter);
         }
         if (!startDate && !endDate) {
             return dm.getSubstituteRecords(startDate, endDate, teacherFilter);
         }
-        let records = await v2GetRecordsInRange(startDate, endDate);
+        let records = await v2GetRecordsInRange(startDate, endDate, { fresh: opts && opts.fresh === true });
         if (teacherFilter) {
             records = records.filter(r =>
                 r.originalTeacher === teacherFilter || r.substituteTeacher === teacherFilter);
         }
         records = [...records].sort((a, b) => new Date(b.date) - new Date(a.date));
         return records;
+    };
+
+    /**
+     * P7：月結算依「月份所屬學期」取課表與名冊。
+     *   - 目前學期：用本機已訂閱的資料（0 次額外讀取）。
+     *   - 其他學期：讀該學期的課表文件一次並快取（1 次讀取），不退回舊版單一文件（避免默默用錯學期的資料）。
+     * 該學期沒有課表時回傳 null，由呼叫端明確警示。
+     */
+    dm.getSettlementSemesterData = async function(semesterId) {
+        if (!roleSvc.isSignedIn()) return { semesterId, schedule: dm.scheduleData, teachers: dm.teachers };
+        if (semesterId === semesterState.getCurrentSemesterId()) {
+            return { semesterId, schedule: dm.scheduleData, teachers: dm.teachers };
+        }
+        if (_v2SettlementSemesterCache.has(semesterId)) return _v2SettlementSemesterCache.get(semesterId);
+        const doc = await dataSvc.getScheduleForSemesterStrict(semesterId);
+        if (!doc || !Array.isArray(doc.scheduleData)) return null;
+        const data = { semesterId, schedule: doc.scheduleData, teachers: Array.isArray(doc.teachers) ? doc.teachers : [] };
+        _v2SettlementSemesterCache.set(semesterId, data);
+        return data;
     };
 
     /**
@@ -5400,6 +5464,7 @@ async function bootstrap() {
             _v2RecordsCache = [];
             _v2PendingCache = [];
             _v2RecordDetailCache.clear();
+            _v2SettlementSemesterCache.clear();
             _v2RecordsCacheGen++;   // 同上：作廢登出前任何仍在飛行中的補讀
             // Stage 1：同上，分頁狀態與日期範圍查詢快取一併清空（見 resetV2ViewState 註解）。
             _v2RecordsTabExtra    = [];
@@ -5480,6 +5545,7 @@ async function bootstrap() {
 
             // 月結算上課週數設定：改存 Firestore config/settlement；director 與 section_chief（approver）可編輯，一般教師唯讀。refresh 在下面的 bootstrap 步驟執行。
             installSettlementConfigStore();
+            installGrade9ConfigStore();
 
             const roleLabelMap = { director: '教務主任', section_chief: '教學組長', teacher: '教師' };
             const nameSpan = document.getElementById('user-name');
@@ -5544,6 +5610,7 @@ async function bootstrap() {
             if (roleSvc.canManageRoster()) {
                 await safeBootstrapStep('教師管理', renderTeachersAdminTab);
             }
+            await safeBootstrapStep('九年級畢業設定', applyGrade9FromCloud);
             await safeBootstrapStep('月結算週數設定', () => window.app?.refreshSettlementWeeksCard?.({ force: true }));
             if (roleSvc.isDirector()) {
                 await safeBootstrapStep('學期管理', renderSemesterAdminTab);

@@ -45,6 +45,9 @@ export const serverTimestamp = () => '<<ts>>';
 export const Timestamp = { now: () => ({}) };
 // 測試用：__fake.getDocOnce = { [path]: data|null } 讓該路徑的「下一次」getDoc 回傳指定內容（null＝不存在），用完即清，交易內 tx.get 不受影響
 export const getDoc = async (ref) => {
+    // 測試用：__fake.getDocErrors = { [path]: Error } 讓該路徑的 getDoc 持續丟錯（模擬網路中斷、逾時；交易內 tx.get 不受影響）
+    const errs = F().getDocErrors;
+    if (errs && Object.prototype.hasOwnProperty.call(errs, ref.path)) throw errs[ref.path];
     const once = F().getDocOnce;
     if (once && Object.prototype.hasOwnProperty.call(once, ref.path)) {
         const v = once[ref.path]; delete once[ref.path];

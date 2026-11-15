@@ -289,11 +289,18 @@
                                             <option value="official">公假</option>
                                             <option value="longsick">長期病假（3日以上）</option>
                                             <option value="funeral">喪假</option>
+                                            <option value="marriage">婚假</option>
+                                            <option value="maternity">產假</option>
+                                            <option value="paternity">陪產假</option>
+                                            <option value="injury">公傷假</option>
+                                            <option value="miscarriage">流產假</option>
                                         </optgroup>
                                         <optgroup label="一般假別（扣時數）">
                                             <option value="personal">事假</option>
                                             <option value="sick">病假</option>
                                             <option value="rest">休假</option>
+                                            <option value="family">家庭照顧假</option>
+                                            <option value="menstrual">生理假</option>
                                             <option value="other">其他</option>
                                         </optgroup>
                                     </select>
@@ -587,6 +594,8 @@
                     </div>
 
                     <div id="settlement-result" class="hidden">
+                        <p class="hint mt-3" id="settlement-source"></p>
+                        <ul class="hint settlement-warnings hidden" id="settlement-warnings"></ul>
                         <div class="settlement-header mt-3">
                             <span class="hint m-0">教師授課時數統計表</span>
                             <div class="settlement-filter">
@@ -703,6 +712,11 @@
                                 <span class="hint">開啟後停用九年級（9年X班）所有課程，讓這些時段的老師可正常被安排調代課；資料完整保留，可隨時關閉還原。</span>
                             </span>
                         </label>
+                        <div class="form-group form-group-inline v2-only mt-2" id="grade9-effective-wrap">
+                            <label for="grade9-effective-date">生效日期（可留空）</label>
+                            <input type="date" id="grade9-effective-date">
+                            <span class="hint">此設定存在雲端、只在設定當時的學期有效，換學期後自動恢復為未畢業；這個設定影響的是推薦與衝堂判斷；月結算不套用九年級設定，原定時數仍依課表照算。生效日期之前，推薦與衝堂判斷仍把九年級課程計入。</span>
+                        </div>
                     </div>
                 </div>
 
@@ -744,6 +758,11 @@
                         <button type="button" class="btn btn-secondary btn-sm" id="sw-import-btn">從日曆帶入</button>
                         <button type="button" class="btn btn-primary btn-sm" id="sw-save-btn">儲存</button>
                         <button type="button" class="btn btn-secondary btn-sm hidden" id="sw-retry-btn">重試讀取</button>
+                    </div>
+                    <div class="form-group mt-3">
+                        <label for="sw-base-map">每人每週基本授課節數（超鐘點門檻）</label>
+                        <textarea id="sw-base-map" rows="4" placeholder="每行一位：姓名,每週節數（例如 王大明,16）。沒列的教師一律用每週 20 節。" autocomplete="off"></textarea>
+                        <p class="hint">超鐘點時數 = 實際授課時數 − 每週基本節數 × 該月週數。導師、兼行政或兼課教師的基本節數與專任不同時在此逐人設定；同名教師會套用同一個數字。</p>
                     </div>
                     <p class="hint sw-message hidden" id="sw-message"></p>
                     <p class="hint sw-readonly-note hidden" id="sw-readonly-note"></p>

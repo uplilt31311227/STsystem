@@ -1,6 +1,6 @@
 rules_version = '2';
 
-// STsystem V2 權限系統 Firestore 規則（v2.14（含 v2.13-A／B、v2.14 成立紀錄序號鎖，皆已納入本檔，P5／P6 未部署）— 身分與授權修補 + 三層角色 + 敏感欄位私有化 + 學期唯讀鎖 + 封存生命週期 + schoolId 反查目錄 + 多租戶開通 + 月結算設定開放 approver + 主任不可改自己的 role + 課表匯入版本紀錄 + 組長可刪除目前學期紀錄 + 開新學期原子建立課表 + 課表版本號）
+// STsystem V2 權限系統 Firestore 規則（v2.15（P7：config/settlement 增加逐人超鐘點門檻欄位、config/grade9 九年級畢業設定）、v2.14（含 v2.13-A／B、v2.14 成立紀錄序號鎖，皆已納入本檔，P5／P6 未部署）— 身分與授權修補 + 三層角色 + 敏感欄位私有化 + 學期唯讀鎖 + 封存生命週期 + schoolId 反查目錄 + 多租戶開通 + 月結算設定開放 approver + 主任不可改自己的 role + 課表匯入版本紀錄 + 組長可刪除目前學期紀錄 + 開新學期原子建立課表 + 課表版本號）
 //
 // 設計原則：
 //   1. 兩條根路徑物理隔離
@@ -166,6 +166,16 @@ rules_version = '2';
 //      ⚠ 部署順序（修正）：舊 rules 的 config/{docId} 只允許 director 寫入，新前端在舊 rules 下，教學組長（section_chief）
 //        的核准與代發會因寫 recordsLock 全部 permission-denied；而 v2.13 又要求前端先上線。兩者合起來的結論是：
 //        前端與 rules（v2.13＋v2.14）必須同時上線，不可任何一方單獨先上。步驟見 docs/DEPLOYMENT.md。
+//
+//  16. v2.15（P7 月結算正確性；測試見 test/emulator/rules-p7-config）：
+//      A. config/settlement 增加可選欄位 weeklyBaseByTeacher（逐人超鐘點門檻，map，最多 400 筆）。存取權限不變：只有 approver 可讀可寫。
+//      B. 新增 config/grade9（九年級畢業設定）：{ semesterId, enabled, effectiveDate, updatedAt, updatedBy }。
+//         所有成員可讀（推薦與衝突判斷要用），只有 approver 可寫；欄位白名單與長度上限。設定只對 semesterId 所指的學期有效，
+//         換學期後前端視為未啟用（不需要改規則）。
+//      運算式成本：兩條都只在 config 寫入時評估，沿用既有 isApprover()，未動到熱路徑；規則引擎單次請求上限 1000 個運算式，
+//      本次新增的欄位檢查合計約 14 個。
+//      ⚠ 部署順序：新前端寫 weeklyBaseByTeacher／config/grade9 需要本規則；舊規則下這兩項儲存會被拒（其餘功能不受影響）。
+//        與 v2.13＋v2.14 一起同時上線即可，沒有新增順序約束。
 //
 // 部署：透過 gcloud REST API 或 Firebase Console（見 docs/V2_PERMISSION_SYSTEM.md）
 
@@ -844,13 +854,27 @@ service cloud.firestore {
           && (resource == null
               ? request.resource.data.seq == 1
               : request.resource.data.seq == resource.data.seq + 1);
+        // v2.15（P7）：九年級畢業設定。成員可讀（沿用上方 read 規則）；只有 approver 可寫，欄位白名單與長度上限。
+        allow create, update: if docId == 'grade9'
+          && isApprover(schoolId)
+          && request.resource.data.keys().hasOnly(['semesterId', 'enabled', 'effectiveDate', 'updatedAt', 'updatedBy'])
+          && request.resource.data.keys().hasAll(['semesterId', 'enabled', 'effectiveDate', 'updatedAt', 'updatedBy'])
+          && request.resource.data.semesterId is string
+          && request.resource.data.semesterId.size() <= 20
+          && request.resource.data.enabled is bool
+          && request.resource.data.effectiveDate is string
+          && request.resource.data.effectiveDate.size() <= 10
+          && request.resource.data.updatedAt is string
+          && request.resource.data.updatedAt.size() <= 40
+          && request.resource.data.updatedBy is string
+          && request.resource.data.updatedBy.size() <= 100;
         // v2.8：月結算週數設定（config/settlement）開放 approver（含 section_chief、director）
         // 建立與更新，含欄位白名單、型別與大小檢查；不含 delete。
         // updatedBy 須為本人 email 或 uid（client 寫 email || uid）；updatedAt 為 ISO 字串。
         allow create, update: if docId == 'settlement'
           && isApprover(schoolId)
           && request.resource.data.keys().hasOnly(
-               ['calendarId', 'calendarApiKey', 'weeksByYear', 'updatedAt', 'updatedBy'])
+               ['calendarId', 'calendarApiKey', 'weeksByYear', 'weeklyBaseByTeacher', 'updatedAt', 'updatedBy'])
           && request.resource.data.keys().hasAll(
                ['calendarId', 'calendarApiKey', 'weeksByYear', 'updatedAt', 'updatedBy'])
           && request.resource.data.calendarId is string
@@ -859,6 +883,11 @@ service cloud.firestore {
           && request.resource.data.calendarApiKey.size() <= 128
           && request.resource.data.weeksByYear is map
           && request.resource.data.weeksByYear.size() <= 20
+          // v2.15（P7）：逐人超鐘點門檻（可選欄位）。{ 教師姓名或 teacherId: 每週基本節數 }，只有 approver 可寫。
+          // 規則無法逐項檢查 map 的值型別，這裡只限制為 map 且不超過 400 筆；數值合法性由前端與結算端驗證（非數字、負數一律退回預設 20）。
+          && (!('weeklyBaseByTeacher' in request.resource.data)
+              || (request.resource.data.weeklyBaseByTeacher is map
+                  && request.resource.data.weeklyBaseByTeacher.size() <= 400))
           && request.resource.data.updatedAt is string
           && request.resource.data.updatedAt.size() <= 40
           && request.resource.data.updatedBy is string

@@ -226,7 +226,7 @@ async function restoreConfig(fs, backup, plan, st, me, say) {
         say('還原月結算設定…');
         const s = backup.config.settlement || {};
         await dataSvc.saveSettlementConfig(
-            { calendarId: s.calendarId || '', calendarApiKey: s.calendarApiKey || '', weeksByYear: s.weeksByYear || {} },
+            { calendarId: s.calendarId || '', calendarApiKey: s.calendarApiKey || '', weeksByYear: s.weeksByYear || {}, weeklyBaseByTeacher: s.weeklyBaseByTeacher || null },
             me?.email || me?.uid || null,
         );
         st.done++;

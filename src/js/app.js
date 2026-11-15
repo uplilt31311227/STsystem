@@ -27,6 +27,9 @@ import { PDFGenerator } from './modules/pdfGenerator.js';
 import { SettlementCalculator } from './modules/settlementCalculator.js';
 import { importWeeksFromCalendar, calendarErrorMessage } from './modules/schoolCalendar.js';
 import { isV2Enabled } from './modules/v2/envDetector.js';
+import { prepareSettlementInputs, settlementMissingMessage } from './modules/settlementInputs.js';
+import { getCurrentSemesterId } from './modules/v2/semesterState.js';
+import { parseBaseMapText, formatBaseMapText } from './modules/settlementCalculator.js';
 import { filterSameBatch } from './modules/v2/batchGuard.js';
 
 // 匯入 Firebase 相關模組
@@ -3316,6 +3319,13 @@ ${lines.join(NL)}${more}
             'official': '公假',
             'longsick': '長期病假',
             'funeral': '喪假',
+            'marriage': '婚假',
+            'maternity': '產假',
+            'paternity': '陪產假',
+            'injury': '公傷假',
+            'miscarriage': '流產假',
+            'family': '家庭照顧假',
+            'menstrual': '生理假',
             'personal': '事假',
             'sick': '病假',
             'rest': '休假',
@@ -4399,6 +4409,7 @@ ${lines.join(NL)}${more}
             calendarId: raw?.calendarId || '',
             calendarApiKey: raw?.calendarApiKey || '',
             weeksByYear: raw?.weeksByYear && typeof raw.weeksByYear === 'object' ? raw.weeksByYear : {},
+            weeklyBaseByTeacher: raw?.weeklyBaseByTeacher && typeof raw.weeklyBaseByTeacher === 'object' ? raw.weeklyBaseByTeacher : {},
         };
     }
 
@@ -4418,11 +4429,30 @@ ${lines.join(NL)}${more}
             throw Object.assign(new Error('讀不到月結算上課週數設定'), { name: 'SettlementConfigError', cause: err });
         }
         this.settlementCalculator.setWeeksOverride(year, cfg.weeksByYear[String(year)] || {});
+        return cfg;
+    }
+
+    /**
+     * 月結算共用準備（產生表與匯出 Excel 共用）：依月份所屬學期取課表與名冊、讀當月紀錄（不吃快取）、
+     * 套用週數與逐人門檻。V2 該學期沒有課表時丟 SettlementScheduleMissing，不退回目前學期的資料。
+     * 讀取量：目前學期 0 次額外讀取；其他學期 1 次課表文件（工作階段內快取）；紀錄 1 次範圍查詢。
+     */
+    async prepareSettlement(year, month) {
+        return prepareSettlementInputs({
+            calculator: this.settlementCalculator,
+            dataManager: this.dataManager,
+            year, month,
+            applyConfig: () => this.applySettlementWeeksOverride(year),
+        });
     }
 
     /** 月結算失敗提示：週數設定讀取失敗給專屬訊息；StaleModuleError 已在拋出處提示過 */
     notifySettlementError(err) {
         if (err?.name === 'StaleModuleError') return;
+        if (err?.name === 'SettlementScheduleMissing') {
+            this.showToast(settlementMissingMessage(err, getCurrentSemesterId()), 'error', 8000);
+            return;
+        }
         if (err?.name === 'SettlementConfigError') {
             this.showToast('讀不到上課週數設定，未產生結算（為避免用預設週數算錯金額）。請檢查網路後重試', 'error', 6000);
             return;
@@ -4502,7 +4532,7 @@ ${lines.join(NL)}${more}
         const editable = !!store?.canEdit?.();
         const note = document.getElementById('sw-readonly-note');
         const retryBtn = document.getElementById('sw-retry-btn');
-        const setDisabled = (v) => card.querySelectorAll('.sw-week-input, #sw-calendar-id, #sw-api-key, #sw-import-btn, #sw-save-btn')
+        const setDisabled = (v) => card.querySelectorAll('.sw-week-input, #sw-calendar-id, #sw-api-key, #sw-base-map, #sw-import-btn, #sw-save-btn')
             .forEach(el => { el.disabled = v; });
 
         // M1：讀取成功前一律停用（含 V2 尚未裝上 Firestore store 的空窗期，此時不可用 local store 的空值）
@@ -4532,6 +4562,8 @@ ${lines.join(NL)}${more}
         this._swTouched = {};
         document.getElementById('sw-calendar-id').value = this._settlementConfig.calendarId;
         document.getElementById('sw-api-key').value = this._settlementConfig.calendarApiKey;
+        const baseMapEl = document.getElementById('sw-base-map');
+        if (baseMapEl) baseMapEl.value = formatBaseMapText(this._settlementConfig.weeklyBaseByTeacher || {});
         this.renderSettlementWeekInputs();
 
         // M1：讀取失敗時停用輸入格、帶入與儲存鈕，避免空白格被存回而清掉已存週數
@@ -4577,7 +4609,9 @@ ${lines.join(NL)}${more}
             const got = order.filter(m => m in r.weeks).map(m => `${m} 月 ${r.weeks[m]} 週`).join('、');
             const miss = r.missingMonths.map(m => `${m} 月`).join('、') || '無';
             this._swDirty = true;
-            this.swMessage(`已帶入：${got}\n日曆中找不到資料（維持原值）：${miss}\n尚未儲存，確認後請按「儲存」。`);
+            const partial = (r.partialClosures || []).map(x => `${x.title}（${x.days[0]}${x.days.length > 1 ? ' 起 ' + x.days.length + ' 天' : ''}）`);
+            const partialNote = partial.length ? `\n只影響部分年級的停課（未扣全校週數，請自行確認）：${partial.join('、')}` : '';
+            this.swMessage(`已帶入：${got}\n日曆中找不到資料（維持原值）：${miss}${partialNote}\n尚未儲存，確認後請按「儲存」。`);
         } catch (err) {
             this.swMessage('');
             if (err?.name !== 'CalendarError') console.error('日曆帶入失敗:', err);
@@ -4622,11 +4656,24 @@ ${lines.join(NL)}${more}
                 }
                 if (Object.keys(merged).length) weeksByYear[year] = merged; else delete weeksByYear[year];
             }
-            await store.save({
+            let weeklyBaseByTeacher = cfg.weeklyBaseByTeacher || {};
+            const baseMapEl = document.getElementById('sw-base-map');
+            if (baseMapEl) {
+                const parsed = parseBaseMapText(baseMapEl.value);
+                if (parsed.errors.length) {
+                    this.showToast('逐人基本節數格式有誤：' + parsed.errors.slice(0, 3).join('；'), 'warning', 6000);
+                    return;
+                }
+                weeklyBaseByTeacher = parsed.map;
+            }
+            const payload = {
                 calendarId: document.getElementById('sw-calendar-id').value.trim(),
                 calendarApiKey: document.getElementById('sw-api-key').value.trim(),
                 weeksByYear,
-            });
+            };
+            // 逐人門檻沒有任何設定時不寫入該欄位：舊版 rules 不認得這個欄位，寫了會整份被拒，連「週數」都存不了
+            if (Object.keys(weeklyBaseByTeacher).length) payload.weeklyBaseByTeacher = weeklyBaseByTeacher;
+            await store.save(payload);
             this._swDirty = false;
             await this.refreshSettlementWeeksCard({ force: true });
             this.swMessage('');
@@ -4684,19 +4731,21 @@ ${lines.join(NL)}${more}
         const month = document.getElementById('settle-month').value;
         const btn = document.getElementById('generate-settlement-btn');
 
+        const exportBtn = document.getElementById('export-settlement-btn');
         try {
             if (btn) btn.disabled = true;
-            const { startDate, endDate } = this.settlementCalculator.getMonthDateRange(year, month);
-            const records = await this.dataManager.getSubstituteRecordsAsync(startDate, endDate);
-            await this.applySettlementWeeksOverride(year);
-
+            const { records, opts, semesterId } = await this.prepareSettlement(year, month);
             const settlementData = this.settlementCalculator.calculate(
-                year,
-                month,
-                this.dataManager.getScheduleData(),
-                records,
-                this.dataManager.getTeachers()
-            );
+                year, month, opts.segments[0].schedule, records, opts.segments[0].teachers, opts);
+
+            const src = document.getElementById('settlement-source');
+            if (src) src.textContent = `使用 ${semesterId} 學期的課表與名冊計算`;
+            const warnEl = document.getElementById('settlement-warnings');
+            if (warnEl) {
+                const ws = settlementData.warnings || [];
+                warnEl.innerHTML = ws.map(w => `<li>${esc(w)}</li>`).join('');
+                warnEl.classList.toggle('hidden', ws.length === 0);
+            }
 
             // 儲存結算資料供篩選使用
             this.currentSettlementData = settlementData;
@@ -4706,12 +4755,28 @@ ${lines.join(NL)}${more}
 
             this.renderSettlementTable(settlementData);
             document.getElementById('settlement-result').classList.remove('hidden');
+            if (exportBtn) exportBtn.disabled = false;
         } catch (err) {
             console.error('產生月結算失敗:', err);
+            // 失敗時不可留著上一個月的表格與來源標示（年月選單已換成新月份，舊數字會被誤當成新月份的結果）
+            this.clearSettlementResult();
+            if (exportBtn) exportBtn.disabled = true;
             this.notifySettlementError(err);
         } finally {
             if (btn) btn.disabled = false;
         }
+    }
+
+    /** 清空月結算結果區（表格、來源標示、警示列）並隱藏；產生失敗時呼叫。 */
+    clearSettlementResult() {
+        this.currentSettlementData = null;
+        const tbody = document.getElementById('settlement-tbody');
+        if (tbody) tbody.innerHTML = '';
+        const src = document.getElementById('settlement-source');
+        if (src) src.textContent = '';
+        const warnEl = document.getElementById('settlement-warnings');
+        if (warnEl) { warnEl.innerHTML = ''; warnEl.classList.add('hidden'); }
+        document.getElementById('settlement-result')?.classList.add('hidden');
     }
 
     /**
@@ -4785,17 +4850,9 @@ ${lines.join(NL)}${more}
 
         try {
             if (btn) btn.disabled = true;
-            const { startDate, endDate } = this.settlementCalculator.getMonthDateRange(year, month);
-            const records = await this.dataManager.getSubstituteRecordsAsync(startDate, endDate);
-            await this.applySettlementWeeksOverride(year);
-
+            const { records, opts } = await this.prepareSettlement(year, month);
             const settlementData = this.settlementCalculator.calculate(
-                year,
-                month,
-                this.dataManager.getScheduleData(),
-                records,
-                this.dataManager.getTeachers()
-            );
+                year, month, opts.segments[0].schedule, records, opts.segments[0].teachers, opts);
 
             // records 同時傳入，供「明細」分頁使用（內部以同一個 filterMonthlyRecords 篩月）
             this.settlementCalculator.exportToExcel(settlementData, year, month, records);
@@ -4881,6 +4938,10 @@ ${lines.join(NL)}${more}
             grade9Toggle.checked = this.dataManager.isGrade9Disabled();
             grade9Toggle.addEventListener('change', (e) => {
                 this.handleGrade9Toggle(e.target.checked);
+            });
+            // 只改生效日期（開關已開啟）時同樣寫回雲端
+            document.getElementById('grade9-effective-date')?.addEventListener('change', () => {
+                if (this.grade9ConfigStore && grade9Toggle.checked) this.handleGrade9Toggle(true);
             });
         }
 
@@ -5015,8 +5076,22 @@ ${lines.join(NL)}${more}
      * 處理「九年級已畢業」開關切換
      * @param {boolean} disabled - true 表示停用九年級課程
      */
-    handleGrade9Toggle(disabled) {
-        this.dataManager.setGrade9Disabled(disabled);
+    async handleGrade9Toggle(disabled) {
+        // P7：V2 改存雲端（依學期重置、可設生效日期），寫入成功才套用；失敗則還原開關
+        if (this.grade9ConfigStore) {
+            const toggle = document.getElementById('grade9-disabled-toggle');
+            try {
+                const active = await this.grade9ConfigStore.save(disabled, document.getElementById('grade9-effective-date')?.value || '');
+                this.dataManager.setGrade9Disabled(active);
+            } catch (err) {
+                console.error('儲存九年級畢業設定失敗:', err);
+                if (toggle) toggle.checked = !disabled;
+                this.showToast('儲存九年級設定失敗：' + (err?.message || '請查看 console'), 'error', 5000);
+                return;
+            }
+        } else {
+            this.dataManager.setGrade9Disabled(disabled);
+        }
         this.saveDataToStorage();
 
         // 重新渲染所有受開關影響的可見區塊（課表灰底、推薦/調課面板）

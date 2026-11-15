@@ -190,6 +190,7 @@ export class ScheduleParser {
         // 偵測欄位對應
         const headers = Object.keys(rawData[0]);
         const fieldMap = this.detectFieldMapping(headers);
+        const freqHeader = headers.find(h => String(h).trim() === '上課頻率') || null;
 
         console.log('偵測到的欄位對應:', fieldMap);
 
@@ -251,7 +252,7 @@ export class ScheduleParser {
             }
 
             // 新增課表資料
-            scheduleData.push({
+            const entry = {
                 weekday,
                 period,
                 className,
@@ -261,7 +262,10 @@ export class ScheduleParser {
                 rawSubject,      // 原始科目欄位值
                 courseName,      // 語言別/校訂課程名稱欄位值
                 category
-            });
+            };
+            // P7：「上課頻率」欄為 2 表示隔週上課，月結算每週節數以 0.5 計；每週（空白或 1）不加欄位，維持原格式
+            if (freqHeader && String(row[freqHeader] ?? '').trim() === '2') entry.frequency = 2;
+            scheduleData.push(entry);
 
             // 收集班級
             classSet.add(className);

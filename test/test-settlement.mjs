@@ -128,10 +128,13 @@ await suite.case('兼課教師與一般教師同一套算法（partTime 不影�
     eq(row(res, '王大明').overtimeHours, 0, '兼課的 B 超鐘點仍為 0');
 });
 
-await suite.case('不在名冊的教師不會出現在結算表（即使課表或紀錄有他）', () => {
+// 此條依 2026-11-10 審計修復計畫 P7 更正：教師集合＝名冊∪紀錄（原期望「名冊外不列入」本身是錯的）
+await suite.case('不在名冊的教師也會出現在結算表（課表或紀錄有他，鐘點照算）', () => {
     const res = run(115, 10, buildGoldenSchedule(), goldenRecordsForCalculator(), [{ name: '巫阿福' }]);
-    eq(res.map(r => r.teacherName), ['巫阿福'], '只列名冊中的教師');
-    eq(res[0].actualHours, 20, 'A 仍為 24−4=20');
+    // 手算：沿用黃金資料的數字，名冊外四位實際時數 黃大俠 84、史大俠 81、王大明 23、婁某 16；名冊內 A 仍為 24−4=20
+    eq(res.map(r => r.teacherName), ['黃大俠', '史大俠', '王大明', '巫阿福', '婁某'], '名冊外的人也列出');
+    eq(row(res, '巫阿福').actualHours, 20, 'A 仍為 24−4=20');
+    eq([row(res, '王大明').actualHours, row(res, '王大明').notInRoster], [23, true], 'B 名冊外但鐘點正確');
 });
 
 await suite.case('寒暑假月份有紀錄時：實際時數以 0 為下限，被代課減少仍計 1，代課者超鐘點 1', () => {

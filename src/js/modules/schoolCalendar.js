@@ -17,7 +17,19 @@
 export const SEMESTER_START_RE = /正式上課|開學典禮|開學日/;
 export const SEMESTER_END_RE   = /休業式|結業式/;
 export const HOLIDAY_RE        = /放假|補假|停課|颱風假/;
-export const NOT_HOLIDAY_RE    = /寒假|暑假/;
+export const NOT_HOLIDAY_RE    = /寒假|暑假|不放假|不停課|照常上課|照常上班|不補假/;
+// 只影響部分年級／班級的停課（例：九年級畢旅停課、七年級校外教學停課）：全校仍有課，不算放假。
+// 標題同時寫明全校時（例：全校停課、全校各年級放假）仍算放假。
+export const PARTIAL_GRADE_RE  = /[七八九789]\s*年級|[一二三]\s*年級|年級|[七八九]年\d*班|\d{3}班/;
+// 寫明「全年級」「七八九年級（三個年級全部）」也是全校，不是部分年級。
+export const WHOLE_SCHOOL_RE   = /全校|各年級|所有年級|全體|全年級|全部年級|[七7]\s*[、,，及和與]?\s*[八8]\s*[、,，及和與]?\s*[九9]\s*年級|[一1]\s*[、,，及和與]?\s*[二2]\s*[、,，及和與]?\s*[三3]\s*年級/;
+/** 標題是否為「放假」：符合放假用語、不屬於寒暑假／不放假，且不是只針對部分年級的停課。 */
+export function isHolidayTitle(title) {
+    const t = title || '';
+    if (!HOLIDAY_RE.test(t) || NOT_HOLIDAY_RE.test(t)) return false;
+    if (PARTIAL_GRADE_RE.test(t) && !WHOLE_SCHOOL_RE.test(t)) return false;
+    return true;
+}
 export const MAKEUP_RE         = /補行上班|補課/;
 
 const TAIPEI_OFFSET_MS = 8 * 3600 * 1000;
@@ -111,12 +123,15 @@ export function findSemesterRanges(events) {
     return { semesters, unpairedStarts };
 }
 
-function collectDays(events, includeRe, excludeRe) {
+function collectDays(events, includeRe, excludeRe, predicate = null) {
     const set = new Set();
     for (const ev of events) {
         const title = ev.summary || '';
-        if (!includeRe.test(title)) continue;
-        if (excludeRe && excludeRe.test(title)) continue;
+        if (predicate) { if (!predicate(title)) continue; }
+        else {
+            if (!includeRe.test(title)) continue;
+            if (excludeRe && excludeRe.test(title)) continue;
+        }
         for (const d of eventDays(ev)) set.add(d);
     }
     return set;
@@ -136,7 +151,12 @@ export function computeWeeksByMonth(events, rocYear) {
     const inWindow = (ymd) => { const t = ymdToUtc(ymd); return t >= winStart && t < winEnd; };
 
     const { semesters, unpairedStarts } = findSemesterRanges(events);
-    const holidays = collectDays(events, HOLIDAY_RE, NOT_HOLIDAY_RE);
+    const holidays = collectDays(events, HOLIDAY_RE, NOT_HOLIDAY_RE, isHolidayTitle);
+    // 只影響部分年級的停課：不扣全校週數，列給使用者人工確認
+    const partialClosures = events
+        .filter(ev => HOLIDAY_RE.test(ev.summary || '') && !NOT_HOLIDAY_RE.test(ev.summary || '') && !isHolidayTitle(ev.summary))
+        .map(ev => ({ title: ev.summary || '', days: eventDays(ev) }))
+        .filter(x => x.days.length);
     const rawMakeups = collectDays(events, MAKEUP_RE);
 
     const covered = new Set();
@@ -181,6 +201,7 @@ export function computeWeeksByMonth(events, rocYear) {
         holidays: [...holidays].filter(inWindow).sort(),
         makeups: [...makeups].filter(inWindow).sort(),
         unpairedStarts,
+        partialClosures,
     };
 }
 

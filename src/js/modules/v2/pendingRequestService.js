@@ -372,7 +372,16 @@ export async function approveRequest(reqId) {
             },
             commit: async (seq) => {
                 if (!detailWritten) {
-                    const reqDetail = await dataSvc.getRequestDetail(reqId);
+                    // P7：讀不到私有明細時中止核准（不可當成「沒有明細」，否則假別遺失、公假被誤扣時數）
+                    let reqDetail;
+                    try {
+                        reqDetail = await dataSvc.getRequestDetailStrict(reqId);
+                    } catch (readErr) {
+                        const e = new Error('讀不到這筆申請的假別明細，為避免假別遺失造成月結算誤扣時數，已中止核准。請檢查網路後重試');
+                        e.code = 'DETAIL_READ_FAILED';
+                        e.cause = readErr;
+                        throw e;
+                    }
                     if (reqDetail) {
                         // 複製請求的私有明細到新紀錄底下（同一批當事人，approver 本來就不受 ACL 限制，
                         // 不需要因為核准動作而擴增名單）。
