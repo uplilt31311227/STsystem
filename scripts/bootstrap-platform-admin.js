@@ -9,11 +9,11 @@
  *
  * 用法：
  *   node scripts/bootstrap-platform-admin.js --uid=abc123              # 預設 --dry-run，只印計畫
- *   node scripts/bootstrap-platform-admin.js --uid=abc123 --dry-run=false   # 實際寫入
+ *   node scripts/bootstrap-platform-admin.js --uid=abc123 --apply   # 實際寫入
  *   node scripts/bootstrap-platform-admin.js --email=a@b.com           # 用 email 查 uid 後印計畫
- *   node scripts/bootstrap-platform-admin.js --email=a@b.com --dry-run=false
+ *   node scripts/bootstrap-platform-admin.js --email=a@b.com --apply
  *   node scripts/bootstrap-platform-admin.js --list                    # 列出目前所有 platformAdmins
- *   node scripts/bootstrap-platform-admin.js --remove --uid=abc123 --dry-run=false  # 移除
+ *   node scripts/bootstrap-platform-admin.js --remove --uid=abc123 --apply  # 移除
  *
  * opus 驗收 L6：本腳本以「新增」為主要用途，`--remove` 只是最小必要的移除功能，並內建
  * 「最後一位平台管理者」保護——移除後若名冊會變空，預設拒絕執行，需明確加 `--force-remove-last`
@@ -34,14 +34,23 @@
  */
 const { execSync } = require('child_process');
 
-const PROJECT        = 'stsystem-9d5fe';
+const safety = require('./lib/script-safety');
+const TARGET = safety.resolveTarget(process.env);
+const PROJECT = TARGET.project;
 const OPERATOR_EMAIL  = 'operator@example.edu.tw';
-const FIRESTORE_BASE = `https://firestore.googleapis.com/v1/projects/${PROJECT}/databases/(default)/documents`;
-const IDENTITY_TOOLKIT_BASE = `https://identitytoolkit.googleapis.com/v1/projects/${PROJECT}`;
+const FIRESTORE_BASE = `${safety.databaseBase(TARGET)}/documents`;
+// emulator 模式：改打 Auth emulator（FIREBASE_AUTH_EMULATOR_HOST），不得對外打 identitytoolkit。
+function identityToolkitBase() {
+    if (!TARGET.emulator) return `https://identitytoolkit.googleapis.com/v1/projects/${PROJECT}`;
+    const h = process.env.FIREBASE_AUTH_EMULATOR_HOST;
+    if (!h || !safety.isLocalEmulatorHost(h)) {
+        throw new Error('emulator 模式下以 --email= 查 uid 需設定 FIREBASE_AUTH_EMULATOR_HOST（127.0.0.1:<埠>），目前：' + (h || '（未設定）'));
+    }
+    return `http://${h}/identitytoolkit.googleapis.com/v1/projects/${PROJECT}`;
+}
 
 function getToken() {
-    return execSync(`gcloud auth print-access-token --account=${OPERATOR_EMAIL}`)
-        .toString().trim();
+    return safety.getAccessToken(TARGET, OPERATOR_EMAIL);
 }
 
 function buildHeaders(token) {
@@ -94,7 +103,7 @@ async function firestoreListCollection(collectionPath) {
  */
 async function lookupUidByEmail(email) {
     const token = getToken();
-    const res = await fetch(`${IDENTITY_TOOLKIT_BASE}/accounts:lookup`, {
+    const res = await fetch(`${identityToolkitBase()}/accounts:lookup`, {
         method:  'POST',
         headers: buildHeaders(token),
         body:    JSON.stringify({ email: [email] }),
@@ -130,40 +139,30 @@ function docFieldsToObj(doc) {
 }
 
 function parseArgs() {
-    const args = process.argv.slice(2);
-    const flags = { uid: null, email: null, list: false, remove: false, dryRun: true, note: null, forceRemoveLast: false };
-    for (const a of args) {
-        if (a === '--list') flags.list = true;
-        else if (a === '--remove') flags.remove = true;
-        else if (a === '--force-remove-last') flags.forceRemoveLast = true;
-        else if (a.startsWith('--uid=')) flags.uid = a.slice('--uid='.length);
-        else if (a.startsWith('--email=')) flags.email = a.slice('--email='.length).toLowerCase().trim();
-        else if (a.startsWith('--note=')) flags.note = a.slice('--note='.length);
-        else if (a === '--dry-run' || a === '--dry-run=true') flags.dryRun = true;
-        else if (a === '--dry-run=false') flags.dryRun = false;
-        else {
-            console.error(`❌ 未知參數：${a}`);
-            printUsage();
-            process.exit(2);
-        }
+    try {
+        return require('./lib/cli-args').parseAdminArgs(process.argv.slice(2));
+    } catch (e) {
+        console.error(`❌ ${e.message}`);
+        printUsage();
+        process.exit(2);
     }
-    return flags;
 }
 
 function printUsage() {
     console.log('用法：');
-    console.log('  node scripts/bootstrap-platform-admin.js --uid=<uid> [--note="說明"] [--dry-run=false]');
-    console.log('  node scripts/bootstrap-platform-admin.js --email=<email> [--dry-run=false]');
+    console.log('  node scripts/bootstrap-platform-admin.js --uid=<uid> [--note="說明"] [--apply]');
+    console.log('  node scripts/bootstrap-platform-admin.js --email=<email> [--apply]');
     console.log('  node scripts/bootstrap-platform-admin.js --list');
-    console.log('  node scripts/bootstrap-platform-admin.js --remove --uid=<uid> [--dry-run=false]');
-    console.log('  node scripts/bootstrap-platform-admin.js --remove --uid=<uid> --force-remove-last --dry-run=false');
+    console.log('  node scripts/bootstrap-platform-admin.js --remove --uid=<uid> [--apply]');
+    console.log('  node scripts/bootstrap-platform-admin.js --remove --uid=<uid> --force-remove-last --apply');
     console.log('      （--remove 目標是「目前唯一」的平台管理者時，預設會被拒絕；確定要移除到空名冊才加這個旗標）');
-    console.log('（不帶 --dry-run=false 一律只印計畫、不寫入，這是預設安全閘）');
+    console.log('（不帶 --apply 一律只印計畫、不寫入，這是預設安全閘；--dry-run／--dry-run=true 與 --apply 並存時以 dry-run 為準；--dry-run=false 為相容寫法，等同 --apply）');
     console.log('（opus 驗收 L6：本腳本以新增為主要用途，--remove 只做最小必要的移除功能，並內建「最後一位管理者」保護）');
 }
 
 async function main() {
     const flags = parseArgs();
+    safety.targetBanner(TARGET, { action: flags.list ? '列出平台管理者（唯讀）' : flags.remove ? '移除平台管理者' : '新增平台管理者', apply: flags.list ? undefined : !flags.dryRun }).forEach(l => console.log(l));
 
     if (flags.list) {
         console.log(`📡 列出 platformAdmins（專案 ${PROJECT}）\n`);
@@ -210,13 +209,13 @@ async function main() {
                 `   也沒有其他 platformAdmin 帳號可以立即補建（仍可用本腳本以其他管理者身份重建，\n` +
                 `   但那需要「先有另一個能執行本腳本的人」，等於自我鎖死）。\n` +
                 `   若確定要移除（例如帳號已由其他管理者妥善接手，且會立即用 --uid= 補建新的），\n` +
-                `   請加上 --force-remove-last --dry-run=false 明確表達意圖。`
+                `   請加上 --force-remove-last --apply 明確表達意圖。`
             );
             process.exit(2);
         }
         console.log(`📋 計畫：刪除 ${docPath}`);
         if (flags.dryRun) {
-            console.log('🚧 --dry-run（預設）：不會實際刪除。加上 --dry-run=false 才會真的執行。');
+            console.log('🚧 dry-run（預設）：不會實際刪除。加上 --apply 才會真的執行。');
             return;
         }
         await firestoreDelete(docPath);
@@ -238,7 +237,7 @@ async function main() {
     console.log(`📋 計畫：建立 ${docPath}`);
     console.log(`   欄位：${JSON.stringify({ addedAt: '(now)', addedBy: OPERATOR_EMAIL, note: flags.note || '(空)' })}`);
     if (flags.dryRun) {
-        console.log('🚧 --dry-run（預設）：不會實際寫入。確認無誤後加上 --dry-run=false 才會真的執行。');
+        console.log('🚧 dry-run（預設）：不會實際寫入。確認無誤後加上 --apply 才會真的執行。');
         return;
     }
     await firestorePatch(docPath, fields);

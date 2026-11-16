@@ -9,7 +9,7 @@
 import { Buffer } from 'node:buffer';
 
 import {
-    ACCOUNTS, loginStable, gotoTab, shot, bodyText, waitForText,
+    ACCOUNTS, loginStable, gotoTab, shot, bodyText, waitForText, readServer,
 } from './helpers.mjs';
 import { Suite, eq, ok, includes } from '../scenarios/harness.mjs';
 import { ALPHA, buildSchoolFixture } from '../fixtures/school-fixture.mjs';
@@ -147,11 +147,7 @@ export async function run(browser) {
             ok(blocked, `有在途申請時應擋下切換（畫面：${(await bodyText(page)).slice(0, 200)}）`);
 
             // 確認真的沒有切換
-            const cfg = await page.evaluate(async () => {
-                const fm = window.firebaseModules, db = fm.getFirestore();
-                const s = await fm.getDoc(fm.doc(db, 'schools/demo-alpha/config/main'));
-                return s.data()?.currentSemester;
-            });
+            const cfg = (await readServer(page, 'schools/demo-alpha/config/main'))?.currentSemester;
             eq(cfg, ALPHA.currentSemester, '被擋下後目前學期不應被改動');
             await shot(page, '03-semester-blocked');
         });
@@ -224,57 +220,30 @@ export async function run(browser) {
         });
 
         await suite.case('課表匯入後，新課表已同步到雲端（其他人也會看到）', async () => {
-            const cloud = await page.evaluate(async () => {
-                const fm = window.firebaseModules, db = fm.getFirestore();
-                const s = await fm.getDoc(fm.doc(db, 'schools/demo-alpha/schedules/115-1'));
-                const d = s.data() || {};
-                return { n: d.scheduleData?.length ?? -1, classes: (d.classes || []).length };
-            });
+            const d = (await readServer(page, 'schools/demo-alpha/schedules/115-1')) || {};
+            const cloud = { n: d.scheduleData?.length ?? -1, classes: (d.classes || []).length };
             eq(cloud.classes, 3, '雲端課表的班級數應同步更新');
             ok(cloud.n > 0 && cloud.n < 306, `雲端課表節數應已更新（實際 ${cloud.n}）`);
         });
 
         await suite.case('課表匯入覆寫後，被覆寫的舊課表（306 節）已存成「匯入前自動備份」，可從匯入紀錄還原', async () => {
-            const r = await page.evaluate(async () => {
-                const fm = window.firebaseModules, db = fm.getFirestore();
-                // 只採信伺服器結果：getDocs 在 emulator 斷線時會靜默回傳本機快取（metadata.fromCache），
-                // 此時重試至多 ~20 秒；仍是快取就直接失敗，不拿快取內容下判斷
-                let col = null;
-                for (let i = 0; i < 20; i++) {
-                    col = await fm.getDocs(fm.collection(db, 'schools/demo-alpha/schedules/115-1/imports'));
-                    if (!col.metadata.fromCache) break;
-                    await new Promise(r => setTimeout(r, 1000));
-                }
-                if (col.metadata.fromCache) throw new Error('imports 子集合只讀到本機快取，無法確認伺服器內容');
-                const pre = col.docs.map(d => d.data()).find(d => d.source === 'pre_import');
-                return pre ? { n: pre.snapshot?.scheduleData?.length ?? -1, versionNo: pre.versionNo } : null;
-            });
+            // 只採信伺服器結果（readServer 遇 fromCache 會重試，仍是快取就丟錯）
+            const imports = await readServer(page, 'schools/demo-alpha/schedules/115-1/imports', { kind: 'collection' });
+            const pre = imports.find(d => d.source === 'pre_import');
+            const r = pre ? { n: pre.snapshot?.scheduleData?.length ?? -1, versionNo: pre.versionNo } : null;
             ok(r, '應有 source=pre_import 的備份紀錄');
             eq(r.n, 306, '備份快照應是被覆寫前的完整課表（306 節）');
             eq(r.versionNo, null, '備份不佔版本號');
         });
 
         await suite.case('課表匯入後，主文件帶 lastImport 且 imports 子集合多一版（含快照）', async () => {
-            const r = await page.evaluate(async () => {
-                const fm = window.firebaseModules, db = fm.getFirestore();
-                const s = await fm.getDoc(fm.doc(db, 'schools/demo-alpha/schedules/115-1'));
-                const li = (s.data() || {}).lastImport || null;
-                // 只採信伺服器結果：getDocs 在 emulator 斷線時會靜默回傳本機快取（metadata.fromCache），
-                // 此時重試至多 ~20 秒；仍是快取就直接失敗，不拿快取內容下判斷
-                let col = null;
-                for (let i = 0; i < 20; i++) {
-                    col = await fm.getDocs(fm.collection(db, 'schools/demo-alpha/schedules/115-1/imports'));
-                    if (!col.metadata.fromCache) break;
-                    await new Promise(r => setTimeout(r, 1000));
-                }
-                if (col.metadata.fromCache) throw new Error('imports 子集合只讀到本機快取，無法確認伺服器內容');
-                const docs = col.docs.map(d => d.data());
-                return {
-                    li, n: docs.length,
-                    hasSnapshot: docs.some(d => Array.isArray(d.snapshot?.scheduleData) && d.snapshot.scheduleData.length > 0),
-                    sameVersion: docs.some(d => li && d.versionNo === li.versionNo),
-                };
-            });
+            const li = ((await readServer(page, 'schools/demo-alpha/schedules/115-1')) || {}).lastImport || null;
+            const docs = await readServer(page, 'schools/demo-alpha/schedules/115-1/imports', { kind: 'collection' });
+            const r = {
+                li, n: docs.length,
+                hasSnapshot: docs.some(d => Array.isArray(d.snapshot?.scheduleData) && d.snapshot.scheduleData.length > 0),
+                sameVersion: docs.some(d => li && d.versionNo === li.versionNo),
+            };
             ok(r.li && r.li.fileName && r.li.importedAt, `主文件應有 lastImport（實際 ${JSON.stringify(r.li)}）`);
             eq(r.li.source, 'file', 'lastImport.source 應為 file');
             ok(r.li.importedBy?.name, 'lastImport 應記錄匯入者');

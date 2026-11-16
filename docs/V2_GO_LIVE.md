@@ -112,7 +112,7 @@ git push preview feature/permission-system:main
 # 安全規則（改動 firestore.rules 後才需要）
 node scripts/firestore-deploy-rules.js --list   # 先看現況
 node scripts/firestore-deploy-rules.js --dry    # 語法驗證
-node scripts/firestore-deploy-rules.js          # 正式發布
+node scripts/firestore-deploy-rules.js --apply --confirm=<專案ID>   # 正式發布（不帶參數只印計畫、不發布）
 ```
 
 正式站（master → GitHub Pages）目前仍是 V1 v1.13.2，**V2 尚未合併回 master**，全校現行作業不受任何影響。

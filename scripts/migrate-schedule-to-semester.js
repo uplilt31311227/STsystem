@@ -10,7 +10,7 @@
  * 新路徑。本腳本讓遷移可以「主動」完成，不必等下一次課表異動。
  *
  * 用法：
- *   node scripts/migrate-schedule-to-semester.js --dry-run [--school=<id>] [--semester=<id>]
+ *   node scripts/migrate-schedule-to-semester.js [--school=<id>] [--semester=<id>]
  *   node scripts/migrate-schedule-to-semester.js [--school=<id>] [--semester=<id>]
  *
  *   --school:    指定 schoolId，預設 inhu（正式資料所在）。
@@ -37,15 +37,18 @@
  */
 const { execSync } = require('child_process');
 
-const PROJECT   = 'stsystem-9d5fe';
+const safety = require('./lib/script-safety');
+const TARGET = safety.resolveTarget(process.env);
+const PROJECT = TARGET.project;
 const SCHOOL_ID = process.argv.find(a => a.startsWith('--school='))?.split('=')[1] || 'inhu';
 const TARGET_SEMESTER_ARG = process.argv.find(a => a.startsWith('--semester='))?.split('=')[1] || null;
-const DRY_RUN   = process.argv.includes('--dry-run');
-const BASE      = `https://firestore.googleapis.com/v1/projects/${PROJECT}/databases/(default)/documents`;
+const WRITE_MODE = safety.parseWriteMode(process.argv.slice(2));
+const DRY_RUN = WRITE_MODE.dryRun;   // 預設 dry-run；實際寫入需 --apply
+safety.targetBanner(TARGET, { action: '遷移課表到學期文件', apply: WRITE_MODE.apply }).forEach(l => console.log(l));
+const BASE      = `${safety.databaseBase(TARGET)}/documents`;
 
 function getToken() {
-    return execSync('gcloud auth print-access-token --account=operator@example.edu.tw')
-        .toString().trim();
+    return safety.getAccessToken(TARGET, 'operator@example.edu.tw');
 }
 
 function buildHeaders(token) {
@@ -95,7 +98,7 @@ function docFieldsToObj(doc) {
 }
 
 async function main() {
-    console.log(`📡 課表遷移 → schools/${SCHOOL_ID}（專案 ${PROJECT}）${DRY_RUN ? '  [--dry-run，不寫入]' : ''}\n`);
+    console.log(`📡 課表遷移 → schools/${SCHOOL_ID}（專案 ${PROJECT}）${DRY_RUN ? '  [dry-run，不寫入]' : ''}\n`);
 
     let targetSemester = TARGET_SEMESTER_ARG;
     if (!targetSemester) {
@@ -133,7 +136,7 @@ async function main() {
     console.log('');
 
     if (DRY_RUN) {
-        console.log('（--dry-run：僅顯示計畫，不會寫入。確認無誤後移除 --dry-run 才會實際遷移）');
+        console.log('（dry-run（預設）：僅顯示計畫，不會寫入。確認無誤後加上 --apply 才會實際寫入）');
         process.exit(0);
     }
 

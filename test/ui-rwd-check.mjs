@@ -13,17 +13,20 @@
  * 長假別事由的種子紀錄（模擬真實資料長度），再展開查詢區間涵蓋所有種子日期後斷言，
  * 確保這支測試真的在驗證有內容寬度的表格。
  *
- * 前置：先啟動本機伺服器（預設 http://localhost:8000）：
- *   python start-server.py
+ * 前置：emulator（npm run emu）、種子資料（npm run seed）與本機伺服器（預設 8000，可用 E2E_PORT 指定）。
+ * 2026-11 起舊版（V1）網址會轉址到 V2，因此本檢查改為以 emulator 教務主任帳號正常登入後，
+ * 把 viewport 縮成 375×667 再走訪各分頁（不移除登入遮罩，不改任何 body class）。
  *
  * 用法：node test/ui-rwd-check.mjs
  */
-import { chromium } from 'playwright';
+import { assertEmulator, mustSetDoc } from './emulator/emu-client.mjs';
+import { launchBrowser, loginStable, ACCOUNTS, APP_BASE } from './e2e/helpers.mjs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const BASE_URL  = 'http://localhost:8000/';
+// 埠由 e2e/helpers.mjs 決定（預設 8000，E2E_PORT 可覆寫）；走 emulator 的 V2 網址並以 emulator 教務主任帳號正常登入
+const BASE_URL  = APP_BASE;
 const CSV_PATH  = path.join(__dirname, 'test-data.csv');
 const VIEWPORT  = { width: 375, height: 667 };
 
@@ -79,27 +82,48 @@ async function switchTab(page, tabId) {
 }
 
 (async () => {
-    const browser = await chromium.launch();
-    const context = await browser.newContext({ viewport: VIEWPORT });
-    const page = await context.newPage();
+    // V2 的紀錄來自 Firestore：登入前以 admin 身分把長字串種子紀錄寫入 emulator（只寫 emulator，host 固定 127.0.0.1）
+    await assertEmulator();
+    for (const r of SEED_RECORDS) {
+        await mustSetDoc(`schools/demo-alpha/substituteRecords/${r.id}`, {
+            id: r.id, type: '代課', date: r.date, weekday: r.weekday, period: r.period, className: r.className,
+            subject: r.subject, domain: '語文', originalTeacher: r.originalTeacher, substituteTeacher: r.substituteTeacher,
+            leaveTypeName: r.leaveTypeName, semesterId: '115-1', isSelfSwap: false,
+            createdAt: '2026-09-07T08:00:00.000Z', approvedAt: '2026-09-07T10:00:00.000Z',
+        });
+    }
+    const browser = await launchBrowser();
+    const { page } = await loginStable(browser, ACCOUNTS.director, { needSchedule: true });
+    await page.setViewportSize(VIEWPORT);
+    await page.waitForTimeout(500);
 
     const pageIssues = [];
     page.on('pageerror', e => pageIssues.push(`pageerror: ${e.message}`));
     page.on('console', m => { if (m.type() === 'error') pageIssues.push(`console: ${m.text()}`); });
 
-    console.log(`開啟 ${BASE_URL}（375×667，V1 穩定版）`);
-    await page.goto(BASE_URL, { waitUntil: 'networkidle' });
-    await page.waitForTimeout(500);
+    console.log(`已登入 ${BASE_URL}（emulator 教務主任），viewport 375×667`);
+    await switchTab(page, 'schedule');
 
     console.log('\n[課表管理／課表匯入] 初始狀態（未載入資料，Stage 2 起課表匯入為課表管理分頁預設 sub-view）');
     record('課表管理／課表匯入（初始）', await measure(page));
 
     // 上傳測試課表，解鎖各分頁內容
     console.log('\n上傳 test-data.csv...');
+    // 雲端課表訂閱送達前匯入會被擋下（isReady() 為 false），先等它就緒（emulator 的 Listen stream 偶發停滯數十秒）
+    await page.waitForFunction(() => window.app?.scheduleImportContext?.isReady?.() === true, null, { timeout: 120000 });
     await page.setInputFiles('#schedule-file', CSV_PATH);
+    // 課表匯入會先跳出「確認匯入課表」預覽對話框（P5），必須按確認才會寫入；
+    // 若要求勾選學期確認（ack）先勾選，確認鈕解除 disabled 後再按。
+    await page.waitForSelector('[data-rd="confirm"]', { timeout: 90000 });
+    record('匯入預覽對話框（375 寬）', await measure(page));
+    const ack = await page.$('[data-rd="ack"]');
+    if (ack) await ack.check();
+    await page.waitForSelector('[data-rd="confirm"]:not([disabled])', { timeout: 5000 });
+    await page.click('[data-rd="confirm"]');
+    await page.waitForSelector('[data-rd="confirm"]', { state: 'detached', timeout: 30000 });
     // 教師屬性表格 Stage 2 起搬到獨立的「教師管理」分頁，上傳當下仍停留在課表管理分頁，
     // 改等同一 sub-view 內、上傳後才會出現的 #schedule-status 狀態盒作為「已解析」訊號。
-    await page.waitForSelector('#schedule-status:not(.hidden)', { timeout: 5000 }).catch(() => {
+    await page.waitForSelector('#schedule-status:not(.hidden)', { timeout: 30000 }).catch(() => {
         console.log('  ⚠ 課表狀態盒未在時限內出現，繼續嘗試');
     });
     await page.waitForTimeout(500);
@@ -125,28 +149,24 @@ async function switchTab(page, tabId) {
     await page.waitForTimeout(600);
     record('調代課申請（含課表格）', await measure(page));
 
-    console.log('\n[調代課紀錄] 注入 6 筆含長字串種子紀錄（修正「空表格空轉測試」缺陷）');
-    await page.evaluate((seedRecords) => {
-        const app = window.app;
-        seedRecords.forEach(r => app.dataManager.addSubstituteRecord(r));
-        app.saveDataToStorage();
-    }, SEED_RECORDS);
+    console.log('[調代課紀錄] 種子 6 筆含長字串紀錄（V2 紀錄來自雲端，改在登入前以 admin 身分寫入 emulator）');
     await switchTab(page, 'records');
-    // 種子日期跨 2026-01 ~ 2026-06，明確展開查詢區間涵蓋全部，不依賴「本月」預設值
-    await page.fill('#record-start-date', '2000-01-01');
-    await page.fill('#record-end-date', '2099-12-31');
-    await page.click('#search-records-btn');
-    await page.waitForTimeout(500);
-    const seededRowCount = await page.evaluate(() => document.querySelectorAll('#records-tbody tr').length);
+    // 等 V2 紀錄表渲染出種子的長班級名（用第一筆班級名的前綴判斷）
+    const marker = SEED_RECORDS[0].className.slice(0, 6);
+    await page.waitForFunction((m) => document.body.innerText.includes(m), marker, { timeout: 60000 }).catch(() => {});
+    const seededRowCount = await page.evaluate((names) =>
+        [...document.querySelectorAll('table tbody tr')].filter(tr => names.some(n => tr.innerText.includes(n))).length,
+        SEED_RECORDS.map(r => r.className));
     console.log(`  種子紀錄實際渲染列數：${seededRowCount}（種入 ${SEED_RECORDS.length} 筆）`);
     if (seededRowCount !== SEED_RECORDS.length) {
-        console.log('  ⚠ 渲染列數與種入筆數不符，可能查詢區間或篩選條件有誤');
+        console.log(`  ⚠ 種子紀錄渲染列數 ${seededRowCount} 不等於種入筆數 ${SEED_RECORDS.length}（查詢區間或篩選條件有誤，此頁溢出檢查可能空轉）`);
+        results.push({ label: '調代課紀錄種子未渲染', scrollWidth: 0, innerWidth: 0, pass: false });
     }
     record(`調代課紀錄（種子 ${SEED_RECORDS.length} 筆，含長姓名/長科目/長事由）`, await measure(page));
 
     console.log('\n[月結算] 嘗試產生結算表');
     await switchTab(page, 'settlement');
-    await page.click('#generate-settlement-btn').catch(() => {});
+    await page.click('#generate-settlement-btn', { timeout: 3000 }).catch(() => {});
     await page.waitForTimeout(600);
     record('月結算', await measure(page));
 

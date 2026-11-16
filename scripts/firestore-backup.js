@@ -37,7 +37,9 @@ const path          = require('node:path');
 
 /** 正式專案；測試站用 --project= 覆寫，避免把動作做錯邊。 */
 const DEFAULT_PROJECT = 'stsystem-9d5fe';
-const PROJECT     = process.argv.find(a => a.startsWith('--project='))?.split('=')[1] || DEFAULT_PROJECT;
+const safety = require('./lib/script-safety');
+const TARGET = safety.resolveTarget(process.env, process.argv.find(a => a.startsWith('--project='))?.split('=')[1]);
+const PROJECT = TARGET.project;
 
 // PROJECT 會被組進備份輸出路徑（見 BACKUP_ROOT），所以先擋掉不合法的專案 ID——
 // Firebase 專案 ID 只會是小寫英數與連字號，不先擋就可能用 ../ 把備份寫到目錄外。
@@ -47,11 +49,9 @@ if (!/^[a-z][a-z0-9-]{3,29}$/.test(PROJECT)) {
 }
 
 // 目標專案一律先印出來，免得動作做錯邊才發現。
-console.log(PROJECT === DEFAULT_PROJECT
-    ? `🎯 目標專案：${PROJECT}（正式）`
-    : `🎯 目標專案：${PROJECT}（非正式專案）`);
+safety.targetBanner(TARGET).forEach(l => console.log(l));
 const SCHOOL_ID   = process.argv.find(a => a.startsWith('--school='))?.split('=')[1] || 'inhu';
-const BASE        = `https://firestore.googleapis.com/v1/projects/${PROJECT}/databases/(default)/documents`;
+const BASE        = `${safety.databaseBase(TARGET)}/documents`;
 const BACKUP_ROOT = path.join(__dirname, '..', 'backups', PROJECT === DEFAULT_PROJECT ? 'firestore' : `firestore-${PROJECT}`);
 
 const SUBCOMMAND = process.argv.slice(2).filter(a => !a.startsWith('--project='))[0];
@@ -69,8 +69,7 @@ const PLAIN_COLLECTIONS = ['teachers', 'userMappings', 'config', 'operationLogs'
 const PRIVATE_DETAIL_COLLECTIONS = ['substituteRecords', 'pendingRequests'];
 
 function getToken() {
-    return execSync('gcloud auth print-access-token --account=operator@example.edu.tw')
-        .toString().trim();
+    return safety.getAccessToken(TARGET, 'operator@example.edu.tw');
 }
 
 /**
@@ -241,8 +240,10 @@ async function patchDoc(relPath, fields) {
 
 async function doRestore() {
     const dirArg  = process.argv.find(a => a.startsWith('--dir='))?.split('=')[1];
-    const yes     = process.argv.includes('--yes');
-    const dryRun  = process.argv.includes('--dry-run');
+    const wm      = safety.parseWriteMode(process.argv.slice(2), { applyAliases: ['--yes'] });   // --apply 或舊旗標 --yes
+    const yes     = wm.apply;
+    const dryRun  = wm.explicitDryRun;
+    safety.targetBanner(TARGET, { action: 'restore 還原備份', apply: wm.apply }).forEach(l => console.log(l));
 
     if (!dirArg) {
         console.error('❌ 缺少 --dir=<備份資料夾>，用法：node scripts/firestore-backup.js restore --dir=<路徑> [--yes]');

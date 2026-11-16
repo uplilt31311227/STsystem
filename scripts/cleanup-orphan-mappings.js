@@ -46,9 +46,13 @@ const path          = require('node:path');
 
 /** 正式專案；測試站用 --project= 覆寫，避免把動作做錯邊。 */
 const DEFAULT_PROJECT = 'stsystem-9d5fe';
-const PROJECT   = process.argv.find(a => a.startsWith('--project='))?.split('=')[1] || DEFAULT_PROJECT;
+const safety = require('./lib/script-safety');
+const TARGET = safety.resolveTarget(process.env, process.argv.find(a => a.startsWith('--project='))?.split('=')[1]);
+const PROJECT = TARGET.project;
 const SCHOOL_ID = process.argv.find(a => a.startsWith('--school='))?.split('=')[1] || 'inhu';
-const EXECUTE   = process.argv.includes('--yes');
+const WRITE_MODE = safety.parseWriteMode(process.argv.slice(2), { applyAliases: ['--yes'] });   // --apply 或舊旗標 --yes
+const EXECUTE   = WRITE_MODE.apply;
+safety.targetBanner(TARGET, { action: '刪除孤兒 userMappings', apply: WRITE_MODE.apply }).forEach(l => console.log(l));
 
 // 與 firestore-backup.js 同款的專案 ID 驗證：Firebase 專案 ID 只會是小寫英數與連字號。
 if (!/^[a-z][a-z0-9-]{3,29}$/.test(PROJECT)) {
@@ -62,16 +66,12 @@ if (!/^[a-z0-9_-]{1,50}$/.test(SCHOOL_ID)) {
 }
 
 // 目標專案一律先印出來，免得動作做錯邊才發現。
-console.log(PROJECT === DEFAULT_PROJECT
-    ? `🎯 目標專案：${PROJECT}（正式）`
-    : `🎯 目標專案：${PROJECT}（非正式專案）`);
 
-const BASE        = `https://firestore.googleapis.com/v1/projects/${PROJECT}/databases/(default)/documents`;
+const BASE        = `${safety.databaseBase(TARGET)}/documents`;
 const BACKUP_ROOT = path.join(__dirname, '..', 'backups', PROJECT === DEFAULT_PROJECT ? 'firestore' : `firestore-${PROJECT}`, 'orphan-mappings');
 
 function getToken() {
-    return execSync('gcloud auth print-access-token --account=operator@example.edu.tw')
-        .toString().trim();
+    return safety.getAccessToken(TARGET, 'operator@example.edu.tw');
 }
 
 async function listCollection(collectionPath) {

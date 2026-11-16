@@ -70,11 +70,21 @@ Firebase config 為前端公開設定（非機密），已包含在 `index.html`
 ### Firestore 安全規則
 規則檔 `firestore.rules` 為 source of truth。部署：
 ```bash
-node scripts/firestore-deploy-rules.js          # 建立 ruleset 並發布 release
-node scripts/firestore-deploy-rules.js --list   # 觀察目前 release 與最近 ruleset
-node scripts/firestore-deploy-rules.js --dry    # 只建立 ruleset 不發布
+node scripts/firestore-deploy-rules.js                              # 預設只印目標專案、git 分支與 commit、將做的事，不呼叫任何 API
+node scripts/firestore-deploy-rules.js --list                       # 觀察目前 release 與最近 ruleset（唯讀）
+node scripts/firestore-deploy-rules.js --dry                        # 只建立 ruleset 不發布
+node scripts/firestore-deploy-rules.js --apply --confirm=stsystem-9d5fe   # 實際發布（confirm 必須等於目標專案 ID）
 ```
+實際發布前腳本會檢查 git 工作樹（已追蹤檔案）必須乾淨，並印出目前 commit；不乾淨就拒絕。測試站用 `--project=<測試專案ID>`，`--confirm` 要填同一個 ID。
 認證：透過 `gcloud auth print-access-token --account=operator@example.edu.tw`。
+
+### 管理腳本（scripts/）的安全約定
+- 會寫入或刪除的腳本一律**預設 dry-run**，要實際執行必須明確加 `--apply`（舊旗標 `--yes` 仍相容；`--apply` 與 `--dry-run`／`--dry-run=true` 同時出現時以 dry-run 為準；`--dry-run=false` 只代表「未指定 dry-run」，不等於 `--apply`，唯一例外是 `bootstrap-platform-admin`）。涵蓋：`backfill-semester-id`、`backfill-user-directory`、`firestore-backfill-emailindex`、`migrate-schedule-to-semester`、`firestore-bootstrap-inhu`、`cleanup-operation-logs`、`cleanup-orphan-mappings`、`create-indexes`、`firestore-backup.js restore`、`bootstrap-platform-admin`（建議寫法為 `--apply`；`--dry-run=false` 為相容寫法，等同 `--apply`；但只要同時出現 `--dry-run` 或 `--dry-run=true` 就一律不寫入）。
+- 每支腳本啟動時先印「目標專案：<ID>（正式／非正式／emulator）」；唯讀腳本（`firestore-health-check`、`firestore-snapshot`、`firestore-backup.js` 備份）同樣印出。
+- 緊急止血 `emergency-brake.js`：`--status` 唯讀；拉煞車 `--brake --apply`、解除 `--restore --apply`（`--yes` 仍相容）；裸執行只印用法。啟動即印目標專案。
+- 對 emulator 驗證：設 `FIRESTORE_EMULATOR_HOST=127.0.0.1:8080` 後，上述腳本改打 emulator（專案固定 `demo-stsystem`、不呼叫 gcloud）；該變數只接受 127.0.0.1／localhost。
+- 旗標解析與 dry-run 判斷集中在 `scripts/lib/script-safety.js`，單元測試為 `test/test-script-safety.mjs`（已掛進 `npm test`）。`firestore-deploy-rules.js` 與 `emergency-brake.js` 不支援 emulator，偵測到 `FIRESTORE_EMULATOR_HOST` 會直接拒絕。
+
 詳細權限分層見 [`V2_PERMISSION_SYSTEM.md`](./V2_PERMISSION_SYSTEM.md)。
 
 ## 依賴
@@ -111,7 +121,7 @@ node scripts/firestore-deploy-rules.js --dry    # 只建立 ruleset 不發布
 舊 rules 的 `config/{docId}` 只允許主任（director）寫入；P6 的新前端在核准與組長代發時會寫 `config/recordsLock`，所以新前端遇到舊 rules 時，教學組長的核准與代發全部被拒。另一方面，rules v2.13 要求前端先上線（舊頁面寫課表會被新規則拒絕）。結論是兩者不能有先後，必須同時上線：
 
 1. 部署前備份正式庫與現行 rules 原文（`backups/firestore/`、`backups/rules/`）。
-2. 選上課日以外的時段。先把新前端 push 到 GitHub Pages 並等建置完成，**不要在中間停留**，緊接著發布 `firestore.rules`（`node scripts/firestore-deploy-rules.js`），兩個動作間隔以分鐘計。
+2. 選上課日以外的時段。先把新前端 push 到 GitHub Pages 並等建置完成，**不要在中間停留**，緊接著發布 `firestore.rules`（`node scripts/firestore-deploy-rules.js --apply --confirm=<專案ID>`），兩個動作間隔以分鐘計。
 3. 兩者之間的空窗期內，組長的核准與代發會暫時失敗（可重試），教師自行調課與其他功能不受影響；舊頁面寫課表會被拒，請教務人員重新整理頁面。
 4. 部署後確認：組長核准一筆測試申請成功、`config/recordsLock` 的 `seq` 有遞增、教師自我調課仍可成立。
 5. 序號鎖的涵蓋範圍與例外見 `firestore.rules` 檔頭第 15 點。

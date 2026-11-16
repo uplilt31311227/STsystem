@@ -25,7 +25,7 @@ tags:
 
 ```
 1. node scripts/firestore-deploy-rules.js --dry     # 先確認語法通過
-2. node scripts/firestore-deploy-rules.js           # 正式發布
+2. node scripts/firestore-deploy-rules.js --apply --confirm=<專案ID>   # 正式發布（不帶參數只印計畫、不發布）
 3. node scripts/firestore-deploy-rules.js --list     # 確認 release 已指向新 ruleset
 4. git push preview feature/permission-system:main  # 部署前端
 ```

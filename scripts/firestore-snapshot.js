@@ -12,13 +12,15 @@
  */
 const { execSync } = require('child_process');
 
-const PROJECT   = 'stsystem-9d5fe';
+const safety = require('./lib/script-safety');
+const TARGET = safety.resolveTarget(process.env);
+const PROJECT = TARGET.project;
+safety.targetBanner(TARGET, { action: '快照（唯讀）' }).forEach(l => console.log(l));
 const SCHOOL_ID = process.argv.find(a => a.startsWith('--school='))?.split('=')[1] || 'inhu';
-const BASE      = `https://firestore.googleapis.com/v1/projects/${PROJECT}/databases/(default)/documents`;
+const BASE      = `${safety.databaseBase(TARGET)}/documents`;
 
 function getToken() {
-    return execSync('gcloud auth print-access-token --account=operator@example.edu.tw')
-        .toString().trim();
+    return safety.getAccessToken(TARGET, 'operator@example.edu.tw');
 }
 
 async function api(pathSuffix) {

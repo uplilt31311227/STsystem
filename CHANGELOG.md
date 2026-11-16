@@ -1002,7 +1002,7 @@
 ### 資安修補（2026-06-20，Phase 1 多 agent code review）
 - **🔴 修復 operationLogs 稽核日誌全數寫入失敗**：`firestore.rules` 的欄位白名單（`target/detail/request.time`）與 `operationLogger.log()` 實際 schema（`targetType/targetId/details` + ISO timestamp）不符，導致每筆日誌寫入被 DENY（含 login_denied）。改規則對齊程式碼實際 schema。
 - **🔴 封堵 userMappings 自寫提權**：整套 `isDirector/isApprover/myTeacherId` 信任使用者自寫的 `userMappings/{uid}.linkedTeacherId`，原規則未限欄位 → 任一教師可映射到 director 的 teacherId 而提權為主任。改為自寫時 `linkedTeacherId` 必須指向 email 等於本人登入 email 的教師檔。
-- **⚠️ 待重新部署**：以上只改 `firestore.rules` 檔，需 `node scripts/firestore-deploy-rules.js` 重新發布才生效。
+- **⚠️ 待重新部署**：以上只改 `firestore.rules` 檔，需 `node scripts/firestore-deploy-rules.js --apply --confirm=<專案ID>` 重新發布才生效。
 - 已記錄延後 Phase 3/4 處理：`substituteRecords` 偽造已核准、`pendingRequests` 同意人全欄竄改（詳見 `docs/PLAN_v2.0.0.md` §0.5）。
 
 ### Phase 3：三種審核流程分支（2026-07-09）

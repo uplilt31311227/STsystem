@@ -10,8 +10,7 @@
  * 必須先跑本腳本回填，才能部署 firestore.rules（見 docs/STAGE0-DEPLOY.md 的上線順序）。
  *
  * 用法：
- *   node scripts/firestore-backfill-emailindex.js --dry-run [--school=<id>]
- *   node scripts/firestore-backfill-emailindex.js [--school=<id>]
+ *   node scripts/firestore-backfill-emailindex.js [--school=<id>]          # 預設 dry-run
  *
  *   --school:   指定 schoolId，預設 inhu（正式資料所在）。
  *   --dry-run:  只列出將建立/更新的 emailIndex 條目與衝突，不寫入任何資料。
@@ -56,14 +55,17 @@
  */
 const { execSync } = require('child_process');
 
-const PROJECT   = 'stsystem-9d5fe';
+const safety = require('./lib/script-safety');
+const TARGET = safety.resolveTarget(process.env);
+const PROJECT = TARGET.project;
 const SCHOOL_ID = process.argv.find(a => a.startsWith('--school='))?.split('=')[1] || 'inhu';
-const DRY_RUN   = process.argv.includes('--dry-run');
-const BASE      = `https://firestore.googleapis.com/v1/projects/${PROJECT}/databases/(default)/documents`;
+const WRITE_MODE = safety.parseWriteMode(process.argv.slice(2));
+const DRY_RUN = WRITE_MODE.dryRun;   // 預設 dry-run；實際寫入需 --apply
+safety.targetBanner(TARGET, { action: '回填 emailIndex', apply: WRITE_MODE.apply }).forEach(l => console.log(l));
+const BASE      = `${safety.databaseBase(TARGET)}/documents`;
 
 function getToken() {
-    return execSync('gcloud auth print-access-token --account=operator@example.edu.tw')
-        .toString().trim();
+    return safety.getAccessToken(TARGET, 'operator@example.edu.tw');
 }
 
 function buildHeaders(token) {
@@ -148,7 +150,7 @@ function groupByEmail(teachers) {
 }
 
 async function main() {
-    console.log(`📡 emailIndex 回填 → schools/${SCHOOL_ID}（專案 ${PROJECT}）${DRY_RUN ? '  [--dry-run，不寫入]' : ''}\n`);
+    console.log(`📡 emailIndex 回填 → schools/${SCHOOL_ID}（專案 ${PROJECT}）${DRY_RUN ? '  [dry-run，不寫入]' : ''}\n`);
 
     const teacherDocs = await listCollection(`schools/${SCHOOL_ID}/teachers`);
     const teachers     = teacherDocs.map(d => ({ teacherId: docId(d), ...docFieldsToObj(d) }));
@@ -201,7 +203,7 @@ async function main() {
     console.log('');
 
     if (DRY_RUN) {
-        console.log('（--dry-run：僅顯示計畫，不會寫入。確認無誤後移除 --dry-run 才會實際回填）');
+        console.log('（dry-run（預設）：僅顯示計畫，不會寫入。確認無誤後加上 --apply 才會實際寫入）');
         process.exit(conflicts.length > 0 ? 1 : 0);
     }
 

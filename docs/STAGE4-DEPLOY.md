@@ -34,9 +34,9 @@ tags:
                                                           # 現有全體成員實際執行（opus 驗收 B1 新增
                                                           # 的硬性前置條件，見下方相容性說明）
 1. node scripts/firestore-deploy-rules.js --dry          # 先確認語法通過
-2. node scripts/firestore-deploy-rules.js                # 正式發布規則
+2. node scripts/firestore-deploy-rules.js --apply --confirm=<專案ID>   # 正式發布規則（不帶參數只印計畫、不發布）
 3. node scripts/firestore-deploy-rules.js --list         # 確認 release 已指向新 ruleset
-4. node scripts/bootstrap-platform-admin.js --uid=<你的 uid> --dry-run=false
+4. node scripts/bootstrap-platform-admin.js --uid=<你的 uid> --apply
                                                           # 建立第一位平台管理者（你自己），
                                                           # 否則規則部署後沒有任何人能核准申請
 5. git push preview feature/permission-system:main       # 部署前端
@@ -120,6 +120,9 @@ curl -X PATCH \
 ### 2. 緊急煞車腳本（`scripts/emergency-brake.js`）
 
 收到高門檻（建議 10 倍或 150% 門檻）警報後，由人工判斷是否需要立即停止服務：
+
+> 注意：若 shell 裡殘留 `FIRESTORE_EMULATOR_HOST`（例如剛跑完本機測試），此腳本會直接拒絕執行（exit 2）。
+> 緊急時請先在同一個 shell 取消該變數：bash 用 `unset FIRESTORE_EMULATOR_HOST`，PowerShell 用 `Remove-Item Env:FIRESTORE_EMULATOR_HOST`。
 
 ```bash
 # 平時：確認現況（會實際取回線上 ruleset 內容並比對是否為全 deny 版本，opus 驗收 M2）

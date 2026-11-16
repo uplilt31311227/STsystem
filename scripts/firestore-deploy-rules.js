@@ -3,9 +3,10 @@
  * Firestore 安全規則部署腳本
  *
  * 用法：
- *   node scripts/firestore-deploy-rules.js          # 部署 firestore.rules
- *   node scripts/firestore-deploy-rules.js --dry    # 只建立 ruleset，不發布
- *   node scripts/firestore-deploy-rules.js --list   # 列出最近 5 個 ruleset 與目前 release
+ *   node scripts/firestore-deploy-rules.js                                  # 預設：只印目標專案、git 狀態與將做的事（不呼叫任何 API）
+ *   node scripts/firestore-deploy-rules.js --dry                            # 只建立 ruleset，不發布
+ *   node scripts/firestore-deploy-rules.js --list                           # 列出最近 5 個 ruleset 與目前 release
+ *   node scripts/firestore-deploy-rules.js --apply --confirm=<專案ID>       # 實際部署（需 git 工作樹乾淨，且 confirm 與目標專案一致）
  *
  *   --project=<id>  目標 Firebase 專案，預設正式專案 stsystem-9d5fe。
  *                   測試站專案（STsystem-preview）傳 --project=<測試專案 id>。
@@ -23,6 +24,10 @@
 const { execSync } = require('child_process');
 const fs           = require('fs');
 const path         = require('path');
+const safety       = require('./lib/script-safety');
+
+// 本腳本打 firebaserules.googleapis.com，不支援 emulator；偵測到 emulator 變數一律拒絕（在任何網路請求前）。
+try { safety.rejectIfEmulator(process.env, 'firestore-deploy-rules.js'); } catch (e) { console.error('❌ ' + e.message); process.exit(2); }
 
 /** 正式專案；測試站用 --project= 覆寫，避免把規則部署錯邊。 */
 const DEFAULT_PROJECT = 'stsystem-9d5fe';
@@ -88,32 +93,32 @@ async function publishRelease(rulesetName) {
     });
 }
 
-const KNOWN_FLAGS = ['--dry', '--list', '--help', '-h'];
-
 function printUsage() {
     console.log('用法：');
-    console.log('  node scripts/firestore-deploy-rules.js          # 部署 firestore.rules（會實際發布到線上）');
-    console.log('  node scripts/firestore-deploy-rules.js --dry    # 只建立 ruleset，不發布');
-    console.log('  node scripts/firestore-deploy-rules.js --list   # 列出最近 5 個 ruleset 與目前 release');
-    console.log('  node scripts/firestore-deploy-rules.js --help   # 顯示本說明');
+    console.log('  node scripts/firestore-deploy-rules.js                              # 只印目標專案／git 狀態／將做的事，不呼叫 API');
+    console.log('  node scripts/firestore-deploy-rules.js --dry                        # 只建立 ruleset，不發布');
+    console.log('  node scripts/firestore-deploy-rules.js --list                       # 列出最近 5 個 ruleset 與目前 release');
+    console.log('  node scripts/firestore-deploy-rules.js --apply --confirm=<專案ID>   # 實際部署（git 工作樹須乾淨）');
+    console.log('  node scripts/firestore-deploy-rules.js --help                       # 顯示本說明');
+}
+
+function printGitState(git) {
+    console.log(`🌿 git：分支 ${git.branch}，目前 commit ${git.head}`);
+    console.log(git.clean ? '   工作樹乾淨（已追蹤檔案無未提交變更）' : `   ⚠ 工作樹有未提交的已追蹤檔案變更：\n     ${git.dirtyFiles.join('\n     ')}`);
 }
 
 async function main() {
-    // --project=<id> 可放在任意位置，先濾掉再判斷子命令旗標；
-    // 打成 --project（漏了 =）會留在陣列裡，照下面的安全閘被當未知參數擋下。
-    const flag = process.argv.slice(2).filter(a => !a.startsWith('--project='))[0] || '';
-
-    // 安全閘：未知旗標一律中止，不可退化成「不帶參數 = 正式部署」。
-    // 2026-07-29 事故——有人對本腳本下 --help（當時不支援），腳本忽略未知旗標後
-    // 直接把規則重新發布到線上 production。內容雖等價，但這種預設行為在
-    // 「規則有本地未提交改動」時會造成非預期的線上變更。
-    if (flag && !KNOWN_FLAGS.includes(flag)) {
-        console.error(`❌ 未知參數：${flag}`);
+    // 安全閘：未知旗標一律中止，不可退化成「不帶參數 = 正式部署」（2026-07-29 事故）。
+    // 現在不帶參數只會印計畫；實際部署必須 --apply --confirm=<專案ID>。
+    const parsed = safety.parseDeployArgs(process.argv.slice(2), PROJECT);
+    if (parsed.mode === 'error') {
+        parsed.errors.forEach(e => console.error(`❌ ${e}`));
         printUsage();
         process.exit(2);
     }
+    const flag = { help: '--help', list: '--list', validate: '--dry', plan: '', deploy: '--apply' }[parsed.mode];
 
-    if (flag === '--help' || flag === '-h') {
+    if (flag === '--help') {
         printUsage();
         return;
     }
@@ -127,6 +132,22 @@ async function main() {
             console.log(`  ${mark} ${r.name}  createTime=${r.createTime}`);
         });
         return;
+    }
+
+    let git;
+    try { git = safety.readGitState(path.resolve(__dirname, '..')); }
+    catch (e) { git = null; console.error(`⚠ 無法讀取 git 狀態：${e.message}`); }
+    if (git) printGitState(git);
+
+    if (parsed.mode === 'plan') {
+        console.log(`\n🛈  預設不執行。將會：讀取 firestore.rules → 在 ${PROJECT} 建立 ruleset → 發布 release。`);
+        console.log(`   要實際部署請加：--apply --confirm=${PROJECT}`);
+        return;
+    }
+    if (parsed.mode === 'deploy') {
+        if (!git) { console.error('❌ 無法確認 git 狀態，拒絕部署。'); process.exit(2); }
+        if (!git.clean) { console.error('❌ git 工作樹不乾淨，拒絕部署（請先 commit 或還原已追蹤檔案的變更）。'); process.exit(2); }
+        console.log(`⚠️  即將部署 commit ${git.head} 的 firestore.rules 到 ${PROJECT}`);
     }
 
     if (!fs.existsSync(RULES_FILE)) {

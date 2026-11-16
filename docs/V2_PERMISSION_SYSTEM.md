@@ -80,7 +80,7 @@ tags:
 
 部署 / 回滾：
 ```bash
-node scripts/firestore-deploy-rules.js          # 建立 ruleset 並發布 release
+node scripts/firestore-deploy-rules.js --apply --confirm=<專案ID>   # 建立 ruleset 並發布 release（不帶參數只印計畫、不發布）
 node scripts/firestore-deploy-rules.js --list   # 確認 release 指向新 ruleset
 node scripts/firestore-deploy-rules.js --dry    # 只建立 ruleset 不發布（rollback 預備）
 ```

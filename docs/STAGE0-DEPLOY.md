@@ -120,7 +120,7 @@ node scripts/firestore-backfill-emailindex.js --dry-run
 node scripts/firestore-deploy-rules.js --dry
 
 # 2b. 確認無誤後正式發布
-node scripts/firestore-deploy-rules.js
+node scripts/firestore-deploy-rules.js --apply --confirm=<專案ID>   # 不帶參數只印計畫、不發布
 ```
 
 **驗證**：
@@ -185,7 +185,7 @@ git push preview <Stage0之前的備份commit或分支>:main -f
 git log --oneline -- firestore.rules
 git show <Stage0之前的commit>:firestore.rules > /tmp/firestore.rules.rollback
 cp /tmp/firestore.rules.rollback firestore.rules
-node scripts/firestore-deploy-rules.js
+node scripts/firestore-deploy-rules.js --apply --confirm=<專案ID>   # 不帶參數只印計畫、不發布
 # 部署完成後記得把工作目錄的 firestore.rules 復原回 Stage 0 版本（git checkout -- firestore.rules），
 # 不要讓「已回退規則」與「本地檔案已是新版」的狀態不一致。
 ```

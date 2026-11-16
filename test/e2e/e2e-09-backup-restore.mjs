@@ -13,7 +13,7 @@
 import { Buffer } from 'node:buffer';
 import { readFileSync } from 'node:fs';
 
-import { ACCOUNTS, loginStable, gotoTab, shot, bodyText, waitForText } from './helpers.mjs';
+import { ACCOUNTS, loginStable, gotoTab, shot, bodyText, waitForText, readServer, clickAndWaitDownload } from './helpers.mjs';
 import { seedAll } from '../emulator/seed.mjs';
 import { listDocs, deleteDoc, getDoc } from '../emulator/emu-client.mjs';
 import { Suite, eq, ok, includes } from '../scenarios/harness.mjs';
@@ -81,10 +81,9 @@ export async function run(browser) {
             await openSettings(page);
             ok(await visible(page, '#v2-backup-restore-btn'), '主任應看到還原按鈕');
             const before = await cloudCounts();
-            const [download] = await Promise.all([
-                page.waitForEvent('download', { timeout: LONG }),
-                page.click('#v2-backup-export-btn'),
-            ]);
+            // 先暖機：讓 SDK 的伺服器連線先通（只採信伺服器結果），避免第一次大量讀取落在停滯的連線上
+            await readServer(page, `schools/${SCHOOL}/schedules/115-1`);
+            const download = await clickAndWaitDownload(page, '#v2-backup-export-btn');
             const name = download.suggestedFilename();
             includes(name, `STsystem_雲端備份_${SCHOOL}_`, '檔名');
             exported = readFileSync(await download.path(), 'utf8');
@@ -159,10 +158,7 @@ export async function run(browser) {
             await page.fill('.rich-dialog-content [data-rd="phrase"]', `還原 ${SCHOOL}`);
             eq(await page.isDisabled('.rich-dialog-content [data-rd="confirm"]'), false, '輸入確認字樣後確認鈕才可按');
 
-            const [preDownload] = await Promise.all([
-                page.waitForEvent('download', { timeout: LONG }),
-                page.click('.rich-dialog-content [data-rd="confirm"]'),
-            ]);
+            const preDownload = await clickAndWaitDownload(page, '.rich-dialog-content [data-rd="confirm"]');
             includes(preDownload.suggestedFilename(), '_還原前', '還原前應先下載目前狀態的備份');
 
             const done = await waitForText(page, /還原完成|還原未全部完成/, LONG);

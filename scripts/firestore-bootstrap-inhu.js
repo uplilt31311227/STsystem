@@ -3,7 +3,7 @@
  * Firestore v2.0.0 schools/inhu 環境 bootstrap
  *
  * 用法：
- *   node scripts/firestore-bootstrap-inhu.js                       # 確保 config + 主任白名單存在
+ *   node scripts/firestore-bootstrap-inhu.js [--apply]             # 確保 config + 主任白名單存在（預設 dry-run，--apply 才寫入）
  *   node scripts/firestore-bootstrap-inhu.js --add-teacher          # 新增 / 更新一名教師
  *      --name "姓名" --email a@b.com --role section_chief
  *      [--domains 國文,英文] [--homeroom 801]
@@ -22,22 +22,21 @@ const { execSync } = require('child_process');
 
 /** 正式專案；測試站用 --project= 覆寫，避免把動作做錯邊。 */
 const DEFAULT_PROJECT = 'stsystem-9d5fe';
-const PROJECT = process.argv.find(a => a.startsWith('--project='))?.split('=')[1] || DEFAULT_PROJECT;
+const safety = require('./lib/script-safety');
+const TARGET = safety.resolveTarget(process.env, process.argv.find(a => a.startsWith('--project='))?.split('=')[1]);
+const PROJECT = TARGET.project;
 
 // 目標專案一律先印出來，免得動作做錯邊才發現。
-console.log(PROJECT === DEFAULT_PROJECT
-    ? `🎯 目標專案：${PROJECT}（正式）`
-    : `🎯 目標專案：${PROJECT}（非正式專案）`);
 const SCHOOL_ID = 'inhu';
-const BASE      = `https://firestore.googleapis.com/v1/projects/${PROJECT}/databases/(default)/documents`;
+const WRITE_MODE = safety.parseWriteMode(process.argv.slice(2));
+const BASE      = `${safety.databaseBase(TARGET)}/documents`;
 
 const DEFAULT_DIRECTOR_EMAIL = 'operator@example.edu.tw';
 const DEFAULT_SCHOOL_NAME    = '新竹市立內湖國民中學';
 const DEFAULT_SEMESTER       = '114-2';
 
 function getToken() {
-    return execSync(`gcloud auth print-access-token --account=${DEFAULT_DIRECTOR_EMAIL}`)
-        .toString().trim();
+    return safety.getAccessToken(TARGET, DEFAULT_DIRECTOR_EMAIL);
 }
 
 function buildHeaders(token) {
@@ -57,6 +56,10 @@ async function get(docPath) {
 }
 
 async function patchDoc(docPath, fields, updateMask) {
+    if (!WRITE_MODE.apply) {
+        console.log(`   [dry-run] 將 PATCH ${docPath}（欄位：${Object.keys(fields).join(', ')}）；加 --apply 才會實際寫入`);
+        return {};
+    }
     const token = getToken();
     const url   = new URL(`${BASE}/${docPath}`);
     if (updateMask) {
@@ -135,11 +138,13 @@ async function ensureConfig() {
             initialAdminEmails: v.arr(merged),
             updatedAt:          v.time(),
         }, ['initialAdminEmails', 'updatedAt']);
-        console.log(`✓ 已補入主任 ${DEFAULT_DIRECTOR_EMAIL} 到 initialAdminEmails（並正規化為全小寫）`);
+        console.log(WRITE_MODE.apply
+            ? `✓ 已補入主任 ${DEFAULT_DIRECTOR_EMAIL} 到 initialAdminEmails（並正規化為全小寫）`
+            : `（計畫）將補入主任 ${DEFAULT_DIRECTOR_EMAIL} 到 initialAdminEmails（並正規化為全小寫）`);
         return { ...data, initialAdminEmails: merged };
     }
 
-    console.log(`🛠  建立 schools/${SCHOOL_ID}/config/main`);
+    console.log(`🛠  ${WRITE_MODE.apply ? '建立' : '（計畫）將建立'} schools/${SCHOOL_ID}/config/main`);
     const fields = {
         schoolName:         v.str(DEFAULT_SCHOOL_NAME),
         currentSemester:    v.str(DEFAULT_SEMESTER),
@@ -148,7 +153,7 @@ async function ensureConfig() {
         updatedAt:          v.time(),
     };
     await patchDoc(`schools/${SCHOOL_ID}/config/main`, fields);
-    console.log(`   ✓ 學校：${DEFAULT_SCHOOL_NAME}（白名單：${DEFAULT_DIRECTOR_EMAIL}）`);
+    console.log(`   ${WRITE_MODE.apply ? '✓' : '（計畫）'} 學校：${DEFAULT_SCHOOL_NAME}（白名單：${DEFAULT_DIRECTOR_EMAIL}）`);
     return null;
 }
 
@@ -194,7 +199,7 @@ async function upsertTeacher({ name, email, role, domains, homeroom }) {
         const updateMask = ['name', 'role', 'domains', 'homeroomClass', 'updatedAt'];
         await patchDoc(`schools/${SCHOOL_ID}/teachers/${existing.teacherId}`, fields, updateMask);
         // 印完整 teacherId（曾誤用 .slice(-12) 截斷成 tail-12，操作者拿截斷 id 去寫其他文件的關聯會直接失敗）。
-        console.log(`✓ 教師 ${existing.teacherId} 已更新（${existing.name} → ${name || existing.name}，role=${normalizedRole}）`);
+        console.log(`${WRITE_MODE.apply ? '✓ 教師 ' + existing.teacherId + ' 已更新' : '（計畫）將更新教師 ' + existing.teacherId}（${existing.name} → ${name || existing.name}，role=${normalizedRole}）`);
         return { ...existing, ...fields, _action: 'updated' };
     }
 
@@ -204,30 +209,25 @@ async function upsertTeacher({ name, email, role, domains, homeroom }) {
     fields.createdAt = v.time();
     await patchDoc(`schools/${SCHOOL_ID}/teachers/${teacherId}`, fields);
     // 印完整 teacherId（曾誤用 .slice(-12) 截斷成 tail-12，操作者拿截斷 id 去寫其他文件的關聯會直接失敗）。
-    console.log(`✓ 教師 ${teacherId} 已建立（${name}，email=${normalizedEmail}，role=${normalizedRole}）`);
+    console.log(`${WRITE_MODE.apply ? '✓ 教師 ' + teacherId + ' 已建立' : '（計畫）將建立教師 ' + teacherId}（${name}，email=${normalizedEmail}，role=${normalizedRole}）`);
     return { teacherId, _action: 'created' };
 }
 
 /* ===== CLI ===== */
 
 function parseArgs() {
-    const args = process.argv.slice(2);
-    const flags = { addTeacher: false, name: null, email: null, role: 'teacher', domains: [], homeroom: '' };
-    for (let i = 0; i < args.length; i++) {
-        const a = args[i];
-        if (a === '--add-teacher') flags.addTeacher = true;
-        else if (a === '--name')    flags.name = args[++i];
-        else if (a === '--email')   flags.email = args[++i];
-        else if (a === '--role')    flags.role = args[++i];
-        else if (a === '--domains') flags.domains = (args[++i] || '').split(',').map(s => s.trim()).filter(Boolean);
-        else if (a === '--homeroom') flags.homeroom = args[++i];
+    try {
+        return require('./lib/cli-args').parseInhuArgs(process.argv.slice(2));
+    } catch (e) {
+        console.error(`❌ ${e.message}`);
+        process.exit(2);
     }
-    return flags;
 }
 
 async function main() {
     const flags = parseArgs();
 
+    safety.targetBanner(TARGET, { action: `bootstrap schools/${SCHOOL_ID}${flags.addTeacher ? '（含新增/更新教師）' : ''}`, apply: WRITE_MODE.apply }).forEach(l => console.log(l));
     console.log(`📡 Firestore bootstrap → schools/${SCHOOL_ID}（專案 ${PROJECT}）\n`);
 
     await ensureConfig();
@@ -247,7 +247,7 @@ async function main() {
         });
     }
 
-    console.log('\n✅ 完成。');
+    console.log(WRITE_MODE.apply ? '\n✅ 完成。' : '\n🚧 dry-run 結束：以上皆為計畫，未寫入任何資料。加 --apply 才會實際執行。');
 }
 
 main().catch(e => { console.error('\n❌ 失敗：', e.message); process.exit(1); });

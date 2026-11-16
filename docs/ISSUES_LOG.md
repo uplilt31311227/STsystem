@@ -625,7 +625,7 @@ master 維持 v1.11.0 不動，tag `v1.11.0-stable` 可隨時 `git checkout v1.1
 ### Firestore 規則由「測試版（任何登入者皆可讀寫）」收緊為 v2.1
 
 - **日期**: 2026-04-29
-- **狀態**: 🟢 規則撰寫完成；部署需手動執行 `node scripts/firestore-deploy-rules.js`
+- **狀態**: 🟢 規則撰寫完成；部署需手動執行 `node scripts/firestore-deploy-rules.js --apply --confirm=<專案ID>`
 - **描述**: V2 alpha 初版的安全規則僅檢查 `request.auth != null`，任何登入者都能改 schools/default 任意資料。雖然 schools 路徑不影響穩定版 master，但偽造請求即可越權。
 - **解決方案**: 重寫 `firestore.rules` 加入 `isAdmin(schoolId)` / `myTeacherId` helper：
   - admin 由 `config.initialAdminEmails` 白名單或 `teachers/{tid}.role=='admin'` 判定

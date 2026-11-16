@@ -74,17 +74,20 @@ const { execSync } = require('child_process');
 const fs   = require('node:fs');
 const path = require('node:path');
 
-const PROJECT     = 'stsystem-9d5fe';
+const safety = require('./lib/script-safety');
+const TARGET = safety.resolveTarget(process.env);
+const PROJECT = TARGET.project;
 const SCHOOL_ID   = process.argv.find(a => a.startsWith('--school='))?.split('=')[1] || 'inhu';
 const BEFORE       = process.argv.find(a => a.startsWith('--before='))?.split('=')[1];
-const EXECUTE      = process.argv.includes('--yes');
-const DRY_RUN      = process.argv.includes('--dry-run');
-const BASE          = `https://firestore.googleapis.com/v1/projects/${PROJECT}/databases/(default)/documents`;
+const WRITE_MODE   = safety.parseWriteMode(process.argv.slice(2), { applyAliases: ['--yes'] });   // --apply 或舊旗標 --yes
+const EXECUTE      = WRITE_MODE.apply;
+const DRY_RUN      = WRITE_MODE.explicitDryRun;
+safety.targetBanner(TARGET, { action: '清理 operationLogs', apply: WRITE_MODE.apply }).forEach(l => console.log(l));
+const BASE          = `${safety.databaseBase(TARGET)}/documents`;
 const BACKUP_ROOT  = path.join(__dirname, '..', 'backups', 'firestore', 'operationLogs-cleanup');
 
 function getToken() {
-    return execSync('gcloud auth print-access-token --account=operator@example.edu.tw')
-        .toString().trim();
+    return safety.getAccessToken(TARGET, 'operator@example.edu.tw');
 }
 
 function buildHeaders(token) {

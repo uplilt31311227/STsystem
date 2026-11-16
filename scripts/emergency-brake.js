@@ -13,10 +13,10 @@
  *   node scripts/emergency-brake.js --status         # 顯示目前線上規則是否為全 deny（會實際
  *                                                     #   取回 ruleset 內容比對，見下）、本機是否
  *                                                     #   有待還原的備份（不異動任何東西）
- *   node scripts/emergency-brake.js --brake --yes    # 拉下煞車：備份目前 firestore.rules 到
+ *   node scripts/emergency-brake.js --brake --apply    # 拉下煞車：備份目前 firestore.rules 到
  *                                                     #   firestore.rules.emergency-backup，
  *                                                     #   建立「全 deny」ruleset 並立即發布上線
- *   node scripts/emergency-brake.js --restore --yes  # 解除煞車：從備份還原 firestore.rules 內容
+ *   node scripts/emergency-brake.js --restore --apply  # 解除煞車：從備份還原 firestore.rules 內容
  *                                                     #   並重新部署（不會自動刪除備份檔，供人工核對）
  *
  * opus 驗收 H1：拉煞車／還原這兩個有副作用的動作，都必須**同時**帶對應動作旗標與 `--yes`
@@ -35,6 +35,10 @@
 const { execSync } = require('child_process');
 const fs   = require('fs');
 const path = require('path');
+const safety = require('./lib/script-safety');
+
+// 本腳本打 firebaserules.googleapis.com，不支援 emulator；偵測到 emulator 變數一律拒絕（在任何網路請求前）。
+try { safety.rejectIfEmulator(process.env, 'emergency-brake.js'); } catch (e) { console.error('❌ ' + e.message); process.exit(2); }
 
 const PROJECT      = 'stsystem-9d5fe';
 const RULES_FILE   = path.resolve(__dirname, '..', 'firestore.rules');
@@ -166,7 +170,7 @@ async function cmdBrake() {
             `已存在備份檔 ${BACKUP_FILE}——代表可能已經拉過一次煞車、或上次還原後忘了清備份。\n` +
             `為避免覆蓋掉「真正的正常規則」備份，本腳本拒絕在備份檔存在時再次拉煞車。\n` +
             `請先確認線上現況（node scripts/emergency-brake.js --status），\n` +
-            `若確定要還原，用 --restore --yes；若確定要用目前 firestore.rules 內容覆蓋備份重新拉一次煞車，\n` +
+            `若確定要還原，用 --restore --apply；若確定要用目前 firestore.rules 內容覆蓋備份重新拉一次煞車，\n` +
             `請先手動刪除 ${BACKUP_FILE} 後再重跑本指令。`
         );
     }
@@ -176,12 +180,12 @@ async function cmdBrake() {
 
     await deployRules(DENY_ALL_RULES, '全 deny');
     console.log('\n⚠️  緊急煞車已生效：所有讀寫（含平台管理者）皆被拒絕。');
-    console.log('    問題排除後，執行 `node scripts/emergency-brake.js --restore --yes` 還原。');
+    console.log('    問題排除後，執行 `node scripts/emergency-brake.js --restore --apply` 還原。');
 }
 
 async function cmdRestore() {
     if (!fs.existsSync(BACKUP_FILE)) {
-        throw new Error(`找不到備份檔 ${BACKUP_FILE}——沒有東西可還原。若規則已被手動改過，請改用 node scripts/firestore-deploy-rules.js 直接部署 firestore.rules。`);
+        throw new Error(`找不到備份檔 ${BACKUP_FILE}——沒有東西可還原。若規則已被手動改過，請改用 node scripts/firestore-deploy-rules.js --apply --confirm=<專案ID> 直接部署 firestore.rules。`);
     }
     const backupSource = fs.readFileSync(BACKUP_FILE, 'utf8');
     await deployRules(backupSource, '還原自備份');
@@ -189,19 +193,20 @@ async function cmdRestore() {
     console.log('   建議：還原後跑一次 node scripts/firestore-deploy-rules.js --list 確認 ruleset 已切換，或 --status 重新比對內容。');
 }
 
-const KNOWN_FLAGS = ['--status', '--brake', '--restore', '--yes', '--help', '-h'];
+const KNOWN_FLAGS = ['--status', '--brake', '--restore', '--yes', '--apply', '--help', '-h'];
 
 function printUsage() {
     console.log('用法：');
     console.log('  node scripts/emergency-brake.js --status           # 顯示現況（含線上規則內容比對），不異動任何東西');
-    console.log('  node scripts/emergency-brake.js --brake --yes      # 拉下煞車（部署全 deny 規則，先備份現有規則）');
-    console.log('  node scripts/emergency-brake.js --restore --yes    # 從備份還原並重新部署');
+    console.log('  node scripts/emergency-brake.js --brake --apply      # 拉下煞車（部署全 deny 規則，先備份現有規則）');
+    console.log('  node scripts/emergency-brake.js --restore --apply    # 從備份還原並重新部署');
     console.log('');
-    console.log('opus 驗收 H1：--brake／--restore 都必須同時帶 --yes 才會真的執行；裸執行（不帶任何參數）只印這段說明，不會拉煞車。');
+    console.log('opus 驗收 H1：--brake／--restore 都必須同時帶 --apply（或 --yes） 才會真的執行；裸執行（不帶任何參數）只印這段說明，不會拉煞車。');
 }
 
 async function main() {
     const args = process.argv.slice(2);
+    console.log(PROJECT === 'stsystem-9d5fe' ? `🎯 目標專案：${PROJECT}（正式）` : `🎯 目標專案：${PROJECT}（非正式專案）`);
     for (const a of args) {
         if (!KNOWN_FLAGS.includes(a)) {
             console.error(`❌ 未知參數：${a}`);
@@ -215,10 +220,10 @@ async function main() {
     }
     if (args.includes('--status')) { await cmdStatus(); return; }
 
-    const hasYes = args.includes('--yes');
+    const hasYes = args.includes('--yes') || args.includes('--apply');   // --apply 為建議寫法，--yes 保留相容
     if (args.includes('--brake')) {
         if (!hasYes) {
-            console.error('❌ --brake 必須同時帶 --yes 才會執行（安全閘，見檔頭 H1 說明）。');
+            console.error('❌ --brake 必須同時帶 --apply（或 --yes） 才會執行（安全閘，見檔頭 H1 說明）。');
             printUsage();
             process.exit(2);
         }
@@ -227,7 +232,7 @@ async function main() {
     }
     if (args.includes('--restore')) {
         if (!hasYes) {
-            console.error('❌ --restore 必須同時帶 --yes 才會執行（安全閘，見檔頭 H1 說明）。');
+            console.error('❌ --restore 必須同時帶 --apply（或 --yes） 才會執行（安全閘，見檔頭 H1 說明）。');
             printUsage();
             process.exit(2);
         }

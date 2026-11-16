@@ -1,132 +1,65 @@
 #!/usr/bin/env node
 /**
- * V2 Firestore 規則 allow/deny 矩陣測試
+ * V2 Firestore 規則 allow/deny 矩陣測試（Emulator 版）
  *
- * 目的：firestore.rules（現行 v2.7，三層角色 + Phase 6 敏感欄位私有化 + 多租戶開通）從未有
- * 自動化測試，每次改規則都靠人肉推理。本檔直接打 Firestore REST API（純 node 內建 fetch，
- * 無外部依賴），驗證 60 個正向／攻擊案例是否符合預期的 ALLOW/DENY，其中 P13-P19／X15-X24
- * 專門覆蓋 substituteRecords/{id}/private/detail 與 pendingRequests/{id}/private/detail
- * 這兩處敏感欄位（leaveType/leaveTypeName/reason）子文件的權限邊界；X25-X30 為 Stage 0
- * 補充攻擊案例；X31-X40／X42 為 Stage 4（多租戶開通）補充攻擊案例，全數為 DENY 案例（opus
- * 驗收 R3 後 X40 改為不留永久殘留的兩步 DENY 驗證；X41 因故意保留原 id 空號——opus 驗收 R4
- * 認定原版是「檢驗到錯誤機制卻剛好也回傳 DENY」的假測試，移除並在該處改寫成明確的已知覆蓋
- * 缺口說明，不編號重排以保留變更軌跡）。
+ * 驗證 firestore.rules 的三層角色、敏感欄位私有化（private/detail）與多租戶開通：
+ * 19 個正向案例（P）＋ 約 40 個攻擊案例（X）。X41 為刻意保留的空號。
  *
- * 用法：node test/v2-rules-matrix.mjs
+ * 安全設計（2026-07-30 舊版曾直接打正式 Firestore 並寫入測試文件，見 docs/ISSUES_LOG.md）：
+ *   - 只對 Firebase Emulator 執行；必須設定 FIRESTORE_EMULATOR_HOST 與 FIREBASE_AUTH_EMULATOR_HOST，
+ *     且主機必須是 127.0.0.1／localhost，缺一即中止（exit 2），在發出任何網路請求之前。
+ *   - 專案寫死 demo-stsystem；本檔沒有任何正式網址、API key、憑證檔路徑或退回正式環境的路徑。
+ *   - 種子與測試帳號沿用 test/emulator/seed.mjs（seedAll 會清空並重建 emulator）。
  *
- * 憑證來源：環境變數 STSYSTEM_TEST_CREDS 指向的 JSON 檔，未設定時 fallback 到
- * scratchpad 路徑（見 FALLBACK_CREDS_PATH）。檔案需含 v2t1/v2t2/v2t3 三把 key，
- * 各自至少要有 email + refreshToken（或 password）。密碼與 idToken 一律不寫死在
- * 本檔——idToken 一律在執行當下用 refreshToken 向 Google Secure Token API 換發
- * （不需要密碼；若憑證檔剛好帶 password 欄位則優先用 signInWithPassword）。
- * 找不到憑證檔或換發 idToken 失敗時，印出說明並 exit(2)（讓 CI 視為「環境缺件而跳過」，
- * 不要誤判成規則有 bug）。
+ * 用法（emulator 已啟動時）：npm run test:rules-matrix
+ *   （npm script 會經 test/emulator/with-emu-env.mjs 補上預設的 127.0.0.1 環境變數；
+ *    直接 node 執行本檔而不帶環境變數時會中止。）
  *
- * 安全紅線：所有測試寫入一律用 zz_test_ 前綴 doc id，只碰三個測試帳號自己的資料；
- * 絕不寫入或刪除 tch_* 開頭的正式教師檔、既有 substituteRecords/operationLogs、
- * schools/inhu/config/main。攻擊案例的目標若是「既有文件」，一律只指向測試帳號
- * 自己的文件（自己的 teachers doc、自己的 userMapping），不對正式教師檔做寫入嘗試。
- * 唯一例外：REAL_RECORD_WITH_PRIVATE_DETAIL（正式紀錄 rec_1783657255158_nv698xk）
- * 僅供「執行完成後完整性檢查」讀取比對用，全程只 GET、絕不 PATCH/DELETE。
- *
- * 案例設計依據：
- *   - src/js/modules/v2/pendingRequestService.js（三種審核狀態機的實際寫入欄位）
- *   - src/js/modules/v2/schemaConstants.js（private/detail 固定 docId 為 'detail'，
- *     substituteDetailDoc()/pendingDetailDoc() 兩個路徑產生器）
- *   - firestore.rules 第 100-360 行（schools/{schoolId} 下所有 match block，含
- *     第 103-115 行 private/detail 共用 helper、第 222-235 行 substituteRecords
- *     私有明細、第 345-352 行 pendingRequests 私有明細）
- * 逐案 rulesRef 標注對應 firestore.rules 行號區間，供未來改規則時回溯。
- *
- * 執行完成後，把「成功建立」的文件路徑寫到 test/.last-test-docs.json（已加入
- * .gitignore）供事後清理——注意 teachers/substituteRecords 的 delete 規則只允許
- * isDirector，本測試的三個帳號（teacher/teacher/section_chief）都無法自行刪除
- * 万一攻擊案例意外 ALLOW 而寫入的 teachers 或 substituteRecords 文件，需要正式
- * director 帳號手動清理（腳本會在該情況印出明確警告）。
+ * 角色對應：A = 一般教師甲、B = 一般教師乙、C = 組長（section_chief）。
+ * 測試資料一律用 zz_test_ 前綴 doc id。
  */
 
-import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ---------------------------------------------------------------------------
-// 常數（apiKey 為前端公開設定，已存在於 src/js/modules/firebaseConfig.js，非機密）
+// 環境守門：必須在 import 任何會連線的模組、發出任何請求之前通過
 // ---------------------------------------------------------------------------
-const PROJECT_ID  = 'stsystem-9d5fe';
-const API_KEY     = 'AIzaSyCJ1WL_aScocarEvQdEgCYtsdqM8AUdGlw';
-const SCHOOL_ID   = 'inhu';
-const FIRESTORE_BASE = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents`;
-// 既有正式 director——唯讀參照用，攻擊案例②③會「引用」此 ID 但絕不寫入此文件本身。
-const REAL_DIRECTOR_TEACHER_ID = 'tch_<director-id>';
-// 既有正式 substituteRecords——唯讀參照用，僅供跑完後的完整性檢查比對
-// private/detail.leaveType 是否仍為「長期病假」，絕不寫入/更新/刪除此文件或其子文件。
-const REAL_RECORD_WITH_PRIVATE_DETAIL = 'rec_1783657255158_nv698xk';
-const REAL_RECORD_EXPECTED_LEAVE_TYPE = '長期病假';
+export function resolveEmulatorEnv(env) {
+    const fs = env.FIRESTORE_EMULATOR_HOST;
+    const au = env.FIREBASE_AUTH_EMULATOR_HOST;
+    if (!fs || !au) return { ok: false, reason: '未設定 FIRESTORE_EMULATOR_HOST／FIREBASE_AUTH_EMULATOR_HOST' };
+    const okHost = (h) => /^(127\.0\.0\.1|localhost):\d+$/.test(h);
+    if (!okHost(fs) || !okHost(au)) return { ok: false, reason: 'emulator 主機必須是 127.0.0.1 或 localhost（含埠號）' };
+    return { ok: true, firestoreHost: fs, authHost: au };
+}
+const ENV = resolveEmulatorEnv(process.env);
+if (!ENV.ok) {
+    console.error('[中止] ' + ENV.reason + '。本測試只能對 emulator 執行，未發出任何網路請求。');
+    console.error('請用 npm run test:rules-matrix，或自行設定 FIRESTORE_EMULATOR_HOST=127.0.0.1:8080 與 FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9099。');
+    process.exit(2);
+}
 
-const FALLBACK_CREDS_PATH = 'C:\\Users\\uplil\\AppData\\Local\\Temp\\claude\\C--Users-uplil-sideprojet-STsystem\\af9a3c19-dd93-45b3-92cd-e97c9633ce40\\scratchpad\\test-tokens.json';
-const LAST_DOCS_PATH = path.join(__dirname, '.last-test-docs.json');
+const { seedAll } = await import('./seed.mjs');
+const { getDoc: emuGetDoc, EMULATOR_INFO } = await import('./emu-client.mjs');
+if (ENV.firestoreHost !== EMULATOR_INFO.FIRESTORE_HOST || ENV.authHost !== EMULATOR_INFO.AUTH_HOST) {
+    console.error(`[中止] 環境變數（${ENV.firestoreHost}／${ENV.authHost}）與 emu-client 固定的 emulator 位址（${EMULATOR_INFO.FIRESTORE_HOST}／${EMULATOR_INFO.AUTH_HOST}）不一致。`);
+    process.exit(2);
+}
+
+const PROJECT_ID = EMULATOR_INFO.PROJECT_ID; // demo-stsystem
+const SCHOOL_ID = 'demo-alpha';
+const FIRESTORE_BASE = `http://${ENV.firestoreHost}/v1/projects/${PROJECT_ID}/databases/(default)/documents`;
+// 種子中的 director（唯讀參照用；攻擊案例引用此 ID 但不寫入此文件本身）
+let REAL_DIRECTOR_TEACHER_ID = null;
+let CURRENT_SEMESTER = null;
 
 const RUN = Date.now().toString(36); // 每次執行不同，避免 doc id 撞名
 const nowIso = () => new Date().toISOString();
 const zz = (name) => `zz_test_${name}_${RUN}`;
 
-// ---------------------------------------------------------------------------
-// 憑證載入 + idToken 換發
-// ---------------------------------------------------------------------------
-function resolveCredsPath() {
-    return process.env.STSYSTEM_TEST_CREDS || FALLBACK_CREDS_PATH;
-}
-
-function loadCreds() {
-    const p = resolveCredsPath();
-    if (!fs.existsSync(p)) {
-        console.error(`[環境缺件] 找不到測試憑證檔：${p}`);
-        console.error('請設定環境變數 STSYSTEM_TEST_CREDS 指向憑證 JSON，或確認 fallback 路徑存在。');
-        console.error('憑證檔需含 v2t1 / v2t2 / v2t3 三把 key，每把至少要有 email + refreshToken（或 password）。');
-        process.exit(2);
-    }
-    try {
-        let raw = fs.readFileSync(p, 'utf8');
-        if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1); // 去除可能的 UTF-8 BOM
-        return JSON.parse(raw);
-    } catch (e) {
-        console.error(`[環境缺件] 憑證檔解析失敗：${p}`);
-        console.error(String(e && e.message || e));
-        process.exit(2);
-    }
-}
-
-async function signInWithPassword(email, password) {
-    const res = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${API_KEY}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password, returnSecureToken: true }),
-    });
-    const json = await res.json();
-    if (!res.ok) throw new Error(`signInWithPassword 失敗（${email}）：${JSON.stringify(json)}`);
-    return json.idToken;
-}
-
-async function refreshIdToken(refreshToken) {
-    const res = await fetch(`https://securetoken.googleapis.com/v1/token?key=${API_KEY}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refreshToken }).toString(),
-    });
-    const json = await res.json();
-    if (!res.ok) throw new Error(`refresh_token 換發失敗：${JSON.stringify(json)}`);
-    return json.id_token;
-}
-
-async function getFreshIdToken(entry) {
-    if (entry.password && entry.email) return signInWithPassword(entry.email, entry.password);
-    if (entry.refreshToken) return refreshIdToken(entry.refreshToken);
-    throw new Error(`憑證缺少 password 或 refreshToken：${entry.email || '未知帳號'}`);
-}
-
-// ---------------------------------------------------------------------------
 // Firestore REST 輔助（typed-value 編碼／解碼、CRUD、list）
 // ---------------------------------------------------------------------------
 function encodeValue(v) {
@@ -228,7 +161,13 @@ const createdDocs = [];
 async function execStep(step) {
     let result;
     if (step.kind === 'create') {
-        result = await createDoc(step.collectionPath, step.docId, step.data, step.idToken);
+        // 現行規則（Stage 2）要求 substituteRecords／pendingRequests 的主文件帶「目前學期」semesterId，
+        // 舊案例 payload 沒有此欄位；統一在送出前補上（不覆蓋案例自己指定的值）。
+        let data = step.data;
+        if (/\/(pendingRequests|substituteRecords)$/.test(step.collectionPath) && data && !('semesterId' in data)) {
+            data = { ...data, semesterId: CURRENT_SEMESTER };
+        }
+        result = await createDoc(step.collectionPath, step.docId, data, step.idToken);
         if (classify(result) === 'ALLOW') createdDocs.push(`${step.collectionPath}/${step.docId}`);
     } else if (step.kind === 'patch') {
         result = await patchDoc(step.docPath, step.data, step.idToken);
@@ -236,6 +175,13 @@ async function execStep(step) {
         result = await getDoc(step.docPath, step.idToken);
     } else if (step.kind === 'delete') {
         result = await deleteDoc(step.docPath, step.idToken);
+    } else if (step.kind === 'adminSet') {
+        // setup 專用：以 admin（繞過 rules）種入現行前端已不會產生的舊形狀文件（例如 legacy 請求）。
+        // 只能用在非末步；末步一定要以一般使用者 token 驗 rules。
+        const { mustSetDoc } = await import('./emu-client.mjs');
+        await mustSetDoc(step.docPath, step.data);
+        createdDocs.push(step.docPath);
+        return { verdict: 'ALLOW', httpStatus: 200, body: null };
     } else {
         throw new Error(`execStep: 未知 step.kind=${step.kind}`);
     }
@@ -284,7 +230,7 @@ function printCaseResult(c, result) {
 // P13-P19／X15-X24（Phase 6）覆蓋 substituteRecords 與 pendingRequests 底下
 // private/detail 子文件（leaveType/leaveTypeName/reason 敏感欄位）的權限邊界。
 // ---------------------------------------------------------------------------
-function buildCases({ A, B, C }) {
+function buildCases({ A, B, C, D, P }) {
     const col = {
         pending:      `schools/${SCHOOL_ID}/pendingRequests`,
         records:      `schools/${SCHOOL_ID}/substituteRecords`,
@@ -480,7 +426,7 @@ function buildCases({ A, B, C }) {
                 type: '調課', isSelfSwap: true,
                 originalTeacherId: A.teacherId, swapTeacherId: A.teacherId, substituteTeacherId: A.teacherId,
                 date: '2026-08-07', period: '第五節', className: '7年1班',
-                status: 'approved', approvedAt: nowIso(), approvedBy: A.teacherId, approvedByName: A.label,
+                status: 'approved', approvedAt: nowIso(), initiatedBy: A.teacherId,
                 createdAt: nowIso(),
             },
         }],
@@ -496,7 +442,7 @@ function buildCases({ A, B, C }) {
             data: {
                 action: 'zz_test_action', actor: { uid: A.uid, teacherId: A.teacherId, name: A.label, role: A.role },
                 timestamp: nowIso(), targetType: 'pendingRequest', targetId: docId.reqSub1,
-                details: { note: 'rules matrix test log', runId: RUN },
+                details: JSON.stringify({ note: 'rules matrix test log', runId: RUN }),
             },
         }],
     });
@@ -671,6 +617,8 @@ function buildCases({ A, B, C }) {
                 requestType: 'substitute', status: 'pending_approval',
                 initiatedBy: A.teacherId, initiatedByName: A.label, approvedBy: A.teacherId,
                 pendingConsentTeacherIds: [], swapConsents: {}, createdAt: nowIso(),
+                type: '代課', date: '2026-08-03', period: '第一節', className: '7年1班',
+                originalTeacherId: A.teacherId, substituteTeacherId: B.teacherId,
             },
         }],
     });
@@ -686,6 +634,8 @@ function buildCases({ A, B, C }) {
                 requestType: 'swap', status: 'pending_approval',
                 initiatedBy: A.teacherId, initiatedByName: A.label,
                 pendingConsentTeacherIds: [B.teacherId], swapConsents: {}, createdAt: nowIso(),
+                type: '調課', date: '2026-08-04', period: '第二節', className: '7年2班',
+                originalTeacherId: A.teacherId, swapTeacherId: B.teacherId,
             },
         }],
     });
@@ -701,6 +651,8 @@ function buildCases({ A, B, C }) {
                 requestType: 'swap', status: 'pending_swap_consent',
                 initiatedBy: A.teacherId, initiatedByName: A.label,
                 pendingConsentTeacherIds: [A.teacherId], swapConsents: {}, createdAt: nowIso(),
+                type: '調課', date: '2026-08-04', period: '第二節', className: '7年2班',
+                originalTeacherId: A.teacherId, swapTeacherId: B.teacherId,
             },
         }],
     });
@@ -718,6 +670,8 @@ function buildCases({ A, B, C }) {
                 pendingConsentTeacherIds: [B.teacherId],
                 swapConsents: { [B.teacherId]: { consentedAt: nowIso() } },
                 createdAt: nowIso(),
+                type: '調課', date: '2026-08-04', period: '第二節', className: '7年2班',
+                originalTeacherId: A.teacherId, swapTeacherId: B.teacherId,
             },
         }],
     });
@@ -731,7 +685,7 @@ function buildCases({ A, B, C }) {
             {
                 kind: 'create', label: '(setup 建立合法 swap 請求)', collectionPath: col.pending, docId: docId.reqAttack8, expect: 'ALLOW', idToken: A.idToken,
                 data: {
-                    requestType: 'swap', status: 'pending_swap_consent',
+                    requestType: 'swap', status: 'pending_swap_consent', type: '調課',
                     initiatedBy: A.teacherId, initiatedByName: A.label,
                     pendingConsentTeacherIds: [B.teacherId], swapConsents: {}, createdAt: nowIso(),
                     date: '2026-08-08', period: '第六節', className: '7年2班',
@@ -750,7 +704,7 @@ function buildCases({ A, B, C }) {
             {
                 kind: 'create', label: '(setup 建立合法 swap 請求)', collectionPath: col.pending, docId: docId.reqAttack9, expect: 'ALLOW', idToken: A.idToken,
                 data: {
-                    requestType: 'swap', status: 'pending_swap_consent',
+                    requestType: 'swap', status: 'pending_swap_consent', type: '調課',
                     initiatedBy: A.teacherId, initiatedByName: A.label,
                     pendingConsentTeacherIds: [B.teacherId], swapConsents: {}, createdAt: nowIso(),
                     date: '2026-08-09', period: '第七節', className: '7年3班',
@@ -761,24 +715,23 @@ function buildCases({ A, B, C }) {
     });
 
     cases.push({
-        id: 'X10', type: 'attack', actor: 'B(教師乙)', method: 'CREATE(setup)+PATCH(setup)+PATCH', severity: 'critical',
-        desc: '攻擊⑩已 approved 的請求被同意人改回 rejected（終態鎖，經 legacy requiredApproverId 分支可達）',
+        id: 'X10', type: 'attack', actor: 'B(教師乙)', method: 'ADMIN-SET(setup)+PATCH', severity: 'critical',
+        desc: '攻擊⑩已 approved 的 legacy 請求被同意人改回 rejected（終態鎖，經 legacy requiredApproverId 分支可達）',
         path: `${col.pending}/${docId.reqAttack10}`, expect: 'DENY',
-        rulesRef: 'rules:270-273 legacy 分支 + rules:285-289 同意人終態鎖',
+        rulesRef: 'rules isValidConsenterUpdate：無 pendingConsentTeacherIds 時以 requiredApproverId 為同意人；原狀態須在 [pending, pending_swap_consent]',
         steps: [
             {
-                kind: 'create', label: '(setup 建立 legacy 相容請求，不含 pendingConsentTeacherIds)', collectionPath: col.pending, docId: docId.reqAttack10, expect: 'ALLOW', idToken: A.idToken,
+                // 現行前端一律寫 pendingConsentTeacherIds，legacy 形狀只能以 admin 種入（正式庫可能仍有舊文件）。
+                // 欄位一旦存在（即使是 []），legacy 分支就不可達，乙根本不是同意人——那會變成驗「非同意人不能改」而非終態鎖。
+                kind: 'adminSet', label: '(setup admin 種入已核准的 legacy 請求，不含 pendingConsentTeacherIds)', docPath: `${col.pending}/${docId.reqAttack10}`, expect: 'ALLOW',
                 data: {
-                    requestType: 'substitute', status: 'pending_approval',
+                    requestType: 'substitute', status: 'approved',
                     initiatedBy: A.teacherId, initiatedByName: A.label,
                     requiredApproverId: B.teacherId, swapConsents: {}, createdAt: nowIso(),
+                    approvedAt: nowIso(), approvedBy: C.teacherId, approvedByName: C.label,
                     type: '代課', date: '2026-08-10', period: '第一節', className: '7年4班',
-                    originalTeacherId: A.teacherId, substituteTeacherId: B.teacherId,
+                    originalTeacherId: A.teacherId, substituteTeacherId: B.teacherId, semesterId: CURRENT_SEMESTER,
                 },
-            },
-            {
-                kind: 'patch', label: '(setup 丙核准，狀態轉 approved)', docPath: `${col.pending}/${docId.reqAttack10}`, expect: 'ALLOW', idToken: C.idToken,
-                data: { status: 'approved', approvedAt: nowIso(), approvedBy: C.teacherId, approvedByName: C.label, statusUpdatedAt: nowIso() },
             },
             {
                 kind: 'patch', label: 'B（legacy 同意人）把已核准請求改回 rejected', docPath: `${col.pending}/${docId.reqAttack10}`, expect: 'DENY', idToken: B.idToken,
@@ -821,10 +774,13 @@ function buildCases({ A, B, C }) {
         rulesRef: 'rules:182-183 自我調課路徑限定 type in [調課,swap]，杜絕 type=代課 自寫',
         steps: [{
             kind: 'create', label: 'create 偽代課紀錄自灌代課費', collectionPath: col.records, docId: docId.recAttack12, expect: 'DENY', idToken: A.idToken,
+            // 只留 type 違規（比照 P08 的合法自我調課形狀，唯一差異是 type='代課'）：
+            // 三個 teacherId 皆自己、isSelfSwap=true、initiatedBy=自己、無 approvedBy 類保留欄位。
             data: {
-                type: '代課', originalTeacherId: B.teacherId, substituteTeacherId: A.teacherId,
+                type: '代課', isSelfSwap: true,
+                originalTeacherId: A.teacherId, swapTeacherId: A.teacherId, substituteTeacherId: A.teacherId,
                 date: '2026-08-12', period: '第三節', className: '7年6班',
-                status: 'approved', approvedAt: nowIso(), approvedBy: A.teacherId, approvedByName: A.label,
+                status: 'approved', approvedAt: nowIso(), initiatedBy: A.teacherId,
                 createdAt: nowIso(),
             },
         }],
@@ -1001,7 +957,7 @@ function buildCases({ A, B, C }) {
         rulesRef: 'firestore.rules joinAttempts create（hasOnly([email,attemptedAt,reason])，驗收修復 S3）',
         steps: [{
             kind: 'create', label: 'create 夾帶 note 欄位', collectionPath: col.joinAttempts, docId: A.uid, expect: 'DENY', idToken: A.idToken,
-            data: { email: 'zz_test_attacker@example.com', attemptedAt: nowIso(), reason: 'zz_test', note: 'zz_test 白名單外欄位' },
+            data: { email: A.email.toLowerCase(), attemptedAt: nowIso(), reason: 'zz_test', note: 'zz_test 白名單外欄位' },
         }],
     });
 
@@ -1012,7 +968,7 @@ function buildCases({ A, B, C }) {
         rulesRef: 'firestore.rules joinAttempts create（reason.size() < 100，驗收修復 S3）',
         steps: [{
             kind: 'create', label: 'create reason 超長字串', collectionPath: col.joinAttempts, docId: A.uid, expect: 'DENY', idToken: A.idToken,
-            data: { email: 'zz_test_attacker@example.com', attemptedAt: nowIso(), reason: 'x'.repeat(150) },
+            data: { email: A.email.toLowerCase(), attemptedAt: nowIso(), reason: 'x'.repeat(150) },
         }],
     });
 
@@ -1024,7 +980,7 @@ function buildCases({ A, B, C }) {
         steps: [{
             kind: 'create', label: '對不存在的 schoolId 寫 joinAttempts',
             collectionPath: `schools/${OTHER_SCHOOL_ID}/joinAttempts`, docId: A.uid, expect: 'DENY', idToken: A.idToken,
-            data: { email: 'zz_test_attacker@example.com', attemptedAt: nowIso(), reason: 'zz_test' },
+            data: { email: A.email.toLowerCase(), attemptedAt: nowIso(), reason: 'zz_test' },
         }],
     });
 
@@ -1082,7 +1038,7 @@ function buildCases({ A, B, C }) {
             kind: 'create', label: 'create applicantUid 指向乙',
             collectionPath: 'schoolApplications', docId: A.uid, expect: 'DENY', idToken: A.idToken,
             data: {
-                schoolName: 'zz_test_school_x31', applicantEmail: 'zz_test_x31@example.com',
+                schoolName: 'zz_test_school_x31', applicantEmail: A.email.toLowerCase(),
                 applicantUid: B.uid, desiredSchoolId: 'zz_test_id_x31',
                 status: 'pending', createdAt: nowIso(), updatedAt: nowIso(),
             },
@@ -1098,7 +1054,7 @@ function buildCases({ A, B, C }) {
             kind: 'create', label: 'create 夾帶 note 欄位',
             collectionPath: 'schoolApplications', docId: A.uid, expect: 'DENY', idToken: A.idToken,
             data: {
-                schoolName: 'zz_test_school_x32', applicantEmail: 'zz_test_x32@example.com',
+                schoolName: 'zz_test_school_x32', applicantEmail: A.email.toLowerCase(),
                 applicantUid: A.uid, desiredSchoolId: 'zz_test_id_x32',
                 status: 'pending', createdAt: nowIso(), updatedAt: nowIso(),
                 note: 'zz_test 白名單外欄位',
@@ -1115,7 +1071,7 @@ function buildCases({ A, B, C }) {
             kind: 'create', label: 'create status=approved',
             collectionPath: 'schoolApplications', docId: A.uid, expect: 'DENY', idToken: A.idToken,
             data: {
-                schoolName: 'zz_test_school_x33', applicantEmail: 'zz_test_x33@example.com',
+                schoolName: 'zz_test_school_x33', applicantEmail: A.email.toLowerCase(),
                 applicantUid: A.uid, desiredSchoolId: 'zz_test_id_x33',
                 status: 'approved', createdAt: nowIso(), updatedAt: nowIso(),
             },
@@ -1215,7 +1171,7 @@ function buildCases({ A, B, C }) {
                 kind: 'create', label: '甲嘗試在非自己 uid 的路徑建立申請',
                 collectionPath: 'schoolApplications', docId: zz('x40_stranger_app'), expect: 'DENY', idToken: A.idToken,
                 data: {
-                    schoolName: 'zz_test_school_x40', applicantEmail: 'zz_test_x40@example.com',
+                    schoolName: 'zz_test_school_x40', applicantEmail: A.email.toLowerCase(),
                     applicantUid: A.uid, desiredSchoolId: 'zz_test_id_x40',
                     status: 'pending', createdAt: nowIso(), updatedAt: nowIso(),
                 },
@@ -1266,6 +1222,128 @@ function buildCases({ A, B, C }) {
         }],
     });
 
+    // =====================================================================
+    // 對照案例（*-ctrl）：證明 DENY 案例的拒絕確實來自它聲稱的那條規則。
+    // 做法：複製對應 DENY 案例，只拿掉攻擊要素、其餘 payload 完全相同，預期 ALLOW；
+    // 若對照被拒，代表原 DENY 案例其實是因為別的理由被拒（假綠燈）。
+    // 文件 id 一律加 _c 後綴避免撞名；本段全部排在所有 P／X 案例之後，不影響它們的前置狀態。
+    // 例外（以 uid 為 doc id 的集合：joinAttempts／schoolApplications 一人一份）：對照改用不同帳號，
+    // 並在 actor／desc 註明；攻擊案例本身仍是甲。
+    // =====================================================================
+    const byId = (id) => cases.find((x) => x.id === id);
+    const renameIds = (v) => JSON.parse(JSON.stringify(v).split(`_${RUN}`).join(`_c_${RUN}`));
+    const lastStep = (c) => c.steps[c.steps.length - 1];
+    /** 以 baseId 的案例為底做對照。mutate(c, lastStep) 就地修改 clone（只拿掉攻擊要素）。
+     *  rename:false = 目標是先前案例已建立的既有文件（讀／改／刪），不可改 doc id，否則對照打到不存在的文件。 */
+    function addCtrl(baseId, ctrlId, note, mutate, { expect = 'ALLOW', rename = true } = {}) {
+        const base = byId(baseId);
+        if (!base) throw new Error(`addCtrl: 找不到 ${baseId}`);
+        const c = {
+            id: ctrlId, type: expect === 'ALLOW' ? 'positive' : 'attack', actor: base.actor, method: base.method,
+            desc: `對照 ${baseId}：${note}`, path: rename ? renameIds(base.path) : base.path, expect, rulesRef: base.rulesRef,
+            steps: rename ? renameIds(base.steps) : JSON.parse(JSON.stringify(base.steps)),
+        };
+        if (expect !== 'ALLOW') c.severity = base.severity;
+        mutate(c, lastStep(c));
+        lastStep(c).expect = expect;
+        cases.push(c);
+        return c;
+    }
+    // 以 uid 為 doc id 的對照改用其他帳號（各自只留本人欄位）
+    const asActor = (c, s, U, label) => {
+        s.idToken = U.idToken;
+        if (s.docId === A.uid) s.docId = U.uid;
+        c.path = c.path.replace(A.uid, U.uid);
+        c.actor = label;
+        if (s.data) {
+            if ('email' in s.data) s.data.email = U.email.toLowerCase();
+            if ('applicantEmail' in s.data) s.data.applicantEmail = U.email.toLowerCase();
+            if ('applicantUid' in s.data && s.data.applicantUid === A.uid) s.data.applicantUid = U.uid;
+        }
+    };
+
+    // ---- 必修 M3：被改過的 DENY 案例 ----
+    addCtrl('X04', 'X04-ctrl', '同 payload 拿掉 approvedBy', (c, s) => { delete s.data.approvedBy; });
+    addCtrl('X05', 'X05-ctrl', '同 payload 把 status 改成 pending_swap_consent', (c, s) => { s.data.status = 'pending_swap_consent'; });
+    addCtrl('X06', 'X06-ctrl', '同 payload 把同意名單改成 [乙]（不含發起人）', (c, s) => { s.data.pendingConsentTeacherIds = [B.teacherId]; });
+    addCtrl('X07', 'X07-ctrl', '同 payload 把 swapConsents 改成空 map', (c, s) => { s.data.swapConsents = {}; });
+    addCtrl('X12', 'X12-ctrl', '同 payload 把 type 改成 調課（即 P08 形狀）', (c, s) => { s.data.type = '調課'; });
+    addCtrl('X27', 'X27-ctrl', '同 payload 拿掉 note（甲本人）', (c, s) => { delete s.data.note; });
+    addCtrl('X28', 'X28-ctrl', '同 payload 把 reason 改成短字串（乙本人，因甲的 joinAttempts 已被 X27-ctrl 建立）', (c, s) => { s.data.reason = 'zz_test'; asActor(c, s, B, 'B(教師乙)'); });
+    addCtrl('X29', 'X29-ctrl', '同 payload 的路徑改到真實存在的學校 demo-alpha（丙本人）', (c, s) => {
+        s.collectionPath = `schools/${SCHOOL_ID}/joinAttempts`; c.path = `schools/${SCHOOL_ID}/joinAttempts/${A.uid}`;
+        asActor(c, s, C, 'C(組長丙)');
+    });
+    addCtrl('X31', 'X31-ctrl', '同 payload 把 applicantUid 改成本人（甲）', (c, s) => { s.data.applicantUid = A.uid; });
+    addCtrl('X32', 'X32-ctrl', '同 payload 拿掉 note（乙本人）', (c, s) => { delete s.data.note; asActor(c, s, B, 'B(教師乙)'); });
+    addCtrl('X33', 'X33-ctrl', '同 payload 把 status 改成 pending（丙本人）', (c, s) => { s.data.status = 'pending'; asActor(c, s, C, 'C(組長丙)'); });
+
+    // ---- 必修 M3：驗收未做反證的 DENY 案例（能轉成 ALLOW 的才加對照）----
+    addCtrl('X02', 'X02-ctrl', '同路徑同帳號，改成規則允許的欄位（updatedAt）而非 role', (c, s) => { s.data = { updatedAt: nowIso() }; });
+    addCtrl('X11', 'X11-ctrl', '拿掉前置的「丙駁回」，丙直接核准 pending_approval 的請求', (c) => {
+        c.steps.splice(1, 2, c.steps[2]);   // 刪 (setup 丙駁回)，保留末步（丙核准）
+    });
+    addCtrl('X10', 'X10-ctrl', '同一份 legacy 請求，唯一差異是原狀態為 pending（尚未進入終態）——乙經 legacy 分支拒絕應允許', (c) => {
+        c.steps[0].data.status = 'pending';
+        for (const k of ['approvedAt', 'approvedBy', 'approvedByName']) delete c.steps[0].data[k];
+    });
+    // X12 只隔離了 type 規則；原攻擊情境「拿別人的課灌自己的費」另以 X12c 隔離「原任教師必須是本人」。
+    cases.push({
+        id: 'X12c', type: 'attack', actor: 'A(教師甲)', method: 'CREATE', severity: 'critical',
+        desc: '攻擊⑫c 教師甲以自我調課形狀直寫紀錄，但原任教師填乙（拿別人的課灌自己的節數）',
+        path: `${col.records}/${zz('rec_attack12c')}`, expect: 'DENY',
+        rulesRef: '自我調課路徑要求 originalTeacherId／swapTeacherId／substituteTeacherId 皆為本人',
+        steps: [{
+            kind: 'create', label: 'create 自我調課紀錄但 originalTeacherId=乙', collectionPath: col.records, docId: zz('rec_attack12c'), expect: 'DENY', idToken: A.idToken,
+            // 與 X12-ctrl（合法自我調課，ALLOW）唯一差異是 originalTeacherId。
+            data: {
+                type: '調課', isSelfSwap: true,
+                originalTeacherId: B.teacherId, swapTeacherId: A.teacherId, substituteTeacherId: A.teacherId,
+                date: '2026-08-12', period: '第三節', className: '7年6班',
+                status: 'approved', approvedAt: nowIso(), initiatedBy: A.teacherId,
+                createdAt: nowIso(),
+            },
+        }],
+    });
+    addCtrl('X14', 'X14-ctrl', '改由 approver（組長丙）讀乙的 userMapping', (c, s) => { s.idToken = C.idToken; c.actor = 'C(組長丙)'; });
+    addCtrl('X15', 'X15-ctrl', '改由 ACL 內的乙讀自己的私有明細（P13 明細 ACL=[乙]）', (c, s) => { s.idToken = B.idToken; c.actor = 'B(教師乙)'; }, { rename: false });
+    addCtrl('X21', 'X21-ctrl', '改由 approver（組長丙）update 同一份私有明細', (c, s) => { s.idToken = C.idToken; c.actor = 'C(組長丙)'; s.data = { reason: 'zz_test ctrl' }; }, { rename: false });
+    addCtrl('X25', 'X25-ctrl', '同讀法，schoolId 改成自己所屬的 demo-alpha', (c, s) => {
+        s.docPath = `${col.teachers}/${A.teacherId}`; c.path = s.docPath;
+    });
+    addCtrl('X26', 'X26-ctrl', '改讀自己 email 的 emailIndex 條目', (c, s) => {
+        s.docPath = `${col.emailIndex}/${A.email.toLowerCase()}`; c.path = s.docPath;
+    });
+    addCtrl('X30', 'X30-ctrl', '改由 director 寫入、且只含 teacherId（兩個條件都滿足）', (c, s) => {
+        s.idToken = D.idToken; c.actor = 'D(director)'; s.data = { teacherId: A.teacherId };
+    });
+    addCtrl('X30', 'X30-ctrl-dir-extra', 'director 寫入但夾帶 extra 欄位——單獨驗 hasOnly 這一半（預期 DENY）', (c, s) => {
+        s.idToken = D.idToken; c.actor = 'D(director)'; s.docId = 'zz_test_attacker3@example.com';
+        c.path = `${col.emailIndex}/zz_test_attacker3@example.com`;
+    }, { expect: 'DENY' });
+    addCtrl('X30', 'X30-ctrl-nondir-clean', '非 director（甲）只寫 teacherId、無 extra——單獨驗 isDirector 這一半（預期 DENY）', (c, s) => {
+        s.data = { teacherId: A.teacherId }; s.docId = 'zz_test_attacker4@example.com'; c.path = `${col.emailIndex}/zz_test_attacker4@example.com`;
+    }, { expect: 'DENY' });
+    addCtrl('X34', 'X34-ctrl', '改由乙讀自己的 schoolApplications（X32-ctrl 已建立）', (c, s) => { s.idToken = B.idToken; c.actor = 'B(教師乙)'; });
+    addCtrl('X35', 'X35-ctrl', '改由平台管理者（種子 platformAdmin）把乙的申請 pending→approved', (c, s) => { s.idToken = P.idToken; c.actor = 'P(platformAdmin)'; });
+    addCtrl('X37', 'X37-ctrl', '改讀自己的 platformAdmins（平台管理者本人）', (c, s) => {
+        s.idToken = P.idToken; c.actor = 'P(platformAdmin)'; s.docPath = `platformAdmins/${P.uid}`; c.path = s.docPath;
+    });
+    addCtrl('X38', 'X38-ctrl', '改由平台管理者建立 schoolDirectory 條目', (c, s) => { s.idToken = P.idToken; c.actor = 'P(platformAdmin)'; });
+    addCtrl('X39', 'X39-ctrl', '改由平台管理者建立新學校 config/main（initialAdminEmails 恰 1 筆）', (c, s) => {
+        s.idToken = P.idToken; c.actor = 'P(platformAdmin)'; s.data.initialAdminEmails = ['zz_test_ctrl_admin@example.com'];
+    });
+    addCtrl('X40', 'X40-ctrl', '第一步路徑改成申請人本人 uid（director 本人）；後續更新步驟省略', (c) => {
+        c.steps = [c.steps[0]];
+        const st = c.steps[0];
+        st.docId = D.uid; st.idToken = D.idToken; st.data.applicantUid = D.uid; st.data.applicantEmail = D.email.toLowerCase();
+        c.actor = 'D(director)'; c.path = `schoolApplications/${D.uid}`;
+    });
+    addCtrl('X22', 'X22-ctrl', '改由 director 刪除同一份私有明細', (c, s) => { s.idToken = D.idToken; c.actor = 'D(director)'; }, { rename: false });
+    // 無法做 ALLOW 對照的案例（規則本身無條件 false，沒有任何合法身份能轉成 ALLOW）：
+    //   X13 operationLogs update／delete 一律 false；X36 platformAdmins write 一律 false；
+    //   X42 schoolDirectory delete 一律 false。X13 另以 customRun 前置檢查用 C 讀得到 log1，證明目標存在。
+
     return cases;
 }
 
@@ -1290,7 +1368,7 @@ async function runUtf8RoundTripCheck(C) {
         originalTeacherId: C.teacherId, swapTeacherId: C.teacherId, substituteTeacherId: C.teacherId,
         date: '2026-08-15', period: '第一節', className: 'zz_test_utf8',
         status: 'approved', approvedAt: nowIso(), approvedBy: C.teacherId, approvedByName: C.label,
-        createdAt: nowIso(),
+        createdAt: nowIso(), semesterId: CURRENT_SEMESTER,
     }, C.idToken);
     if (classify(createParent) !== 'ALLOW') {
         return { pass: false, detail: `建立驗證用父文件失敗（HTTP ${createParent.httpStatus}），無法進行 UTF-8 往返驗證。body=${JSON.stringify(createParent.json).slice(0, 300)}` };
@@ -1323,58 +1401,36 @@ async function runUtf8RoundTripCheck(C) {
 }
 
 // ---------------------------------------------------------------------------
-// 正式紀錄完整性檢查（驗收條件⑤）：本檔案唯一會「讀取」的正式資料是
-// REAL_RECORD_WITH_PRIVATE_DETAIL，全程只 GET，這裡確認跑完整套 43 案後它的
-// private/detail.leaveType 仍是「長期病假」——證明本檔案沒有意外寫壞正式資料。
 // ---------------------------------------------------------------------------
-async function verifyProdRecordUntouched(C) {
-    const path = `schools/${SCHOOL_ID}/substituteRecords/${REAL_RECORD_WITH_PRIVATE_DETAIL}/private/detail`;
-    const got = await getDoc(path, C.idToken);
-    if (classify(got) !== 'ALLOW') {
-        return { pass: false, detail: `讀取正式紀錄 private/detail 失敗（HTTP ${got.httpStatus}），無法驗證是否遭更動。` };
-    }
-    const obj = docToObj(got.json);
-    const ok = obj.leaveType === REAL_RECORD_EXPECTED_LEAVE_TYPE;
-    return {
-        pass: ok,
-        detail: ok
-            ? `${REAL_RECORD_WITH_PRIVATE_DETAIL} 的 private/detail.leaveType 仍為 '${REAL_RECORD_EXPECTED_LEAVE_TYPE}'，未遭更動。`
-            : `⚠⚠ ${REAL_RECORD_WITH_PRIVATE_DETAIL} 的 private/detail.leaveType 現為 ${JSON.stringify(obj.leaveType)}，預期 '${REAL_RECORD_EXPECTED_LEAVE_TYPE}'——正式紀錄可能已被本次測試意外更動，須立即人工複查！`,
-    };
+// 種子紀錄完整性檢查：跑完整套案例後，種子中既有紀錄的 private/detail.leaveType 不得被更動
+// ---------------------------------------------------------------------------
+async function readSeedLeaveType(recId) {
+    const r = await emuGetDoc(`schools/${SCHOOL_ID}/substituteRecords/${recId}/private/detail`);
+    return r.ok ? r.data.leaveType : undefined;
 }
 
-// ---------------------------------------------------------------------------
-// main
-// ---------------------------------------------------------------------------
 async function main() {
-    const creds = loadCreds();
-    for (const key of ['v2t1', 'v2t2', 'v2t3']) {
-        if (!creds[key]) {
-            console.error(`[環境缺件] 憑證檔缺少 ${key}`);
-            process.exit(2);
-        }
-    }
+    console.log('重建 emulator 種子資料（seedAll，只對 emulator）...');
+    const seed = await seedAll({ quiet: true });
+    const { fixture, director, sectionChief, teachers } = seed.alpha;
+    REAL_DIRECTOR_TEACHER_ID = director.teacherId;
+    CURRENT_SEMESTER = fixture.config.currentSemester;
+    const mk = (u) => ({ ...u, uid: u.localId, label: u.name });
+    const A = mk(teachers[0]);   // 教師甲
+    const B = mk(teachers[1]);   // 教師乙
+    const C = mk(sectionChief);  // 組長丙
+    console.log(`✓ 三帳號已就緒：A=${A.label} B=${B.label} C=${C.label}
+`);
 
-    console.log('正在為三個測試帳號換發新的 idToken（refreshToken 交換，不需密碼）...');
-    let tokenA, tokenB, tokenC;
-    try {
-        [tokenA, tokenB, tokenC] = await Promise.all([
-            getFreshIdToken(creds.v2t1),
-            getFreshIdToken(creds.v2t2),
-            getFreshIdToken(creds.v2t3),
-        ]);
-    } catch (e) {
-        console.error('[環境缺件] 取得 idToken 失敗，無法執行規則矩陣測試：');
-        console.error(String(e && e.message || e));
-        process.exit(2);
-    }
+    const withPriv = fixture.substituteRecords.find(r => r.private);
+    const guardId = withPriv.recordId;
+    const guardBefore = await readSeedLeaveType(guardId);
+    if (!guardBefore) { console.error('[中止] 種子中找不到可用的私有明細作為完整性基準'); process.exit(2); }
 
-    const A = { ...creds.v2t1, idToken: tokenA }; // 教師甲
-    const B = { ...creds.v2t2, idToken: tokenB }; // 教師乙
-    const C = { ...creds.v2t3, idToken: tokenC }; // 組長丙
-    console.log(`✓ 三帳號 idToken 已就緒：A=${A.label} B=${B.label} C=${C.label}\n`);
-
-    const cases = buildCases({ A, B, C });
+    // D = 種子 director、P = 種子平台管理者（seed.mjs 的 platformAdmins 信任錨點）：只用於 *-ctrl 對照案例
+    const D = mk(director);
+    const P = { ...seed.platformAdmin, uid: seed.platformAdmin.localId, label: 'platformAdmin' };
+    const cases = buildCases({ A, B, C, D, P });
 
     let passCount = 0, failCount = 0;
     const mismatches = [];
@@ -1387,19 +1443,13 @@ async function main() {
         }
         const pass = printCaseResult(c, result);
         if (pass) passCount++; else { failCount++; mismatches.push({ c, result }); }
-
         if (!pass && result.verdict === 'ALLOW' && c.onUnexpectedAllow) {
-            try {
-                await c.onUnexpectedAllow();
-                console.log('    → 已嘗試自動回復（自我修復），仍請人工複查。');
-            } catch (e2) {
-                console.error(`    ✗ 自動回復失敗，需人工立即處理：${String(e2 && e2.message || e2)}`);
-            }
+            try { await c.onUnexpectedAllow(); console.log('    → 已嘗試自動回復。'); }
+            catch (e2) { console.error(`    ✗ 自動回復失敗：${String(e2 && e2.message || e2)}`); }
         }
     }
 
     console.log(`\n結果：通過 ${passCount}，失敗 ${failCount}（共 ${cases.length} 案）`);
-
     if (mismatches.length) {
         console.log('\n--- 不符預期案例摘要 ---');
         for (const { c, result } of mismatches) {
@@ -1407,44 +1457,20 @@ async function main() {
         }
     }
 
-    try {
-        fs.writeFileSync(LAST_DOCS_PATH, JSON.stringify({ runId: RUN, createdAt: nowIso(), docs: createdDocs }, null, 2));
-        console.log(`\n已寫入建立文件清單：${LAST_DOCS_PATH}（${createdDocs.length} 筆，供事後清理）`);
-    } catch (e) {
-        console.error(`寫入 ${LAST_DOCS_PATH} 失敗：${String(e && e.message || e)}`);
-    }
-
-    console.log('\n--- 驗後檢查：substituteRecords / operationLogs 現況筆數（用組長丙 token 讀取）---');
-    try {
-        const records = await listCollection(`schools/${SCHOOL_ID}/substituteRecords`, C.idToken);
-        const logs    = await listCollection(`schools/${SCHOOL_ID}/operationLogs`, C.idToken);
-        console.log(`substituteRecords 現有 ${records.length} 筆`);
-        console.log(`operationLogs 現有 ${logs.length} 筆`);
-    } catch (e) {
-        console.error(`驗後讀取失敗：${String(e && e.message || e)}`);
-    }
-
-    console.log('\n--- UTF-8 中文往返驗證（approver 建立 leaveType=調課 後讀回比對，見驗收條件③）---');
+    console.log('\n--- UTF-8 中文往返驗證 ---');
     let utf8Pass = false;
     try {
         const r = await runUtf8RoundTripCheck(C);
         utf8Pass = r.pass;
         console.log(`${r.pass ? '✓' : '✗✗'} ${r.detail}`);
-    } catch (e) {
-        console.error(`✗✗ UTF-8 往返驗證發生例外：${String(e && e.message || e)}`);
-    }
+    } catch (e) { console.error(`✗✗ UTF-8 往返驗證發生例外：${String(e && e.message || e)}`); }
 
-    console.log(`\n--- 正式紀錄完整性檢查（${REAL_RECORD_WITH_PRIVATE_DETAIL} 不得被本次測試更動，見驗收條件⑤）---`);
-    let prodIntegrityPass = false;
-    try {
-        const r = await verifyProdRecordUntouched(C);
-        prodIntegrityPass = r.pass;
-        console.log(`${r.pass ? '✓' : '✗✗'} ${r.detail}`);
-    } catch (e) {
-        console.error(`✗✗ 正式紀錄完整性檢查發生例外：${String(e && e.message || e)}`);
-    }
+    console.log('\n--- 種子紀錄完整性檢查 ---');
+    const guardAfter = await readSeedLeaveType(guardId);
+    const integrity = guardAfter === guardBefore;
+    console.log(`${integrity ? '✓' : '✗✗'} 種子紀錄 ${guardId} 的 private/detail.leaveType ${integrity ? '未被更動' : '已被更動（前後不一致）'}`);
 
-    process.exit((failCount === 0 && utf8Pass && prodIntegrityPass) ? 0 : 1);
+    process.exit((failCount === 0 && utf8Pass && integrity) ? 0 : 1);
 }
 
 main().catch((err) => {

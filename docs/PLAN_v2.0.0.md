@@ -75,7 +75,7 @@ status: 開發中｜Phase 1-3 完成｜商用上線實戰化中（錯誤處理�
    原「2026-06-20 資安修補後必做」的部署已於 2026-06-25 完成並驗證；同一份規則其後又於
    2026-07-10 隨 Phase 3 資安收緊再次部署，現行線上 release 為 `0ad89275-0df4-46c6-99c8-825a6cc94889`
    （詳見 `docs/DEPLOYMENT.md` 部署歷史）。**若未來再修改 `firestore.rules`**，重新部署指令仍為：
-   `node scripts/firestore-deploy-rules.js`（先 `--dry` 驗證語法，再正式發布）
+   `node scripts/firestore-deploy-rules.js --apply --confirm=<專案ID>`（先 `--dry` 驗證語法，再正式發布；不帶參數只印計畫）
    或 Firebase Console → Firestore → 規則 → 貼上 `firestore.rules` → 發布。
 
 **1. Firebase Console 啟用 Email/Password provider** → ✅ 已完成（Phase 1.6.b 前置條件）

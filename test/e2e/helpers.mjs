@@ -308,6 +308,63 @@ export async function waitForText(page, pattern, timeout = 10000) {
     return false;
 }
 
+/**
+ * 在頁面內讀取 Firestore「伺服器端」資料（只採信伺服器結果，遇 metadata.fromCache 重試）。
+ *
+ * 背景：本機 emulator 的 Listen stream 偶發停滯 30～70 秒，SDK 斷線後 getDoc/getDocs 會靜默回傳
+ * 本機快取（metadata.fromCache），內容可能是空的或過期，不能拿來下斷言。
+ * 這裡重試到讀到伺服器結果為止（預設最多約 90 秒，涵蓋實測最久的 70 秒停滯）；仍是快取就丟錯，
+ * 不退而求其次拿快取內容。這只改善等待方式，不改任何斷言內容。
+ *
+ * @param {import('playwright').Page} page
+ * @param {string} path  文件或集合路徑；kind 決定如何解讀
+ * @param {{kind?: 'doc'|'collection', timeoutMs?: number, intervalMs?: number}} [opts]
+ * @returns {Promise<object|null|Array<object>>} doc → data()（不存在為 null）；collection → data() 陣列
+ */
+export async function readServer(page, path, { kind = 'doc', timeoutMs = 90000, intervalMs = 1500 } = {}) {
+    return page.evaluate(async ({ path, kind, timeoutMs, intervalMs }) => {
+        const fm = window.firebaseModules, db = fm.getFirestore();
+        const deadline = Date.now() + timeoutMs;
+        let snap = null, lastErr = null;
+        while (Date.now() < deadline) {
+            try {
+                snap = kind === 'collection'
+                    ? await fm.getDocs(fm.collection(db, path))
+                    : await fm.getDoc(fm.doc(db, path));
+                if (!snap.metadata.fromCache) break;
+                snap = null;
+            } catch (e) { lastErr = e; snap = null; }
+            await new Promise(r => setTimeout(r, intervalMs));
+        }
+        if (!snap) throw new Error(`${path} 只讀到本機快取或讀取失敗，無法確認伺服器內容${lastErr ? '：' + lastErr.message : ''}`);
+        return kind === 'collection' ? snap.docs.map(d => d.data()) : (snap.data() ?? null);
+    }, { path, kind, timeoutMs, intervalMs });
+}
+
+/**
+ * 點擊後等待下載事件；逾時就再點一次（最多 tries 次）。
+ *
+ * 背景：本機 emulator 的伺服器讀取（getDocsFromServer）偶發停滯數十秒甚至更久，匯出／還原按下後
+ * 單次等待可能整段落空。預設單次等待 7 分鐘、不重點（重點可能讓進行中的匯出重新排隊，實測不划算）；需要時可傳 tries>1。
+ * 只改善等待方式，不碰任何斷言；全部嘗試都沒等到下載就丟出最後一次的逾時錯誤。
+ */
+export async function clickAndWaitDownload(page, selector, { perTryMs = 420000, tries = 1 } = {}) {
+    let lastErr = null;
+    for (let i = 0; i < tries; i++) {
+        try {
+            const [download] = await Promise.all([
+                page.waitForEvent('download', { timeout: perTryMs }),
+                page.click(selector),
+            ]);
+            return download;
+        } catch (e) {
+            lastErr = e;
+            if (!/Timeout/i.test(String(e && e.message))) throw e;
+        }
+    }
+    throw lastErr;
+}
+
 /** 確認本機服務與 emulator 都在跑，否則給出可操作的指示。 */
 export async function assertEnvironment() {
     const problems = [];
