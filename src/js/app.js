@@ -21,6 +21,7 @@ import { openRichDialog, rdText, rdHeading, rdList, rdNotice, rdTable } from './
 import { ScheduleParser } from './modules/scheduleParser.js';
 import { RecommendationEngine, findSwapDateConflict, pendingTag } from './modules/recommendationEngine.js';
 import { withBusyButton } from './modules/busyGuard.js';
+import { watchStaticModals } from './modules/modalA11y.js';
 import { findScheduleImpact, describeImpactItem } from './modules/scheduleImpact.js';
 import { findClassSlotConflict, describeClassSlotConflict, describeExistingRecord, applySwapsToSchedule, isEstablishedRecord } from './modules/slotOccupancy.js';
 import { PDFGenerator } from './modules/pdfGenerator.js';
@@ -148,7 +149,34 @@ class SubstituteTeacherApp {
     /**
      * 初始化應用程式
      */
+    /**
+     * P8：讓 aria-pressed 跟著 .selected／.multi-selected 走。
+     * 選取狀態在十多個地方以 classList 增減（單選、多選、清除、重設），逐處補 aria 容易漏；
+     * 改成觀察容器內 class 變化，集中同步（新渲染的子元素也會被觀察，因為觀察的是容器子樹）。
+     */
+    _bindPressedState(container) {
+        if (!container || container._pressedObserver) return;
+        const sync = (el) => {
+            if (!el.hasAttribute || !el.hasAttribute('aria-pressed')) return;
+            const on = el.classList.contains('selected') || el.classList.contains('multi-selected');
+            el.setAttribute('aria-pressed', on ? 'true' : 'false');
+        };
+        container._pressedObserver = new MutationObserver((muts) => {
+            for (const m of muts) {
+                if (m.type === 'attributes') sync(m.target);
+            }
+        });
+        container._pressedObserver.observe(container, { attributes: true, attributeFilter: ['class'], subtree: true });
+    }
+
     init() {
+        // P8：靜態對話框共用無障礙行為（role、Esc、焦點移入與還原、Tab 循環）
+        this._bindPressedState(document.getElementById('original-schedule-grid'));
+        this._bindPressedState(document.getElementById('recommendation-list'));
+        watchStaticModals(document, {
+            'confirm-modal': '#confirm-modal-cancel-btn',
+            'sync-conflict-modal': '#cancel-sync-btn',
+        });
         // 綁定頁籤切換事件
         this.bindTabEvents();
 
@@ -790,6 +818,11 @@ class SubstituteTeacherApp {
 
         // 點擊上傳區域觸發檔案選擇
         uploadArea.addEventListener('click', () => fileInput.click());
+        // P8：鍵盤操作（上傳區是 role=button、tabindex=0 的 div，Enter／空白鍵等同點擊）
+        uploadArea.addEventListener('keydown', (e) => {
+            if (e.target !== uploadArea) return;
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.click(); }
+        });
 
         // 拖放事件
         uploadArea.addEventListener('dragover', (e) => {
@@ -1354,6 +1387,7 @@ ${lines.join(NL)}${more}
                 }
                 // F10 修復：改用 class 切換而非 inline style，避免蓋掉新 CSS（見 hotfix 區塊 .tab-btn.is-locked）
                 btn.classList.toggle('is-locked', !isConfigured);
+                btn.setAttribute('aria-disabled', isConfigured ? 'false' : 'true');
             }
         });
     }
@@ -2378,8 +2412,14 @@ ${lines.join(NL)}${more}
                     ].filter(Boolean).join(' ');
 
                     // esc() 防 XSS：className/subject/domain/dayName/period 為使用者課表資料
+                    // P8：可選的課程格改用原生 <button>（可聚焦、Enter／空白鍵啟動），aria-pressed 由
+                    // _bindPressedState 依 .selected／.multi-selected 同步；不可選的格子維持一般 div（不是互動元素）
+                    const cellTag = isSelectable ? 'button' : 'div';
+                    const cellAttrs = isSelectable
+                        ? ` type="button" aria-pressed="false" aria-label="${esc(`${course.className} ${course.subject}，${dayName}${period}`)}"`
+                        : '';
                     html += `
-                        <div class="${esc(cellClasses)}"
+                        <${cellTag}${cellAttrs} class="${esc(cellClasses)}"
                              data-weekday="${esc(dayName)}"
                              data-period="${esc(period)}"
                              data-class="${esc(course.className)}"
@@ -2388,7 +2428,7 @@ ${lines.join(NL)}${more}
                              data-selectable="${isSelectable}">
                             <span class="course-class">${esc(course.className)}</span>
                             <span class="course-subject">${esc(course.subject)}</span>${course.__swapped ? '<span class="course-subject">（調課後）</span>' : ''}
-                        </div>
+                        </${cellTag}>
                     `;
                 } else {
                     const freeClasses = isActiveDay
@@ -2576,7 +2616,7 @@ ${lines.join(NL)}${more}
         chipsContainer.innerHTML = this.selectedCourses.map((course, index) => `
             <div class="course-chip" data-index="${index}">
                 <span class="chip-text">${esc(course.period)} ${esc(course.className)} ${esc(course.subject)}</span>
-                <span class="chip-remove" data-index="${index}" title="移除">×</span>
+                <button type="button" class="chip-remove" data-index="${index}" title="移除" aria-label="${esc(`移除 ${course.period} ${course.className} ${course.subject}`)}">×</button>
             </div>
         `).join('');
 
@@ -2877,7 +2917,10 @@ ${lines.join(NL)}${more}
         }
 
         recommendations.forEach((rec, index) => {
-            const item = document.createElement('div');
+            // P8：推薦項目改用原生 <button>（可聚焦、Enter／空白鍵啟動）；aria-pressed 由 _bindPressedState 同步
+            const item = document.createElement('button');
+            item.type = 'button';
+            item.setAttribute('aria-pressed', 'false');
             item.className = 'recommendation-item';
             item.dataset.index = index;
 
@@ -5397,10 +5440,7 @@ ${lines.join(NL)}${more}
             this.closeCourseEditModal();
         });
 
-        // 點擊 modal 外部關閉
-        document.getElementById('course-edit-modal')?.addEventListener('click', (e) => {
-            if (e.target.id === 'course-edit-modal') this.closeCourseEditModal();
-        });
+        // P8：課程編輯對話框含輸入欄位，點背景不關閉（避免已輸入的內容遺失）；用 Esc 或取消鈕關閉
     }
 
     /**
@@ -6127,7 +6167,7 @@ ${lines.join(NL)}${more}
         toast.innerHTML = `
             <span class="toast-icon">${Object.hasOwn(icons, type) ? icons[type] : icons.info}</span>
             <span class="toast-body">${esc(message).replace(/\n/g, '<br>')}</span>
-            <button class="toast-close">&times;</button>
+            <button type="button" class="toast-close" aria-label="關閉通知">&times;</button>
         `;
 
         container.appendChild(toast);
@@ -6155,7 +6195,7 @@ ${lines.join(NL)}${more}
     /**
      * 統一 confirm 對話框（Stage 5：取代原生 confirm()）。
      * 單例：呼叫時若前一個 confirm 尚未關閉，先以 resolve(false) 關閉它，避免重疊。
-     * Esc 不處理（現有 modal 慣例本就沒有全域 Esc 關閉）；點背景＝取消（跟現有多數 modal 一致）。
+     * Esc 與點背景＝取消（Esc、焦點移入與還原由 modalA11y.watchStaticModals 處理）。
      * @param {Object} opts
      * @param {string} opts.title - 標題
      * @param {string} opts.message - 內容（換行以 \n 表示，會轉成 <br>）

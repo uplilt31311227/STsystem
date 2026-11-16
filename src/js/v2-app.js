@@ -30,13 +30,14 @@ import { escapeHtml, toNum, pickAllowed } from './modules/htmlEscape.js';
 import { assertRuleSafeCaseText } from './modules/v2/caseTextRule.js';
 import { filterSameBatch } from './modules/v2/batchGuard.js';
 import {
-    fmtDate, renderLogRow, renderRecordRow, renderPendingCard,
+    fmtDate, renderLogRow, renderRecordRow, renderPendingCard, renderConsentDetail, renderApprovalDetail,
     consentActions, approvalActions, mineActions, ROLE_CLASS_WHITELIST, impactMetaHtml
 } from './modules/v2/htmlRows.js';
 import { findScheduleImpact } from './modules/scheduleImpact.js';
 import { pendingRequestsToOccupancyRecords, createShortTtlCache } from './modules/v2/assignmentConflict.js';
 import { matchesRecordSlot } from './modules/slotOccupancy.js';
 import { withBusyButton } from './modules/busyGuard.js';
+import { activateModal } from './modules/modalA11y.js';
 import { resolveTeacherIds, describeTeacherCandidate } from './modules/v2/teacherIdentity.js';
 import {
     ScheduleConflictError, ScheduleEmptyOverwriteError, expectedFromDoc, scheduleVersionOf,
@@ -371,13 +372,17 @@ function renderApplyGateContent(state) {
     // 剛核准，也保留這個入口——使用者可能記錯自己該用哪個選項，不強行只顯示一種。
     const joinSection = `
         <div class="data-management-section" style="text-align:left;">
-            <strong>加入既有學校</strong>
-            <p class="hint">若您的學校已經開通、且校內主任／組長已經在教師名單建立您的帳號，請在這裡輸入學校代碼即可直接使用（代碼由該校主任／組長提供）。</p>
+            <strong id="v2-join-school-title">加入既有學校（第一次登入請輸入學校代碼）</strong>
+            <p class="hint">學校代碼是本系統用來分辨各校的簡短英文代號，不是您的密碼，也不需要保密。
+            第一次登入時，系統要靠它把您的帳號接到學校名單。</p>
+            <p class="hint">代碼請向學校的教學組長或教務主任詢問，或查看學校公告。
+            輸入一次即可，之後登入不會再問。</p>
             <div style="display:flex;gap:0.5rem;align-items:flex-start;flex-wrap:wrap;margin-top:0.4rem;">
-                <input type="text" id="v2-join-school-id" placeholder="例如：inhu" style="flex:1;min-width:140px;">
+                <label for="v2-join-school-id" class="sr-only">學校代碼</label>
+                <input type="text" id="v2-join-school-id" placeholder="請輸入學校提供的代碼" autocomplete="off" aria-describedby="v2-join-school-hint" style="flex:1;min-width:140px;">
                 <button id="v2-gate-join-school" class="btn btn-primary btn-sm">加入</button>
             </div>
-            <span class="hint" id="v2-join-school-hint"></span>
+            <span class="hint" id="v2-join-school-hint" role="status"></span>
         </div>
         <p style="text-align:center;color:var(--color-text-muted,#888);margin:0.6rem 0;">－ 或 －</p>
     `;
@@ -422,8 +427,8 @@ function renderApplyGateContent(state) {
         `<p class="v2-gate-denied">🔒 帳號 ${escapeHtml(state.email)} 尚未綁定任何學校。</p>` +
         joinSection + `
         <div class="data-management-section" style="text-align:left;">
-            <strong>申請開通新學校</strong>
-            <p class="hint">若您的學校尚未開通，可在此送出申請；平台管理者審核通過後即可使用（一所學校僅需申請一次）。</p>
+            <strong>申請開通新學校（僅學校負責人使用）</strong>
+            <p class="hint">一般教師不需要填這一區，請用上方的學校代碼加入。若您的學校尚未開通，可在此送出申請；平台管理者審核通過後即可使用（一所學校僅需申請一次）。</p>
             ${rejectedNote}
             <label style="display:block;margin-top:0.4rem;">學校名稱
                 <input type="text" id="v2-apply-school-name" placeholder="例如：新竹市立內湖國民中學"
@@ -670,6 +675,41 @@ async function retryPendingSource() {
 }
 
 /**
+ * P8：在背景讀取審核卡片的私有明細，讀完只更新各卡片的明細區（不整頁重繪、不重讀「我的申請」）。
+ * - 寫入 _v2DetailCache 與更新畫面之前都檢查 isStaleRender(gen)：登出或切換身份後，舊使用者的明細
+ *   不得寫回快取，也不得蓋掉新畫面。
+ * - 同一世代已有讀取在飛行中的 reqId 不重複讀（重繪時卡片會顯示「讀取中…」，由進行中的讀取回填）。
+ * - 讀取失敗：卡片改顯示「明細讀取失敗」（error 不快取，下次重繪重試）。只讀取，不寫入任何 Firestore 資料。
+ */
+async function loadApprovalDetails(host, need, gen, queue, detailHtmlFn) {
+    const ids = need.filter(id => _v2DetailInflight.get(id) !== gen);
+    if (!ids.length) return;
+    ids.forEach(id => _v2DetailInflight.set(id, gen));
+    let got;
+    try {
+        got = await dataSvc.getRequestDetailsBulkWithStatus(ids);
+    } catch (err) {
+        console.warn('[v2] 讀取待核准申請的假別與事由失敗（卡片會標示讀取失敗）:', err);
+        got = new Map();
+    } finally {
+        ids.forEach(id => { if (_v2DetailInflight.get(id) === gen) _v2DetailInflight.delete(id); });
+    }
+    if (isStaleRender(gen)) return;   // 期間登出／切換身份：不寫快取、不動畫面
+    const results = new Map();
+    ids.forEach(id => {
+        const res = got.get(id) || { status: 'error', data: null };
+        results.set(id, res);
+        if (res.status !== 'error') _v2DetailCache.set(id, res);
+    });
+    if (!host.isConnected) return;
+    host.querySelectorAll('[data-approval-detail]').forEach(el => {
+        const res = results.get(el.dataset.approvalDetail);
+        const r = res && queue.find(x => x.reqId === el.dataset.approvalDetail);
+        if (r) el.outerHTML = detailHtmlFn(r, res);
+    });
+}
+
+/**
  * Phase 3：待辦清單改為三段：
  *   1. 待我同意（consent-inbox）— swap / multi_swap 分開呈現，供 pendingConsentTeacherIds 內的教師同意/拒絕
  *   2. 待我審核（approval-queue）— approver only，核准後才建立 record + 產生 PDF
@@ -728,6 +768,19 @@ async function renderPendingTab() {
 
     updatePendingNavBadge(pendingSourceError ? null : (consentMine.length + approvalQueue.length));
 
+    // P8：審核卡片要看得到假別與事由（私有明細，另一份文件）。申請建立後明細不會再變，
+    // 以 reqId 快取，避免每次即時訂閱觸發重繪都重讀。
+    // 明細讀取不擋畫面：先用已有快取立即畫出三區卡片，尚無明細的卡片在明細位置顯示「讀取中…」，
+    // 讀完後只更新各卡片的明細區（見 loadApprovalDetails）。快取值為 {status, data}，
+    // status 區分 ok／missing／denied；error 不進快取（下次重繪會重試），只更新當下畫面。
+    const approvalNeed = approvalQueue.map(r => r.reqId).filter(id => id && !_v2DetailCache.has(id));
+    const approvalRelated = (r) => r.batchId ? filterSameBatch(r, openAll.filter(x => x.batchId === r.batchId)) : [];
+    const approvalDetailHtml = (r, res) => renderApprovalDetail(r, res ? res.data : null, {
+        detailState: res ? res.status : 'loading',
+        related: approvalRelated(r),
+    });
+    const approvalDetailFn = (r) => approvalDetailHtml(r, _v2DetailCache.get(r.reqId) || null);
+
     const consentRemainMeta = (r) => {
         const remain = Array.isArray(r.pendingConsentTeacherIds) ? r.pendingConsentTeacherIds.length : 0;
         return r.requestType === REQUEST_TYPES.MULTI_SWAP ? ` ・ 尚待 ${remain} 人同意` : '';
@@ -735,10 +788,11 @@ async function renderPendingTab() {
 
     // 課表／教師異動後受影響的在途申請（P6）：以目前課表與教師名單即時比對，只提示不改資料
     const impactMapPending = computeImpactMap({ requests: openAll });
-    const renderList = (items, cls, emptyMsg, actionsFn, extraMetaFn) =>
+    const renderList = (items, cls, emptyMsg, actionsFn, extraMetaFn, detailFn) =>
         items.length
             ? items.map(r => renderPendingCard(r, cls, actionsFn(r),
-                (extraMetaFn ? extraMetaFn(r) : '') + impactMetaHtml(impactNoteFor(impactMapPending, r)))).join('')
+                (extraMetaFn ? extraMetaFn(r) : '') + impactMetaHtml(impactNoteFor(impactMapPending, r)),
+                detailFn ? detailFn(r) : '')).join('')
             : `<p class="muted">${escapeHtml(emptyMsg)}</p>`;
     // 卡片、同意／核准／撤回按鈕的組字已移到 modules/v2/htmlRows.js（data-id 皆已跳脫）。
 
@@ -757,16 +811,16 @@ async function renderPendingTab() {
     if (isStaleRender(_gen)) return;   // 期間身份已切換 → 放棄回填，保持 reset 清空的狀態
     host.innerHTML = `
         <div class="v2-section-header"><h3>待我同意・調課</h3></div>
-        ${pendingSourceError ? pendingErrorCard('待我同意') : renderList(consentSwap, 'incoming', '目前沒有等待您同意的調課請求', consentActions)}
+        ${pendingSourceError ? pendingErrorCard('待我同意') : renderList(consentSwap, 'incoming', '目前沒有等待您同意的調課請求', consentActions, null, renderConsentDetail)}
 
         <div class="v2-section-header" style="margin-top:2rem;"><h3>待我同意・多重調課</h3></div>
-        ${pendingSourceError ? pendingErrorCard('待我同意') : renderList(consentMultiSwap, 'incoming', '目前沒有等待您同意的多重調課請求', consentActions, consentRemainMeta)}
+        ${pendingSourceError ? pendingErrorCard('待我同意') : renderList(consentMultiSwap, 'incoming', '目前沒有等待您同意的多重調課請求', consentActions, consentRemainMeta, renderConsentDetail)}
 
         ${isApprover ? `
         <div class="v2-section-header" style="margin-top:2rem;">
             <h3>待我審核 ${!pendingSourceError && approvalQueue.length ? `<span class="v2-badge">${approvalQueue.length}</span>` : ''}</h3>
         </div>
-        ${pendingSourceError ? pendingErrorCard('待我審核') : renderList(approvalQueue, 'incoming', '目前沒有待核准的申請', approvalActions)}
+        ${pendingSourceError ? pendingErrorCard('待我審核') : renderList(approvalQueue, 'incoming', '目前沒有待核准的申請', approvalActions, null, approvalDetailFn)}
         ` : ''}
 
         <div class="v2-section-header" style="margin-top:2rem;"><h3>我的申請</h3></div>
@@ -776,6 +830,10 @@ async function renderPendingTab() {
             : renderList(mine, 'outgoing', '目前沒有您發起中的請求', mineActions, mineMeta)}
     `;
 
+    // 畫面已出，才在背景讀取尚無的明細（不 await，不阻塞待辦頁）
+    if (!pendingSourceError && approvalNeed.length) {
+        loadApprovalDetails(host, approvalNeed, _gen, approvalQueue, approvalDetailHtml);
+    }
     document.getElementById('v2-refresh-pending-mine')?.addEventListener('click', renderPendingTab);
     // 驗收修復（中 #A）：這顆鈕不能只是重繪（_v2PendingCache/_v2PendingSourceError 不會自己
     // 變好）——實際重打 listOpenPendingRequests() 嘗試恢復，見 retryPendingSource()。
@@ -880,10 +938,10 @@ async function renderPendingTab() {
             }
         })));
     host.querySelectorAll('.v2-dismiss-btn').forEach(btn =>
-        btn.addEventListener('click', async () => {
+        btn.addEventListener('click', () => withBusyButton(btn, `dismiss:${btn.dataset.id}`, async () => {
             try { await requestSvc.dismissRejectedRequest(btn.dataset.id); await renderPendingTab(); }
             catch (e) { notifyError(e, '清除已拒絕請求'); }
-        }));
+        })));
 }
 
 /**
@@ -1257,7 +1315,7 @@ async function renderTeachersAdminTab() {
     });
 
     host.querySelectorAll('.v2-delete-teacher').forEach(btn =>
-        btn.addEventListener('click', async () => {
+        btn.addEventListener('click', () => withBusyButton(btn, `delete-teacher:${btn.closest('tr')?.dataset.id}`, async () => {
             const tr   = btn.closest('tr');
             const id   = tr.dataset.id;
             const name = tr.dataset.name;
@@ -1296,7 +1354,7 @@ async function renderTeachersAdminTab() {
                 await renderTeachersAdminTab();
             }
             catch (e) { notifyError(e, '刪除教師'); }
-        }));
+        })));
 
     host.querySelectorAll('.v2-send-reset').forEach(btn =>
         btn.addEventListener('click', async () => {
@@ -1394,19 +1452,27 @@ async function renderTeachersAdminTab() {
         }
     });
 
-    document.getElementById('v2-import-legacy-teachers')?.addEventListener('click', async () => {
-        const legacy = window.app?.dataManager?.teachers || [];
-        if (!legacy.length) { notify('找不到課表教師資料，請先於「課表管理」載入課表', 'warning'); return; }
-        const created = await teacherMgr.importFromLegacyTeachers(legacy);
-        notify(`已匯入 ${created.length} 位教師`, 'success');
-        await renderTeachersAdminTab();
+    // P8：防連點（連點會重複寫入）；原本沒有 try/catch，失敗時使用者看不到任何訊息，一併補上
+    document.getElementById('v2-import-legacy-teachers')?.addEventListener('click', (ev) => {
+        const btn = ev.currentTarget;
+        return withBusyButton(btn, 'import-legacy-teachers', async () => {
+            const legacy = window.app?.dataManager?.teachers || [];
+            if (!legacy.length) { notify('找不到課表教師資料，請先於「課表管理」載入課表', 'warning'); return; }
+            try {
+                const created = await teacherMgr.importFromLegacyTeachers(legacy);
+                notify(`已匯入 ${created.length} 位教師`, 'success');
+                await renderTeachersAdminTab();
+            } catch (e) {
+                notifyError(e, '從課表匯入教師');
+            }
+        }, { busyText: '匯入中…' });
     });
 
     document.getElementById('v2-import-roster-csv')?.addEventListener('click', () => {
         document.getElementById('v2-roster-csv-input')?.click();
     });
 
-    document.getElementById('v2-roster-csv-input')?.addEventListener('change', async (ev) => {
+    document.getElementById('v2-roster-csv-input')?.addEventListener('change', (ev) => {
         const file = ev.target.files && ev.target.files[0];
         ev.target.value = ''; // 清空，允許使用者重新選同一檔案時仍觸發 change
         if (!file) return;
@@ -1414,6 +1480,8 @@ async function renderTeachersAdminTab() {
             notify('名冊 CSV 檔案太大（上限 5 MB），請確認是否選錯檔案', 'error');
             return;
         }
+        // P8：匯入進行中（預覽、確認、寫入）鎖住觸發鈕並互斥，避免連續選檔重複匯入
+        return withBusyButton(document.getElementById('v2-import-roster-csv'), 'import-roster-csv', async () => {
         try {
             const rows = await parseRosterCsvFile(file);
             const preview = await teacherMgr.importRosterCsv(rows, { dryRun: true });
@@ -1428,6 +1496,7 @@ async function renderTeachersAdminTab() {
         } catch (e) {
             notifyError(e, 'CSV 批次匯入');
         }
+        }, { busyText: '匯入中…' });
     });
 
     bindLegacyMigrationCard();
@@ -1586,10 +1655,12 @@ function promptRosterImportPreview(preview) {
             </div>`;
         document.body.appendChild(backdrop);
 
-        const cleanup = (result) => { backdrop.remove(); resolve(result); };
+        let a11y = null;
+        const cleanup = (result) => { a11y?.release(); backdrop.remove(); resolve(result); };
         backdrop.querySelector('#v2-roster-preview-cancel').addEventListener('click', () => cleanup(false));
         backdrop.querySelector('#v2-roster-preview-confirm').addEventListener('click', () => cleanup(true));
-        backdrop.addEventListener('click', (e) => { if (e.target === backdrop) cleanup(false); });
+        // P8：role／Esc／焦點管理／Tab 循環由 modalA11y 處理（此對話框無輸入欄位，點背景＝取消）
+        a11y = activateModal(backdrop, { onRequestClose: () => cleanup(false), initialFocus: '#v2-roster-preview-cancel' });
     });
 }
 
@@ -1865,17 +1936,15 @@ async function renderRecordsTab() {
     });
 
     host.querySelectorAll('.v2-download-pdf').forEach(btn =>
-        btn.addEventListener('click', async () => {
+        btn.addEventListener('click', () => withBusyButton(btn, `download-pdf:${btn.dataset.id}`, async () => {
             const rec = visible.find(x => x.recordId === btn.dataset.id);
             if (!rec) return;
-            btn.disabled = true;
             await generateRecordPdf(rec, { mode: 'reprint' });
-            btn.disabled = false;
-        }));
+        }, { busyText: '產生中…' })));
 
     if (isApprover) {
         host.querySelectorAll('.v2-admin-delete').forEach(btn =>
-            btn.addEventListener('click', async () => {
+            btn.addEventListener('click', () => withBusyButton(btn, `admin-delete:${btn.dataset.id}`, async () => {
                 const ok = await window.app?.confirmDialog?.({
                     title: '刪除紀錄', message: '確定刪除此紀錄？此操作會寫入 log。', confirmText: '刪除', danger: true,
                 });
@@ -1890,7 +1959,7 @@ async function renderRecordsTab() {
                     await renderRecordsTab();
                 }
                 catch (e) { notifyError(e, '刪除紀錄'); }
-            }));
+            })));
     }
 }
 
@@ -3232,6 +3301,8 @@ function resetV2ViewState() {
     _v2IsPlatformAdmin = null;
     _v2RecordsCache = [];
     _v2PendingCache = [];
+    _v2DetailCache.clear();
+    _v2DetailInflight.clear();
     _v2RecordDetailCache.clear();
     _v2RecordsCacheGen++;   // 讓前一身份任何仍在飛行中的 hydrateRecordsWithDetail 事後失效，不得回填
     // Stage 1：分頁狀態與日期範圍查詢快取同屬「含個資的畫面狀態」，身份切換必須一併清空，
@@ -3501,7 +3572,6 @@ function promptSelectTeacher(name, candidates) {
         const backdrop = document.createElement('div');
         backdrop.id = 'v2-select-teacher-modal';
         backdrop.className = 'modal';
-        backdrop.setAttribute('role', 'dialog');
         backdrop.innerHTML = `
             <div class="modal-content" style="max-width:460px;">
                 <div class="modal-body">
@@ -3524,13 +3594,16 @@ function promptSelectTeacher(name, candidates) {
                 </div>
             </div>`;
         document.body.appendChild(backdrop);
-        const cleanup = (result) => { backdrop.remove(); resolve(result); };
+        let a11y = null;
+        const cleanup = (result) => { a11y?.release(); backdrop.remove(); resolve(result); };
         backdrop.querySelector('#v2-select-teacher-cancel').addEventListener('click', () => cleanup(null));
         backdrop.querySelector('#v2-select-teacher-confirm').addEventListener('click', () => {
             const picked = backdrop.querySelector('input[name="v2-select-teacher"]:checked');
             if (!picked) { backdrop.querySelector('#v2-select-teacher-msg').style.display = 'block'; return; }
             cleanup(picked.value);
         });
+        // P8：Esc＝取消送出；含輸入（radio）的對話框點背景不關閉；焦點移到第一個選項，關閉後還原
+        a11y = activateModal(backdrop, { onRequestClose: () => cleanup(null), initialFocus: 'input[name="v2-select-teacher"]' });
     });
 }
 
@@ -3538,7 +3611,7 @@ function promptSelectTeacher(name, candidates) {
  * Phase 3：調課（非自我調課、非 approver 代發起）時詢問「是否還有其他教師需一併同意」，
  * 讓一般調課雙簽升級為多重調課全員同意。純 v2-app.js 內動態注入的 modal，
  * 不改動 app.js / index.html 既有調課表單與批次調課流程。
- * 回傳勾選的教師姓名陣列（可能是空陣列 = 維持雙簽調課）。
+ * 回傳勾選的教師姓名陣列（可能是空陣列 = 維持雙簽調課）；使用者取消（取消鈕、Esc）回傳 null = 放棄送出。
  */
 function promptAdditionalConsentTeachers(record, allTeachers) {
     return new Promise((resolve) => {
@@ -3551,21 +3624,29 @@ function promptAdditionalConsentTeachers(record, allTeachers) {
         // 誤中 #modal-root 內 5 個常駐（但預設 hidden）的靜態 modal。
         backdrop.id = 'v2-extra-consent-modal';
         backdrop.className = 'modal';
+        // P8：標題改為平實問句（原標題「多重調課：…」把內部名詞放在使用者面前）；加搜尋框與「取消」鈕
         backdrop.innerHTML = `
             <div class="modal-content" style="max-width:420px;">
                 <div class="modal-body">
-                <h3>多重調課：還有其他教師需一併同意嗎？</h3>
+                <h3>還有其他教師需要一併同意嗎？</h3>
                 <p style="font-size:0.8rem;color:#6b7280;margin-top:-0.4rem;">
                     若本次調課牽動其他教師課務（例如三方輪調），請勾選需一併同意的教師；
-                    僅雙方調課請直接點「僅雙方調課」送出。
+                    只有雙方調課請按「僅雙方調課」。按「取消」會放棄這次送出。
                 </p>
-                <div class="v2-consent-teacher-list" style="max-height:220px;overflow:auto;margin:0.6rem 0;border:1px solid #e5e7eb;border-radius:6px;padding:6px 10px;">
+                <div class="form-group">
+                    <label for="v2-extra-consent-search">搜尋教師</label>
+                    <input type="search" id="v2-extra-consent-search" autocomplete="off" placeholder="輸入姓名的一部分">
+                </div>
+                <div class="v2-consent-teacher-list" role="group" aria-label="需一併同意的教師" style="max-height:220px;overflow:auto;margin:0.6rem 0;border:1px solid var(--color-border-input);border-radius:6px;padding:6px 10px;">
                     ${candidates.map(t => `
-                        <label style="display:block;padding:4px 0;font-size:0.9rem;">
+                        <label class="v2-extra-consent-item" style="display:block;padding:4px 0;font-size:0.9rem;">
                             <input type="checkbox" class="v2-extra-consent-cb" value="${escapeHtml(t.name)}"> ${escapeHtml(t.name)}
                         </label>`).join('')}
+                    <p class="hint" id="v2-extra-consent-empty" hidden>沒有符合的教師</p>
                 </div>
+                <p class="hint" id="v2-extra-consent-count" aria-live="polite">已勾選 0 位</p>
                 <div class="modal-actions">
+                    <button class="btn btn-secondary" id="v2-extra-consent-cancel">取消</button>
                     <button class="btn btn-secondary" id="v2-extra-consent-skip">僅雙方調課</button>
                     <button class="btn btn-primary" id="v2-extra-consent-confirm">送出</button>
                 </div>
@@ -3573,12 +3654,35 @@ function promptAdditionalConsentTeachers(record, allTeachers) {
             </div>`;
         document.body.appendChild(backdrop);
 
-        const cleanup = (result) => { backdrop.remove(); resolve(result); };
+        let a11y = null;
+        const cleanup = (result) => { a11y?.release(); backdrop.remove(); resolve(result); };
+        const search = backdrop.querySelector('#v2-extra-consent-search');
+        const countEl = backdrop.querySelector('#v2-extra-consent-count');
+        const emptyEl = backdrop.querySelector('#v2-extra-consent-empty');
+        const items = Array.from(backdrop.querySelectorAll('.v2-extra-consent-item'));
+        const updateCount = () => {
+            countEl.textContent = `已勾選 ${backdrop.querySelectorAll('.v2-extra-consent-cb:checked').length} 位`;
+        };
+        search.addEventListener('input', () => {
+            const kw = search.value.trim();
+            let shown = 0;
+            items.forEach((label) => {
+                const match = !kw || label.textContent.includes(kw);
+                label.style.display = match ? 'block' : 'none';     // 被篩掉的項目維持原勾選狀態，送出時仍會算入
+                if (match) shown++;
+            });
+            emptyEl.hidden = shown > 0;
+        });
+        backdrop.addEventListener('change', updateCount);
+        // 取消＝放棄這次送出（resolve null，由呼叫端中止）；與「僅雙方調課」（resolve []）不同
+        backdrop.querySelector('#v2-extra-consent-cancel').addEventListener('click', () => cleanup(null));
         backdrop.querySelector('#v2-extra-consent-skip').addEventListener('click', () => cleanup([]));
         backdrop.querySelector('#v2-extra-consent-confirm').addEventListener('click', () => {
             const names = Array.from(backdrop.querySelectorAll('.v2-extra-consent-cb:checked')).map(cb => cb.value);
             cleanup(names);
         });
+        // P8：含輸入（搜尋、勾選）的對話框點背景不關閉；Esc＝取消
+        a11y = activateModal(backdrop, { onRequestClose: () => cleanup(null), initialFocus: search });
     });
 }
 
@@ -3615,9 +3719,9 @@ function promptRejectReason() {
         document.body.appendChild(backdrop);
 
         const textarea = backdrop.querySelector('#v2-reject-reason-input');
-        textarea.focus();
 
-        const cleanup = (result) => { backdrop.remove(); resolve(result); };
+        let a11y = null;
+        const cleanup = (result) => { a11y?.release(); backdrop.remove(); resolve(result); };
         backdrop.querySelector('#v2-reject-reason-cancel').addEventListener('click', () => cleanup(null));
         backdrop.querySelector('#v2-reject-reason-confirm').addEventListener('click', () => {
             const value = textarea.value || '';
@@ -3630,7 +3734,8 @@ function promptRejectReason() {
             }
             cleanup(value);
         });
-        backdrop.addEventListener('click', (e) => { if (e.target === backdrop) cleanup(null); });
+        // P8：含輸入的對話框點背景不關閉（原本點背景會丟掉已輸入的原因）；Esc＝取消
+        a11y = activateModal(backdrop, { onRequestClose: () => cleanup(null), initialFocus: textarea });
     });
 }
 
@@ -3667,9 +3772,9 @@ function promptNewTeacherModal() {
         const nameInput  = backdrop.querySelector('#v2-new-teacher-name');
         const emailInput = backdrop.querySelector('#v2-new-teacher-email');
         const msgEl      = backdrop.querySelector('#v2-new-teacher-msg');
-        nameInput.focus();
 
-        const cleanup = (result) => { backdrop.remove(); resolve(result); };
+        let a11y = null;
+        const cleanup = (result) => { a11y?.release(); backdrop.remove(); resolve(result); };
         backdrop.querySelector('#v2-new-teacher-cancel').addEventListener('click', () => cleanup(null));
         backdrop.querySelector('#v2-new-teacher-confirm').addEventListener('click', () => {
             const name = nameInput.value.trim();
@@ -3681,7 +3786,8 @@ function promptNewTeacherModal() {
             }
             cleanup({ name, email: emailInput.value.trim() || null });
         });
-        backdrop.addEventListener('click', (e) => { if (e.target === backdrop) cleanup(null); });
+        // P8：含輸入的對話框點背景不關閉；Esc＝取消
+        a11y = activateModal(backdrop, { onRequestClose: () => cleanup(null), initialFocus: nameInput });
     });
 }
 
@@ -3795,7 +3901,12 @@ async function writeV2Record(record) {
     // 可精確區分兩者。請勿改回 isMultiSwap。
     if (record.type === '調課' && !record.isSelfSwap && !record.batchId && !roleSvc.isAdmin()
         && !Array.isArray(record.additionalConsentTeachers)) {
-        record.additionalConsentTeachers = await promptAdditionalConsentTeachers(record, teachers);
+        const extraNames = await promptAdditionalConsentTeachers(record, teachers);
+        if (extraNames === null) {
+            // 使用者在對話框按「取消」或 Esc：放棄這次送出（沿用「使用者取消」的既有處理，只顯示提示、不記錯誤）
+            throw Object.assign(new Error('已取消送出：尚未送出調課申請'), { code: 'AMBIGUOUS_TEACHER_CANCELLED' });
+        }
+        record.additionalConsentTeachers = extraNames;
     }
 
     const ids = await resolveApproverInfo(record, teachers);
@@ -3853,6 +3964,10 @@ let _swallowPdfSummaryToast = false;
 // （最近 V2_RECORDS_PAGE_SIZE 筆，見 schoolDataService.subscribeSubstituteRecords）。
 let _v2RecordsCache = [];
 let _v2PendingCache = [];
+// P8：待核准申請的私有明細（假別、事由）快取，以 reqId 為鍵；身份切換時清空
+const _v2DetailCache = new Map();
+// 明細背景讀取中的 reqId → 發起讀取時的身份世代（避免重繪時重複讀；世代不同視為無效）
+const _v2DetailInflight = new Map();
 // 驗收修復（中 #A）：subscribePendingRequests 的即時訂閱與 bootstrap 的 prefill
 // （listOpenPendingRequests）是「待我同意/待我審核」唯二的資料來源；若兩者同時失敗，
 // _v2PendingCache 會停在初始值 `[]`，renderPendingTab 若只看陣列長度會誤判成「真的沒有
@@ -5273,10 +5388,15 @@ function injectEmailLoginTrigger() {
 }
 
 function closeAuthModal() {
-    document.getElementById('v2-auth-modal-backdrop')?.remove();
+    const el = document.getElementById('v2-auth-modal-backdrop');
+    el?._a11y?.release();
+    el?.remove();
 }
 
 function openAuthModal(mode = 'signin') {
+    if (!document.getElementById('v2-auth-modal-backdrop')) {
+        openAuthModal._opener = document.activeElement && document.activeElement !== document.body ? document.activeElement : null;
+    }
     closeAuthModal();
     const backdrop = document.createElement('div');
     backdrop.id = 'v2-auth-modal-backdrop';
@@ -5299,16 +5419,16 @@ function openAuthModal(mode = 'signin') {
             <h3>${escapeHtml(titles[mode])}</h3>
             ${mode !== 'forgot' ? `
                 <div class="form-group">
-                    <label>Email</label>
+                    <label for="v2-modal-email">Email</label>
                     <input type="email" id="v2-modal-email" placeholder="your@email.com" autocomplete="email">
                 </div>
                 <div class="form-group">
-                    <label>密碼${mode === 'register' ? '（至少 6 字元）' : ''}</label>
+                    <label for="v2-modal-pwd">密碼${mode === 'register' ? '（至少 6 字元）' : ''}</label>
                     <input type="password" id="v2-modal-pwd" placeholder="••••••••" autocomplete="${mode === 'signin' ? 'current-password' : 'new-password'}">
                 </div>
             ` : `
                 <div class="form-group">
-                    <label>Email</label>
+                    <label for="v2-modal-email">Email</label>
                     <input type="email" id="v2-modal-email" placeholder="your@email.com" autocomplete="email">
                 </div>
             `}
@@ -5338,7 +5458,9 @@ function openAuthModal(mode = 'signin') {
     };
 
     backdrop.querySelector('#v2-modal-cancel').addEventListener('click', closeAuthModal);
-    backdrop.addEventListener('click', (e) => { if (e.target === backdrop) closeAuthModal(); });
+    // P8：含輸入（email、密碼）的對話框點背景不關閉；Esc 關閉；焦點移到 Email 欄
+    // 切換模式（登入／重設／註冊）會重建對話框，焦點還原目標沿用最初開啟前的元素
+    activateModal(backdrop, { onRequestClose: closeAuthModal, initialFocus: '#v2-modal-email', returnFocusTo: openAuthModal._opener });
     backdrop.querySelectorAll('.modal-links a').forEach(a =>
         a.addEventListener('click', () => openAuthModal(a.dataset.mode)));
 
@@ -5463,6 +5585,8 @@ async function bootstrap() {
             document.body.classList.remove('v2-admin', 'v2-director', 'v2-section-chief', 'v2-teacher', 'v2-approver');
             _v2RecordsCache = [];
             _v2PendingCache = [];
+            _v2DetailCache.clear();
+            _v2DetailInflight.clear();
             _v2RecordDetailCache.clear();
             _v2SettlementSemesterCache.clear();
             _v2RecordsCacheGen++;   // 同上：作廢登出前任何仍在飛行中的補讀

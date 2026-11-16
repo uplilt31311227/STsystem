@@ -17,22 +17,24 @@
     <!-- Favicon - 使用 SVG 作為網站圖標 -->
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📅</text></svg>">
 
-    <!-- CDN 引入 -->
+    <!-- CDN 引入。P8：全部加 defer（不阻擋首屏渲染）。defer 的classic 腳本會依序在文件解析完成後、DOMContentLoaded 之前執行，
+         且早於下方的 type=module 腳本（module 本身也是延後執行、依出現順序排在後面），所以 app.js／v2-app.js 載入時這些全域變數都已就緒。
+         integrity／crossorigin 與 CSP 不受 defer 影響。 -->
     <!-- PapaParse - CSV 解析 -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js" integrity="sha384-D/t0ZMqQW31H3az8ktEiNb39wyKnS82iFY52QPACM+IjKW3jDUhyIgh2PApRqJZs" crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js" integrity="sha384-D/t0ZMqQW31H3az8ktEiNb39wyKnS82iFY52QPACM+IjKW3jDUhyIgh2PApRqJZs" crossorigin="anonymous" defer></script>
     <!-- jsPDF - PDF 生成 -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/3.0.3/jspdf.umd.min.js" integrity="sha384-GwHhSt8QjC7J+v0zZ0Flfho/T76YHEcCL9w4rvjTIUHauh6gWJeBSIi3vWXxNhtA" crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/3.0.3/jspdf.umd.min.js" integrity="sha384-GwHhSt8QjC7J+v0zZ0Flfho/T76YHEcCL9w4rvjTIUHauh6gWJeBSIi3vWXxNhtA" crossorigin="anonymous" defer></script>
     <!-- jsPDF AutoTable - PDF 表格 -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js" integrity="sha384-b8MpgG2ZzWN6OPAtiB1JiBmDr9MpTt3NKK6KQf61hC/L7X4wJrvoTeVmMFPgp3nL" crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js" integrity="sha384-b8MpgG2ZzWN6OPAtiB1JiBmDr9MpTt3NKK6KQf61hC/L7X4wJrvoTeVmMFPgp3nL" crossorigin="anonymous" defer></script>
     <!-- SheetJS (xlsx) 0.20.3 - Excel 讀取（官方修補版，cdnjs 的 0.18.5 有 CVE-2023-30533／CVE-2024-22363 且已停止更新） -->
-    <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js" integrity="sha384-EnyY0/GSHQGSxSgMwaIPzSESbqoOLSexfnSMN2AP+39Ckmn92stwABZynq1JyzdT" crossorigin="anonymous"></script>
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js" integrity="sha384-EnyY0/GSHQGSxSgMwaIPzSESbqoOLSexfnSMN2AP+39Ckmn92stwABZynq1JyzdT" crossorigin="anonymous" defer></script>
     <!-- html2canvas - HTML 轉圖片（用於 PDF 中文支援） -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js" integrity="sha384-ZZ1pncU3bQe8y31yfZdMFdSpttDoPmOZg2wguVK9almUodir1PghgT0eY7Mrty8H" crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js" integrity="sha384-ZZ1pncU3bQe8y31yfZdMFdSpttDoPmOZg2wguVK9almUodir1PghgT0eY7Mrty8H" crossorigin="anonymous" defer></script>
 
-    <link rel="stylesheet" href="src/css/tokens.css?v=2.6.2">
-    <link rel="stylesheet" href="src/css/base.css?v=2.6.2">
-    <link rel="stylesheet" href="src/css/components.css?v=2.6.2">
-    <link rel="stylesheet" href="src/css/features.css?v=2.6.2">
+    <link rel="stylesheet" href="src/css/tokens.css?v=2.7.0">
+    <link rel="stylesheet" href="src/css/base.css?v=2.7.0">
+    <link rel="stylesheet" href="src/css/components.css?v=2.7.0">
+    <link rel="stylesheet" href="src/css/features.css?v=2.7.0">
 </head>
 <body>
     <div class="app-container">
@@ -99,9 +101,9 @@
                             </div>
                         </div>
                         <p class="hint v2-only v2-approver-only" id="v2-import-target-hint"></p>
-                        <div class="upload-area upload-area-compact v2-approver-only" id="schedule-upload">
+                        <div class="upload-area upload-area-compact v2-approver-only" id="schedule-upload" role="button" tabindex="0" aria-label="選擇課表檔案（支援 xls、xlsx、csv），也可以把檔案拖放到這裡">
                             <div class="upload-icon-compact">📅</div>
-                            <p>拖放課表檔案或<label for="schedule-file" class="upload-link">點擊選擇</label></p>
+                            <p>拖放課表檔案或<span class="upload-link">點擊選擇</span></p>
                             <span class="upload-hint">支援 .xls / .xlsx / .csv</span>
                             <input type="file" id="schedule-file" accept=".xls,.xlsx,.csv" hidden>
                         </div>
@@ -252,7 +254,7 @@
                             <label class="change-type-option">
                                 <input type="radio" name="change-type-radio" value="substitute" checked>
                                 <div class="change-type-card">
-                                    <div class="change-type-icon">👤</div>
+                                    <div class="change-type-icon" aria-hidden="true">👤</div>
                                     <div class="change-type-info">
                                         <strong>代課</strong>
                                     </div>
@@ -261,7 +263,7 @@
                             <label class="change-type-option">
                                 <input type="radio" name="change-type-radio" value="swap">
                                 <div class="change-type-card">
-                                    <div class="change-type-icon">🔄</div>
+                                    <div class="change-type-icon" aria-hidden="true">🔄</div>
                                     <div class="change-type-info">
                                         <strong>調課</strong>
                                     </div>
@@ -270,7 +272,7 @@
                             <label class="change-type-option">
                                 <input type="radio" name="change-type-radio" value="multi-swap">
                                 <div class="change-type-card">
-                                    <div class="change-type-icon">🔀</div>
+                                    <div class="change-type-icon" aria-hidden="true">🔀</div>
                                     <div class="change-type-info">
                                         <strong>多重調課</strong>
                                     </div>
@@ -852,7 +854,7 @@
     </div>
 
     <!-- Toast 通知容器 -->
-    <div id="toast-container"></div>
+    <div id="toast-container" role="status" aria-live="polite"></div>
 
     <!-- 所有 modal 集中於此（Stage 2 起：原本散落各分頁內，分頁非 active 時 modal 因祖先
          display:none 而打不開；全部只靠 getElementById 存取，搬到這裡後不受任何分頁切換影響） -->
@@ -862,7 +864,7 @@
             <div class="modal-content import-history-modal-content">
                 <div class="modal-header">
                     <h3>課表匯入紀錄</h3>
-                    <button type="button" class="modal-close" id="close-import-history-btn">&times;</button>
+                    <button type="button" class="modal-close" aria-label="關閉" id="close-import-history-btn">&times;</button>
                 </div>
                 <div class="modal-body">
                     <p class="hint" id="import-history-hint"></p>
@@ -892,7 +894,7 @@
             <div class="modal-content">
                 <div class="modal-header">
                     <h3 id="course-modal-title">新增課程</h3>
-                    <button class="modal-close" id="close-course-modal-btn">&times;</button>
+                    <button class="modal-close" aria-label="關閉" id="close-course-modal-btn">&times;</button>
                 </div>
                 <div class="modal-body">
                     <div class="course-modal-info">
@@ -940,7 +942,7 @@
             <div class="modal-content">
                 <div class="modal-header">
                     <h3>調代課詳細資料</h3>
-                    <button class="modal-close" id="close-modal-btn">&times;</button>
+                    <button class="modal-close" aria-label="關閉" id="close-modal-btn">&times;</button>
                 </div>
                 <div class="modal-body" id="record-detail-content">
                 </div>
@@ -952,7 +954,7 @@
             <div class="modal-content">
                 <div class="modal-header">
                     <h3>列印本週調代課彙整單</h3>
-                    <button class="modal-close" id="close-weekly-summary-btn">&times;</button>
+                    <button class="modal-close" aria-label="關閉" id="close-weekly-summary-btn">&times;</button>
                 </div>
                 <div class="modal-body">
                     <div class="form-group">
@@ -1069,8 +1071,8 @@
          Firebase <script> 標籤——比照既有 Auth/Firestore SDK 的載入方式，見該檔
          initializeFirebase()、RECAPTCHA_V3_SITE_KEY 常數與 docs/STAGE4-DEPLOY.md
          「App Check 啟用步驟」。 -->
-    <script type="module" src="src/js/app.js?v=1.14.4"></script>
+    <script type="module" src="src/js/app.js?v=1.14.5"></script>
     <!-- V2 權限系統（?v2=1 或預覽站才啟用；對穩定版無影響） -->
-    <script type="module" src="src/js/v2-app.js?v=0.1.16"></script>
+    <script type="module" src="src/js/v2-app.js?v=0.1.17"></script>
 </body>
 </html>

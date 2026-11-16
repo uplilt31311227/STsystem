@@ -11,6 +11,7 @@
  */
 
 import { escapeHtml } from './htmlEscape.js';
+import { activateModal } from './modalA11y.js';
 
 /** 一段文字（保留換行）。 */
 export function rdText(text, cls = '') {
@@ -110,19 +111,21 @@ export function openRichDialog({
     refresh();
 
     return new Promise((resolve) => {
-        const onKey = (e) => { if (e.key === 'Escape') finish(false); };
+        // role／aria-modal／標題關聯、Esc、焦點移入與還原、Tab 循環、含輸入者點背景不關閉：全由 modalA11y 處理
+        // （焦點進入：字樣輸入框 > 勾選框 > 取消鈕；preventScroll 避免內容很長時被捲到底）
+        let a11y = null;
         const finish = (result) => {
-            document.removeEventListener('keydown', onKey);
+            a11y?.release();
             modal.remove();
             resolve(result);
         };
-        document.addEventListener('keydown', onKey);
         confirmBtn.addEventListener('click', () => { if (!confirmBtn.disabled) finish(true); });
         q('cancel').addEventListener('click', () => finish(false));
         q('close').addEventListener('click', () => finish(false));
-        // 含輸入的對話框不允許點背景關閉（避免誤觸丟失已輸入的字樣）
-        modal.addEventListener('click', (e) => { if (e.target === modal && !phrase) finish(false); });
-        // preventScroll：內容很長時，焦點落在底部的輸入框不可把對話框捲到底，使用者要先看到頂端的目標與警告
-        (phraseInput || ack || q('cancel')).focus({ preventScroll: true });
+        a11y = activateModal(modal, {
+            labelledBy: `${id}-title`,
+            onRequestClose: () => finish(false),
+            initialFocus: phraseInput || ack || q('cancel'),
+        });
     });
 }

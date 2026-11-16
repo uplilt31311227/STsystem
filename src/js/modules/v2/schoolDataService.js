@@ -1457,6 +1457,38 @@ export async function getRequestDetailsBulk(reqIds) {
 }
 
 /**
+ * P8：getRequestDetailsBulk() 的「帶狀態」版本，只給待辦頁（審核卡片）區分「讀不到」與「沒有」。
+ * 不改 getRequestDetailsBulk() 的行為（它把 permission-denied／not-found 視為「沒有明細」），也不拋錯。
+ * 回傳 Map<reqId, {status, data}>，status：
+ *   'ok'      讀到明細（data 為明細內容）
+ *   'missing' 文件確定不存在（data=null）；舊資料的假別與事由可能仍在父文件上
+ *   'denied'  permission-denied（無權檢視，data=null）
+ *   'error'   其餘錯誤（網路、逾時等，data=null）；整批失敗時每個 id 都是 'error'
+ * 只讀取，不寫入。
+ */
+export async function getRequestDetailsBulkWithStatus(reqIds) {
+    const ids = Array.isArray(reqIds) ? [...new Set(reqIds.filter(Boolean))] : [];
+    const result = new Map();
+    let fs;
+    try {
+        fs = await getV2Firestore();
+    } catch (_) {
+        ids.forEach(id => result.set(id, { status: 'error', data: null }));
+        return result;
+    }
+    await Promise.all(ids.map(async (id) => {
+        try {
+            const snap = await fs.getDoc(fs.doc(fs.db, SCHEMA_PATHS.pendingDetailDoc(id)));
+            result.set(id, snap.exists() ? { status: 'ok', data: snap.data() } : { status: 'missing', data: null });
+        } catch (err) {
+            const code = err && err.code;
+            result.set(id, { status: code === 'permission-denied' ? 'denied' : code === 'not-found' ? 'missing' : 'error', data: null });
+        }
+    }));
+    return result;
+}
+
+/**
  * Stage 5 驗收修復（阻斷1）：getRequestDetailsBulk() 的「零容忍」版本，只給封存匯出鏈使用。
  * 行為與 getRecordDetailsBulkStrict() 相同，見該處完整說明。
  */

@@ -60,7 +60,19 @@ body {
 .flex-1 { flex: 1 !important; }
 .w-full { width: 100% !important; }
 .hint-flush { margin: var(--sp-1) 0 0 !important; }
-.required-mark { color: red; }
+.required-mark { color: #c00000; }
+
+/* P8：視覺隱藏但保留給螢幕報讀（label、狀態文字）；以及可用鍵盤操作的隱藏式 radio／checkbox 共用 */
+.sr-only {
+    position: absolute !important; width: 1px; height: 1px; margin: -1px; padding: 0;
+    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+/* P8：全站鍵盤焦點環（對白底 6.7:1、對頁面底 6.1:1，符合非文字元件 3:1）。
+   只在鍵盤操作（focus-visible）時出現，滑鼠點擊不會多出外框。 */
+:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+}
 .label-hint { font-weight: normal; color: #6b7280; }
 
 /* 載入動畫（header 同步圖示 .sync-status.syncing .sync-icon 亦沿用同一 keyframe） */
@@ -264,7 +276,11 @@ body {
 /* F10：頁籤鎖定狀態改用 class 切換（app.js updateTabLockStatus），取代 inline
    style.opacity/cursor 寫入，避免蓋掉 CSS */
 .tab-btn.is-locked {
-    opacity: 0.5;
+    /* P8：原本用 opacity .5（對比 1.96:1，也只靠灰階表意）；改成文字與底色都達標，再加虛線框表示「尚不可用」 */
+    color: var(--c-n-500);
+    background-color: var(--c-n-100);
+    outline: 1px dashed var(--c-n-500);
+    outline-offset: -3px;
     cursor: not-allowed;
 }
 
@@ -318,5 +334,4 @@ body.v2-active .v1-only {
 .footer .credit {
     margin-top: var(--sp-2);
     font-size: var(--fs-2xs);
-    opacity: 0.8;
 }

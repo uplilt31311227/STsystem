@@ -237,7 +237,15 @@ export async function run(browser) {
         await suite.case('課表匯入覆寫後，被覆寫的舊課表（306 節）已存成「匯入前自動備份」，可從匯入紀錄還原', async () => {
             const r = await page.evaluate(async () => {
                 const fm = window.firebaseModules, db = fm.getFirestore();
-                const col = await fm.getDocs(fm.collection(db, 'schools/demo-alpha/schedules/115-1/imports'));
+                // 只採信伺服器結果：getDocs 在 emulator 斷線時會靜默回傳本機快取（metadata.fromCache），
+                // 此時重試至多 ~20 秒；仍是快取就直接失敗，不拿快取內容下判斷
+                let col = null;
+                for (let i = 0; i < 20; i++) {
+                    col = await fm.getDocs(fm.collection(db, 'schools/demo-alpha/schedules/115-1/imports'));
+                    if (!col.metadata.fromCache) break;
+                    await new Promise(r => setTimeout(r, 1000));
+                }
+                if (col.metadata.fromCache) throw new Error('imports 子集合只讀到本機快取，無法確認伺服器內容');
                 const pre = col.docs.map(d => d.data()).find(d => d.source === 'pre_import');
                 return pre ? { n: pre.snapshot?.scheduleData?.length ?? -1, versionNo: pre.versionNo } : null;
             });
@@ -251,7 +259,15 @@ export async function run(browser) {
                 const fm = window.firebaseModules, db = fm.getFirestore();
                 const s = await fm.getDoc(fm.doc(db, 'schools/demo-alpha/schedules/115-1'));
                 const li = (s.data() || {}).lastImport || null;
-                const col = await fm.getDocs(fm.collection(db, 'schools/demo-alpha/schedules/115-1/imports'));
+                // 只採信伺服器結果：getDocs 在 emulator 斷線時會靜默回傳本機快取（metadata.fromCache），
+                // 此時重試至多 ~20 秒；仍是快取就直接失敗，不拿快取內容下判斷
+                let col = null;
+                for (let i = 0; i < 20; i++) {
+                    col = await fm.getDocs(fm.collection(db, 'schools/demo-alpha/schedules/115-1/imports'));
+                    if (!col.metadata.fromCache) break;
+                    await new Promise(r => setTimeout(r, 1000));
+                }
+                if (col.metadata.fromCache) throw new Error('imports 子集合只讀到本機快取，無法確認伺服器內容');
                 const docs = col.docs.map(d => d.data());
                 return {
                     li, n: docs.length,

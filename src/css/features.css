@@ -92,6 +92,11 @@
 }
 
 .schedule-course { cursor: pointer; transition: all var(--dur) var(--ease); }
+/* P8：可選課程格是 <button>，重設瀏覽器預設外觀，維持原本 div 格子的版型 */
+button.schedule-course {
+    font-family: inherit; line-height: inherit; color: inherit; text-align: center; background-color: var(--color-surface);
+    border: 0; margin: 0;
+}
 .schedule-course:hover { background-color: var(--c-primary-50); }
 .schedule-course.selected {
     background-color: var(--c-primary-700) !important;
@@ -99,7 +104,8 @@
     border: 3px solid var(--c-primary-800) !important;
     box-shadow: var(--sh-focus);
 }
-.schedule-course.free { background-color: var(--c-success-50); color: var(--c-success-600); }
+.schedule-course.free { background-color: var(--c-success-50); color: var(--c-success-800); }
+.schedule-course.today-highlight.free { color: var(--c-success-800); }
 .schedule-course.today-highlight { background-color: var(--c-warning-100); border: 2px solid var(--c-warning-600); }
 .schedule-course.disabled { opacity: 0.4; cursor: not-allowed; pointer-events: none; }
 
@@ -187,7 +193,14 @@
     .change-type-selector { flex-direction: row; }
 }
 .change-type-option { flex: 1; cursor: pointer; }
-.change-type-option input[type="radio"] { display: none; }
+.change-type-option { position: relative; }
+/* P8：radio 原本 display:none，鍵盤與報讀完全無法操作；改成視覺隱藏（仍可聚焦），焦點時在卡片上畫出焦點環 */
+.change-type-option input[type="radio"] {
+    position: absolute; opacity: 0; width: 1px; height: 1px; margin: 0; pointer-events: none;
+}
+.change-type-option input[type="radio"]:focus-visible + .change-type-card {
+    outline: 2px solid var(--focus-ring); outline-offset: 2px;
+}
 .change-type-icon { font-size: 1.5rem; line-height: 1; }
 @media (min-width: 640px) {
     .change-type-icon { font-size: 2rem; }
@@ -245,7 +258,10 @@
 @media (min-width: 640px) {
     .multi-course-toggle { width: auto; }
 }
-.multi-course-toggle input { display: none; }
+/* P8：同上，開關改成視覺隱藏（仍可聚焦、可用空白鍵切換），焦點時在滑軌上畫出焦點環 */
+.multi-course-toggle { position: relative; }
+.multi-course-toggle input { position: absolute; opacity: 0; width: 1px; height: 1px; margin: 0; pointer-events: none; }
+.multi-course-toggle input:focus-visible + .toggle-slider { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .toggle-slider {
     position: relative;
     width: 48px; height: 26px;
@@ -316,6 +332,7 @@
 .course-chip:hover { background-color: var(--c-primary-100); }
 .course-chip .chip-text { font-weight: var(--fw-medium); }
 .course-chip .chip-remove {
+    border: 0; padding: 0; font-family: inherit;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -354,15 +371,15 @@
 .recommendation-info { display: flex; flex-direction: column; min-width: 0; }
 .recommendation-name { font-weight: var(--fw-semibold); }
 .recommendation-reason { font-size: var(--fs-xs); color: var(--color-text-muted); }
-.recommendation-item.selected .recommendation-reason { color: rgba(255, 255, 255, 0.8); }
+.recommendation-item.selected .recommendation-reason { color: var(--color-text-invert); }
 .recommendation-badge { padding: var(--sp-1) var(--sp-2); border-radius: var(--r-xs); font-size: var(--fs-xs); font-weight: var(--fw-semibold); }
 .recommendation-badges { display: flex; flex-wrap: wrap; gap: var(--sp-1); justify-content: flex-end; }
 .badge-same-subject { background-color: var(--c-primary-100); color: var(--c-primary-700); }
-.badge-homeroom { background-color: var(--c-warning-100); color: var(--c-warning-600); }
+.badge-homeroom { background-color: var(--c-warning-100); color: var(--c-warning-800); }
 .badge-same-class { background-color: var(--c-info-50); color: var(--c-info-600); }
-.badge-free { background-color: var(--c-success-100); color: var(--c-success-600); }
+.badge-free { background-color: var(--c-success-100); color: var(--c-success-800); }
 .badge-part-time { background-color: var(--c-n-100); color: var(--c-n-600); }
-.badge-on-leave { background-color: var(--c-warning-100); color: var(--c-warning-600); }
+.badge-on-leave { background-color: var(--c-warning-100); color: var(--c-warning-800); }
 .recommendation-item.selected .recommendation-badge { background-color: rgba(255, 255, 255, 0.2); color: var(--color-text-invert); }
 
 /* 調課預覽表（原 app.js inline style 表格，改用 .data-table class） */
@@ -386,7 +403,7 @@
 .batch-swap-container { margin: var(--sp-4) 0; }
 .batch-empty-message {
     text-align: center;
-    color: var(--c-n-400);
+    color: var(--c-n-500);
     padding: var(--sp-6);
     background: var(--color-surface);
     border-radius: var(--r-md);
@@ -420,7 +437,7 @@
     background: var(--c-primary-500);
     flex-shrink: 0;
 }
-.batch-slot-label-b { background: var(--c-warning-600); }
+.batch-slot-label-b { background: var(--c-warning-700); }
 .batch-swap-arrow { text-align: center; color: var(--c-primary-500); font-size: var(--fs-lg); font-weight: bold; padding: 2px 0; }
 .batch-swap-badge {
     display: inline-block;
@@ -488,8 +505,9 @@
 .changed-count { font-size: var(--fs-sm); color: var(--color-text-muted); background-color: var(--color-bg); padding: var(--sp-1) var(--sp-3); border-radius: var(--r-pill); }
 .settlement-row-changed { background-color: var(--c-warning-100) !important; }
 .settlement-row-changed:hover { background-color: var(--c-warning-200) !important; }
-.settlement-increase { color: var(--c-success-600); font-weight: var(--fw-semibold); }
+.settlement-increase { color: var(--c-success-800); font-weight: var(--fw-semibold); }
 .settlement-decrease { color: var(--c-danger-600); font-weight: var(--fw-semibold); }
+.settlement-row-changed .settlement-decrease { color: var(--c-danger-800); }
 .settlement-no-change { color: var(--color-text-muted); }
 
 /* 月結算表不轉卡片（數值比較表，橫向對照才有意義），維持 .table-wrap 橫捲，
@@ -582,7 +600,7 @@
 
 .school-name-setting { margin-top: var(--sp-6); padding: var(--sp-4); background: var(--c-info-50); border: 1px solid var(--c-info-200); border-radius: var(--r-md); }
 .school-name-setting input[type="text"] { padding: var(--sp-2); border: var(--bd); border-radius: var(--r-xs); font-size: var(--fs-lg); }
-.school-name-setting input[type="text"]:focus { outline: none; border-color: var(--color-accent); box-shadow: var(--sh-focus); }
+.school-name-setting input[type="text"]:focus { outline: 2px solid var(--focus-ring); outline-offset: 1px; border-color: var(--color-accent); box-shadow: var(--sh-focus); }
 .school-name-setting .hint { font-size: var(--fs-xs); color: var(--color-text-muted); margin-top: 4px; }
 .school-name-confirmed { background: var(--c-success-50); border-color: var(--c-success-200); }
 .school-name-row { display: flex; gap: var(--sp-2); align-items: center; }
@@ -725,10 +743,15 @@
 .v2-role-tag { display: inline-block; padding: 2px var(--sp-2); border-radius: var(--r-pill); font-size: var(--fs-xs); font-weight: var(--fw-semibold); }
 .v2-role-tag.admin,
 .v2-role-tag.director      { background: var(--c-danger-800); color: var(--color-text-invert); }
-.v2-role-tag.section_chief { background: var(--c-warning-600); color: var(--color-text-invert); }
+.v2-role-tag.section_chief { background: var(--c-warning-700); color: var(--color-text-invert); }
 .v2-role-tag.teacher       { background: var(--c-primary-600); color: var(--color-text-invert); }
 
 .v2-pending-meta { font-size: var(--fs-sm); color: var(--c-n-500); margin-top: 4px; }
+/* P8：待辦卡片的決策資訊（時段 B、代課教師、假別、事由、同批調課） */
+.v2-pending-detail { margin-top: var(--sp-2); padding: var(--sp-2) var(--sp-3); background: var(--color-surface-2); border-radius: var(--r-sm); font-size: var(--fs-md); }
+.v2-pending-detail-line { padding: 2px 0; overflow-wrap: anywhere; }
+.v2-pending-detail-label { display: inline-block; min-width: 4.5em; margin-right: var(--sp-2); font-weight: var(--fw-semibold); color: var(--c-n-600); }
+.v2-pending-related { margin: 2px 0 0 1.2em; padding: 0; }
 .v2-pending-actions { margin-top: 0.6rem; display: flex; gap: 0.4rem; flex-wrap: wrap; }
 .v2-status-tag { display: inline-block; padding: 2px var(--sp-2); border-radius: var(--r-pill); font-size: var(--fs-2xs); font-weight: var(--fw-semibold); margin-right: 4px; }
 .v2-status-tag.pending  { background: var(--c-warning-100); color: var(--c-warning-800); }
@@ -813,7 +836,9 @@
 body.v2-locked { overflow: hidden; }
 body.v2-locked #v2-auth-gate {
     position: fixed; inset: 0; z-index: var(--z-authgate);
-    display: flex; align-items: center; justify-content: center;
+    display: flex; align-items: flex-start; justify-content: center;
+    /* P8：小螢幕內容高過視窗時可捲動（原本 body 鎖捲動又置中，卡片上下被裁切、按鈕按不到） */
+    overflow-y: auto; -webkit-overflow-scrolling: touch; padding: var(--sp-4) 0;
     background: linear-gradient(135deg, var(--c-primary-800) 0%, var(--c-primary-700) 100%);
 }
 
@@ -825,6 +850,10 @@ body.v2-locked #v2-auth-gate {
 .v2-auth-gate-card {
     background: var(--color-surface); border-radius: var(--r-lg); padding: var(--sp-10) var(--sp-8);
     width: 92%; max-width: 420px; text-align: center; box-shadow: var(--sh-3);
+    margin: auto 0; /* 內容矮時垂直置中，高時由外層捲動 */
+}
+@media (max-width: 480px) {
+    .v2-auth-gate-card { padding: var(--sp-6) var(--sp-4); }
 }
 .v2-auth-gate-card h2 { margin: 0 0 0.6rem; color: var(--c-n-800); font-size: var(--fs-xl); }
 .v2-auth-gate-card p { margin: 0 0 var(--sp-6); color: var(--c-n-500); font-size: var(--fs-lg); line-height: var(--lh-base); }

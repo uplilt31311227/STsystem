@@ -18,6 +18,7 @@ import { run as runSettleNums } from './e2e-06-settlement-numbers.mjs';
 import { run as runSettleWeeks } from './e2e-07-settlement-weeks.mjs';
 import { run as runV1NoWeeks } from './e2e-08-v1-no-weeks.mjs';
 import { run as runBackup }  from './e2e-09-backup-restore.mjs';
+import { run as runKeyboard } from './e2e-10-keyboard.mjs';
 
 const SUITES = [
     { name: '登入穩定度', run: runStability },
@@ -34,6 +35,8 @@ const SUITES = [
     // 07 開頭自行 seed 並清除 config/settlement，不依賴 06 的狀態。
     { name: '月結算上課週數設定／日曆帶入', run: runSettleWeeks },
     { name: 'V1 不顯示週數設定', run: runV1NoWeeks },
+    // 10 開頭自行 seed；只做申請與對話框操作（會留下幾筆在途申請），排在 09 之前讓 09 重新 seed 清掉。
+    { name: '鍵盤走查與對話框無障礙', run: runKeyboard },
     // 09 開頭自行 seed；會刪紀錄再以備份還原（破壞性），排在最後。
     { name: '雲端完整備份與還原', run: runBackup },
 ];

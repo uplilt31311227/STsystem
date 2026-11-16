@@ -17,6 +17,7 @@ const MAP = {
     '07': './e2e-07-settlement-weeks.mjs',
     '08': './e2e-08-v1-no-weeks.mjs',
     '09': './e2e-09-backup-restore.mjs',
+    '10': './e2e-10-keyboard.mjs',
 };
 if (!MAP[n]) { console.error(`用法：node test/e2e/run-one.mjs ${Object.keys(MAP).join('|')}`); process.exit(2); }
 

@@ -187,6 +187,51 @@ checkRender('待辦卡片(被拒絕＋原因)', r => rows.renderPendingCard(r, '
     const ids = tokenize(html).tags.flatMap(t => t.attrs).filter(a => a.name === 'data-id').map(a => a.value);
     check('(b) 待辦卡片：reqId 屬性跳出 payload（C3）→ data-id 共 3 處皆為完整原值', ids.length === 3 && ids.every(v => unesc(v) === attackId) && !/<img/i.test(html), JSON.stringify(ids));
 }
+
+// P8：待辦卡片的決策資訊（時段 B、代課教師、假別、事由、同批調課）——新增的每個欄位都要跳脫
+const swapBenign = {
+    ...reqBenign, requestType: 'swap', status: 'pending_swap_consent', weekday: '週二', swapDate: '2026-11-12', swapWeekday: '週四',
+    swapPeriod: '第三節', swapSubject: '數學', swapTeacher: '李', substituteTeacher: '李', docNumber: 'A-001',
+};
+const swapFields = ['weekday', 'swapDate', 'swapWeekday', 'swapPeriod', 'swapSubject', 'swapTeacher', 'substituteTeacher', 'docNumber', 'date', 'className', 'subject'];
+const detailBenign = { leaveType: 'public', leaveTypeName: '公假', reason: '研習' };
+const relatedBenign = [{ ...swapBenign, reqId: 'req_2_xyz', date: '2026-11-11', period: '第一節' }];
+checkRender('待辦卡片(同意＋時段 B)', r => rows.renderPendingCard(r, 'incoming', rows.consentActions(r), '', rows.renderConsentDetail(r)), swapBenign, swapFields, { roundTripField: 'swapSubject' });
+checkRender('待辦卡片(核准＋時段 B／假別／事由／同批)', r => rows.renderPendingCard(r, 'incoming', rows.approvalActions(r), '', rows.renderApprovalDetail(r, detailBenign, { related: relatedBenign.map(x => ({ ...x, swapTeacher: r.swapTeacher, swapSubject: r.swapSubject, className: r.className })) })), { ...swapBenign, status: 'pending_approval' }, swapFields, { roundTripField: 'swapSubject' });
+checkRender('待辦卡片(核准＋代課教師)', r => rows.renderPendingCard(r, 'incoming', rows.approvalActions(r), '', rows.renderApprovalDetail(r, detailBenign)), { ...reqBenign, requestType: 'substitute', substituteTeacher: '李', docNumber: 'A-1' }, ['substituteTeacher', 'docNumber'], { roundTripField: 'substituteTeacher' });
+checkRender('待辦卡片(核准＋私有明細欄位)', r => rows.renderPendingCard(r, 'incoming', rows.approvalActions(r), '', rows.renderApprovalDetail(r, { leaveTypeName: r.__ltn, reason: r.__reason })), { ...reqBenign, requestType: 'substitute', substituteTeacher: '李', __ltn: '公假', __reason: '研習' }, ['__ltn', '__reason'], { roundTripField: '__reason' });
+{
+    const attack = '"><img src=x onerror=alert(1)>';
+    const html = rows.renderApprovalDetail({ ...swapBenign, swapTeacher: attack, swapSubject: attack }, { leaveTypeName: attack, reason: attack }, { related: [{ ...swapBenign, reqId: 'r9', className: attack, swapTeacher: attack }] });
+    check('(b) 核准明細：假別、事由、時段 B、同批調課內的攻擊字串全部跳脫（沒有 <img> 標籤）', !tokenize(html).tags.some(t => t.name === 'img' || t.name === 'script'), html.slice(0, 200));
+    check('(b) 核准明細：沒有事件處理屬性', !tokenize(html).tags.flatMap(t => t.attrs).some(a => /^on/i.test(a.name)));
+    check('(P8) 核准明細：顯示時段 B、假別、事由、同批', /時段 B/.test(rows.renderApprovalDetail(swapBenign, detailBenign)) && />公假</.test(rows.renderApprovalDetail(swapBenign, detailBenign)) && />研習</.test(rows.renderApprovalDetail(swapBenign, detailBenign)) && /同批調課/.test(rows.renderApprovalDetail(swapBenign, detailBenign, { related: relatedBenign })));
+    check('(P8) 核准明細：讀取明細失敗時明說，不顯示「未填」', /讀取失敗/.test(rows.renderApprovalDetail(swapBenign, null, { detailError: true })) && !/未填/.test(rows.renderApprovalDetail(swapBenign, null, { detailError: true })));
+    check('(P8) 同意卡片：代課申請不顯示時段 B', rows.renderConsentDetail({ ...reqBenign, requestType: 'substitute' }) === '');
+    check('(P8) 同意卡片：調課顯示時段 B 日期、節次、科目與對象', (() => { const h = rows.renderConsentDetail(swapBenign); return h.includes('2026-11-12') && h.includes('週四第三節') && h.includes('數學') && h.includes('李'); })());
+
+    // P8 驗收：假別／事由的四種狀態與父文件退回（實際呼叫 render 函式，非比對原始碼）
+    const txt = (h) => h.replace(/<[^>]*>/g, '|').replace(/\|+/g, '|');
+    const sub = { ...reqBenign, requestType: 'substitute', substituteTeacher: '李' };
+    const hOk = txt(rows.renderApprovalDetail(sub, { leaveTypeName: '公假', reason: '研習' }, { detailState: 'ok' }));
+    check('(P8) 明細有值：顯示假別與事由', hOk.includes('公假') && hOk.includes('研習') && !hOk.includes('未填'));
+    const hFallback = txt(rows.renderApprovalDetail({ ...sub, leaveTypeName: '病假', reason: '看診' }, null, { detailState: 'missing' }));
+    check('(P8) 沒有私有明細：退回父文件的 leaveTypeName／reason', hFallback.includes('病假') && hFallback.includes('看診') && !hFallback.includes('未填'));
+    const hFallbackErr = txt(rows.renderApprovalDetail({ ...sub, leaveTypeName: '病假', reason: '看診' }, null, { detailState: 'error' }));
+    check('(P8) 讀不到但父文件有值：仍顯示父文件的值，不顯示失敗字樣', hFallbackErr.includes('病假') && hFallbackErr.includes('看診') && !hFallbackErr.includes('失敗'));
+    const hMissing = txt(rows.renderApprovalDetail(sub, null, { detailState: 'missing' }));
+    check('(P8) 確定沒有明細且父文件也沒有：顯示「未填」', (hMissing.match(/未填/g) || []).length === 2 && !hMissing.includes('失敗'));
+    const hErr = txt(rows.renderApprovalDetail(sub, null, { detailState: 'error' }));
+    check('(P8) 讀取失敗（網路等）：顯示「明細讀取失敗」，不顯示「未填」', hErr.includes('明細讀取失敗') && !hErr.includes('未填'));
+    const hDenied = txt(rows.renderApprovalDetail(sub, null, { detailState: 'denied' }));
+    check('(P8) permission-denied：顯示「無權檢視」，不顯示「未填」', hDenied.includes('無權檢視') && !hDenied.includes('未填'));
+    const hLoading = txt(rows.renderApprovalDetail(sub, null, { detailState: 'loading' }));
+    check('(P8) 明細尚在讀取：顯示「讀取中…」，不顯示「未填」', hLoading.includes('讀取中') && !hLoading.includes('未填'));
+    const hAtkParent = rows.renderApprovalDetail({ ...sub, leaveTypeName: attack, reason: attack }, null, { detailState: 'missing' });
+    check('(P8) 父文件退回值中的攻擊字串同樣被跳脫', !tokenize(hAtkParent).tags.some(t => t.name === 'img' || t.name === 'script') && !tokenize(hAtkParent).tags.flatMap(t => t.attrs).some(a => /^on/i.test(a.name)));
+    const hAtkId = rows.renderApprovalDetail({ ...sub, reqId: 'x"><img src=x onerror=alert(1)>' }, null, { detailState: 'loading' });
+    check('(P8) 明細區標記屬性（data-approval-detail）內的 reqId 攻擊字串被跳脫', !tokenize(hAtkId).tags.some(t => t.name === 'img'));
+}
 check('(b) 待辦卡片：cls 不在白名單時被清空（屬性集合不變、無 onclick）', !tokenize(rows.renderPendingCard(reqBenign, 'x" onclick="', '')).tags.some(t => t.attrs.some(a => a.name === 'onclick')) && sig(rows.renderPendingCard(reqBenign, 'x" onclick="', '')) === sig(rows.renderPendingCard(reqBenign, 'incoming', '')));
 
 /* ---------- (b2) v2-app.js 實際使用這些函式、且不再自行拼接未跳脫的日誌／紀錄列 ---------- */

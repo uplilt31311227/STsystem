@@ -7,7 +7,7 @@
  *   - 數字先轉型（toNum）
  * 不依賴 DOM、不依賴 Firebase，node 下可直接 import。
  */
-import { escapeHtml, pickAllowed } from '../htmlEscape.js';
+import { escapeHtml, pickAllowed, toNum } from '../htmlEscape.js';
 import { REQUEST_STATUS, REQUEST_TYPES } from './schemaConstants.js';
 
 /** 角色 class 白名單（對應 features.css 的 .v2-role-tag.*）。 */
@@ -95,19 +95,94 @@ export function impactMetaHtml(note) {
     return note ? `<br><span class="v2-impact-note">⚠ 課表已變更：${escapeHtml(note)}</span>` : '';
 }
 
-export function renderPendingCard(r, cls, actionsHtml, extraMeta = '') {
+export function renderPendingCard(r, cls, actionsHtml, extraMeta = '', detailHtml = '') {
     return `
         <div class="list-item list-item-${pickAllowed(cls, ['incoming', 'outgoing'])}" data-id="${escapeHtml(r.reqId)}">
             <div>
                 ${stageLabel(r)}
                 <strong>${escapeHtml(typeLabel(r))}</strong> ・ ${escapeHtml(r.date || '')} ${escapeHtml(r.period || '?')} ・ ${escapeHtml(r.className || '')} ${escapeHtml(r.subject || '')}
             </div>
+            ${detailHtml}
             <div class="v2-pending-meta">
                 發起：${escapeHtml(r.initiatedByName || r.initiatedBy || '')}${extraMeta} ・ ${escapeHtml(fmtDate(r.createdAt))}
                 ${r.status === REQUEST_STATUS.REJECTED && r.rejectNote ? `<br>拒絕原因：${escapeHtml(r.rejectNote)}` : ''}
             </div>
             <div class="v2-pending-actions">${actionsHtml}</div>
         </div>`;
+}
+
+/* ===== P8：待辦卡片的決策資訊（時段 B、代課教師、假別、事由、同批調課） =====
+   原本卡片只有「日期・節次・班級・科目」，同意的人看不到自己要換到哪一節，核准的人看不到代課教師、假別與事由。
+   以下輸出的每個資料值都經 escapeHtml()（欄位來自 Firestore，一般教師可寫入任意值）；標籤文字是常數。 */
+
+/** 是否為調課類（有時段 B）。 */
+function isSwapLike(r) {
+    return r.requestType === REQUEST_TYPES.SWAP || r.requestType === REQUEST_TYPES.MULTI_SWAP;
+}
+
+/** 時段 B 的純文字描述（無資料回傳空字串）：「2026-11-12 週四第三節 數學」。 */
+export function describeSlotB(r) {
+    const parts = [r.swapDate, `${r.swapWeekday || ''}${r.swapPeriod || ''}`.trim(), r.swapSubject]
+        .map(v => String(v ?? '').trim()).filter(Boolean);
+    return parts.join(' ');
+}
+
+/** 時段 A 的純文字描述：「2026-11-10 週二第二節 802 國文」。 */
+export function describeSlotA(r) {
+    const parts = [r.date, `${r.weekday || ''}${r.period || ''}`.trim(), r.className, r.subject]
+        .map(v => String(v ?? '').trim()).filter(Boolean);
+    return parts.join(' ');
+}
+
+function detailLine(label, valueHtml) {
+    return `<div class="v2-pending-detail-line"><span class="v2-pending-detail-label">${label}</span>${valueHtml}</div>`;
+}
+
+/** 「待我同意」卡片：顯示對方的時段 B（調課類才有）。 */
+export function renderConsentDetail(r) {
+    if (!isSwapLike(r)) return '';
+    const slotB = describeSlotB(r);
+    if (!slotB && !r.swapTeacher) return '';
+    const who = r.swapTeacher ? `（${escapeHtml(r.swapTeacher)} 的課）` : '';
+    return `<div class="v2-pending-detail">${detailLine('時段 B', `${escapeHtml(slotB || '（未註明）')}${who}`)}</div>`;
+}
+
+/**
+ * 「待我審核」卡片：代課教師或時段 B、假別、字號、事由，以及同批調課。
+ * 假別與事由的來源：私有明細優先，沒有就退回父文件上的 leaveTypeName／reason（舊資料放在父文件）。
+ * 兩處都沒有值時，依「明細讀取狀態」區分，不可把「讀不到」顯示成「未填」：
+ *   ok／missing（含未提供）→ 未填；loading → 讀取中…；error → 明細讀取失敗；denied → 無權檢視
+ * @param {Object} r 申請（公開欄位）
+ * @param {{leaveType?:string, leaveTypeName?:string, reason?:string}|null} detail 私有明細；null＝沒有或讀不到
+ * @param {{detailState?:'ok'|'missing'|'loading'|'error'|'denied', detailError?:boolean, related?:Array}} [opts]
+ *        detailState：明細讀取狀態；detailError：舊參數，等同 detailState:'error'；related：同批其他申請
+ */
+export function renderApprovalDetail(r, detail, { detailState = '', detailError = false, related = [] } = {}) {
+    const state = detailError ? 'error' : (detailState || 'ok');
+    const lines = [];
+    if (isSwapLike(r)) {
+        lines.push(detailLine('時段 B', `${escapeHtml(describeSlotB(r) || '（未註明）')}${r.swapTeacher ? `（${escapeHtml(r.swapTeacher)} 的課）` : ''}`));
+    } else if (r.substituteTeacher) {
+        lines.push(detailLine('代課教師', escapeHtml(r.substituteTeacher)));
+    }
+    const leaveName = (detail && (detail.leaveTypeName || detail.leaveType)) || r.leaveTypeName || '';
+    const reasonText = (detail && detail.reason) || r.reason || '';
+    const missingText = state === 'loading' ? '讀取中…'
+        : state === 'error' ? '明細讀取失敗，請重新整理後再審核'
+        : state === 'denied' ? '無權檢視'
+        : '未填';
+    const missingHtml = `<span class="v2-pending-detail-${state === 'ok' || state === 'missing' ? 'empty' : state}">${escapeHtml(missingText)}</span>`;
+    lines.push(detailLine('假別', leaveName ? escapeHtml(leaveName) : missingHtml));
+    if (r.docNumber) lines.push(detailLine('字號', escapeHtml(r.docNumber)));
+    lines.push(detailLine('事由', reasonText ? escapeHtml(reasonText) : missingHtml));
+    const others = Array.isArray(related) ? related.filter(x => x && x.reqId !== r.reqId) : [];
+    if (others.length) {
+        const shown = others.slice(0, 5).map(x =>
+            `<li>${escapeHtml(describeSlotA(x))} ↔ ${escapeHtml(describeSlotB(x) || '（未註明）')}${x.swapTeacher ? `（${escapeHtml(x.swapTeacher)}）` : ''}</li>`).join('');
+        const more = others.length > 5 ? `<li>另有 ${toNum(others.length - 5)} 筆</li>` : '';
+        lines.push(detailLine(`同批調課（另 ${toNum(others.length)} 筆）`, `<ul class="v2-pending-related">${shown}${more}</ul>`));
+    }
+    return `<div class="v2-pending-detail" data-approval-detail="${escapeHtml(r.reqId)}">${lines.join('')}</div>`;
 }
 
 /** 同意按鈕：純「同意」／「拒絕」。 */

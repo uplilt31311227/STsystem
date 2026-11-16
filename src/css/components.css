@@ -27,7 +27,8 @@
 }
 
 .btn:focus-visible {
-    outline: none;
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
     box-shadow: var(--sh-focus);
 }
 
@@ -208,6 +209,11 @@
     background-color: var(--color-surface-2);
 }
 
+button.recommendation-item {
+    /* P8：推薦項目是 <button>，重設預設外觀（背景、字型、對齊），版型維持原本 div 的樣子 */
+    font-family: inherit; font-size: inherit; line-height: inherit; color: inherit; text-align: left; width: 100%;
+    background-color: var(--color-surface);
+}
 .recommendation-item {
     display: flex;
     align-items: center;
@@ -409,7 +415,8 @@
 }
 .data-table input:focus,
 .data-table select:focus {
-    outline: none;
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 1px;
     border-color: var(--color-accent);
 }
 
@@ -607,7 +614,8 @@
 .form-group input:focus,
 .form-group select:focus,
 .form-group textarea:focus {
-    outline: none;
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 1px;
     border-color: var(--color-accent);
     box-shadow: var(--sh-focus);
 }
@@ -676,4 +684,20 @@
         justify-content: space-between;
         align-items: center;
     }
+}
+
+/* P8：輸入框框線對背景需 3:1（--color-border 只有 1.23:1）；只改文字輸入類，不動 checkbox／radio */
+.form-group input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+.form-group select,
+.form-group textarea,
+.data-table input:not([type="checkbox"]):not([type="radio"]),
+.data-table select {
+    border-color: var(--color-border-input);
+}
+.form-group input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):focus,
+.form-group select:focus,
+.form-group textarea:focus,
+.data-table input:not([type="checkbox"]):not([type="radio"]):focus,
+.data-table select:focus {
+    border-color: var(--color-accent);
 }

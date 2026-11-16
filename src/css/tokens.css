@@ -9,13 +9,13 @@
   --c-primary-600:#2563eb; --c-primary-700:#1d4ed8; --c-primary-800:#1e40af;
   /* 中性 slate（v2 的 gray 系 #6b7280/#e5e7eb 等日後全部映射到此） */
   --c-n-0:#ffffff; --c-n-50:#f8fafc; --c-n-100:#f1f5f9; --c-n-200:#e2e8f0;
-  --c-n-300:#cbd5e1; --c-n-400:#94a3b8; --c-n-500:#64748b; --c-n-600:#475569;
+  --c-n-300:#cbd5e1; --c-n-400:#94a3b8; --c-n-500:#586579; --c-n-600:#475569;
   --c-n-700:#334155; --c-n-800:#1e293b; --c-n-900:#0f172a;
   /* 語意狀態（面/框/字） */
   /* Stage 3：補 100 階（-50 過淺、-200 過重，徽章/警示條實務上常需要中間這階；
      原本散落 style.css/v2-app.js 的 #dcfce7 #fef3c7 #fee2e2 等重複淺色全收斂到此）。 */
   --c-success-50:#f0fdf4; --c-success-100:#dcfce7; --c-success-200:#bbf7d0; --c-success-600:#16a34a; --c-success-800:#166534;
-  --c-warning-50:#fffbeb; --c-warning-100:#fef3c7; --c-warning-200:#fde68a; --c-warning-600:#d97706; --c-warning-800:#92400e;
+  --c-warning-50:#fffbeb; --c-warning-100:#fef3c7; --c-warning-200:#fde68a; --c-warning-600:#d97706; --c-warning-700:#b45309; --c-warning-800:#92400e;
   --c-danger-50:#fef2f2;  --c-danger-100:#fee2e2;  --c-danger-200:#fecaca;  --c-danger-600:#dc2626;  --c-danger-800:#991b1b;
   --c-info-50:#eff6ff;    --c-info-200:#bae6fd;    --c-info-600:#0369a1;
 
@@ -46,6 +46,9 @@
   --sh-3:0 20px 50px rgba(15,23,42,.30);
   --sh-focus:0 0 0 3px rgba(37,99,235,.25);
   --bd:1px solid var(--color-border);
+  /* P8：輸入框框線（非文字介面元件需與背景有 3:1 對比，--color-border 只有 1.23:1，僅用於分隔線與卡片框） */
+  --color-border-input:#7a889d;
+  --focus-ring:var(--c-primary-700);  /* 鍵盤焦點環顏色：對白底 6.7:1 */
   --ctl-h:36px; --ctl-h-touch:44px; --ctl-h-sm:30px;
   --dur-fast:.15s; --dur:.2s; --ease:cubic-bezier(.4,0,.2,1);
 
