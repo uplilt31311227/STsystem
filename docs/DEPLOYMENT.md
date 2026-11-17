@@ -76,7 +76,13 @@ node scripts/firestore-deploy-rules.js --dry                        # 只建立 
 node scripts/firestore-deploy-rules.js --apply --confirm=stsystem-9d5fe   # 實際發布（confirm 必須等於目標專案 ID）
 ```
 實際發布前腳本會檢查 git 工作樹（已追蹤檔案）必須乾淨，並印出目前 commit；不乾淨就拒絕。測試站用 `--project=<測試專案ID>`，`--confirm` 要填同一個 ID。
-認證：透過 `gcloud auth print-access-token --account=operator@example.edu.tw`。
+認證：透過 `gcloud auth print-access-token --account=<操作者信箱>`。操作者帳號**不寫死在 repo**，所有會呼叫 gcloud 的腳本（含 `firestore-deploy-rules.js`、`emergency-brake.js`）改由下列兩種方式之一提供，兩者都沒有就報錯並印出用法（`--account=` 優先）：
+```bash
+export STSYSTEM_GCLOUD_ACCOUNT=<操作者信箱>     # PowerShell：$env:STSYSTEM_GCLOUD_ACCOUNT = '<操作者信箱>'
+node scripts/firestore-deploy-rules.js --list
+node scripts/firestore-deploy-rules.js --list --account=<操作者信箱>
+```
+emulator 模式（設了 `FIRESTORE_EMULATOR_HOST`）不需要帳號。`firestore-bootstrap-inhu.js` 的主任白名單信箱用 `--director=<主任信箱>` 指定，沒給時沿用操作者帳號並印出提示；`bootstrap-platform-admin.js` 的 `addedBy` 取自操作者帳號。帳號格式只放行 `^[A-Za-z0-9._+-]+@[A-Za-z0-9.-]+$`（它會進 gcloud 指令列，刻意不放行 `%` 以免 cmd 展開 `%VAR%`；Windows 的 gcloud 是 .cmd，故保留 shell 並以白名單把關，未改 `execFileSync`）。`test/v2-approval-flows.mjs`、`test/v2-verify-fixes.mjs`（對正式專案的舊式驗證腳本）同樣讀 `STSYSTEM_GCLOUD_ACCOUNT`，測試帳號以 plus-address（`<帳號>+v2t1@<網域>`）推導。
 
 ### 管理腳本（scripts/）的安全約定
 - 會寫入或刪除的腳本一律**預設 dry-run**，要實際執行必須明確加 `--apply`（舊旗標 `--yes` 仍相容；`--apply` 與 `--dry-run`／`--dry-run=true` 同時出現時以 dry-run 為準；`--dry-run=false` 只代表「未指定 dry-run」，不等於 `--apply`，唯一例外是 `bootstrap-platform-admin`）。涵蓋：`backfill-semester-id`、`backfill-user-directory`、`firestore-backfill-emailindex`、`migrate-schedule-to-semester`、`firestore-bootstrap-inhu`、`cleanup-operation-logs`、`cleanup-orphan-mappings`、`create-indexes`、`firestore-backup.js restore`、`bootstrap-platform-admin`（建議寫法為 `--apply`；`--dry-run=false` 為相容寫法，等同 `--apply`；但只要同時出現 `--dry-run` 或 `--dry-run=true` 就一律不寫入）。

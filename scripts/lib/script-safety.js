@@ -73,10 +73,66 @@ function databaseBase(target) {
     return `${target.firestoreOrigin}/v1/projects/${target.project}/databases/(default)`;
 }
 
+/** emulator 模式下的占位操作者（不會被傳給 gcloud）。 */
+const EMULATOR_OPERATOR = 'operator@example.edu.tw';
+
+const ACCOUNT_USAGE = '請用 --account=<你的 gcloud 帳號信箱> 或環境變數 STSYSTEM_GCLOUD_ACCOUNT 指定操作者帳號（需先 gcloud auth login）。'
+    + '例：STSYSTEM_GCLOUD_ACCOUNT=you@example.edu.tw node scripts/<腳本>.js --dry-run';
+
+/** 操作者帳號白名單（帳號會進 gcloud 指令列，只放行信箱常見字元；其餘一律拒絕）。
+ *  刻意不放行 %：Windows cmd 會先展開 %VAR% 再解析 & | 等運算子，%FOO% 可被拿來夾帶指令。 */
+const ACCOUNT_RE = /^[A-Za-z0-9._+-]+@[A-Za-z0-9.-]+$/;
+function isValidAccount(a) { return typeof a === 'string' && ACCOUNT_RE.test(a); }
+
+/**
+ * 決定操作者 gcloud 帳號：--account= 優先，其次環境變數 STSYSTEM_GCLOUD_ACCOUNT。
+ * 帳號不寫死在 repo。emulator 模式不需要帳號（回傳占位值）；非 emulator 兩者皆無 → 丟錯並說明用法。
+ * @param {string[]} argv 不含 node 與腳本路徑的參數
+ * @param {object} env process.env
+ * @param {{emulator?: boolean}} [target] resolveTarget 的結果；沒有 target 的腳本（只打正式環境）可省略
+ */
+function resolveOperatorAccount(argv, env, target) {
+    const raw = getArgValue(argv || [], 'account') || (env && env.STSYSTEM_GCLOUD_ACCOUNT) || '';
+    const account = String(raw).trim();
+    if (account) {
+        if (!isValidAccount(account)) {
+            throw new Error(`操作者帳號格式不正確：${account}。${ACCOUNT_USAGE}`);
+        }
+        return account;
+    }
+    if (target && target.emulator) return EMULATOR_OPERATOR;
+    throw new Error(`缺少操作者 gcloud 帳號。${ACCOUNT_USAGE}`);
+}
+
+/**
+ * 決定「主任白名單信箱」（firestore-bootstrap-inhu 寫入 initialAdminEmails 的值）。
+ * --director= 優先；沒給時沿用操作者帳號並回報 source='operator'（呼叫端應印出提示）。
+ * 信箱格式只放行常見字元（同 ACCOUNT_RE）；--director= 給了卻格式不對 → 丟錯，不退回操作者帳號。
+ * @returns {{email: string, source: 'flag'|'operator'}}
+ */
+function resolveDirectorEmail(argv, operatorAccount) {
+    const raw = getArgValue(argv || [], 'director');
+    if (raw !== undefined) {
+        const email = String(raw).trim();
+        if (!isValidAccount(email)) throw new Error(`--director= 信箱格式不正確：${email}（例：--director=director@example.edu.tw）`);
+        return { email, source: 'flag' };
+    }
+    return { email: operatorAccount, source: 'operator' };
+}
+
+/** 呼叫 gcloud 取 token（只給對正式／測試專案的腳本用；帳號必須已通過 resolveOperatorAccount）。 */
+function gcloudAccessToken(account) {
+    if (!account) throw new Error(`缺少操作者 gcloud 帳號。${ACCOUNT_USAGE}`);
+    // 不改用 execFileSync：Windows 的 gcloud 是 gcloud.cmd，Node 18.20.2／20.12.2 起（CVE-2024-27980）不經 shell 無法執行 .cmd（EINVAL）。
+    // 改以白名單把關：此處再驗一次，確保任何呼叫路徑都不會把未驗證字串交給 shell。
+    if (!isValidAccount(account)) throw new Error(`操作者帳號格式不正確：${account}。${ACCOUNT_USAGE}`);
+    return execSync(`gcloud auth print-access-token --account=${account}`).toString().trim();
+}
+
 /** 取得 access token：emulator 用 'owner'（繞過規則），正式環境才呼叫 gcloud。 */
 function getAccessToken(target, account) {
     if (target.emulator) return 'owner';
-    return execSync(`gcloud auth print-access-token --account=${account}`).toString().trim();
+    return gcloudAccessToken(account);
 }
 
 /** 執行前的目標橫幅（純函式，回傳字串陣列）。 */
@@ -102,11 +158,11 @@ function targetBanner(target, { action, apply, extra } = {}) {
  * @returns {{mode: 'help'|'list'|'plan'|'validate'|'deploy'|'error', errors: string[]}}
  */
 function parseDeployArgs(argv, project) {
-    const rest = argv.filter(a => !a.startsWith('--project='));
+    const rest = argv.filter(a => !a.startsWith('--project=') && !a.startsWith('--account='));
     const known = ['--dry', '--list', '--help', '-h', '--apply'];
     const errors = [];
     for (const a of rest) {
-        if (!known.includes(a) && !a.startsWith('--confirm=')) errors.push(`未知參數：${a}`);
+        if (!known.includes(a) && !a.startsWith('--confirm=') && !a.startsWith('--account=')) errors.push(`未知參數：${a}`);
     }
     if (errors.length) return { mode: 'error', errors };
     if (rest.includes('--help') || rest.includes('-h')) return { mode: 'help', errors };
@@ -162,5 +218,6 @@ module.exports = {
     PROD_PROJECT, EMULATOR_PROJECT,
     getArgValue, parseWriteMode, findUnknownFlags, isLocalEmulatorHost,
     resolveTarget, databaseBase, getAccessToken, targetBanner,
+    resolveOperatorAccount, resolveDirectorEmail, gcloudAccessToken, isValidAccount, ACCOUNT_RE, EMULATOR_OPERATOR,
     parseDeployArgs, evaluateGitState, readGitState,
 };

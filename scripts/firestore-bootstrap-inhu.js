@@ -15,7 +15,8 @@
  *   - 教師若 email 已存在則只更新 role / domains / homeroomClass（不重複建立）
  *   - teacherId 不存在則自動產生 teacher_<timestamp>
  *
- * 認證：透過 gcloud auth print-access-token --account=operator@example.edu.tw
+ * 認證：透過 gcloud auth print-access-token --account=<操作者信箱>（或設環境變數 STSYSTEM_GCLOUD_ACCOUNT）
+ *      主任白名單信箱：--director=<主任信箱>；沒給時沿用操作者帳號並印出提示
  *      （需先 gcloud auth login 完成）
  */
 const { execSync } = require('child_process');
@@ -31,12 +32,22 @@ const SCHOOL_ID = 'inhu';
 const WRITE_MODE = safety.parseWriteMode(process.argv.slice(2));
 const BASE      = `${safety.databaseBase(TARGET)}/documents`;
 
-const DEFAULT_DIRECTOR_EMAIL = 'operator@example.edu.tw';
+// 操作者帳號（gcloud 認證用）：--account= 或環境變數 STSYSTEM_GCLOUD_ACCOUNT；emulator 模式用占位值
+// 主任信箱（initialAdminEmails 白名單）：--director= 指定；沒給時沿用操作者帳號並印出提示
+let OPERATOR_ACCOUNT, DEFAULT_DIRECTOR_EMAIL;
+try {
+    OPERATOR_ACCOUNT = safety.resolveOperatorAccount(process.argv.slice(2), process.env, TARGET);
+    const d = safety.resolveDirectorEmail(process.argv.slice(2), OPERATOR_ACCOUNT);
+    DEFAULT_DIRECTOR_EMAIL = d.email;
+    if (d.source === 'operator') {
+        console.log(`ℹ️  未指定 --director=：主任白名單信箱沿用操作者帳號 ${d.email}（要指定其他信箱請加 --director=<主任信箱>）`);
+    }
+} catch (e) { console.error('❌ ' + e.message); process.exit(2); }
 const DEFAULT_SCHOOL_NAME    = '新竹市立內湖國民中學';
 const DEFAULT_SEMESTER       = '114-2';
 
 function getToken() {
-    return safety.getAccessToken(TARGET, DEFAULT_DIRECTOR_EMAIL);
+    return safety.getAccessToken(TARGET, OPERATOR_ACCOUNT);
 }
 
 function buildHeaders(token) {

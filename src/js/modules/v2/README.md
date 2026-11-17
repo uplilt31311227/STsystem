@@ -38,7 +38,7 @@
 {
   "schoolName": "新竹市立內湖國民中學",
   "currentSemester": "114-2",
-  "initialAdminEmails": ["operator@example.edu.tw"]
+  "initialAdminEmails": ["director@example.edu.tw"]
 }
 ```
 

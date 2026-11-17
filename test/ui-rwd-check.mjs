@@ -142,8 +142,8 @@ async function switchTab(page, tabId) {
 
     console.log('\n[調代課申請] 含原任課教師週課表');
     await switchTab(page, 'substitute');
-    await page.selectOption('#sub-teacher', { label: '王大明' }).catch(() => {
-        console.log('  ⚠ 找不到教師選項「王大明」，略過課表格渲染步驟');
+    await page.selectOption('#sub-teacher', { label: '方小生' }).catch(() => {
+        console.log('  ⚠ 找不到教師選項「方小生」，略過課表格渲染步驟');
     });
     await page.fill('#sub-date', '2026-03-16').catch(() => {});
     await page.waitForTimeout(600);

@@ -17,7 +17,7 @@
  *   2. POST /rulesets 建立新 ruleset
  *   3. PATCH /releases/cloud.firestore 把 release 指向新 ruleset
  *
- * 認證：透過 gcloud auth print-access-token --account=operator@example.edu.tw
+ * 認證：透過 gcloud auth print-access-token --account=<操作者信箱>（或設環境變數 STSYSTEM_GCLOUD_ACCOUNT）
  *
  * 出處對齊：docs/V2_PERMISSION_SYSTEM.md「1b. Firestore 安全規則」段落。
  */
@@ -41,8 +41,7 @@ const RULES_FILE = path.resolve(__dirname, '..', 'firestore.rules');
 const RULES_API  = `https://firebaserules.googleapis.com/v1/projects/${PROJECT}`;
 
 function getToken() {
-    return execSync('gcloud auth print-access-token --account=operator@example.edu.tw')
-        .toString().trim();
+    return safety.gcloudAccessToken(safety.resolveOperatorAccount(process.argv.slice(2), process.env));
 }
 
 async function api(method, urlSuffix, body) {

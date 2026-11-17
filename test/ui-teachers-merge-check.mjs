@@ -125,9 +125,9 @@ async function seedSchedule(page) {
         // #schedule-file 點不到，故直接呼叫 dataManager（setScheduleData 本身也在受測的 patch 內）。
         await page.evaluate(() => {
             const dm = window.app.dataManager;
-            dm.setTeachers([{ name: '王大明', domains: ['國文'], homeroomClass: '701' }]);
+            dm.setTeachers([{ name: '方小生', domains: ['國文'], homeroomClass: '701' }]);
             dm.setScheduleData([
-                { teacher: '王大明', className: '701', subject: '國文', weekday: '週一', period: '第一節' },
+                { teacher: '方小生', className: '701', subject: '國文', weekday: '週一', period: '第一節' },
             ]);
         });
         await page.waitForTimeout(300);

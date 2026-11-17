@@ -24,12 +24,12 @@
  *   本腳本改呼叫 Identity Toolkit Admin REST API（accounts:lookup）用同一顆 gcloud OAuth
  *   token 查詢。這個 API 需要呼叫者在專案上有足夠的 IAM 權限（例如 Firebase Authentication
  *   Admin 或專案 Owner/Editor）——本專案目前唯一的操作者帳號
- *   （operator@example.edu.tw）具備專案 Owner，理論上足夠，但這條路徑*未在本次任務中
+ *   （操作者帳號）具備專案 Owner，理論上足夠，但這條路徑*未在本次任務中
  *   實際執行驗證過*（任務範圍明確要求「只寫不執行」）。若 --email= 查詢失敗或回傳的權限
  *   不足，**改用 --uid=** 是最可靠的路徑（uid 可在 Firebase Console → Authentication →
  *   Users 頁面直接複製，或請目標使用者在瀏覽器 devtools 印出 `firebase.auth().currentUser.uid`）。
  *
- * 認證：透過 gcloud auth print-access-token --account=operator@example.edu.tw
+ * 認證：透過 gcloud auth print-access-token --account=<操作者信箱>（或設環境變數 STSYSTEM_GCLOUD_ACCOUNT）
  *      （需先 gcloud auth login 完成，與 firestore-bootstrap-inhu.js 相同）
  */
 const { execSync } = require('child_process');
@@ -37,7 +37,10 @@ const { execSync } = require('child_process');
 const safety = require('./lib/script-safety');
 const TARGET = safety.resolveTarget(process.env);
 const PROJECT = TARGET.project;
-const OPERATOR_EMAIL  = 'operator@example.edu.tw';
+// 操作者帳號：--account= 或環境變數 STSYSTEM_GCLOUD_ACCOUNT（emulator 模式用占位值）；缺少時丟錯並說明用法
+let OPERATOR_EMAIL;
+try { OPERATOR_EMAIL = safety.resolveOperatorAccount(process.argv.slice(2), process.env, TARGET); }
+catch (e) { console.error('❌ ' + e.message); process.exit(2); }
 const FIRESTORE_BASE = `${safety.databaseBase(TARGET)}/documents`;
 // emulator 模式：改打 Auth emulator（FIREBASE_AUTH_EMULATOR_HOST），不得對外打 identitytoolkit。
 function identityToolkitBase() {

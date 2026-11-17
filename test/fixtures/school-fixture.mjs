@@ -47,7 +47,7 @@ const FACULTY = [
     { name: '左大俠', subject: 'chinese',     role: 'director' },
     { name: '陳某', subject: 'chinese',     role: 'section_chief' },
     { name: '巫阿福', subject: 'chinese' },
-    { name: '王大明', subject: 'english' },
+    { name: '方小生', subject: 'english' },
     { name: '婁某', subject: 'english' },
     { name: '黃大俠', subject: 'math' },
     { name: '史大俠', subject: 'math' },

@@ -17,6 +17,7 @@ function parseAdminArgs(args) {
         else if (a === '--force-remove-last') flags.forceRemoveLast = true;
         else if (a.startsWith('--uid=')) flags.uid = a.slice('--uid='.length);
         else if (a.startsWith('--email=')) flags.email = a.slice('--email='.length).toLowerCase().trim();
+        else if (a.startsWith('--account=')) { /* 操作者帳號，由 script-safety.resolveOperatorAccount 處理 */ }
         else if (a.startsWith('--note=')) flags.note = a.slice('--note='.length);
         else if (a === '--dry-run' || a === '--dry-run=true' || a === '--dry-run=false' || a === '--apply') { /* 由 parseWriteMode 判斷 */ }
         else throw new Error(`未知參數：${a}`);
@@ -43,7 +44,7 @@ function parseInhuArgs(args) {
         else if (a === '--role')     { flags.role = valueOf(i, a); i++; }
         else if (a === '--domains')  { flags.domains = valueOf(i, a).split(',').map(s => s.trim()).filter(Boolean); i++; }
         else if (a === '--homeroom') { flags.homeroom = valueOf(i, a); i++; }
-        else if (a === '--apply' || a === '--dry-run' || a === '--dry-run=true' || a === '--dry-run=false' || a.startsWith('--project=')) { /* 由 safety 處理 */ }
+        else if (a === '--apply' || a === '--dry-run' || a === '--dry-run=true' || a === '--dry-run=false' || a.startsWith('--project=') || a.startsWith('--account=') || a.startsWith('--director=')) { /* 由 safety 處理 */ }
         else throw new Error(`未知參數：${a}`);
     }
     return flags;

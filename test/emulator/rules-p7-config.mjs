@@ -28,8 +28,8 @@ const teacher = await signIn('t03@alpha.demo.test');
 const suite = new Suite('firestore.rules v2.15：逐人門檻與九年級畢業設定');
 
 await suite.case('settlement：組長寫入 weeklyBaseByTeacher（map）→ ALLOW，讀回相同', async () => {
-    allowed(await setDoc(SET, settlement({ weeklyBaseByTeacher: { 王大明: 16, tB: 12 } }), { idToken: chief.idToken }), '組長寫門檻');
-    eq((await getDoc(SET)).data.weeklyBaseByTeacher, { 王大明: 16, tB: 12 }, '讀回');
+    allowed(await setDoc(SET, settlement({ weeklyBaseByTeacher: { 方小生: 16, tB: 12 } }), { idToken: chief.idToken }), '組長寫門檻');
+    eq((await getDoc(SET)).data.weeklyBaseByTeacher, { 方小生: 16, tB: 12 }, '讀回');
 });
 await suite.case('settlement：不帶 weeklyBaseByTeacher 的既有格式仍可寫（相容舊前端）', async () => {
     allowed(await setDoc(SET, settlement(), { idToken: chief.idToken }), '舊格式');

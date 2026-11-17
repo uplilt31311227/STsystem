@@ -7,7 +7,7 @@
  *   --school: 指定 schoolId，預設 inhu（正式資料所在）。
  *             --school=default 可查看 2026-04 alpha 期的舊備份。
  *
- * 透過 gcloud auth print-access-token --account=operator@example.edu.tw
+ * 透過 gcloud auth print-access-token --account=<操作者信箱>（或設環境變數 STSYSTEM_GCLOUD_ACCOUNT）
  * 取得 access token 後直接呼叫 Firestore REST API。
  */
 const { execSync } = require('child_process');
@@ -20,7 +20,7 @@ const SCHOOL_ID = process.argv.find(a => a.startsWith('--school='))?.split('=')[
 const BASE      = `${safety.databaseBase(TARGET)}/documents`;
 
 function getToken() {
-    return safety.getAccessToken(TARGET, 'operator@example.edu.tw');
+    return safety.getAccessToken(TARGET, safety.resolveOperatorAccount(process.argv.slice(2), process.env, TARGET));
 }
 
 async function api(pathSuffix) {
@@ -79,7 +79,7 @@ function fmt(obj) {
 }
 
 async function main() {
-    const which = process.argv.slice(2).find(a => !a.startsWith('--school=')) || 'all';
+    const which = process.argv.slice(2).find(a => !a.startsWith('--school=') && !a.startsWith('--account=')) || 'all';
     const sep   = '='.repeat(60);
 
     console.log(`🏫 檢查對象：schools/${SCHOOL_ID}（專案 ${PROJECT}）\n`);

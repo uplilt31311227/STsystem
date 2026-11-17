@@ -34,7 +34,7 @@ tags:
 ## 2026-11-10 V1 個人雲端同步無限寫入迴圈，Firestore 帳單暴增（已修正並部署，V1 網址已停用）
 
 - **現象**：帳單帳戶「STsystem」（<billing-account-id>）11/1–11/9 費用 $270.42（TWD），其中 Cloud Firestore Internet Data Transfer Out APAC→APAC 76.75 GiB = $259.69；另有寫入 232,073 次、讀取 480,601 次。費用集中在 11/8–11/9 兩天。
-- **定位**：Cloud Monitoring 顯示 11/9 早上約 7–9 點起，每 3 小時約 1.6–3.4 萬次寫入（op=UPDATE），之前幾乎為 0；同時只有約 3 個即時監聽連線（排除外部攻擊）。全庫依 updateTime 掃描後，只有 `users/<uid>/data/substituteSystem`（operator2@example.edu.tw 的 V1 個人雲端備份，約 270 KB）在持續更新，`version` 已累積到 570,307。
+- **定位**：Cloud Monitoring 顯示 11/9 早上約 7–9 點起，每 3 小時約 1.6–3.4 萬次寫入（op=UPDATE），之前幾乎為 0；同時只有約 3 個即時監聽連線（排除外部攻擊）。全庫依 updateTime 掃描後，只有 `users/<uid>/data/substituteSystem`（chief@example.edu.tw 的 V1 個人雲端備份，約 270 KB）在持續更新，`version` 已累積到 570,307。
 - **根因**：`cloudSyncService.enableRealtimeSync` 只用 `hasPendingWrites` 過濾，但伺服器確認後，自己剛寫入的資料仍會以快照回來 → `dataManager.loadFromCloud()` → `notifyDataChange()` → `app.js` 監聽回呼 `syncToCloud()`（2026-06-18 v1.13.2 加入）→ 整份 setDoc → 再收到回音……每個分頁約每秒 1–2 次寫入，每次寫入都把 270 KB 推給每個監聽者，所以對外流量很大。只要有人以 V1 頁面（未帶 `?v2=1`）登入並開著分頁就會觸發。
 - **緊急處置**：2026-11-10 15:43 使用者關閉相關分頁，文件停止更新。該專案目前**未綁帳單帳戶**（Spark），這段期間迴圈可能吃光免費配額，影響正式站讀寫。
 - **修法**：見 CHANGELOG 2026-11-10——即時來源以 `fromRealtime` 標記，監聽回呼不回寫。回歸測試 `test/test-v1-realtime-loop.mjs`。
@@ -59,7 +59,7 @@ tags:
 
 - **匯入 STC 格式會出錯（未修）**：`scheduleParser.parseCSV` 固定以 UTF-8 讀取，且不把年級併入班級。直接上傳 STC 匯出檔（Big5、班級 01）會亂碼或把各年級同號班併成一班，且無防呆。修法：支援編碼偵測與年級＋班級組合，或拒絕並提示。
 - **「指紋相符」不等於課表正確**：第 1 版即因此誤匯。指紋只證明與 9/11 重建時相同。日後匯入須先由使用者確認來源檔。
-- **V1 舊課表仍在**：正式站 V1 的 localStorage 與藍奕麟帳號個人雲端備份仍為 349 節舊課表；該個人備份於 22:46 被更新，觸發原因與是否覆蓋其他版本未查明（備份不含 users/）。
+- **V1 舊課表仍在**：正式站 V1 的 localStorage 與<主任姓名>帳號個人雲端備份仍為 349 節舊課表；該個人備份於 22:46 被更新，觸發原因與是否覆蓋其他版本未查明（備份不含 users/）。
 - **待使用者**：新教師 4 位指派 email；無課 10 位教師是否停用；正式站 master 尚無匯入紀錄功能，在正式站編輯課表會抹除主文件 lastImport（版本紀錄不受影響）。
 
 ## 2026-11-05 課表匯入版本紀錄：已知未修（獨立驗收發現）
@@ -256,7 +256,7 @@ tags:
 
 - **日期**: 2026-07-30
 - **狀態**: 🟡 重複資料已清除，產生重複的程式路徑仍在（需改 rules 才能修）
-- **描述**: production `schools/inhu/teachers` 有兩筆「藍奕麟」同名同 email 教師檔（`V2_GO_LIVE.md` 步驟 4 記載）。本次於 preview 站以合併表刪除零引用孤兒 `tch_<teacher-id>`（`authProvider` 為空、從未被任何登入綁定），保留 `tch_<director-id>`（`authProvider=google.com`）。刪除後驗證：教師數 32→31、主任身份與該筆的領域資料完好、同名重複警示消失。
+- **描述**: production `schools/inhu/teachers` 有兩筆「<主任姓名>」同名同 email 教師檔（`V2_GO_LIVE.md` 步驟 4 記載）。本次於 preview 站以合併表刪除零引用孤兒 `tch_<id-B>`（`authProvider` 為空、從未被任何登入綁定），保留 `tch_<id-A>`（`authProvider=google.com`）。刪除後驗證：教師數 32→31、主任身份與該筆的領域資料完好、同名重複警示消失。
 - **根因**: `authGuardV2.ensureDirectorTeacher()`（`authGuardV2.js:34`）只用 `findTeacherByEmail()` 查既有教師檔。課表匯入產生的教師檔 `email` 是 `null`，初始主任首次 Google 登入時查不到自己那筆，於是走 `createTeacher()` 另建一筆——這正好解釋兩筆的 `authProvider` 一為 `google.com`（登入時建立並寫入 provider）、一為空（課表匯入，從未登入綁定）。並非單純的併發競態。
 - **為何未修根因**: 正確做法是 email 查不到時改用姓名（Google `displayName`）查，找到同名且 `email` 為空的教師檔就補綁 email + 升級 director，不新建。但這條 update 會被 `firestore.rules` 擋下：初始主任尚未成為 `isDirector`，只能走 `isInitialDirector` 分支，而該分支要求 `resource.data.email == userEmail()`，目標那筆是 `null` 不符。rules 也拿不到 `displayName` 無法比對姓名。修它必須放寬 rules 並重新部署 ruleset，超出本次範圍。
 - **目前的緩解**: 合併表新增「同名重複帳號檔」警示，列出重複姓名並指引保留有登入紀錄的那筆（操作欄顯示「🔒 Google 登入」或「📧 重設密碼」者）；刪除邏輯加同名保護，同名還有其他筆時只刪帳號檔、不動 V1 課表資料。手動新增這條入口已於 `teacherMgr.createTeacher()` 補上姓名／email 防重。
@@ -274,7 +274,7 @@ tags:
 
 - **日期**: 2026-07-30
 - **狀態**: 🟢 已解決（commit `14108ad`，缺陷由 commit `d594973` 引入）
-- **描述**: 合併表把教師刪除統一為「完整刪除」（帳號 + 教師屬性 + 該教師在課表中的所有課程），修正了原本兩個入口各刪一半的問題。但 V1 側（`dataManager.teachers`）以**姓名**為鍵、沒有 teacherId 概念，分不出同名的兩筆帳號檔。正式課表上傳後「藍奕麟」會出現在 V1，此時刪掉兩筆中任一筆就會連帶清掉他在課表裡的所有課程，另一筆仍在使用中的帳號的課表資料也一起消失。發現於 production 實地檢視兩筆重複檔時（當下 V1 恰好沒有藍奕麟，僅因線上還是測試課表才沒踩到）。
+- **描述**: 合併表把教師刪除統一為「完整刪除」（帳號 + 教師屬性 + 該教師在課表中的所有課程），修正了原本兩個入口各刪一半的問題。但 V1 側（`dataManager.teachers`）以**姓名**為鍵、沒有 teacherId 概念，分不出同名的兩筆帳號檔。正式課表上傳後「<主任姓名>」會出現在 V1，此時刪掉兩筆中任一筆就會連帶清掉他在課表裡的所有課程，另一筆仍在使用中的帳號的課表資料也一起消失。發現於 production 實地檢視兩筆重複檔時（當下 V1 恰好沒有<主任姓名>，僅因線上還是測試課表才沒踩到）。
 - **解決方案**: delete handler 先數同名列數，`sameName > 0` 時只刪這一筆 V2 帳號檔、不呼叫 `deleteLegacyTeacher()`，並在確認對話框明確說明「將只刪除這一筆帳號，課表屬性與課程保留給另一筆」。`deleteLegacyTeacher()` 的 JSDoc 加上呼叫端必須先確認無同名的前置條件。
 - **相關檔案**: `src/js/v2-app.js`
 
@@ -432,9 +432,9 @@ Stage 2（9→8 分頁重組）驗收過程中發現的既有缺陷與判斷取�
 
 - **日期**: 2026-07-29
 - **狀態**: 🟠 待使用者確認後清理（production 資料，未自行刪除）
-- **描述**: `schools/inhu/teachers` 有兩筆同名同 email 同角色的主任檔：`tch_<director-id>`（`authProvider=google.com`，**使用中**——userMappings 指向它、既有正式紀錄的 `adminOperatorId` 也是它）與 `tch_<teacher-id>`（`authProvider` 空，**無任何文件引用**）。兩筆 `createdAt` 完全相同，應為 bootstrap 競態產生。
+- **描述**: `schools/inhu/teachers` 有兩筆同名同 email 同角色的主任檔：`tch_<id-A>`（`authProvider=google.com`，**使用中**——userMappings 指向它、既有正式紀錄的 `adminOperatorId` 也是它）與 `tch_<id-B>`（`authProvider` 空，**無任何文件引用**）。兩筆 `createdAt` 完全相同，應為 bootstrap 競態產生。
 - **風險**: `schoolDataService.js:48-53` `findTeacherByEmail` 回傳第一筆符合者，目前靠文件 ID 字典序（`k` < `q`）碰巧命中正在使用的那筆。若排序改變或有人編輯孤兒檔，身份綁定會飄移；教師管理 UI 也會看到主任重複出現。
-- **建議解法**: 確認無引用後刪除 `tch_<teacher-id>`（需 director 權限）。
+- **建議解法**: 確認無引用後刪除 `tch_<id-B>`（需 director 權限）。
 - **相關檔案**: `src/js/modules/v2/schoolDataService.js`（findTeacherByEmail）、`src/js/modules/v2/authGuardV2.js`
 
 ### 全校調代課紀錄與待審請求對任何登入教師 API 可讀

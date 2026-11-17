@@ -28,7 +28,7 @@ status: 開發中｜Phase 1-3 完成｜商用上線實戰化中（錯誤處理�
 | V2 評估報告 | ✅ 完成 | 2026-05-29 | 見下方 §1 |
 | V2 路徑裁決 | ✅ 接續 | 2026-05-29 | tag `v2.0.0-alpha2-backup` 標記擴充前 V2 |
 | Phase 1：基礎建設（三層角色 + rules v2.2） | 🟡 程式碼 + rules 完成並部署（2026-06-25 byte 級驗證），**待三角色實機驗收** | 2026-06-20 | commit `4fded65`(模組) + `40c7c19`(rules) + `5072b99`(語法修正)；2026-06-20 修補見下方 §0.5 |
-| Phase 1.5：bootstrap schools/inhu + 組長 uplilt313 | ✅ 完成 | 2026-05-29 | rules v2.2 已部署 `ruleset 14413047-...`、config/main + teacher uplilt313 已寫入。commit `bdc7a06` |
+| Phase 1.5：bootstrap schools/inhu + 組長 <組長帳號> | ✅ 完成 | 2026-05-29 | rules v2.2 已部署 `ruleset 14413047-...`、config/main + teacher <組長帳號> 已寫入。commit `bdc7a06` |
 | Phase 1.6.a：課表匯入 → 教師管理串接 | ✅ 完成 | 2026-05-29 | dataManager.setTeachers 攔截 + 自動 importFromLegacyTeachers + 浮動跳轉 toast + 未指派 email 高亮。commit `4d8d6d3` |
 | Phase 1.6.b：Email/密碼雙軌登入 + 主任寄密碼信 | ✅ 已於 2026-07-29 查證 Email/Password provider 啟用 | 2026-05-29 | authService 加 4 API + v2-app 雙軌登入 modal + 教師管理寄信按鈕。commit `f37dcf3`；provider 啟用狀態 2026-07-29 查證（`signIn.email.enabled=true`），舊版「需先啟用」之說法已過時 |
 | Phase 2：全校課表共享 | ✅ 完成 | 2026-07-06 | commit `614e4ff`——approver 上傳/編輯即時同步全校教師，已部署 preview |
@@ -66,7 +66,7 @@ status: 開發中｜Phase 1-3 完成｜商用上線實戰化中（錯誤處理�
   2026-07-10 隨 Phase 3 資安收緊版部署，取代前一版 `05f9b203-10fb-4df0-bef3-ecfec905fe16`；
   詳見 `docs/DEPLOYMENT.md` 部署歷史，2026-07-29 更正此處過時的 ruleset 參照）
 - ✅ schools/inhu/config/main 建立完成（initialAdminEmails 含主任）
-- ✅ schools/inhu/teachers 已有 uplilt313（組長角色）
+- ✅ schools/inhu/teachers 已有 <組長帳號>（組長角色）
 
 #### 待實機操作（步驟）
 
@@ -84,8 +84,8 @@ status: 開發中｜Phase 1-3 完成｜商用上線實戰化中（錯誤處理�
    （見本文件頂部 2026-06-18 更新註記）。
 
 **2. 三角色登入測試**（本機 `?v2=1`）：
-   - **director 帳號**（operator@example.edu.tw）：Google 登入 → body 應有 `v2-director v2-approver v2-admin`、頭部徽章顯示「教務主任」、可看到「教師管理」「操作日誌」頁籤
-   - **section_chief 帳號**（operator2@example.edu.tw）：
+   - **director 帳號**（director@example.edu.tw）：Google 登入 → body 應有 `v2-director v2-approver v2-admin`、頭部徽章顯示「教務主任」、可看到「教師管理」「操作日誌」頁籤
+   - **section_chief 帳號**（chief@example.edu.tw）：
      - 第一次使用：點「使用 Email / 密碼登入」→「我是新教師（註冊）」→ 設密碼
      - 或主任在「教師管理」按該列「📧 寄密碼信」→ 收信設密碼 → 用 Email 登入
      - 登入後 body 應有 `v2-section-chief v2-approver v2-admin`、徽章「教學組長」、能看「操作日誌」但**看不到**「教師管理」

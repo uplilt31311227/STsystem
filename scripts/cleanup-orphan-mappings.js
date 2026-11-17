@@ -71,7 +71,7 @@ const BASE        = `${safety.databaseBase(TARGET)}/documents`;
 const BACKUP_ROOT = path.join(__dirname, '..', 'backups', PROJECT === DEFAULT_PROJECT ? 'firestore' : `firestore-${PROJECT}`, 'orphan-mappings');
 
 function getToken() {
-    return safety.getAccessToken(TARGET, 'operator@example.edu.tw');
+    return safety.getAccessToken(TARGET, safety.resolveOperatorAccount(process.argv.slice(2), process.env, TARGET));
 }
 
 async function listCollection(collectionPath) {

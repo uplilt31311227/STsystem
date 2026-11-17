@@ -29,7 +29,7 @@
  *   5. 舊文件本身不刪除（fallback 讀取路徑仍可能用到；且刪除是不可逆操作，不在回填腳本的
  *      職責範圍——若要清理舊文件，應是另一個獨立、明確的手動步驟）。
  *
- * 認證：透過 gcloud auth print-access-token --account=operator@example.edu.tw
+ * 認證：透過 gcloud auth print-access-token --account=<操作者信箱>（或設環境變數 STSYSTEM_GCLOUD_ACCOUNT）
  *      （需先 gcloud auth login 完成）
  *
  * exit code：0 = 成功（含「無需遷移」與「已存在故略過」）；2 = 執行中斷（取不到 token、
@@ -48,7 +48,7 @@ safety.targetBanner(TARGET, { action: '遷移課表到學期文件', apply: WRIT
 const BASE      = `${safety.databaseBase(TARGET)}/documents`;
 
 function getToken() {
-    return safety.getAccessToken(TARGET, 'operator@example.edu.tw');
+    return safety.getAccessToken(TARGET, safety.resolveOperatorAccount(process.argv.slice(2), process.env, TARGET));
 }
 
 function buildHeaders(token) {

@@ -50,12 +50,12 @@ Cloud Function (gen2) billing-kill-switch @ asia-east1
    ```bash
    gcloud functions deploy billing-kill-switch --gen2 --region=asia-east1 \
      --update-env-vars=DISARMED_UNTIL=2026-12-01T08:00:00Z \
-     --project=stsystem-9d5fe --account=operator@example.edu.tw
+     --project=stsystem-9d5fe --account=<操作者信箱>
    ```
    （函式在專案斷線期間無法部署，要先完成第 3 步再回來做這一步，並盡快做完；或在第 3 步之前先暫時移除預算的 Pub/Sub 連結。）
 3. 重新綁定：
    ```bash
-   gcloud billing projects link stsystem-9d5fe --billing-account=<billing-account-id> --account=operator@example.edu.tw
+   gcloud billing projects link stsystem-9d5fe --billing-account=<billing-account-id> --account=<操作者信箱>
    ```
 4. 下個月檢查日誌出現 `不動作：未達門檻`，確認保護已恢復。
 
@@ -77,7 +77,7 @@ gcloud functions deploy billing-kill-switch --gen2 --region=asia-east1 --runtime
   --trigger-service-account=billing-kill-switch@stsystem-9d5fe.iam.gserviceaccount.com \
   --memory=256Mi --max-instances=1 --ingress-settings=internal-only \
   --set-env-vars=TARGET_PROJECT_ID=stsystem-9d5fe,BUDGET_ID=b31a4d41-5fec-4da8-8d79-a837e0bcb0e5,BILLING_ACCOUNT_ID=<billing-account-id>,DRY_RUN=false \
-  --project=stsystem-9d5fe --account=operator@example.edu.tw
+  --project=stsystem-9d5fe --account=<操作者信箱>
 ```
 
 ⚠️ `--set-env-vars` 會覆蓋全部變數；若正在暫停中，記得一併帶上 `DISARMED_UNTIL`。

@@ -20,7 +20,7 @@
 /** 課表：每位教師的「每週節數」。weekdays × periods 排出不重複的格子。 */
 export const GOLDEN_WEEKLY = {
     '巫阿福': 6,    // A
-    '王大明': 5,    // B
+    '方小生': 5,    // B
     '婁某': 3,    // C
     '黃大俠': 21,   // D：21 × 4 = 84 > 80，有超鐘點
     '史大俠': 20,   // E：20 × 4 = 80，剛好在門檻
@@ -49,7 +49,7 @@ export function buildGoldenSchedule() {
 }
 
 /**
- * 紀錄。每筆的 `note` 說明它在結算 115 學年度 10 月時的角色（A=巫阿福 B=王大明 C=婁某 D=黃大俠 E=史大俠）。
+ * 紀錄。每筆的 `note` 說明它在結算 115 學年度 10 月時的角色（A=巫阿福 B=方小生 C=婁某 D=黃大俠 E=史大俠）。
  * `inScope`：是否會進入「2026-10」的計算（false = 該被排除）。
  */
 export const GOLDEN_RECORDS = [
@@ -97,7 +97,7 @@ export const GOLDEN_DELETED  = { id: 'd01', date: '2026-10-15', type: '代課', 
  *
  * A 巫阿福：原定 6×4=24；增加 0；被代：g01 事假、g02 病假、g03 病假、g08 事假 = 4（g04 公假、g05 調課不扣）；
  *           實際 24+0−4=20；超鐘點 max(0,20−80)=0
- * B 王大明：原定 5×4=20；增加 g01、g06、g07 = 3（g05 調課不計）；被代：g09 長期病假不扣 = 0；
+ * B 方小生：原定 5×4=20；增加 g01、g06、g07 = 3（g05 調課不計）；被代：g09 長期病假不扣 = 0；
  *           實際 20+3−0=23；超鐘點 0
  * C 婁某：原定 3×4=12；增加 g02、g03、g04、g08、g09 = 5；被代：g06 事假 = 1；
  *           實際 12+5−1=16；超鐘點 0
@@ -107,13 +107,13 @@ export const GOLDEN_DELETED  = { id: 'd01', date: '2026-10-15', type: '代課', 
  */
 export const GOLDEN_EXPECTED_2026_10 = {
     '巫阿福': { weeklyHours: 6,  originalHours: 24, substituteHours: 0, substitutedHours: 4, actualHours: 20, overtimeHours: 0 },
-    '王大明': { weeklyHours: 5,  originalHours: 20, substituteHours: 3, substitutedHours: 0, actualHours: 23, overtimeHours: 0 },
+    '方小生': { weeklyHours: 5,  originalHours: 20, substituteHours: 3, substitutedHours: 0, actualHours: 23, overtimeHours: 0 },
     '婁某': { weeklyHours: 3,  originalHours: 12, substituteHours: 5, substitutedHours: 1, actualHours: 16, overtimeHours: 0 },
     '黃大俠': { weeklyHours: 21, originalHours: 84, substituteHours: 0, substitutedHours: 0, actualHours: 84, overtimeHours: 4 },
     '史大俠': { weeklyHours: 20, originalHours: 80, substituteHours: 1, substitutedHours: 0, actualHours: 81, overtimeHours: 1 },
 };
 
-const NAME = { A: '巫阿福', B: '王大明', C: '婁某', D: '黃大俠', E: '史大俠' };
+const NAME = { A: '巫阿福', B: '方小生', C: '婁某', D: '黃大俠', E: '史大俠' };
 export const GOLDEN_NAME = NAME;
 
 /** 轉成計算器吃的紀錄格式（leaveType 已合併回父文件的樣子）。 */

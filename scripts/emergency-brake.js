@@ -27,7 +27,7 @@
  * 安全閘（比照 firestore-deploy-rules.js 2026-07-29 事故後加的「未知旗標一律中止」慣例）：
  *   未知旗標直接中止，不會退化成任何預設動作。
  *
- * 認證：透過 gcloud auth print-access-token --account=operator@example.edu.tw
+ * 認證：透過 gcloud auth print-access-token --account=<操作者信箱>（或設環境變數 STSYSTEM_GCLOUD_ACCOUNT）
  *      （需先 gcloud auth login 完成，與 firestore-deploy-rules.js 相同）
  *
  * ⚠ 本次任務範圍只寫這支腳本，不執行。實際使用前務必先跑 `--status` 確認現況。
@@ -63,8 +63,7 @@ service cloud.firestore {
 `;
 
 function getToken() {
-    return execSync('gcloud auth print-access-token --account=operator@example.edu.tw')
-        .toString().trim();
+    return safety.gcloudAccessToken(safety.resolveOperatorAccount(process.argv.slice(2), process.env));
 }
 
 async function api(method, urlSuffix, body) {
@@ -208,7 +207,7 @@ async function main() {
     const args = process.argv.slice(2);
     console.log(PROJECT === 'stsystem-9d5fe' ? `🎯 目標專案：${PROJECT}（正式）` : `🎯 目標專案：${PROJECT}（非正式專案）`);
     for (const a of args) {
-        if (!KNOWN_FLAGS.includes(a)) {
+        if (!KNOWN_FLAGS.includes(a) && !a.startsWith('--account=')) {
             console.error(`❌ 未知參數：${a}`);
             printUsage();
             process.exit(2);

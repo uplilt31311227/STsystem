@@ -70,8 +70,8 @@ Stage 0 一次改動了三個各自獨立部署、但彼此耦合的東西：
 
 | Email | 教師 | 是否已有 userMappings（已登入過） |
 |---|---|---|
-| operator@example.edu.tw | 藍奕麟（director） | 是 |
-| operator2@example.edu.tw | 組長（uplilt313） | 是 |
+| director@example.edu.tw | <主任姓名>（director） | 是 |
+| chief@example.edu.tw | 組長（<組長帳號>） | 是 |
 | operator+v2t1@example.edu.tw | [測試]教師甲 | 是 |
 | operator+v2t2@example.edu.tw | [測試]教師乙 | 是 |
 | operator+v2t3@example.edu.tw | [測試]組長丙 | 是 |
@@ -150,7 +150,7 @@ git push preview feature/permission-system:main
 
 | # | 情境 | 操作 | 預期結果 |
 |---|---|---|---|
-| 4a | **既有教師登入** | 用已綁定 `userMappings` 的既有帳號（例如 `operator@example.edu.tw` 或任一 `v2t*` 測試帳號）正常登入 | 登入成功、身份與角色與部署前一致；瀏覽器 devtools 網路面板可見對 `teachers`/`data`/`substituteRecords` 的讀取回 200 |
+| 4a | **既有教師登入** | 用已綁定 `userMappings` 的既有帳號（例如 `director@example.edu.tw` 或任一 `v2t*` 測試帳號）正常登入 | 登入成功、身份與角色與部署前一致；瀏覽器 devtools 網路面板可見對 `teachers`/`data`/`substituteRecords` 的讀取回 200 |
 | 4b | **新教師首登** | 見上方「驗證用測試對象」一節：先用 `firestore-bootstrap-inhu.js --add-teacher` 建立測試教師檔，**再跑一次回填腳本**，才用該 email 登入 | 登入成功、自動建立 `userMappings` |
 | 4c | **跨校讀取被拒** | 用已登入的 `inhu` 帳號，在瀏覽器 console 對另一個不存在或非本人所屬的 `schoolId`（例如 `schools/some-other-school/teachers`）發 `getDoc`/`getDocs` | 回傳 `permission-denied`（HTTP 403），不是空結果、不是資料外洩 |
 | 4d | **完全陌生使用者** | 用一個不在 `teachers` 集合、也不在 `initialAdminEmails` 白名單的 Google 帳號登入 | 登入被拒（`resolveIdentity` 回傳 `null`，前端 signOut），且 `schools/inhu/joinAttempts/{該帳號uid}` 有一筆紀錄（`email`/`attemptedAt`/`reason` 三欄），可在 V2「操作日誌」頁籤的「登入遭拒」區塊看到（驗收修復 S8） |

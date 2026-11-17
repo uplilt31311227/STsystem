@@ -1132,7 +1132,7 @@ async function renderTeachersAdminTab() {
     // 同名重複的帳號檔偵測。手動新增已於 teacherMgr.createTeacher 防重，但
     // authGuardV2.ensureDirectorTeacher() 仍可能產生一筆：它只依 email 查既有教師檔，
     // 而課表匯入的教師檔 email 是 null，初始主任首次登入時查不到自己那筆就會另建一筆
-    // （production 的「藍奕麟」即如此，兩筆的 authProvider 一為 google.com、一為空）。
+    // （production 的「<主任姓名>」即如此，兩筆的 authProvider 一為 google.com、一為空）。
     // 改用姓名補綁 email 會被 firestore.rules 的 isInitialDirector 分支擋下
     // （該分支要求 resource.data.email == userEmail()，而目標那筆是 null），修它得動 rules。
     // 在此之前至少讓重複無法被忽略：明確列出，主任可用刪除鈕清掉多餘那筆。
@@ -1325,7 +1325,7 @@ async function renderTeachersAdminTab() {
             //
             // 例外：同名帳號檔還有其他筆時只刪這一筆帳號、不動 V1。V1 側以姓名為鍵、
             // 分不出是哪一筆帳號的資料，此時清 V1 會把仍在使用中的那筆的課程一起刪掉
-            // （production 的「藍奕麟」就有兩筆 bootstrap 競態產生的同名檔）。
+            // （production 的「<主任姓名>」就有兩筆 bootstrap 競態產生的同名檔）。
             const sameName  = [...host.querySelectorAll('tbody tr')]
                 .filter(r => r.dataset.name === name && r.dataset.id !== id).length;
             const cascade   = sameName === 0;

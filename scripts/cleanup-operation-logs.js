@@ -87,7 +87,7 @@ const BASE          = `${safety.databaseBase(TARGET)}/documents`;
 const BACKUP_ROOT  = path.join(__dirname, '..', 'backups', 'firestore', 'operationLogs-cleanup');
 
 function getToken() {
-    return safety.getAccessToken(TARGET, 'operator@example.edu.tw');
+    return safety.getAccessToken(TARGET, safety.resolveOperatorAccount(process.argv.slice(2), process.env, TARGET));
 }
 
 function buildHeaders(token) {

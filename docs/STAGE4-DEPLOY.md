@@ -61,7 +61,7 @@ tags:
 ```
 node scripts/firestore-bootstrap-inhu.js
 # 目前該腳本不會寫 schoolDirectory，如需補上，可用 gcloud 直接 PATCH：
-gcloud auth print-access-token --account=operator@example.edu.tw
+gcloud auth print-access-token --account=<操作者信箱>
 curl -X PATCH \
   "https://firestore.googleapis.com/v1/projects/stsystem-9d5fe/databases/(default)/documents/schoolDirectory/inhu" \
   -H "Authorization: Bearer <上面印出的 token>" \
@@ -88,7 +88,7 @@ curl -X PATCH \
 >   （NT$250≈US$8）· 150%（NT$375，預估支出）**，對應 `RESEARCH-blaze-followup.md`
 >   §Q3 建議的三道防線＋預測門檻；通知寄給帳單管理員與使用者。
 >   支出上限（強制停用服務）依查證結果**無法**在無 Cloud Function 下達成，故未設定——
->   真的失控時的手動煞車是 `scripts/emergency-brake.js --brake --yes`。
+>   真的失控時的手動煞車是 `scripts/emergency-brake.js --brake --yes`（需先設環境變數 `STSYSTEM_GCLOUD_ACCOUNT=<操作者信箱>`，或加 `--account=<操作者信箱>`）。
 
 依 `RESEARCH-blaze-followup.md` §3 的查證結果：選用 **classic reCAPTCHA v3**（非 Enterprise）——v3 免費額度每月 100 萬次呼叫，遠高於 Enterprise 的每月 1 萬次免費額度與本案估算的用量（20 校情境約每月 1.6 萬次），且超額時是 fail-open（給 0.9 分，不粗暴擋下請求）而非直接失敗。
 
@@ -125,6 +125,9 @@ curl -X PATCH \
 > 緊急時請先在同一個 shell 取消該變數：bash 用 `unset FIRESTORE_EMULATOR_HOST`，PowerShell 用 `Remove-Item Env:FIRESTORE_EMULATOR_HOST`。
 
 ```bash
+# 先指定操作者 gcloud 帳號（不寫死在 repo；也可改在每個指令後加 --account=<操作者信箱>，兩者都沒有會報錯）
+export STSYSTEM_GCLOUD_ACCOUNT=<操作者信箱>   # PowerShell：$env:STSYSTEM_GCLOUD_ACCOUNT = '<操作者信箱>'
+
 # 平時：確認現況（會實際取回線上 ruleset 內容並比對是否為全 deny 版本，opus 驗收 M2）
 node scripts/emergency-brake.js --status
 
@@ -190,7 +193,7 @@ Budget 警報是「等到超支才知道」，建議額外養成每週檢視 [Fi
 5. **`approveApplication()`／`rejectApplication()` 的孤兒學校防呆同樣是啟發式的**（opus 驗收 H3）——`rejectApplication()` 判斷「這筆申請是否已對應到真實建立的學校」依據 `application.status==='approved'` 或「`schoolDirectory` 同代碼同名」，無法涵蓋所有邊界情況（例如學校已建立但名稱事後被人工修改）。人工清理程序見下方。
 6. **孤兒學校的人工清理程序**（H3/H2 相關，opus 驗收要求補充）：若確實出現「`schoolDirectory`/`config` 已建立、但沒有對應的 `schoolApplications` 紀錄指向它」的孤兒狀態，目前**沒有任何 client 路徑可以清理**（`schoolDirectory`/`config` 皆無 delete 規則）。需要開發者以個人 gcloud 帳號執行 REST `DELETE`：
    ```bash
-   gcloud auth print-access-token --account=operator@example.edu.tw
+   gcloud auth print-access-token --account=<操作者信箱>
    curl -X DELETE "https://firestore.googleapis.com/v1/projects/stsystem-9d5fe/databases/(default)/documents/schoolDirectory/<孤兒代碼>" \
      -H "Authorization: Bearer <token>"
    curl -X DELETE "https://firestore.googleapis.com/v1/projects/stsystem-9d5fe/databases/(default)/documents/schools/<孤兒代碼>/config/main" \

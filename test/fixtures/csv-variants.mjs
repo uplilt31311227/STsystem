@@ -12,7 +12,7 @@ import { CSV_HEADERS, rowsToCsv } from './schedule-builder.mjs';
 export function row(overrides = {}) {
     const base = {
         週次: '週一', 節次: '第一節', 年級: '7年級', 班級: '7年1班',
-        教師姓名: '王大明', 身分證字號或居留證號: '', 類別: '領域學習',
+        教師姓名: '方小生', 身分證字號或居留證號: '', 類別: '領域學習',
         領域: '數學領域', 科目: '數學', '語言別/校訂課程名稱': '',
         上課頻率: '1', 起始週: '1',
     };
@@ -74,7 +74,7 @@ export function buildCsvVariants(normalRows) {
         name: 'value-alias',
         title: '週次／節次用別名值（星期一／一／1／第1節）',
         csv: rowsToCsv([
-            row({ 週次: '星期一', 節次: '1',     班級: '7年1班', 教師姓名: '王大明' }),
+            row({ 週次: '星期一', 節次: '1',     班級: '7年1班', 教師姓名: '方小生' }),
             row({ 週次: '二',     節次: '第2節', 班級: '7年1班', 教師姓名: '李小華' }),
             row({ 週次: '3',      節次: '第三節', 班級: '7年2班', 教師姓名: '張美玲' }),
         ]),
@@ -108,7 +108,7 @@ export function buildCsvVariants(normalRows) {
         name: 'incomplete-rows',
         title: '部分列缺值（教師空白／班級空白）',
         csv: rowsToCsv([
-            row({ 教師姓名: '王大明' }),
+            row({ 教師姓名: '方小生' }),
             row({ 節次: '第二節', 教師姓名: '' }),          // 缺教師 → 應跳過
             row({ 節次: '第三節', 班級: '' }),               // 缺班級 → 應跳過
             row({ 節次: '第四節', 週次: '' }),               // 缺週次 → 應跳過
@@ -151,8 +151,8 @@ export function buildCsvVariants(normalRows) {
         name: 'teacher-conflict',
         title: '同一教師同一時段被排在兩個班（衝堂）',
         csv: rowsToCsv([
-            row({ 週次: '週一', 節次: '第一節', 班級: '7年1班', 教師姓名: '王大明' }),
-            row({ 週次: '週一', 節次: '第一節', 班級: '7年2班', 教師姓名: '王大明' }),
+            row({ 週次: '週一', 節次: '第一節', 班級: '7年1班', 教師姓名: '方小生' }),
+            row({ 週次: '週一', 節次: '第一節', 班級: '7年2班', 教師姓名: '方小生' }),
         ]),
         expect: {
             success: true,
@@ -214,13 +214,13 @@ export function buildCsvVariants(normalRows) {
         name: 'whitespace-padding',
         title: '值前後有多餘空白',
         csv: rowsToCsv([
-            row({ 週次: ' 週一 ', 節次: ' 第一節 ', 班級: ' 7年1班 ', 教師姓名: ' 王大明 ' }),
+            row({ 週次: ' 週一 ', 節次: ' 第一節 ', 班級: ' 7年1班 ', 教師姓名: ' 方小生 ' }),
         ]),
         expect: {
             success: true,
             rowCount: 1,
             normalized: [{ weekday: '週一', period: '第一節' }],
-            trimmed: { className: '7年1班', teacher: '王大明' },
+            trimmed: { className: '7年1班', teacher: '方小生' },
             note: 'normalizeWeekday/Period 有 trim；className/teacher 也有 trim',
         },
     });

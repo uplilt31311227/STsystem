@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 const require = createRequire(import.meta.url);
 const S = require('../scripts/lib/script-safety.js');
 
+const P0 = 'stsystem-9d5fe';
 let n = 0;
 const t = (name, fn) => { fn(); n++; console.log('✓ ' + name); };
 
@@ -56,6 +57,33 @@ t('resolveTarget：emulator 主機非本機 → 丟錯', () => {
 t('getAccessToken：emulator 不呼叫 gcloud', () => {
     assert.equal(S.getAccessToken({ emulator: true }, 'x@y'), 'owner');
 });
+t('resolveOperatorAccount：--account= 優先於環境變數', () => {
+    const prod = S.resolveTarget({});
+    assert.equal(S.resolveOperatorAccount(['--account=a@example.com'], { STSYSTEM_GCLOUD_ACCOUNT: 'b@example.com' }, prod), 'a@example.com');
+});
+t('resolveOperatorAccount：沒有 --account= 時讀 STSYSTEM_GCLOUD_ACCOUNT', () => {
+    assert.equal(S.resolveOperatorAccount([], { STSYSTEM_GCLOUD_ACCOUNT: ' b@example.com ' }, S.resolveTarget({})), 'b@example.com');
+});
+t('resolveOperatorAccount：正式環境兩者皆無 → 丟錯並說明用法', () => {
+    assert.throws(() => S.resolveOperatorAccount([], {}, S.resolveTarget({})), /STSYSTEM_GCLOUD_ACCOUNT[\s\S]*--account=|--account=[\s\S]*STSYSTEM_GCLOUD_ACCOUNT/);
+    assert.throws(() => S.resolveOperatorAccount(['--account='], { STSYSTEM_GCLOUD_ACCOUNT: '' }, S.resolveTarget({})), /缺少操作者/);
+    assert.throws(() => S.resolveOperatorAccount([]), /缺少操作者/, '沒有 target（只打正式環境的腳本）也一樣');
+});
+t('resolveOperatorAccount：emulator 模式不需要帳號、不報錯', () => {
+    const emu = S.resolveTarget({ FIRESTORE_EMULATOR_HOST: '127.0.0.1:8080' });
+    assert.equal(S.resolveOperatorAccount([], {}, emu), S.EMULATOR_OPERATOR);
+    assert.equal(S.getAccessToken(emu, S.resolveOperatorAccount([], {}, emu)), 'owner');
+});
+t('resolveOperatorAccount：帳號含 shell 特殊字元 → 拒絕（帳號會進 gcloud 指令列）', () => {
+    for (const bad of ['a@b.com; rm -rf x', 'a@b.com && echo', 'a@b.com`id`', 'a@b.com $(id)', 'no-at-sign', 'a b@c.com', "a@b.com'", 'a@b.com"', 'a@b.com\\x', 'a@b.com\nrm','a@b.com(x)', 'a@b.com>out', '@b.com', 'a@']) {
+        assert.throws(() => S.resolveOperatorAccount([`--account=${bad}`], {}, S.resolveTarget({})), /格式不正確/, bad);
+    }
+});
+t('gcloudAccessToken：沒給帳號 → 丟錯、不呼叫 gcloud', () => {
+    assert.throws(() => S.gcloudAccessToken(undefined), /缺少操作者/);
+    assert.throws(() => S.getAccessToken({ emulator: false }, ''), /缺少操作者/);
+});
+t('parseDeployArgs：--account= 不算未知參數', () => assert.equal(S.parseDeployArgs(['--account=a@example.com'], P0).mode, 'plan'));
 t('databaseBase', () => {
     assert.equal(S.databaseBase(S.resolveTarget({})), 'https://firestore.googleapis.com/v1/projects/stsystem-9d5fe/databases/(default)');
 });
@@ -124,6 +152,10 @@ t('firestore-bootstrap-inhu：值參數不得吃掉 -- 開頭的 token', () => {
     const f = A.parseInhuArgs(['--add-teacher', '--name', '甲', '--email', 'a@b.c', '--domains', '國文,英文', '--apply', '--project=demo-x']);
     assert.equal(f.name, '甲'); assert.deepEqual(f.domains, ['國文', '英文']);
 });
+t('cli-args：--account= 不被當成未知參數', () => {
+    assert.doesNotThrow(() => A.parseInhuArgs(['--account=a@example.com', '--apply']));
+    assert.doesNotThrow(() => A.parseAdminArgs(['--list', '--account=a@example.com']));
+});
 t('resolveTarget：FIRESTORE_EMULATOR_HOST 為空字串或空白 → 丟錯，不落回正式（建議 1）', () => {
     assert.throws(() => S.resolveTarget({ FIRESTORE_EMULATOR_HOST: '' }), /為空/);
     assert.throws(() => S.resolveTarget({ FIRESTORE_EMULATOR_HOST: '   ' }), /為空/);
@@ -164,6 +196,44 @@ t('子行程 bootstrap-platform-admin：emulator 下 --email 未設 FIREBASE_AUT
 t('子行程 firestore-bootstrap-inhu：--name 後接旗標 → exit 2', () => {
     const r = run('firestore-bootstrap-inhu.js', ['--add-teacher', '--name', '--apply'], DEAD);
     assert.equal(r.status, 2); assert.match(r.stderr, /--name/);
+});
+t('帳號白名單：合法信箱放行（含 plus-address）', () => {
+    for (const ok of ['you@example.edu.tw', 'a.b-c_d+tag@sub.example.com']) {
+        assert.equal(S.resolveOperatorAccount([`--account=${ok}`], {}, S.resolveTarget({})), ok);
+        assert.equal(S.isValidAccount(ok), true);
+    }
+});
+t('gcloudAccessToken：未通過白名單的字串不會交給 shell（直接丟錯）', () => {
+    for (const bad of ['a@b.com; echo x', 'a@b.com && id', '$(id)@x.com', 'a%FOO%@b.com']) {
+        assert.throws(() => S.gcloudAccessToken(bad), /格式不正確/, bad);
+    }
+});
+t('resolveDirectorEmail：--director= 優先；沒給時沿用操作者帳號', () => {
+    assert.deepEqual(S.resolveDirectorEmail(['--director=d@example.edu.tw'], 'op@example.com'), { email: 'd@example.edu.tw', source: 'flag' });
+    assert.deepEqual(S.resolveDirectorEmail([], 'op@example.com'), { email: 'op@example.com', source: 'operator' });
+});
+t('resolveDirectorEmail：--director= 格式不對 → 丟錯，不退回操作者帳號', () => {
+    assert.throws(() => S.resolveDirectorEmail(['--director=bad one@x.com'], 'op@example.com'), /--director=/);
+    assert.throws(() => S.resolveDirectorEmail(['--director='], 'op@example.com'), /--director=/);
+});
+t('cli-args：--director= 不被當成未知參數', () => {
+    assert.doesNotThrow(() => A.parseInhuArgs(['--add-teacher', '--director=d@example.edu.tw']));
+});
+t('子行程 firestore-bootstrap-inhu：非 emulator 且沒給操作者帳號 → exit 2 並說明用法（在任何網路請求前）', () => {
+    const r = run('firestore-bootstrap-inhu.js', ['--project=demo-nowhere'], { STSYSTEM_GCLOUD_ACCOUNT: '' });
+    assert.equal(r.status, 2); assert.match(r.stderr, /STSYSTEM_GCLOUD_ACCOUNT/); assert.match(r.stderr, /--account=/);
+});
+t('子行程 firestore-bootstrap-inhu：emulator 下不需要帳號（未因缺帳號而報錯）', () => {
+    const r = run('firestore-bootstrap-inhu.js', ['--add-teacher', '--name', '--apply'], { ...DEAD, STSYSTEM_GCLOUD_ACCOUNT: '' });
+    assert.doesNotMatch(r.stderr, /缺少操作者/);
+});
+t('子行程 firestore-bootstrap-inhu：emulator 且沒給 --director= → 印出沿用操作者帳號的提示；給了則不印', () => {
+    const r1 = run('firestore-bootstrap-inhu.js', ['--add-teacher', '--name', '--apply'], { ...DEAD, STSYSTEM_GCLOUD_ACCOUNT: '' });
+    assert.match(r1.stdout, /未指定 --director=/);
+    const r2 = run('firestore-bootstrap-inhu.js', ['--add-teacher', '--name', '--apply', '--director=d@example.edu.tw'], { ...DEAD, STSYSTEM_GCLOUD_ACCOUNT: '' });
+    assert.doesNotMatch(r2.stdout, /未指定 --director=/);
+    const r3 = run('firestore-bootstrap-inhu.js', ['--director=bad one'], DEAD);
+    assert.equal(r3.status, 2); assert.match(r3.stderr, /--director=/);
 });
 t('子行程 firestore-deploy-rules / emergency-brake：emulator 變數下立即拒絕', () => {
     for (const [sc, a] of [['firestore-deploy-rules.js', ['--list']], ['emergency-brake.js', ['--status']]]) {

@@ -33,7 +33,7 @@
  *      - operationLogs：依 `timestamp`（ISO 字串）反推，同上處理不合法值。
  *   4. --dry-run 只印統計與明細；未帶 --dry-run 才會實際 PATCH 寫入。
  *
- * 認證：透過 gcloud auth print-access-token --account=operator@example.edu.tw
+ * 認證：透過 gcloud auth print-access-token --account=<操作者信箱>（或設環境變數 STSYSTEM_GCLOUD_ACCOUNT）
  *      （需先 gcloud auth login 完成）
  *
  * exit code：0 = 成功且無 UNRESOLVED；1 = 執行完成但有 UNRESOLVED 待人工處理；
@@ -51,7 +51,7 @@ safety.targetBanner(TARGET, { action: '回填 semesterId', apply: WRITE_MODE.app
 const BASE      = `${safety.databaseBase(TARGET)}/documents`;
 
 function getToken() {
-    return safety.getAccessToken(TARGET, 'operator@example.edu.tw');
+    return safety.getAccessToken(TARGET, safety.resolveOperatorAccount(process.argv.slice(2), process.env, TARGET));
 }
 
 function buildHeaders(token) {

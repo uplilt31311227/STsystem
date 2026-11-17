@@ -37,7 +37,7 @@ tags:
 
 系統目前的 `schools/inhu/data/schedule` 是測試期間放的**精簡測試課表**，必須用真正的當學期課表覆蓋。
 
-1. 用主任帳號（`operator@example.edu.tw`，Google 登入）進 preview 站
+1. 用主任帳號（`director@example.edu.tw`，Google 登入）進 preview 站
 2. 到「課表匯入」頁籤，上傳人力資源網 2.0 匯出的課表檔（CSV 或 Excel）
 3. 上傳完成後右下角會顯示同步成功提示
 
@@ -69,8 +69,8 @@ tags:
 
 | teacherId | authProvider | 處理 |
 |---|---|---|
-| `tch_<director-id>` | google.com | **保留**（實際登入綁定的那筆） |
-| `tch_<teacher-id>` | （空） | 已刪除（零引用孤兒，從未被任何登入綁定） |
+| `tch_<id-A>` | google.com | **保留**（實際登入綁定的那筆） |
+| `tch_<id-B>` | （空） | 已刪除（零引用孤兒，從未被任何登入綁定） |
 
 刪除後已驗證：教師數 32→31、主任身份與該筆的領域資料完好、同名重複警示消失。
 

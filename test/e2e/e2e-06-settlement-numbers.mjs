@@ -177,7 +177,7 @@ export async function run(browser) {
                 sd.forEach(r => { m[r.teacher] = (m[r.teacher] || 0) + 1; });
                 return m;
             });
-            eq(weekly, { '巫阿福': 6, '王大明': 5, '婁某': 3, '黃大俠': 21, '史大俠': 20 }, '課表節數');
+            eq(weekly, { '巫阿福': 6, '方小生': 5, '婁某': 3, '黃大俠': 21, '史大俠': 20 }, '課表節數');
         });
 
         await suite.case('115 學年度 10 月：畫面五位教師各欄位等於手算值', async () => {
@@ -196,24 +196,24 @@ export async function run(browser) {
             eq(realErrors(page), [], '過程不應有 console 錯誤');
         });
 
-        await suite.case('畫面列順序：依實際時數由大到小（黃大俠 84、史大俠 81、王大明 23、巫阿福 20、婁某 16）', async () => {
+        await suite.case('畫面列順序：依實際時數由大到小（黃大俠 84、史大俠 81、方小生 23、巫阿福 20、婁某 16）', async () => {
             const names = await page.evaluate(() =>
                 [...document.querySelectorAll('#settlement-tbody tr[data-has-change]')].map(tr => tr.querySelector('td').innerText.trim()));
-            eq(names, ['黃大俠', '史大俠', '王大明', '巫阿福', '婁某'], '列順序');
+            eq(names, ['黃大俠', '史大俠', '方小生', '巫阿福', '婁某'], '列順序');
         });
 
         await suite.case('相鄰月份：9 月與 11 月各只吃到一筆跨月紀錄（期望值互不相同），不受 10 月紀錄影響', async () => {
             // 三次查詢的期望值刻意互不相同，讀到前一次的舊表格必定失敗。
             // 手算：9 月只有 x01（9/30，A 事假被 B 代）→ A 24−1=23、B 20+1=21；C、D、E 不變 12/84/80
             const sep = (await generateAndRead(page, 115, 9)).rows;
-            eq([sep['巫阿福'].actual, sep['王大明'].actual, sep['婁某'].actual, sep['黃大俠'].actual, sep['史大俠'].actual],
+            eq([sep['巫阿福'].actual, sep['方小生'].actual, sep['婁某'].actual, sep['黃大俠'].actual, sep['史大俠'].actual],
                [23, 21, 12, 84, 80], '9 月');
             // 11 月：只有 x02（11/2，B 事假被 C 代）→ B 20−1=19、C 12+1=13；A 不變 24
             const nov = (await generateAndRead(page, 115, 11)).rows;
-            eq([nov['巫阿福'].actual, nov['王大明'].actual, nov['婁某'].actual], [24, 19, 13], '11 月');
+            eq([nov['巫阿福'].actual, nov['方小生'].actual, nov['婁某'].actual], [24, 19, 13], '11 月');
             // 114 學年度 10 月（2025-10）：只有 x03（2025-10-06，C 事假被 A 代）→ A 24+1=25、C 12−1=11；B 不變 20
             const prev = (await generateAndRead(page, 114, 10)).rows;
-            eq([prev['巫阿福'].actual, prev['王大明'].actual, prev['婁某'].actual], [25, 20, 11], '114 學年度 10 月');
+            eq([prev['巫阿福'].actual, prev['方小生'].actual, prev['婁某'].actual], [25, 20, 11], '114 學年度 10 月');
             eq(realErrors(page), [], '相鄰月份查詢過程不應有 console 錯誤');
         });
 
@@ -229,7 +229,7 @@ export async function run(browser) {
             // 用沒被其他案例讀過的學期，因為頁面對歷史學期課表有工作階段快取，已讀過的學期改了內容也不會重讀。
             // 紀錄：2025-03-10 婁某事假、巫阿福代課 1 節（只此一筆在 2025-03）。3 月預設 4 週。
             // 手算：巫阿福 A = 7×4 + 代課 1 = 29（若誤用目前學期 115-1 的 6 節會是 6×4+1=25）
-            //       王大明 B = 5×4 = 20；婁某 C = 3×4 − 1 = 11（誤用也相同，只有 A 能分辨）
+            //       方小生 B = 5×4 = 20；婁某 C = 3×4 − 1 = 11（誤用也相同，只有 A 能分辨）
             const teachers = (await listDocs(`schools/${SCHOOL}/teachers`)).docs;
             const idOf = (name) => teachers.find(t => t.name === name)?.id;
             const chief = teachers.find(t => t.role === 'section_chief');

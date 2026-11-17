@@ -82,7 +82,7 @@ function useMocks(initialTeachers = []) {
 {
     const { svc, log } = useMocks();
     const rows = [
-        { 姓名: '[測試]甲', Email: 'a@x.com', 角色: '主任', 領域: '國文、英文', 導師班: '701' },
+        { 姓名: '[測試]甲', Email: 'a@example.com', 角色: '主任', 領域: '國文、英文', 導師班: '701' },
         { 姓名: '[測試]乙', Email: '', 角色: '', 領域: '', 導師班: '' },
     ];
     const r = await teacherMgr.importRosterCsv(rows, { dryRun: false });
@@ -108,7 +108,7 @@ function useMocks(initialTeachers = []) {
         { teacherId: 'tch_1', name: '[測試]丙', email: null, domains: [], homeroomClass: '', role: 'teacher' },
     ]);
     const rows = [
-        { 姓名: '[測試]丙', Email: 'bing@x.com', 角色: '組長', 領域: '數學', 導師班: '801' },
+        { 姓名: '[測試]丙', Email: 'bing@example.com', 角色: '組長', 領域: '數學', 導師班: '801' },
     ];
     const r = await teacherMgr.importRosterCsv(rows, { dryRun: false });
     eq(r.created.length, 0, '姓名重複：新增 0 筆');
@@ -116,7 +116,7 @@ function useMocks(initialTeachers = []) {
     eq(svc._calls.createTeacher, 0, '姓名重複：未呼叫 createTeacher');
     eq(svc._calls.updateTeacher, 1, '姓名重複：呼叫 updateTeacher 1 次');
     const after = (await svc.listTeachers())[0];
-    eq(after.email, 'bing@x.com', '姓名重複：email 已更新');
+    eq(after.email, 'bing@example.com', '姓名重複：email 已更新');
     eq(after.role, ROLES.SECTION_CHIEF, '姓名重複：角色已更新為 section_chief');
     eq(after.homeroomClass, '801', '姓名重複：導師班已更新');
 }
@@ -124,7 +124,7 @@ function useMocks(initialTeachers = []) {
 /* ================= 2b. 更新時留空欄位不清空既有資料（避免誤將主任打回教師） ================= */
 {
     const { svc } = useMocks([
-        { teacherId: 'tch_1', name: '[測試]丁', email: 'ding@x.com', domains: ['地科'], homeroomClass: '901', role: ROLES.DIRECTOR },
+        { teacherId: 'tch_1', name: '[測試]丁', email: 'ding@example.com', domains: ['地科'], homeroomClass: '901', role: ROLES.DIRECTOR },
     ]);
     const rows = [
         { 姓名: '[測試]丁', Email: '', 角色: '', 領域: '', 導師班: '' },
@@ -132,7 +132,7 @@ function useMocks(initialTeachers = []) {
     const r = await teacherMgr.importRosterCsv(rows, { dryRun: false });
     const after = (await svc.listTeachers())[0];
     eq(after.role, ROLES.DIRECTOR, '留空更新：角色不被打回 teacher，保留 director');
-    eq(after.email, 'ding@x.com', '留空更新：email 保留原值');
+    eq(after.email, 'ding@example.com', '留空更新：email 保留原值');
     eq(after.homeroomClass, '901', '留空更新：導師班保留原值');
     eq(r.updated.length + r.skipped.length, 1, '留空更新：該列計入 updated 或 skipped 其一（此實作應為 skipped）');
 }
@@ -140,10 +140,10 @@ function useMocks(initialTeachers = []) {
 /* ================= 3. email 被他人佔用 → error ================= */
 {
     useMocks([
-        { teacherId: 'tch_1', name: '[測試]戊', email: 'wu@x.com', domains: [], homeroomClass: '', role: 'teacher' },
+        { teacherId: 'tch_1', name: '[測試]戊', email: 'wu@example.com', domains: [], homeroomClass: '', role: 'teacher' },
     ]);
     const rows = [
-        { 姓名: '[測試]己', Email: 'wu@x.com', 角色: '', 領域: '', 導師班: '' },
+        { 姓名: '[測試]己', Email: 'wu@example.com', 角色: '', 領域: '', 導師班: '' },
     ];
     const r = await teacherMgr.importRosterCsv(rows, { dryRun: false });
     eq(r.created.length, 0, 'email 被佔用：新增 0 筆');
@@ -155,8 +155,8 @@ function useMocks(initialTeachers = []) {
 {
     useMocks();
     const rows = [
-        { 姓名: '[測試]庚', Email: 'dup@x.com', 角色: '', 領域: '', 導師班: '' },
-        { 姓名: '[測試]辛', Email: 'dup@x.com', 角色: '', 領域: '', 導師班: '' },
+        { 姓名: '[測試]庚', Email: 'dup@example.com', 角色: '', 領域: '', 導師班: '' },
+        { 姓名: '[測試]辛', Email: 'dup@example.com', 角色: '', 領域: '', 導師班: '' },
     ];
     const r = await teacherMgr.importRosterCsv(rows, { dryRun: false });
     eq(r.created.length, 1, '重複 email：只有第一筆成功新增');
@@ -181,7 +181,7 @@ function useMocks(initialTeachers = []) {
 {
     useMocks();
     const rows = [
-        { 姓名: '', Email: 'noname@x.com', 角色: '', 領域: '', 導師班: '' },
+        { 姓名: '', Email: 'noname@example.com', 角色: '', 領域: '', 導師班: '' },
         { 姓名: '   ', Email: '', 角色: '', 領域: '', 導師班: '' },
     ];
     const r = await teacherMgr.importRosterCsv(rows, { dryRun: false });
@@ -193,7 +193,7 @@ function useMocks(initialTeachers = []) {
 {
     const { svc, log } = useMocks();
     const rows = [
-        { 姓名: '[測試]癸', Email: 'gui@x.com', 角色: '教師', 領域: '', 導師班: '' },
+        { 姓名: '[測試]癸', Email: 'gui@example.com', 角色: '教師', 領域: '', 導師班: '' },
     ];
     const r = await teacherMgr.importRosterCsv(rows, { dryRun: true });
     eq(r.created.length, 1, 'dryRun：預覽仍顯示新增 1 筆');
@@ -207,9 +207,9 @@ function useMocks(initialTeachers = []) {
 {
     const { svc, log } = useMocks();
     const rows = [
-        { 姓名: '[測試]子', Email: 'zi@x.com', 角色: '主任', 領域: '國文', 導師班: '701' },
+        { 姓名: '[測試]子', Email: 'zi@example.com', 角色: '主任', 領域: '國文', 導師班: '701' },
         { 姓名: '[測試]丑', Email: '', 角色: '', 領域: '', 導師班: '' },
-        { 姓名: '[測試]寅', Email: 'zi@x.com', 角色: '', 領域: '', 導師班: '' }, // 與「子」email 重複 → 每次都應該錯誤
+        { 姓名: '[測試]寅', Email: 'zi@example.com', 角色: '', 領域: '', 導師班: '' }, // 與「子」email 重複 → 每次都應該錯誤
         { 姓名: '', Email: '', 角色: '', 領域: '', 導師班: '' },                  // 姓名空白 → 每次都應該錯誤
     ];
 

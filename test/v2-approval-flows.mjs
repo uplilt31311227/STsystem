@@ -60,13 +60,19 @@ if (!PW) {
 const PREVIEW_URL     = 'https://uplilt31311227.github.io/STsystem-preview/';
 const PROJECT         = 'stsystem-9d5fe';
 const SCHOOL_ID       = 'inhu';
-const GCLOUD_ACCOUNT  = 'operator@example.edu.tw';
+// 操作者 gcloud 帳號由環境變數提供（不寫死在 repo）；測試帳號用 plus-address 由它推導
+const GCLOUD_ACCOUNT  = process.env.STSYSTEM_GCLOUD_ACCOUNT;
+if (!GCLOUD_ACCOUNT || !GCLOUD_ACCOUNT.includes('@')) {
+    console.error('缺少操作者帳號：請先設定環境變數 STSYSTEM_GCLOUD_ACCOUNT（例如 STSYSTEM_GCLOUD_ACCOUNT=you@example.com）');
+    process.exit(2);
+}
+const plusAddr = (tag) => GCLOUD_ACCOUNT.replace('@', `+${tag}@`);
 const REST_BASE       = `https://firestore.googleapis.com/v1/projects/${PROJECT}/databases/(default)/documents`;
 
 const ACCOUNTS = {
-    teacherA: { email: 'operator+v2t1@example.edu.tw', name: '[測試]教師甲' },
-    teacherB: { email: 'operator+v2t2@example.edu.tw', name: '[測試]教師乙' },
-    chief:    { email: 'operator+v2t3@example.edu.tw', name: '[測試]組長丙' },
+    teacherA: { email: plusAddr('v2t1'), name: '[測試]教師甲' },
+    teacherB: { email: plusAddr('v2t2'), name: '[測試]教師乙' },
+    chief:    { email: plusAddr('v2t3'), name: '[測試]組長丙' },
 };
 
 // 測試課表：7年1班＝甲/乙四個工作流各自的時段組合；7年2班＝真實既有教師姓名的填充資料

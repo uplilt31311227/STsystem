@@ -96,7 +96,7 @@ await suite.case('1-f 自建 mapping 指向「別人的教師檔」（email 不�
 });
 
 await suite.case('1-g 既有成員每次登入的 mapping 合併更新（upsertUserMapping 的 merge 寫入）→ ALLOW；塞入非白名單欄位 → DENY', async () => {
-    allowed(await updateDoc(`${P.mappings}/${t2.localId}`, { lastLoginAt: iso(), lastProviderId: 'google.com', googleName: '王大明', googlePhotoUrl: null }, as(t2)), '登入更新 mapping');
+    allowed(await updateDoc(`${P.mappings}/${t2.localId}`, { lastLoginAt: iso(), lastProviderId: 'google.com', googleName: '方小生', googlePhotoUrl: null }, as(t2)), '登入更新 mapping');
     denied(await updateDoc(`${P.mappings}/${t2.localId}`, { isAdmin: true }, as(t2)), '夾帶非白名單欄位');
     denied(await updateDoc(`${P.mappings}/${t2.localId}`, { linkedTeacherId: dir.teacherId }, as(t2)), '把 mapping 改指向主任教師檔');
 });

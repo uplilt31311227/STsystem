@@ -40,7 +40,7 @@ async function snap(page, name) {
     await page.waitForFunction(() => document.body.classList.contains('v2-active'), { timeout: 8000 });
     await snap(page, '01-loaded');
 
-    console.log('\n👉 請在彈出的 Chrome 視窗中點右上角「Google 登入」以 operator@example.edu.tw 登入');
+    console.log('\n👉 請在彈出的 Chrome 視窗中點右上角「Google 登入」以操作者帳號登入');
     console.log('   （我會等 180 秒偵測 v2-admin class 出現）');
 
     try {

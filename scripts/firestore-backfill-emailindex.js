@@ -28,7 +28,7 @@
  *      - 已存在且 teacherId 相同 → 略過（SKIP，已同步）。
  *   4. --dry-run 只印統計與明細；未帶 --dry-run 才會實際 PATCH 寫入。
  *
- * 認證：透過 gcloud auth print-access-token --account=operator@example.edu.tw
+ * 認證：透過 gcloud auth print-access-token --account=<操作者信箱>（或設環境變數 STSYSTEM_GCLOUD_ACCOUNT）
  *      （需先 gcloud auth login 完成）
  *
  * 驗收修復 S4（encodeURIComponent vs client 端字面串接的文件 ID 一致性）：
@@ -65,7 +65,7 @@ safety.targetBanner(TARGET, { action: '回填 emailIndex', apply: WRITE_MODE.app
 const BASE      = `${safety.databaseBase(TARGET)}/documents`;
 
 function getToken() {
-    return safety.getAccessToken(TARGET, 'operator@example.edu.tw');
+    return safety.getAccessToken(TARGET, safety.resolveOperatorAccount(process.argv.slice(2), process.env, TARGET));
 }
 
 function buildHeaders(token) {

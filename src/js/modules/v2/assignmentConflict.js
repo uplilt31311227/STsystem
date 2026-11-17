@@ -128,7 +128,7 @@ export function findAssignmentConflict(req, records, excludeRecordId = null, sch
     return null;
 }
 
-/** 把衝突命中描述成一句話（不含前綴），例：王大明 2026-10-20 第三節已被指派為801的代課（待核准中） */
+/** 把衝突命中描述成一句話（不含前綴），例：方小生 2026-10-20 第三節已被指派為801的代課（待核准中） */
 export function describeAssignmentConflict(hit) {
     if (hit.kind === 'classSlot') return describeClassSlotConflict(hit);
     const d = hit.detail || {};

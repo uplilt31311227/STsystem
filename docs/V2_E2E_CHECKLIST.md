@@ -27,10 +27,10 @@ tags:
 
   | 帳號 | email | teacherId | role |
   |---|---|---|---|
-  | 教師甲 | operator+v2t1@example.edu.tw | teacher_1785266484232_s9lay2 | teacher |
-  | 教師乙 | operator+v2t2@example.edu.tw | teacher_1785266488793_ly5xde | teacher |
-  | 組長丙 | operator+v2t3@example.edu.tw | teacher_1785266493704_n9gil4 | section_chief |
-  | 正式 director（唯讀參照，測試絕不可動） | operator@example.edu.tw | tch_<director-id> | director |
+  | 教師甲 | operator+v2t1@example.edu.tw | teacher_<id-1> | teacher |
+  | 教師乙 | operator+v2t2@example.edu.tw | teacher_<id-2> | teacher |
+  | 組長丙 | operator+v2t3@example.edu.tw | teacher_<id-3> | section_chief |
+  | 正式 director（唯讀參照，測試絕不可動） | director@example.edu.tw | tch_<id-A> | director |
 
 - [ ] `[人工]` preview 站已收到最新 `feature/permission-system` 推送（比對最新 commit hash 與 GitHub Actions / Pages 部署紀錄時間）
 - [ ] `[自動:scripts/firestore-health-check.js]` `schools/inhu` 結構健康檢查全綠（config / teachers / mappings / pendingRequests / substituteRecords / operationLogs 必備欄位皆符合）

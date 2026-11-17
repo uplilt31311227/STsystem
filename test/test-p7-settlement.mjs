@@ -152,11 +152,11 @@ await suite.case('A3 逐人超鐘點門檻：以 teacherId 或姓名設定，預
 });
 
 await suite.case('A4 名冊同名重複與前後空白：同一人不重複計、姓名正規化後比對', () => {
-    // 名冊「王大明」「王大明 」（沒有 id）是同一人 → 一列。課表 10 節、紀錄姓名帶空白。
+    // 名冊「方小生」「方小生 」（沒有 id）是同一人 → 一列。課表 10 節、紀錄姓名帶空白。
     // 手算：10 週 4 → 原定 40；被代課扣 1 → 39
-    const sched = rows('王大明', 10);
-    const recs = [rec({ date: '2026-10-05', originalTeacher: ' 王大明 ', substituteTeacher: '王大明　', leaveType: 'personal' })];
-    const res = calc().calculate(115, 10, sched, recs, [{ name: '王大明' }, { name: '王大明 ' }], optsFull());
+    const sched = rows('方小生', 10);
+    const recs = [rec({ date: '2026-10-05', originalTeacher: ' 方小生 ', substituteTeacher: '方小生　', leaveType: 'personal' })];
+    const res = calc().calculate(115, 10, sched, recs, [{ name: '方小生' }, { name: '方小生 ' }], optsFull());
     eq(res.length, 1, '只有一列');
     // 自己代自己（紀錄兩側同一人）：代課 +1、被代課 −1 → 40
     eq([res[0].originalHours, res[0].substituteHours, res[0].substitutedHours, res[0].actualHours], [40, 1, 1, 40], '同一人兩側');

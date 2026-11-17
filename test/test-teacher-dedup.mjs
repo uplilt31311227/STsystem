@@ -4,7 +4,7 @@
  *
  * 背景：teacherAccountManager.createTeacher() 原本是「裸建立」——沒有任何唯一性檢查，
  * 同一個姓名連按兩次新增就會產生兩筆教師檔。而 V1 側（dataManager.teachers）以姓名為鍵、
- * 分不出是哪一筆，導致領域／導師班級的編輯與刪除都對不上目標（production 的「藍奕麟」
+ * 分不出是哪一筆，導致領域／導師班級的編輯與刪除都對不上目標（production 的「<主任姓名>」
  * 就有兩筆同名檔，一筆零引用的孤兒）。本檔驗證補上的防重邏輯。
  *
  * 與 test-roster-import.mjs 相同做法：匯入真正的模組，透過 __testHooks 換上記憶體
@@ -89,9 +89,9 @@ console.log('=== createTeacher 防重 ===');
 // 1. 全新姓名 → 正常建立
 {
     const { svc, log } = useMocks();
-    const t = await teacherMgr.createTeacher({ name: '王大明', email: 'wang@example.com' });
+    const t = await teacherMgr.createTeacher({ name: '方小生', email: 'wang@example.com' });
     ok(!!t.teacherId, '全新姓名可建立，回傳含 teacherId');
-    eq(t.name, '王大明', '姓名正確');
+    eq(t.name, '方小生', '姓名正確');
     eq(t.email, 'wang@example.com', 'email 已正規化為小寫');
     eq(svc._calls.createTeacher, 1, '底層 createTeacher 呼叫 1 次');
     eq(log.entries.length, 1, '寫入 1 筆操作日誌');
@@ -101,9 +101,9 @@ console.log('=== createTeacher 防重 ===');
 // 2. 同名 → 拒絕，且不得寫入任何資料
 {
     const { svc, log } = useMocks([
-        { teacherId: 'tch_a', name: '王大明', email: 'wang@example.com', role: 'teacher' },
+        { teacherId: 'tch_a', name: '方小生', email: 'wang@example.com', role: 'teacher' },
     ]);
-    await throwsWith(() => teacherMgr.createTeacher({ name: '王大明' }), '已存在於名單中', '同名應被拒絕');
+    await throwsWith(() => teacherMgr.createTeacher({ name: '方小生' }), '已存在於名單中', '同名應被拒絕');
     eq(svc._calls.createTeacher, 0, '同名被拒時不呼叫底層 createTeacher');
     eq(svc._store.size, 1, '同名被拒時名單筆數不變');
     eq(log.entries.length, 0, '同名被拒時不寫操作日誌');
@@ -112,9 +112,9 @@ console.log('=== createTeacher 防重 ===');
 // 3. 同名但前後有空白 → 仍視為同名（trim 後比對）
 {
     const { svc } = useMocks([
-        { teacherId: 'tch_a', name: '王大明', email: null, role: 'teacher' },
+        { teacherId: 'tch_a', name: '方小生', email: null, role: 'teacher' },
     ]);
-    await throwsWith(() => teacherMgr.createTeacher({ name: '  王大明  ' }), '已存在於名單中',
+    await throwsWith(() => teacherMgr.createTeacher({ name: '  方小生  ' }), '已存在於名單中',
         '姓名前後空白 trim 後仍判為同名');
     eq(svc._store.size, 1, '名單筆數不變');
 }
@@ -130,19 +130,19 @@ console.log('=== createTeacher 防重 ===');
 // 5. email 已被他人使用 → 拒絕（大小寫不敏感）
 {
     const { svc } = useMocks([
-        { teacherId: 'tch_a', name: '王大明', email: 'wang@example.com', role: 'teacher' },
+        { teacherId: 'tch_a', name: '方小生', email: 'wang@example.com', role: 'teacher' },
     ]);
     const err = await throwsWith(
         () => teacherMgr.createTeacher({ name: '李小華', email: 'WANG@example.com' }),
         '已被教師', 'email 重複（不同大小寫）應被拒絕');
-    ok(String(err?.message).includes('王大明'), '錯誤訊息指出佔用者姓名，主任才知道要找誰');
+    ok(String(err?.message).includes('方小生'), '錯誤訊息指出佔用者姓名，主任才知道要找誰');
     eq(svc._calls.createTeacher, 0, 'email 重複時不建立');
 }
 
 // 6. 不同姓名 + 未填 email → 可建立多筆（26 位待指派 email 的實際情境）
 {
     const { svc } = useMocks([
-        { teacherId: 'tch_a', name: '王大明', email: null, role: 'teacher' },
+        { teacherId: 'tch_a', name: '方小生', email: null, role: 'teacher' },
     ]);
     const t1 = await teacherMgr.createTeacher({ name: '李小華' });
     const t2 = await teacherMgr.createTeacher({ name: '陳某', email: '' });

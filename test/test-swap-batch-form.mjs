@@ -12,7 +12,7 @@ function check(name, cond, detail = '') {
 
 const gen = new PDFGenerator();
 
-// 真實案例（115-1 內湖國中）：10/27 週二第5、6節 701、801 都要上數學，藍奕麟不排第一節
+// 案例（改編自 115-1 實際課表）：10/27 週二第5、6節 701、801 都要上數學，蘇大俠不排第一節
 const course = (weekday, period, className, subject, teacher) => ({ weekday, period, className, subject, teacher });
 const schedule = [
     course('週二', '第一節', '7年1班', '英語文', '鈄道人'),
@@ -20,7 +20,7 @@ const schedule = [
     course('週二', '第三節', '7年1班', '數學', '皮小生'),
     course('週二', '第四節', '7年1班', '生物', '家居士'),
     course('週二', '第五節', '7年1班', '公民與社會', '郝阿福'),
-    course('週二', '第六節', '7年1班', '國語文', '藍奕麟'),
+    course('週二', '第六節', '7年1班', '國語文', '蘇大俠'),
     course('週三', '第一節', '7年1班', '數學', '皮小生'),
     course('週二', '第二節', '8年1班', '數學', '盧小生'),
     course('週二', '第三節', '8年1班', '數學', '盧小生'),
@@ -31,7 +31,7 @@ const swap = (date, weekday, period, className, subject, originalTeacher, swapDa
     ({ type: '調課', date, weekday, period, className, subject, originalTeacher, swapDate, swapWeekday, swapPeriod, swapSubject, swapTeacher });
 const records = [
     swap('2026-10-27', '週二', '第五節', '7年1班', '公民與社會', '郝阿福', '2026-10-28', '週三', '第一節', '數學', '皮小生'),
-    swap('2026-10-27', '週二', '第六節', '7年1班', '國語文', '藍奕麟', '2026-10-27', '週二', '第四節', '生物', '家居士'),
+    swap('2026-10-27', '週二', '第六節', '7年1班', '國語文', '蘇大俠', '2026-10-27', '週二', '第四節', '生物', '家居士'),
     swap('2026-10-27', '週二', '第六節', '8年1班', '家政', '俟居士', '2026-10-27', '週二', '第二節', '數學', '盧小生'),
     swap('2026-10-27', '週二', '第三節', '8年1班', '數學', '盧小生', '2026-10-27', '週二', '第五節', '英語文', '馬道人'),
     // 連鎖第二步：家居士此時在第六節是第 2 筆調入的中繼位置
@@ -53,7 +53,7 @@ const tue = grid.find(d => d.date === '2026-10-27');
 const after = (cls, p) => tue.classes.find(c => c.className === cls).rows.find(r => r.period === p).after.map(a => a.subject + a.teacher).join();
 check('701 週二第5、6節為數學皮小生', after('7年1班', '第五節') === '數學皮小生' && after('7年1班', '第六節') === '數學皮小生');
 check('801 週二第5、6節為數學盧小生', after('8年1班', '第五節') === '數學盧小生' && after('8年1班', '第六節') === '數學盧小生');
-check('701 週二第3節生物、第4節國語', after('7年1班', '第三節') === '生物家居士' && after('7年1班', '第四節') === '國語文藍奕麟');
+check('701 週二第3節生物、第4節國語', after('7年1班', '第三節') === '生物家居士' && after('7年1班', '第四節') === '國語文蘇大俠');
 check('調課後每格剛好一位教師（無 problem）', !grid.some(d => d.classes.some(c => c.rows.some(r => r.problem))));
 check('週三第1節 701 改為公民', grid.find(d => d.date === '2026-10-28').classes.find(c => c.className === '7年1班').rows[0].after[0].teacher === '郝阿福');
 
@@ -74,7 +74,7 @@ check('自行調課產生兩筆、方向相反', selfNet.length === 2
     && selfNet.some(m => m.from.date === '2026-10-28' && m.to.date === '2026-10-27'), selfNet.map(fmt).join(' / '));
 
 // 互換後又換回來 → 沒有淨異動
-const back = [records[1], swap('2026-10-27', '週二', '第六節', '7年1班', '生物', '家居士', '2026-10-27', '週二', '第四節', '國語文', '藍奕麟')];
+const back = [records[1], swap('2026-10-27', '週二', '第六節', '7年1班', '生物', '家居士', '2026-10-27', '週二', '第四節', '國語文', '蘇大俠')];
 check('換過去再換回來 → 無淨異動', gen.computeSwapNetMoves(back).length === 0);
 
 // HTML：教師聯只含該教師、不出現中繼節次
@@ -91,13 +91,13 @@ const desc = g => `${g.type}:${g.className}:${g.moves.map(m => m.teacher).sort()
 check('5 筆批次分成 3 個 pair 與 1 個 chain', groups.filter(g => g.type === 'pair').length === 3 && groups.filter(g => g.type === 'chain').length === 1,
     groups.map(desc).join(' '));
 const chain = groups.find(g => g.type === 'chain');
-check('chain 是 701 皮小生／藍奕麟／家居士三節輪換', chain.className === '7年1班' && chain.moves.map(m => m.teacher).sort().join() === '家居士,皮小生,藍奕麟');
+check('chain 是 701 皮小生／蘇大俠／家居士三節輪換', chain.className === '7年1班' && chain.moves.map(m => m.teacher).sort().join() === '家居士,皮小生,蘇大俠');
 const pairs = groups.filter(g => g.type === 'pair').map(g => gen.buildPairRecordFromMoves(g.moves, records));
 check('801 兩組與 701 公民⇄數學都沿用原紀錄', pairs.every(p => records.includes(p)), pairs.map(p => `${p.originalTeacher}⇄${p.swapTeacher}`).join(' '));
 const chainHTML = gen.createSwapChainSheetHTML(chain, { label: '教師聯', teacher: '家居士' });
 check('連調單為一式五聯（3 位教師＋班級＋教學組）', chainHTML.includes('3 節連調') && chainHTML.includes('一式五聯'));
 check('連調單週課表：第三節改上家居士生物、第六節改上皮小生數學',
-    chainHTML.includes('7年1班 生物<br>原 皮小生<br>改 家居士') && chainHTML.includes('7年1班 數學<br>原 藍奕麟<br>改 皮小生'));
+    chainHTML.includes('7年1班 生物<br>原 皮小生<br>改 家居士') && chainHTML.includes('7年1班 數學<br>原 蘇大俠<br>改 皮小生'));
 
 // 10/27 實際送出的 4 筆（數學只跟國英數換）：兩班各一組三節連調，沒有 pair
 const r4 = [

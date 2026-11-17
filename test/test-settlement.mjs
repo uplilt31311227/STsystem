@@ -38,7 +38,7 @@ await suite.case('黃金資料：115 學年度 10 月，五位教師的每個欄
 await suite.case('黃金資料：結果依實際時數由大到小排序（手算：84、81、23、20、16）', () => {
     const res = run(115, 10, buildGoldenSchedule(), goldenRecordsForCalculator());
     eq(res.map(r => r.actualHours), [84, 81, 23, 20, 16], '實際時數排序');
-    eq(res.map(r => r.teacherName), ['黃大俠', '史大俠', '王大明', '巫阿福', '婁某'], '教師排序');
+    eq(res.map(r => r.teacherName), ['黃大俠', '史大俠', '方小生', '巫阿福', '婁某'], '教師排序');
 });
 
 await suite.case('黃金資料：範圍外紀錄（9/30、11/2、前一學年度 10 月）單獨結算時皆為 0 影響', () => {
@@ -47,7 +47,7 @@ await suite.case('黃金資料：範圍外紀錄（9/30、11/2、前一學年度
     const res = run(115, 10, buildGoldenSchedule(), out);
     // 手算：沒有任何紀錄進入 10 月 → 每人 actual = original；A=24 B=20 C=12 D=84 E=80
     eq(res.map(r => [r.teacherName, r.substituteHours, r.substitutedHours, r.actualHours]).sort(),
-       [['史大俠', 0, 0, 80], ['婁某', 0, 0, 12], ['巫阿福', 0, 0, 24], ['王大明', 0, 0, 20], ['黃大俠', 0, 0, 84]].sort(),
+       [['史大俠', 0, 0, 80], ['婁某', 0, 0, 12], ['巫阿福', 0, 0, 24], ['方小生', 0, 0, 20], ['黃大俠', 0, 0, 84]].sort(),
        '範圍外紀錄不得影響任何人');
 });
 
@@ -56,35 +56,35 @@ await suite.case('相鄰月份各自結算：9 月只有 x01（9/30）、11 月�
     const recs = goldenRecordsForCalculator();
     // 9 月：僅 x01（9/30，A 事假被 B 代）。A = 6×4 − 1 = 23；B = 5×4 + 1 = 21
     const sep = run(115, 9, sched, recs);
-    eq([row(sep, '巫阿福').actualHours, row(sep, '王大明').actualHours], [23, 21], '9 月 A、B');
+    eq([row(sep, '巫阿福').actualHours, row(sep, '方小生').actualHours], [23, 21], '9 月 A、B');
     // 11 月：僅 x02（11/2，B 事假被 C 代）。B = 5×4 − 1 = 19；C = 3×4 + 1 = 13；A 不變 24
     const nov = run(115, 11, sched, recs);
-    eq([row(nov, '巫阿福').actualHours, row(nov, '王大明').actualHours, row(nov, '婁某').actualHours], [24, 19, 13], '11 月 A、B、C');
+    eq([row(nov, '巫阿福').actualHours, row(nov, '方小生').actualHours, row(nov, '婁某').actualHours], [24, 19, 13], '11 月 A、B、C');
     // 114 學年度 10 月（2025-10-06，C 事假被 A 代）：A = 24 + 1 = 25；C = 12 − 1 = 11；B 不變 20
     const prev = run(114, 10, sched, recs);
-    eq([row(prev, '巫阿福').actualHours, row(prev, '王大明').actualHours, row(prev, '婁某').actualHours], [25, 20, 11], '114 學年度 10 月 A、B、C');
+    eq([row(prev, '巫阿福').actualHours, row(prev, '方小生').actualHours, row(prev, '婁某').actualHours], [25, 20, 11], '114 學年度 10 月 A、B、C');
 });
 
 await suite.case('學年度換算：1～7 月屬次年（115 學年度 1 月 = 2027-01）', () => {
     // 手算：2027-01 週數 2。A 6 列 → 原定 12；紀錄 2027-01-11 A 事假被 B 代 → A 11、B 5×2+1=11
-    const recs = [{ date: '2027-01-11', type: '代課', originalTeacher: '巫阿福', substituteTeacher: '王大明', leaveType: '事假' }];
+    const recs = [{ date: '2027-01-11', type: '代課', originalTeacher: '巫阿福', substituteTeacher: '方小生', leaveType: '事假' }];
     const res = run(115, 1, buildGoldenSchedule(), recs);
     eq([row(res, '巫阿福').originalHours, row(res, '巫阿福').actualHours], [12, 11], 'A（1 月 2 週）');
-    eq([row(res, '王大明').originalHours, row(res, '王大明').actualHours], [10, 11], 'B（1 月 2 週）');
+    eq([row(res, '方小生').originalHours, row(res, '方小生').actualHours], [10, 11], 'B（1 月 2 週）');
     // 同一筆紀錄在 115 學年度 8 月（2026-08）不應出現
     const aug = run(115, 8, buildGoldenSchedule(), recs);
-    eq([row(aug, '巫阿福').substitutedHours, row(aug, '王大明').substituteHours], [0, 0], '2027-01 的紀錄不屬於 2026-08');
+    eq([row(aug, '巫阿福').substitutedHours, row(aug, '方小生').substituteHours], [0, 0], '2027-01 的紀錄不屬於 2026-08');
 });
 
 await suite.case('學年度換算：8 月屬本年（115 學年度 8 月 = 2026-08）；8 月週數 0，實際時數以 0 為下限', () => {
     // 手算：2026-08 週數 0 → 原定 0、基本 0。紀錄 2026-08-10 A 事假被 B 代：A 實際 max(0, 0+0−1) = 0（下限）、被代 1；B 實際 0+1−0 = 1、超鐘點 1。
-    const recs = [{ date: '2026-08-10', type: '代課', originalTeacher: '巫阿福', substituteTeacher: '王大明', leaveType: '事假' }];
+    const recs = [{ date: '2026-08-10', type: '代課', originalTeacher: '巫阿福', substituteTeacher: '方小生', leaveType: '事假' }];
     const aug = run(115, 8, buildGoldenSchedule(), recs);
     eq([row(aug, '巫阿福').substitutedHours, row(aug, '巫阿福').actualHours], [1, 0], '2026-08 歸 115 學年度 8 月：A 被代 1、實際 0（下限）');
-    eq([row(aug, '王大明').substituteHours, row(aug, '王大明').actualHours, row(aug, '王大明').overtimeHours], [1, 1, 1], 'B 代 1、實際 1、超鐘點 1');
+    eq([row(aug, '方小生').substituteHours, row(aug, '方小生').actualHours, row(aug, '方小生').overtimeHours], [1, 1, 1], 'B 代 1、實際 1、超鐘點 1');
     // 反向：同一筆紀錄不屬於 114 學年度 8 月（2025-08）
     const prevYear = run(114, 8, buildGoldenSchedule(), recs);
-    eq([row(prevYear, '巫阿福').substitutedHours, row(prevYear, '王大明').substituteHours], [0, 0], '2026-08 不屬於 114 學年度');
+    eq([row(prevYear, '巫阿福').substitutedHours, row(prevYear, '方小生').substituteHours], [0, 0], '2026-08 不屬於 114 學年度');
 });
 
 await suite.case('2 月 3 週：D 21 列 → 63；基本 20×3=60；超鐘點 3', () => {
@@ -94,62 +94,62 @@ await suite.case('2 月 3 週：D 21 列 → 63；基本 20×3=60；超鐘點 3'
 
 await suite.case('缺假別的代課視為一般假別扣 1（公付判斷靠 leaveType）', () => {
     // 手算：A 被代一節、無 leaveType → A 減 1 = 23；B +1 = 21
-    const recs = [{ date: '2026-10-05', type: '代課', originalTeacher: '巫阿福', substituteTeacher: '王大明' }];
+    const recs = [{ date: '2026-10-05', type: '代課', originalTeacher: '巫阿福', substituteTeacher: '方小生' }];
     const res = run(115, 10, buildGoldenSchedule(), recs);
-    eq([row(res, '巫阿福').substitutedHours, row(res, '王大明').substituteHours], [1, 1], '缺假別');
+    eq([row(res, '巫阿福').substitutedHours, row(res, '方小生').substituteHours], [1, 1], '缺假別');
 });
 
 await suite.case('status 防線：rejected／pending_* 等非核准、deleted／isDeleted 的紀錄不計入彙總', () => {
     // 手算：每筆各自單獨餵入；若被排除，A 維持 24（6×4）、B 維持 20（5×4），代課／被代課皆 0。
-    const mk = extra => [{ date: '2026-10-05', type: '代課', originalTeacher: '巫阿福', substituteTeacher: '王大明', leaveType: '事假', ...extra }];
+    const mk = extra => [{ date: '2026-10-05', type: '代課', originalTeacher: '巫阿福', substituteTeacher: '方小生', leaveType: '事假', ...extra }];
     for (const extra of [{ status: 'rejected' }, { status: 'pending_approval' }, { status: 'pending_swap_consent' },
                          { status: 'pending' }, { status: 'weird' }, { deleted: true }, { isDeleted: true }]) {
         const res = run(115, 10, buildGoldenSchedule(), mk(extra));
-        eq([row(res, '巫阿福').substitutedHours, row(res, '王大明').substituteHours,
-            row(res, '巫阿福').actualHours, row(res, '王大明').actualHours], [0, 0, 24, 20], `排除 ${JSON.stringify(extra)}`);
+        eq([row(res, '巫阿福').substitutedHours, row(res, '方小生').substituteHours,
+            row(res, '巫阿福').actualHours, row(res, '方小生').actualHours], [0, 0, 24, 20], `排除 ${JSON.stringify(extra)}`);
         eq(calc().getMonthlyDetailRows(mk(extra), 115, 10).length, 0, `明細也排除 ${JSON.stringify(extra)}`);
     }
 });
 
 await suite.case('status 防線：approved 與沒有 status（V1 本機紀錄）照算，明細同樣出現', () => {
-    const mk = extra => [{ date: '2026-10-05', type: '代課', originalTeacher: '巫阿福', substituteTeacher: '王大明', leaveType: '事假', ...extra }];
+    const mk = extra => [{ date: '2026-10-05', type: '代課', originalTeacher: '巫阿福', substituteTeacher: '方小生', leaveType: '事假', ...extra }];
     for (const extra of [{ status: 'approved' }, {}, { status: undefined }, { status: '' }, { deleted: false }]) {
         const res = run(115, 10, buildGoldenSchedule(), mk(extra));
         // 手算：A 24−1=23；B 20+1=21
-        eq([row(res, '巫阿福').actualHours, row(res, '王大明').actualHours], [23, 21], `計入 ${JSON.stringify(extra)}`);
+        eq([row(res, '巫阿福').actualHours, row(res, '方小生').actualHours], [23, 21], `計入 ${JSON.stringify(extra)}`);
         eq(calc().getMonthlyDetailRows(mk(extra), 115, 10).length, 1, `明細有 1 列 ${JSON.stringify(extra)}`);
     }
 });
 
 await suite.case('兼課教師與一般教師同一套算法（partTime 不影響結算）', () => {
-    const names = roster.map(t => ({ ...t, partTime: t.name === '王大明' }));
+    const names = roster.map(t => ({ ...t, partTime: t.name === '方小生' }));
     const res = run(115, 10, buildGoldenSchedule(), goldenRecordsForCalculator(), names);
-    eq(row(res, '王大明').actualHours, 23, '兼課的 B 仍是 20+3−0=23');
-    eq(row(res, '王大明').overtimeHours, 0, '兼課的 B 超鐘點仍為 0');
+    eq(row(res, '方小生').actualHours, 23, '兼課的 B 仍是 20+3−0=23');
+    eq(row(res, '方小生').overtimeHours, 0, '兼課的 B 超鐘點仍為 0');
 });
 
 // 此條依 2026-11-10 審計修復計畫 P7 更正：教師集合＝名冊∪紀錄（原期望「名冊外不列入」本身是錯的）
 await suite.case('不在名冊的教師也會出現在結算表（課表或紀錄有他，鐘點照算）', () => {
     const res = run(115, 10, buildGoldenSchedule(), goldenRecordsForCalculator(), [{ name: '巫阿福' }]);
-    // 手算：沿用黃金資料的數字，名冊外四位實際時數 黃大俠 84、史大俠 81、王大明 23、婁某 16；名冊內 A 仍為 24−4=20
-    eq(res.map(r => r.teacherName), ['黃大俠', '史大俠', '王大明', '巫阿福', '婁某'], '名冊外的人也列出');
+    // 手算：沿用黃金資料的數字，名冊外四位實際時數 黃大俠 84、史大俠 81、方小生 23、婁某 16；名冊內 A 仍為 24−4=20
+    eq(res.map(r => r.teacherName), ['黃大俠', '史大俠', '方小生', '巫阿福', '婁某'], '名冊外的人也列出');
     eq(row(res, '巫阿福').actualHours, 20, 'A 仍為 24−4=20');
-    eq([row(res, '王大明').actualHours, row(res, '王大明').notInRoster], [23, true], 'B 名冊外但鐘點正確');
+    eq([row(res, '方小生').actualHours, row(res, '方小生').notInRoster], [23, true], 'B 名冊外但鐘點正確');
 });
 
 await suite.case('寒暑假月份有紀錄時：實際時數以 0 為下限，被代課減少仍計 1，代課者超鐘點 1', () => {
     // 手算：2027-07 週數 0 → 原定 0、基本 0。A 被代一節事假：實際 max(0, 0+0−1) = 0、被代課減少 1；
     // B 代課 +1：實際 1、超鐘點 max(0,1−0)=1（寒暑假代課全部算額外）。
-    const recs = [{ date: '2027-07-05', type: '代課', originalTeacher: '巫阿福', substituteTeacher: '王大明', leaveType: '事假' }];
+    const recs = [{ date: '2027-07-05', type: '代課', originalTeacher: '巫阿福', substituteTeacher: '方小生', leaveType: '事假' }];
     const res = run(115, 7, buildGoldenSchedule(), recs);
     eq([row(res, '巫阿福').actualHours, row(res, '巫阿福').substitutedHours, row(res, '巫阿福').overtimeHours], [0, 1, 0],
        'A：實際 0、被代課減少 1、超鐘點 0');
-    eq([row(res, '王大明').actualHours, row(res, '王大明').overtimeHours], [1, 1], 'B：實際 1、超鐘點 1');
+    eq([row(res, '方小生').actualHours, row(res, '方小生').overtimeHours], [1, 1], 'B：實際 1、超鐘點 1');
 });
 
 await suite.case('明細列數與彙總一致：非核准紀錄被排除後，明細列數仍 = 彙總代課／扣時數合計', () => {
     const c = calc();
-    const base = { date: '2026-10-05', type: '代課', originalTeacher: '巫阿福', substituteTeacher: '王大明', leaveType: '事假' };
+    const base = { date: '2026-10-05', type: '代課', originalTeacher: '巫阿福', substituteTeacher: '方小生', leaveType: '事假' };
     const records = [
         { ...base, status: 'approved' }, { ...base, status: 'rejected' }, { ...base, status: 'pending_approval' },
         { ...base }, { ...base, deleted: true }, { ...base, isDeleted: true },
@@ -163,7 +163,7 @@ await suite.case('明細列數與彙總一致：非核准紀錄被排除後，�
 
 await suite.case('buildWorkbook：下限造成不平衡時彙總表尾有註記；無下限時不加', () => {
     const c = calc();
-    const recs = [{ date: '2027-07-05', type: '代課', originalTeacher: '巫阿福', substituteTeacher: '王大明', leaveType: '事假' }];
+    const recs = [{ date: '2027-07-05', type: '代課', originalTeacher: '巫阿福', substituteTeacher: '方小生', leaveType: '事假' }];
     const wb = c.buildWorkbook(c.calculate(115, 7, buildGoldenSchedule(), recs, roster), 115, 7, recs, XLSX);
     const aoa = XLSX.utils.sheet_to_json(wb.Sheets['結算表'], { header: 1 });
     const note = aoa[aoa.length - 1][0];

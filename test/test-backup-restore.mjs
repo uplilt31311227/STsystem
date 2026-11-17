@@ -34,7 +34,7 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const sections = {
     config: { main: { currentSemester: '115-1', schoolName: 'X', initialAdminEmails: ['a@b.c'] }, settlement: { calendarId: 'c', calendarApiKey: 'k', weeksByYear: { 114: {} }, updatedAt: 't', updatedBy: 'u' } },
     teachers: [
-        { id: 'tch_1', data: { name: '王', email: 'wang@x.tw', role: 'director' } },
+        { id: 'tch_1', data: { name: '王', email: 'wang@example.edu.tw', role: 'director' } },
         { id: 'tch_2', data: { name: '李', email: null, role: 'teacher' } },
     ],
     schedules: [
@@ -49,12 +49,12 @@ const sections = {
     ],
     pendingRequests: [{ id: 'req_a', data: { semesterId: '115-1', status: 'pending_approval' }, private: { leaveType: '事假', allowedTeacherIds: ['tch_1'] } }],
 };
-const me = { uid: 'u1', email: 'wang@x.tw', name: '王', role: 'director', teacherId: 'tch_1' };
+const me = { uid: 'u1', email: 'wang@example.edu.tw', name: '王', role: 'director', teacherId: 'tch_1' };
 
 const backup = await fmt.buildBackupFile({ schoolId: 'inhu', exportedAt: '2026-11-11T00:00:00.000Z', exportedBy: me, currentSemester: '115-1', sections });
 check('A 格式欄位：format／formatVersion／meta.schoolId／exportedAt／exportedBy',
     backup.format === 'stsystem-cloud-backup' && backup.formatVersion === 1 && backup.meta.schoolId === 'inhu'
-    && backup.meta.exportedAt === '2026-11-11T00:00:00.000Z' && backup.meta.exportedBy.email === 'wang@x.tw' && backup.meta.currentSemester === '115-1');
+    && backup.meta.exportedAt === '2026-11-11T00:00:00.000Z' && backup.meta.exportedBy.email === 'wang@example.edu.tw' && backup.meta.currentSemester === '115-1');
 check('A 筆數統計寫入 meta.counts（寫死期望值）', same(backup.meta.counts, {
     teachers: 2, schedules: 2, scheduleImports: 1, substituteRecords: 3, substituteRecordDetails: 2,
     pendingRequests: 1, pendingRequestDetails: 1, configDocs: 2,
@@ -120,7 +120,7 @@ check('A 預覽表格各列（備份筆數／將還原筆數）', sum[0].backup 
 const fullCloud = fmt.cloudStateFromSections(sections);
 const plan1 = fmt.planRestore({ backup: ok1.backup, cloud: fullCloud, currentSemesterId: '115-1' });
 check('A 計畫（雲端已有相同內容）：沒有需要寫入的項目', fmt.countPlannedWrites(plan1) === 0 && plan1.schedules.every(s => s.action === 'same' || s.action === 'blocked-historical') && plan1.records.exists === 3, JSON.stringify(plan1.schedules.map(s => s.action)));
-const emailClash = fmt.planRestore({ backup: ok1.backup, cloud: { ...emptyCloud, teachers: [{ id: 'tch_X', email: 'wang@x.tw' }] }, currentSemesterId: '115-1' });
+const emailClash = fmt.planRestore({ backup: ok1.backup, cloud: { ...emptyCloud, teachers: [{ id: 'tch_X', email: 'wang@example.edu.tw' }] }, currentSemesterId: '115-1' });
 check('A email 已被雲端另一位教師使用 → 略過並列入不還原', emailClash.teachers.emailTaken.length === 1 && emailClash.teachers.create.length === 1);
 const emptyBk = JSON.parse(JSON.stringify(ok1.backup)); emptyBk.schedules[1].data = { scheduleData: [], teachers: [], classes: [] };
 const planEmpty = fmt.planRestore({ backup: emptyBk, cloud: fullCloud, currentSemesterId: '115-1' });
@@ -142,7 +142,7 @@ function seedCloud({ nCur = 650, nOld = 40 } = {}) {
     wipe();
     F.docs.set(`${P}/config/main`, { currentSemester: '115-1', schoolName: 'T' });
     F.docs.set(`${P}/config/settlement`, { calendarId: 'c', calendarApiKey: 'k', weeksByYear: { 114: { 9: 4 } }, updatedAt: '2026-01-01T00:00:00.000Z', updatedBy: 'u' });
-    for (let i = 1; i <= 5; i++) F.docs.set(`${P}/teachers/tch_${String(i).padStart(2, '0')}`, { name: `T${i}`, email: `t${i}@x.tw`, role: i === 1 ? 'director' : 'teacher', domains: [], homeroomClass: '' });
+    for (let i = 1; i <= 5; i++) F.docs.set(`${P}/teachers/tch_${String(i).padStart(2, '0')}`, { name: `T${i}`, email: `t${i}@example.edu.tw`, role: i === 1 ? 'director' : 'teacher', domains: [], homeroomClass: '' });
     F.docs.set(`${P}/schedules/114-2`, { scheduleData: [{ teacher: 'T1', className: '7年1班' }], teachers: [{ name: 'T1' }], classes: ['7年1班'], version: 2, updatedAt: 'U1' });
     F.docs.set(`${P}/schedules/115-1`, { scheduleData: [{ teacher: 'T1' }, { teacher: 'T2' }], teachers: [{ name: 'T1' }, { name: 'T2' }], classes: ['7年1班'], version: 3, updatedAt: 'U2' });
     F.docs.set(`${P}/schedules/115-1/imports/imp_1`, { versionNo: 1, fileName: 'a.xlsx', source: 'file', snapshot: { scheduleData: [{ teacher: 'big' }] } });
@@ -161,7 +161,7 @@ function seedCloud({ nCur = 650, nOld = 40 } = {}) {
     F.docs.set(`${P}/operationLogs/log_1`, { action: 'x' });
 }
 
-const asRole = (role) => roleSvc.setCurrentIdentity({ uid: 'u', email: 'e@x.tw', teacherId: 'tch_01', name: 'T1', role });
+const asRole = (role) => roleSvc.setCurrentIdentity({ uid: 'u', email: 'e@example.edu.tw', teacherId: 'tch_01', name: 'T1', role });
 
 /* gating */
 {
@@ -211,7 +211,7 @@ const val = await fmt.parseAndValidateBackupText(built.text, { schoolId: 't' });
     check('B 清空後的計畫：教師 5、目前學期紀錄 650 可還原；歷史 40 與待審 1 不還原',
         plan.teachers.create.length === 5 && plan.records.create.length === 650 && plan.records.historical === 40 && plan.pending.notRestored === 1,
         JSON.stringify({ t: plan.teachers.create.length, r: plan.records.create.length, h: plan.records.historical, p: plan.pending.notRestored }));
-    const report = await svc.executeRestore({ backup: val.backup, plan, cloud: cloudNow, me: { name: 'T1', teacherId: 'tch_01', email: 'e@x.tw' } });
+    const report = await svc.executeRestore({ backup: val.backup, plan, cloud: cloudNow, me: { name: 'T1', teacherId: 'tch_01', email: 'e@example.edu.tw' } });
     check('B 還原全部階段成功', report.ok && report.stages.every(s => s.status === 'done' || s.status === 'skipped'), JSON.stringify(report.stages));
     const cur = (k) => F.docs.get(`${P}/${k}`);
     // 本階段新增（H1）：未勾選時補回的教師檔 email 一律為 null，其餘欄位與原本一致
@@ -222,9 +222,9 @@ const val = await fmt.parseAndValidateBackupText(built.text, { schoolId: 't' });
     check('B 未勾選：整批寫入沒有任何 emailIndex 文件、教師檔寫入的 email 都是 null（H1）',
         !F.writes.some(w => /\/emailIndex\//.test(w.path)) && F.writes.filter(w => /\/teachers\/[^/]+$/.test(w.path)).length === 5
         && F.writes.filter(w => /\/teachers\/[^/]+$/.test(w.path)).every(w => w.data.email === null));
-    check('B 未勾選：結果訊息列出原信箱供手動填回（H1）', svc.describeRestoreReport(report).includes('t3@x.tw') && svc.describeRestoreReport(report).includes('教師管理'));
+    check('B 未勾選：結果訊息列出原信箱供手動填回（H1）', svc.describeRestoreReport(report).includes('t3@example.edu.tw') && svc.describeRestoreReport(report).includes('教師管理'));
     // P5 驗收修復（原期望「還原時 emailIndex 同步建立」會讓已刪除教師的登入綁定被補回、繞過 P3 身分撤銷，故改為預設不補回）
-    check('B 還原教師時預設不補回 emailIndex（登入綁定需在預覽明確勾選）', cur('teachers/tch_03') && cur('emailIndex/t3@x.tw') === undefined);
+    check('B 還原教師時預設不補回 emailIndex（登入綁定需在預覽明確勾選）', cur('teachers/tch_03') && cur('emailIndex/t3@example.edu.tw') === undefined);
     check('B 預設計畫的教師名單帶姓名與角色，供預覽逐一列出', plan.teachers.createList.length === 5 && plan.teachers.createList.every(t => t.id && 'name' in t && 'role' in t) && plan.teachers.restoreEmailIndex === false, JSON.stringify(plan.teachers.createList[0]));
     check('B 預設計畫的「不會還原」清單說明登入綁定不恢復', plan.notRestored.some(x => x.includes('emailIndex') && x.includes('不恢復登入綁定')));
     check('B 結果訊息說明教師檔補回但未恢復登入綁定', svc.describeRestoreReport(report).includes('沒有恢復登入綁定'));
@@ -314,7 +314,7 @@ const val = await fmt.parseAndValidateBackupText(built.text, { schoolId: 't' });
     const cloudNow = fmt.cloudStateFromSections(await svc.collectCloudBackupSections({ includeDetails: false, includeImports: false }));
     const planOn = fmt.planRestore({ backup: val.backup, cloud: cloudNow, currentSemesterId: '115-1', restoreEmailIndex: true });
     const rep = await svc.executeRestore({ backup: val.backup, plan: planOn, cloud: cloudNow, me: null });
-    check('B 勾選後：教師檔（含 email）與 emailIndex 同一批補回', rep.ok && F.docs.get(`${P}/emailIndex/t3@x.tw`)?.teacherId === 'tch_03' && F.docs.get(`${P}/teachers/tch_03`)?.email === 't3@x.tw');
+    check('B 勾選後：教師檔（含 email）與 emailIndex 同一批補回', rep.ok && F.docs.get(`${P}/emailIndex/t3@example.edu.tw`)?.teacherId === 'tch_03' && F.docs.get(`${P}/teachers/tch_03`)?.email === 't3@example.edu.tw');
     check('B 勾選後的結果訊息說明已恢復登入綁定', svc.describeRestoreReport(rep).includes('已一併恢復'));
     check('B 勾選後「不會還原」清單不再列登入綁定警語', !planOn.notRestored.some(x => x.includes('不恢復登入綁定')));
 }
@@ -438,7 +438,7 @@ const val = await fmt.parseAndValidateBackupText(built.text, { schoolId: 't' });
     check('E 其他錯誤保留原因文字', fmt.backupErrorMessage(mk('permission-denied', '權限不足'), 'export').includes('權限不足'));
 
     // L1
-    const bk = { ...sections, teachers: [...sections.teachers, { id: 'tch_3', data: { name: '張', email: 'z@x.tw', role: 'teacher' } }] };
+    const bk = { ...sections, teachers: [...sections.teachers, { id: 'tch_3', data: { name: '張', email: 'z@example.edu.tw', role: 'teacher' } }] };
     const cloudA = { teachers: [], configMainExists: true, settlement: null, schedules: {}, recordIds: [], pendingIds: [] };
     const cloudB = { ...cloudA, teachers: [{ id: 'tch_2', email: null }] };   // 預覽後 tch_2 被別人補回
     const pv = fmt.planRestore({ backup: bk, cloud: cloudA, currentSemesterId: '115-1' });
@@ -473,8 +473,8 @@ const val = await fmt.parseAndValidateBackupText(built.text, { schoolId: 't' });
     await svc.executeRestore({ backup: bk, plan: planOff, cloud: cloudNow, me: null });
     check('F 未勾選補回後：教師檔 email 為 null、沒有 emailIndex', F.docs.get(`${P}/teachers/tch_03`).email === null && ![...F.docs.keys()].some(k => k.includes('/emailIndex/')));
     F.writes.length = 0;
-    await dataSvc.updateTeacher('tch_03', { email: 'T3@X.tw' });
-    check('F updateTeacher 把信箱從 null 填回：同一批寫入教師 email（小寫）與 emailIndex', F.docs.get(`${P}/teachers/tch_03`).email === 't3@x.tw' && F.docs.get(`${P}/emailIndex/t3@x.tw`)?.teacherId === 'tch_03', JSON.stringify(F.writes.map(w => w.path)));
+    await dataSvc.updateTeacher('tch_03', { email: 'T3@example.edu.tw' });
+    check('F updateTeacher 把信箱從 null 填回：同一批寫入教師 email（小寫）與 emailIndex', F.docs.get(`${P}/teachers/tch_03`).email === 't3@example.edu.tw' && F.docs.get(`${P}/emailIndex/t3@example.edu.tw`)?.teacherId === 'tch_03', JSON.stringify(F.writes.map(w => w.path)));
 }
 
 /* ====================== G. 還原時教師信箱正規化（trim＋小寫；非字串視為無信箱） ====================== */
@@ -486,23 +486,23 @@ const val = await fmt.parseAndValidateBackupText(built.text, { schoolId: 't' });
 
     // (a) 勾選：空白與大小寫被正規化，教師檔 email 與 emailIndex 鍵一致
     wipe();
-    let bk = mkBackup([['tch_g1', '  Chief@X.tw ']]), cl = mkCloud([]);
+    let bk = mkBackup([['tch_g1', '  Chief@example.edu.tw ']]), cl = mkCloud([]);
     let plan = fmt.planRestore({ backup: bk, cloud: cl, currentSemesterId: '115-1', restoreEmailIndex: true });
-    check('G(a) 預覽的原信箱已正規化', plan.teachers.createList[0].email === 'chief@x.tw', JSON.stringify(plan.teachers.createList));
+    check('G(a) 預覽的原信箱已正規化', plan.teachers.createList[0].email === 'chief@example.edu.tw', JSON.stringify(plan.teachers.createList));
     await svc.executeRestore({ backup: bk, plan, cloud: cl, me: null });
-    check('G(a) 勾選：教師檔 email 為 chief@x.tw 且 emailIndex 鍵相同',
-        F.docs.get(`${P}/teachers/tch_g1`)?.email === 'chief@x.tw' && F.docs.get(`${P}/emailIndex/chief@x.tw`)?.teacherId === 'tch_g1' && emailKeys().length === 1, JSON.stringify([F.docs.get(`${P}/teachers/tch_g1`), emailKeys()]));
+    check('G(a) 勾選：教師檔 email 為 chief@example.edu.tw 且 emailIndex 鍵相同',
+        F.docs.get(`${P}/teachers/tch_g1`)?.email === 'chief@example.edu.tw' && F.docs.get(`${P}/emailIndex/chief@example.edu.tw`)?.teacherId === 'tch_g1' && emailKeys().length === 1, JSON.stringify([F.docs.get(`${P}/teachers/tch_g1`), emailKeys()]));
 
     // (b) 備份信箱與現職教師相同（只差空白）：視為已被使用，不動現職教師
     wipe();
-    F.docs.set(`${P}/teachers/tch_live`, { name: 'L', email: 'live@x.tw', role: 'teacher' });
-    F.docs.set(`${P}/emailIndex/live@x.tw`, { teacherId: 'tch_live' });
-    bk = mkBackup([['tch_g2', ' live@x.tw']]); cl = mkCloud([{ id: 'tch_live', email: 'Live@X.tw ' }]);
+    F.docs.set(`${P}/teachers/tch_live`, { name: 'L', email: 'live@example.edu.tw', role: 'teacher' });
+    F.docs.set(`${P}/emailIndex/live@example.edu.tw`, { teacherId: 'tch_live' });
+    bk = mkBackup([['tch_g2', ' live@example.edu.tw']]); cl = mkCloud([{ id: 'tch_live', email: 'Live@example.edu.tw ' }]);
     plan = fmt.planRestore({ backup: bk, cloud: cl, currentSemesterId: '115-1', restoreEmailIndex: true });
     check('G(b) 判定信箱已被現職教師使用', plan.teachers.emailTaken.includes('tch_g2') && plan.teachers.create.length === 0, JSON.stringify(plan.teachers));
     await svc.executeRestore({ backup: bk, plan, cloud: cl, me: null });
     check('G(b) 現職教師的 emailIndex 未被改指向、教師檔未被寫入',
-        F.docs.get(`${P}/emailIndex/live@x.tw`)?.teacherId === 'tch_live' && !F.writes.some(w => w.path.endsWith('/teachers/tch_live') || w.path.endsWith('/teachers/tch_g2')), JSON.stringify(F.writes.map(w => w.path)));
+        F.docs.get(`${P}/emailIndex/live@example.edu.tw`)?.teacherId === 'tch_live' && !F.writes.some(w => w.path.endsWith('/teachers/tch_live') || w.path.endsWith('/teachers/tch_g2')), JSON.stringify(F.writes.map(w => w.path)));
 
     // (c) 物件、數字、空白字串：不拋例外、視為無信箱、不產生 emailIndex
     wipe();
@@ -519,11 +519,11 @@ const val = await fmt.parseAndValidateBackupText(built.text, { schoolId: 't' });
 
     // (d) 未勾選仍為 null
     wipe();
-    bk = mkBackup([['tch_g4', '  Chief@X.tw ']]); cl = mkCloud([]);
+    bk = mkBackup([['tch_g4', '  Chief@example.edu.tw ']]); cl = mkCloud([]);
     plan = fmt.planRestore({ backup: bk, cloud: cl, currentSemesterId: '115-1' });
     await svc.executeRestore({ backup: bk, plan, cloud: cl, me: null });
     check('G(d) 未勾選：教師檔 email 為 null、無 emailIndex，原信箱（正規化後）只留在 emailCleared',
-        F.docs.get(`${P}/teachers/tch_g4`)?.email === null && emailKeys().length === 0 && plan.teachers.emailCleared[0]?.email === 'chief@x.tw');
+        F.docs.get(`${P}/teachers/tch_g4`)?.email === null && emailKeys().length === 0 && plan.teachers.emailCleared[0]?.email === 'chief@example.edu.tw');
 }
 
 process.stdout.write(`\n${failed ? '失敗' : '全部通過'}：通過 ${passed}、失敗 ${failed}\n`);

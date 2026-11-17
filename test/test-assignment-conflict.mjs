@@ -20,14 +20,14 @@ function check(name, cond, detail = '') {
     if (!cond) failed++;
 }
 
-const sub = (over = {}) => ({ type: '代課', date: '2026-10-20', period: '第三節', className: '801', originalTeacher: '原師', substituteTeacher: '王大明', ...over });
-const established = { id: 'r1', type: '代課', date: '2026-10-20', period: '第三節', className: '801', originalTeacher: '丙', substituteTeacher: '王大明' };
+const sub = (over = {}) => ({ type: '代課', date: '2026-10-20', period: '第三節', className: '801', originalTeacher: '原師', substituteTeacher: '方小生', ...over });
+const established = { id: 'r1', type: '代課', date: '2026-10-20', period: '第三節', className: '801', originalTeacher: '丙', substituteTeacher: '方小生' };
 
 // ---- (a) 成立紀錄佔用 ----
 const hitA = findAssignmentConflict(sub({ className: '802' }), [established]);
-check('(a) 代課：已有成立紀錄佔用 → 回傳衝突', hitA?.teacher === '王大明' && hitA.role === '代課');
+check('(a) 代課：已有成立紀錄佔用 → 回傳衝突', hitA?.teacher === '方小生' && hitA.role === '代課');
 check('(a) 訊息為明確中文且無待核准標示',
-    buildApprovalConflictMessage(hitA) === '核准失敗：王大明 2026-10-20 第三節已被指派為801的代課，請駁回或請申請人改選',
+    buildApprovalConflictMessage(hitA) === '核准失敗：方小生 2026-10-20 第三節已被指派為801的代課，請駁回或請申請人改選',
     buildApprovalConflictMessage(hitA));
 const swapReq = { type: '調課', date: '2026-10-20', period: '第一節', originalTeacher: '甲', swapTeacher: '乙', swapDate: '2026-10-22', swapPeriod: '第二節' };
 check('(a) 調課：互換教師在時段 A 已被佔用 → 衝突',
@@ -35,11 +35,11 @@ check('(a) 調課：互換教師在時段 A 已被佔用 → 衝突',
 check('(a) 調課：原任教師在時段 B 已被別筆調課移入 → 衝突',
     findAssignmentConflict(swapReq, [{ id: 'm1', type: '調課', date: '2026-10-15', period: '第四節', originalTeacher: '甲', swapTeacher: '丁', swapDate: '2026-10-22', swapPeriod: '第二節', className: '901' }])?.teacher === '甲');
 check('(a) 代課：教師被別筆調課移入該節 → 衝突（findSwapInConflict）',
-    findAssignmentConflict(sub(), [{ id: 'm2', type: '調課', date: '2026-10-12', period: '第一節', originalTeacher: '王大明', swapTeacher: '丁', swapDate: '2026-10-20', swapPeriod: '第三節', className: '901' }])?.role === '調課');
+    findAssignmentConflict(sub(), [{ id: 'm2', type: '調課', date: '2026-10-12', period: '第一節', originalTeacher: '方小生', swapTeacher: '丁', swapDate: '2026-10-20', swapPeriod: '第三節', className: '901' }])?.role === '調課');
 check('(a) 自我調課不檢查', findAssignmentConflict({ ...swapReq, isSelfSwap: true }, [established]) === null);
 
 // ---- (b) 在途請求佔用 ----
-const pendReq = (status, over = {}) => ({ reqId: 'q1', status, type: '代課', date: '2026-10-20', period: '第三節', className: '803', originalTeacher: '丙', substituteTeacher: '王大明', ...over });
+const pendReq = (status, over = {}) => ({ reqId: 'q1', status, type: '代課', date: '2026-10-20', period: '第三節', className: '803', originalTeacher: '丙', substituteTeacher: '方小生', ...over });
 const occApproval = pendingRequestsToOccupancyRecords([pendReq('pending_approval')]);
 const hitB1 = findAssignmentConflict(sub(), occApproval);
 check('(b) 待核准申請佔用 → 衝突且附（待核准中）', hitB1 && describeAssignmentConflict(hitB1).endsWith('（待核准中）'), describeAssignmentConflict(hitB1 || {}));
@@ -61,7 +61,7 @@ check('(c) 無任何紀錄 → 放行', findAssignmentConflict(sub(), []) === nu
 check('(c) 他日、他節不誤擋', findAssignmentConflict(sub(), [{ ...established, date: '2026-10-21' }, { ...established, period: '第四節' }]) === null);
 const calls = [];
 const q = async (range) => { calls.push(range); return [established]; };
-check('(a) verifyNoAssignmentConflict 以日期範圍查詢並回傳衝突', (await verifyNoAssignmentConflict(sub(), q))?.teacher === '王大明');
+check('(a) verifyNoAssignmentConflict 以日期範圍查詢並回傳衝突', (await verifyNoAssignmentConflict(sub(), q))?.teacher === '方小生');
 check('(c) verifyNoAssignmentConflict 無衝突放行', (await verifyNoAssignmentConflict(sub({ substituteTeacher: '李四' }), q)) === null);
 check('查詢窗口為申請日期前後 31 天', calls[0].startDate === '2026-09-19' && calls[0].endDate === '2026-11-20', JSON.stringify(calls[0]));
 check('調課會同時查 date 與 swapDate 兩個窗口', (await fetchRecordsAroundDates(['2026-10-20', '2026-12-30'], async () => [])).length === 0);

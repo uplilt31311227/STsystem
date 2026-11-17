@@ -124,7 +124,7 @@
 依 `scripts/firestore-health-check.js` 的既有做法，用個人 gcloud 帳號取存取權杖，唯讀 GET 專案的資料庫 metadata：
 
 ```
-gcloud auth print-access-token --account=operator@example.edu.tw
+gcloud auth print-access-token --account=<操作者信箱>
 GET https://firestore.googleapis.com/v1/projects/stsystem-9d5fe/databases
 ```
 

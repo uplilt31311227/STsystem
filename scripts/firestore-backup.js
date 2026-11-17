@@ -54,7 +54,7 @@ const SCHOOL_ID   = process.argv.find(a => a.startsWith('--school='))?.split('='
 const BASE        = `${safety.databaseBase(TARGET)}/documents`;
 const BACKUP_ROOT = path.join(__dirname, '..', 'backups', PROJECT === DEFAULT_PROJECT ? 'firestore' : `firestore-${PROJECT}`);
 
-const SUBCOMMAND = process.argv.slice(2).filter(a => !a.startsWith('--project='))[0];
+const SUBCOMMAND = process.argv.slice(2).filter(a => !a.startsWith('--project=') && !a.startsWith('--account='))[0];
 
 // 會一併備份、但清除功能不會動到的集合（低成本，一併存成完整快照）
 //
@@ -69,7 +69,7 @@ const PLAIN_COLLECTIONS = ['teachers', 'userMappings', 'config', 'operationLogs'
 const PRIVATE_DETAIL_COLLECTIONS = ['substituteRecords', 'pendingRequests'];
 
 function getToken() {
-    return safety.getAccessToken(TARGET, 'operator@example.edu.tw');
+    return safety.getAccessToken(TARGET, safety.resolveOperatorAccount(process.argv.slice(2), process.env, TARGET));
 }
 
 /**

@@ -36,7 +36,7 @@
  *        本腳本刻意不自動覆寫，避免把一個已經在其他學校正確運作的使用者改壞）。
  *   3. --dry-run 只印統計與明細；未帶 --dry-run 才會實際 PATCH 寫入。
  *
- * 認證：透過 gcloud auth print-access-token --account=operator@example.edu.tw
+ * 認證：透過 gcloud auth print-access-token --account=<操作者信箱>（或設環境變數 STSYSTEM_GCLOUD_ACCOUNT）
  *      （需先 gcloud auth login 完成）
  *
  * ⚠ 本次任務範圍明確要求「--dry-run，不執行」——本腳本已寫好，但截至本次交付
@@ -58,7 +58,7 @@ safety.targetBanner(TARGET, { action: '回填 userDirectory', apply: WRITE_MODE.
 const BASE      = `${safety.databaseBase(TARGET)}/documents`;
 
 function getToken() {
-    return safety.getAccessToken(TARGET, 'operator@example.edu.tw');
+    return safety.getAccessToken(TARGET, safety.resolveOperatorAccount(process.argv.slice(2), process.env, TARGET));
 }
 
 function buildHeaders(token) {

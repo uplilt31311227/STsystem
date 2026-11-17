@@ -34,7 +34,7 @@ safety.targetBanner(TARGET, { action: '建立複合索引', apply: WRITE_MODE.ap
 const WAIT = process.argv.includes('--wait');
 
 function getToken() {
-    return safety.getAccessToken(TARGET, 'operator@example.edu.tw');
+    return safety.getAccessToken(TARGET, safety.resolveOperatorAccount(process.argv.slice(2), process.env, TARGET));
 }
 
 async function api(method, p, body) {

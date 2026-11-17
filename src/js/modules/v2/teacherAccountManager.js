@@ -285,7 +285,7 @@ export async function setRole(teacherId, role) {
  * 防重（2026-07-30 新增）：建立前先檢查姓名與 email 是否已被佔用，重複則直接拋錯不建立。
  * 過去這支是「裸建立」——沒有任何唯一性檢查，同一個姓名按兩次就會產生兩筆教師檔，
  * 而 V1 側（dataManager.teachers）以姓名為鍵、分不出是哪一筆，導致領域／導師班級的
- * 編輯與刪除都對不上目標（production 的「藍奕麟」就是這樣多出一筆零引用的孤兒檔）。
+ * 編輯與刪除都對不上目標（production 的「<主任姓名>」就是這樣多出一筆零引用的孤兒檔）。
  * importRosterCsv 早有同名合併邏輯，這裡補齊另一條入口。
  */
 export async function createTeacher(payload) {
