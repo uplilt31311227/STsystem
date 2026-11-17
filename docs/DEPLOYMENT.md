@@ -118,6 +118,41 @@ emulator 模式（設了 `FIRESTORE_EMULATOR_HOST`）不需要帳號。`firestor
 
 為了防範點擊劫持（審計 L4），`src/js/v2-redirect.js` 在頁面被嵌入 `<iframe>` 時會嘗試把最上層導回本頁，導不了就把整份文件隱藏（`display: none`）。因此**本站無法被其他網站（含自己的其他頁面）以 iframe 內嵌**；若日後有內嵌需求（例如儀表板），必須先修改該檔的框架偵測邏輯。
 
+### rules v2.17（P9 批次 A2）：白名單主任失效、platformAdmin 最高管理員、核准職務分離
+
+三項使用者決定（2026-11-17）：
+
+1. **初始主任白名單在學校有正式主任後失效**（SB-L9）。`config/main.directorEstablished === true` 時 `isInitialDirector` 恆為 false，白名單的所有特例（bootstrap 建教師檔、補登自己 role、config 讀取後備、日誌 actor.role 後備）一併失效。旗標只進不退（client 不可改回 false、不可拿掉欄位、不可刪除已確立的 `config/main`）。旗標缺席視為尚未確立，行為與 v2.16 相同。前端 `authGuardV2` 在「教師檔為 director（或舊 admin）且已有 mapping」的使用者登入時自動補設旗標，涵蓋白名單 bootstrap、補登 role、他人經 setRole 或名冊匯入成為主任後的首次登入，以及既有正式庫主任的下一次登入；旗標為 true 時前端也不再走白名單分支。
+2. **platformAdmin 為全系統最高、不可移除的管理員**。`isDirector`／`isApprover` 多一個 `isPlatformAdmin()` 分支，讀取走 `canReadSchool`（成員或 platformAdmin），在每所學校等同主任，不需是成員，不受該校名冊、角色、白名單、旗標、刪除操作影響。`platformAdmins/{uid}` 維持 client 完全不可寫（`allow write: if false`，create／update／delete 全擋）：主任、組長、platformAdmin 本人都不能新增、修改、撤銷任何 platformAdmin，所以「platformAdmin 建立 platformAdmin」的路徑本來就不存在，也沒有保留；新增只能由開發者以 `scripts/bootstrap-platform-admin.js`（Admin 憑證）執行。這取代檔頭第 9 點「platformAdmin 不能讀任何學校的 config」的舊設計。platformAdmin 沒有教師檔，前端以 uid 當 teacherId：`approvedBy`／`rejectedBy`／日誌 `actor.teacherId` 接受 uid。**核准開通新學校**（`approveApplication`）原本靠「config/main 對 platformAdmin 只有 create 權限」擋住覆寫既有學校，v2.17 起 platformAdmin 視同每校主任，rules 不再擋，前端改為建校前明確檢查 `config/main` 是否已存在（含不在 `schoolDirectory` 的既有學校如 `inhu`），已存在就中止。
+3. **職務分離**（SB-I7）。核准者不可核准 `initiatedBy` 是自己的申請（登入 uid 或 mapping 的 teacherId），唯一例外是自我調課且不牽涉他人（`isSelfSwap`、換走與換進教師都是本人、沒有同意人）。組長代教師發起的申請 `initiatedBy` 是被代發的教師，不受影響。駁回不受限。platformAdmin 同樣適用。前端在自己發起的申請上停用「核准並產生 PDF」並顯示原因，`approveRequest` 也先擋下。**範圍說明與如實揭露（使用者已接受）**：職務分離只管走 `pendingRequests` 的核准轉換，定位是「防止誠實操作下的誤用」，不是安全邊界。組長／主任可直接「代發」（`adminCreate`）成立紀錄、不經核准；approver 以 approver 分支建立申請時可把 `initiatedBy` 填成別人或任意字串再自己核准；自我調課例外只比對 id（type 為「代課」、姓名寫別人也能被判成自我調課）。這些都不比「代發」多拿到任何能力，故不在 rules 堵。另：舊申請缺 `initiatedBy` 時，沒有成員身分的 platformAdmin 會被判成自己發起而無法核准（前端同樣停用並說明）。
+
+**部署順序**：與 v2.13–v2.16 同一套程序，**前端與 rules 同時上線**（先推前端到 GitHub Pages、等建置完成後立刻發布 rules，兩個動作間隔以分鐘計）。相容性：
+
+- 新 rules × 舊前端：旗標缺席時白名單行為不變；舊前端不會補旗標，也不認得 platformAdmin 選校；舊前端在自己發起的申請上仍顯示核准鈕，按下會被 rules 擋下（permission-denied）。唯一要避免的組合：旗標已設為 true（補旗標腳本已執行）之後，「白名單內但教師檔已降為一般教師」的人用舊前端登入，舊前端會嘗試補登 role 而被拒，登入流程丟錯——因此補旗標腳本請在新前端上線之後再執行。
+- 新前端 × 舊 rules（空窗期）：寫 `directorEstablished` 在舊 rules 下允許但沒有作用；platformAdmin 進入學校會因舊 rules 拒讀而回到選校畫面並顯示原因（不影響一般使用者）；職務分離只有前端把關。
+
+**部署後要做的事（新增步驟，依序）**：
+
+1. 前端與 rules 同時上線（見上）。
+2. **補旗標（既有正式庫必做）**：既有學校已經有主任但沒有旗標，白名單仍然有效。主任下次登入會自動補，但請不要等，用腳本一次補上（預設 dry-run，會列出判定為正式主任的人；沒有「已登入過的正式主任」時預設拒絕，避免學校只剩 platformAdmin 能管理）：
+   ```bash
+   node scripts/set-director-established.js --account=<操作者信箱> --school=inhu            # dry-run
+   node scripts/set-director-established.js --account=<操作者信箱> --school=inhu --apply    # 實際寫入
+   ```
+   **建議上線當天就執行**，讓 inhu 重新取得 rules 層的保護（旗標未設前白名單仍有效）。旗標設好之後，「在白名單內但沒有教師檔」的人無法登入（不再能 bootstrap 自建），必須由主任在教師名冊替他建檔。
+   之後在 Console 確認 `schools/inhu/config/main` 有 `directorEstablished: true`；用白名單內但已不是主任的帳號登入應讀不到 config。旗標要重設只能用 Admin 憑證手動處理（腳本不提供）。
+3. **建立 platformAdmin**（⚠ platformAdmin 能代寫任一校的 `userMappings`，等於能接管任何身分，該帳號必須啟用 Google 兩步驟驗證；帳號信箱**絕對不寫進 repo**，只在執行時以參數給）：先請該帳號登入系統一次（讓 Auth 有這個使用者；或直接用 `--uid=`），再執行：
+   ```bash
+   node scripts/bootstrap-platform-admin.js --account=<操作者信箱> --email=<要成為 platformAdmin 的信箱> --note="說明"          # dry-run
+   node scripts/bootstrap-platform-admin.js --account=<操作者信箱> --email=<要成為 platformAdmin 的信箱> --note="說明" --apply   # 實際寫入
+   node scripts/bootstrap-platform-admin.js --account=<操作者信箱> --list                                                      # 確認名冊
+   ```
+   腳本已用 emulator 實測可完成建立（見 `test/emulator/scripts-p9-admin.mjs`）；`--remove` 仍受「最後一位管理者」保護。
+4. **驗證**：platformAdmin 登入後出現「選擇要進入的學校」畫面，選校後頂端有「平台管理員模式」橫幅、右上角姓名欄顯示「平台管理員」（角色標籤顯示「教務主任」，表示以主任身分操作），能讀寫該校教師名單、核准他人申請；對自己發起的申請核准鈕為停用並有說明。
+5. 前端可選擇「以一般教師身分登入我所屬的學校」（平台管理員兼任某校教師時使用）。
+
+**文件存取與運算式上限實測**見 `test/emulator/probe-rules-limits.mjs` 與 CHANGELOG 2026-11-17 條目。
+
 ### rules v2.16（P9 批次 A）：教師檔欄位白名單、主任不可刪自己、private/detail 可刪
 
 三項改動都在 `firestore.rules`：（1）教師檔 delete：主任不可刪自己的教師檔；（2）教師檔 update：教學組長只能改 `domains`、`homeroomClass`、`partTime`、`updatedAt`（教師管理頁會寫的欄位），改不了任何人的姓名、email、角色與其他欄位，主任權限不變；（3）`substituteRecords`、`pendingRequests` 底下 `private/detail` 的 delete：approver 可刪（紀錄側限目前學期），申請側另開放發起人本人（限未結案或已駁回；被邀請人不開放）。

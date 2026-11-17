@@ -236,10 +236,14 @@ export async function run(ctx) {
         }, { idToken: ctx.platformAdmin.idToken }), '平台管理者新增學校名錄');
     });
 
-    await suite.case('平台管理者不可讀取任何學校的業務資料', async () => {
-        denied(await getDoc(`schools/${aId}/config/main`, { idToken: ctx.platformAdmin.idToken }), '平台管理者讀 config');
+    // 使用者 2026-11-17 決定：platformAdmin 為全系統最高管理員，可在每校行使主任權限（rules v2.17）。
+    // 原案例「平台管理者不可讀取任何學校的業務資料」改為可讀，並保留非成員的拒絕斷言。
+    await suite.case('平台管理者可讀取各校業務資料；非成員仍不可', async () => {
         const rec = A.fixture.substituteRecords[0];
-        denied(await getDoc(`schools/${aId}/substituteRecords/${rec.recordId}`, { idToken: ctx.platformAdmin.idToken }), '平台管理者讀紀錄');
+        allowed(await getDoc(`schools/${aId}/config/main`, { idToken: ctx.platformAdmin.idToken }), '平台管理者讀 config');
+        allowed(await getDoc(`schools/${aId}/substituteRecords/${rec.recordId}`, { idToken: ctx.platformAdmin.idToken }), '平台管理者讀紀錄');
+        denied(await getDoc(`schools/${aId}/config/main`, { idToken: ctx.outsider.idToken }), '非成員讀 config');
+        denied(await getDoc(`schools/${aId}/substituteRecords/${rec.recordId}`, { idToken: ctx.outsider.idToken }), '非成員讀紀錄');
     });
 
     return suite;

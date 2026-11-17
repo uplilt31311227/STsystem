@@ -1,6 +1,6 @@
 rules_version = '2';
 
-// STsystem V2 權限系統 Firestore 規則（v2.16（P9 批次 A：組長改教師檔欄位白名單、主任不可刪自己的教師檔、approver／發起人可刪 private/detail）、v2.15（P7：config/settlement 增加逐人超鐘點門檻欄位、config/grade9 九年級畢業設定）、v2.14（含 v2.13-A／B、v2.14 成立紀錄序號鎖，皆已納入本檔，P5／P6 未部署）— 身分與授權修補 + 三層角色 + 敏感欄位私有化 + 學期唯讀鎖 + 封存生命週期 + schoolId 反查目錄 + 多租戶開通 + 月結算設定開放 approver + 主任不可改自己的 role + 課表匯入版本紀錄 + 組長可刪除目前學期紀錄 + 開新學期原子建立課表 + 課表版本號）
+// STsystem V2 權限系統 Firestore 規則（v2.17（P9 批次 A2：初始主任白名單在學校有正式主任後失效、platformAdmin 為全系統最高管理員、核准者職務分離）、v2.16（P9 批次 A：組長改教師檔欄位白名單、主任不可刪自己的教師檔、approver／發起人可刪 private/detail）、v2.15（P7：config/settlement 增加逐人超鐘點門檻欄位、config/grade9 九年級畢業設定）、v2.14（含 v2.13-A／B、v2.14 成立紀錄序號鎖，皆已納入本檔，P5／P6 未部署）— 身分與授權修補 + 三層角色 + 敏感欄位私有化 + 學期唯讀鎖 + 封存生命週期 + schoolId 反查目錄 + 多租戶開通 + 月結算設定開放 approver + 主任不可改自己的 role + 課表匯入版本紀錄 + 組長可刪除目前學期紀錄 + 開新學期原子建立課表 + 課表版本號）
 //
 // 設計原則：
 //   1. 兩條根路徑物理隔離
@@ -78,23 +78,24 @@ rules_version = '2';
 //        - schoolDirectory/{schoolId}：公開學校名錄（僅 schoolName/createdAt），供申請頁
 //          檢查 schoolId 是否已被使用；任何登入者可讀，寫入僅 platformAdmin、僅 create。
 //      既有 schools/{schoolId}/config/{docId} 的 write 規則新增一條 platformAdmin **create**
-//      分支（不含 update/delete）——新校核准當下還沒有 director，只有 platformAdmin 能完成
-//      config/main 的首次建立；核准動作實際上分兩個 writeBatch 循序執行（非單一原子批次），
+//      分支（不含 update/delete；v2.17 起 platformAdmin 視同每校主任，另可經 isDirector 寫入，見第 18 點）——新校核准當下還沒有 director，只有 platformAdmin 能完成
+//      config/main 的首次建立；核准動作分兩步循序執行（v2.17 起第一步為 transaction、第二步為 writeBatch，非單一原子操作），
 //      理由、schoolId 衝突處理與失敗重試設計見
 //      src/js/modules/v2/schoolApplicationService.js 的 approveApplication() 檔頭註解——
-//      簡述：Firestore 的 create 語意本身就是本設計依賴的「schoolId 衝突」防線，對已存在的
-//      config 文件送出寫入會被規則判定為 update 而非 create，platformAdmin 的 create-only
-//      權限即自然拒絕，不需要額外的樂觀鎖或版本欄位。
+//      簡述（v2.17 已改）：Stage 4 原本靠「platformAdmin 對 config/main 只有 create 權限」當 schoolId 衝突防線；
+//      v2.17 起 platformAdmin 視同每校主任（見第 18 點），rules 不再擋覆寫既有學校，改由 approveApplication()
+//      在 transaction 內先讀 config/main、已存在就中止、不存在才寫入。
 //      userDirectory 的自寫分支新增 isEmailVerified() 檢查（Stage 3 上線時刻意留白，見上方
 //      該處說明，本階段開放註冊後補上；相容性見該 match 區塊內的完整註解）；新增
 //      platformAdmin 分支（approval 時代寫申請人的 userDirectory，不要求 email_verified——
 //      申請人的 email 已在 schoolApplications 的 create 規則驗證過一次，不重複驗證同一件事）。
-//      權限面刻意的留白（如實記錄，不誇大信任邊界）：platformAdmin **不能**讀取任何學校
-//      （含自己核准建立的新學校）的 config/teachers/substituteRecords 等業務資料——本次
-//      規則沒有對 config 的 read 開任何 platformAdmin 分支，只開了 write 的 create 分支；
+//      權限面（Stage 4 原設計 → v2.17 已改）：Stage 4 原本刻意讓 platformAdmin **不能**讀取任何學校的
+//      config/teachers/substituteRecords 等業務資料、只開 config create；v2.17 起使用者決定改為「全系統最高管理員」，
+//      platformAdmin 在每所學校都能行使主任權限（讀寫該校全部資料），見下方第 18 點。
 //      platformAdmin 也**能**代寫任意 uid 的 userDirectory（不限申請中那一位），這是刻意
 //      接受的權限面（理由見 userDirectory match 區塊內的完整說明），與 director 可代寫校內
 //      任何 userMappings 屬同一信任模型，非本次新增的獨立破口。
+//
 //      App Check（classic reCAPTCHA v3，非 Enterprise，理由見 RESEARCH-blaze-followup.md §3）
 //      與支出風控（多門檻預算警報 + scripts/emergency-brake.js 緊急煞車腳本）皆為
 //      client SDK／Console／離線腳本層面的措施，與本檔規則內容無直接關聯，不在此列。
@@ -194,6 +195,38 @@ rules_version = '2';
 //        新 rules 對舊前端無相容問題；新前端在舊 rules 下：刪 private 被拒時前端退回只刪父文件並記錄 detail_delete_failed，不阻擋撤回／刪除，
 //        但送出有明細的申請會因 hasDetail 欄位不在舊 rules 白名單而被拒——這正是前端與 rules 須同時上線的理由之一（空窗以分鐘計）。
 //
+//  18. v2.17（2026-11-17，P9 批次 A2，使用者三項權限決定；測試見 test/emulator/rules-p9-authz）：
+//      A. 初始主任白名單自動失效（SB-L9）：config/main.directorEstablished（布林旗標）為 true 時，isInitialDirector 恆為 false，
+//         一次關掉所有白名單分支（isDirector／isApprover 的白名單後備、teachers 的 bootstrap 建檔與補登自己 role、config 讀取後備、
+//         actorRoleOk）。旗標由前端 authGuardV2 在「正式主任」（教師檔 role 為 director/admin、已有 mapping）登入時補設，
+//         既有正式庫另有 scripts/set-director-established.js（dry-run 預設）。旗標只進不退：config/{docId} 規則禁止
+//         client 改回 false／非布林／拿掉欄位，也禁止刪除已確立的 config/main（刪掉重建會重開白名單）。
+//         旗標缺席＝尚未確立，行為與 v2.16 相同。後備：platformAdmin（見 B）不受白名單與旗標影響，學校不會因白名單失效而無人可管。
+//      B. platformAdmin 為全系統最高管理員：isDirector／isApprover 加 isPlatformAdmin() 分支；所有 `allow read: if isMember`
+//         改用 canReadSchool（成員或 platformAdmin）；config 讀取後備（isMemberOrBootstrapDirector）加 platformAdmin。這取代檔頭
+//         第 9 點「platformAdmin 不能讀任何學校 config」的舊設計。platformAdmins/{uid} 維持 client 完全不可寫（`allow write: if false`
+//         同時涵蓋 create／update／delete）：任何 client——包含 platformAdmin 本人、主任、組長——都不能新增、修改或撤銷任何
+//         platformAdmin；新增只能由開發者以 scripts/bootstrap-platform-admin.js（Admin 憑證）執行，因此不保留「platformAdmin
+//         建立 platformAdmin」的路徑（本來就沒有）。platformAdmin 的身分判斷只看 platformAdmins/{uid}，與任何學校的名冊、角色、
+//         白名單、旗標、刪除操作無關。platformAdmin 沒有教師檔，前端以 uid 當 teacherId：approvedBy／rejectedBy／日誌 actor.teacherId
+//         都接受 uid（isActorId、isValidOperationLog 的 platformAdmin 分支）。
+//      C. 職務分離（SB-I7）：isValidApproverUpdate 的核准分支要求申請的 initiatedBy 不是核准者自己（uid 或 mapping teacherId），
+//         唯一例外 isSelfOnlyRequest（isSelfSwap、換走與換進教師都是本人、無其他同意人）。對 platformAdmin 同樣適用。
+//         組長代教師發起的申請 initiatedBy 是被代發的教師，不受影響。駁回不受限。
+//         ⚠ 已知範圍：組長／主任的「代發」（adminCreate）是直接成立 substituteRecords，不經 pendingRequests、不經核准，因此本規則
+//         管不到（approver 本來就能直接建立任意紀錄，initiatedBy 由 client 填）；真正的職務分離只涵蓋 pendingRequests 的核准轉換。
+//      ⚠ 如實揭露（使用者已接受，不在 rules 堵）：職務分離只是「防止誠實操作下的誤用」，不是安全邊界——
+//        (1) 組長／主任本來就能以「代發」（adminCreate）直接成立紀錄、不經核准；
+//        (2) approver 以 approver 分支建立申請時，initiatedBy 可填成別人或任意字串，再自己核准；
+//        (3) isSelfOnlyRequest 只比對 id（type 為「代課」、姓名寫別人也能被判成自我調課）。
+//        這三條都不比「代發」多拿到任何能力。另：舊申請缺 initiatedBy 時，沒有成員身分的 platformAdmin 會被判成「自己發起」而擋下核准。
+//      運算式與文件存取：isPlatformAdmin 放在各分支最後，一般教師多 1 次 platformAdmins exists（不同路徑，+1 次文件存取）；
+//      最壞路徑實測見 test/emulator/rules-p9-authz.mjs 與 docs/DEPLOYMENT.md v2.17 段。
+//      ⚠ 部署順序：與 v2.13–v2.16 同一套程序，前端與 rules 同時上線（先推前端、緊接著發布 rules）。新 rules 對舊前端：白名單未失效前
+//        行為不變（旗標缺席）、platformAdmin 舊前端不會用到、核准按鈕舊前端仍會顯示於自己的申請但被 rules 擋下（permission-denied）。
+//        新前端在舊 rules 下：寫 directorEstablished 旗標在 v2.16 rules 下是允許的（config 任意欄位 director 可寫）但無作用；
+//        platformAdmin 進入學校會因舊 rules 拒讀而失敗（不影響一般使用者）。
+//
 // 部署：透過 gcloud REST API 或 Firebase Console（見 docs/V2_PERMISSION_SYSTEM.md）
 
 service cloud.firestore {
@@ -239,9 +272,14 @@ service cloud.firestore {
     // 也列了這一項檢查，任何手動編輯 initialAdminEmails 的操作都必須遵守這個約束。
     // v2.12：必須 email_verified（見 isEmailVerified 說明）——否則任何人只要用白名單 email
     // 註冊一個未驗證的 Auth 帳號，就直接取得主任權限。
+    // v2.17（SB-L9）：學校一旦有正式主任，config/main.directorEstablished 會被設為 true，白名單分支即永久失效
+    // （一次關掉所有白名單特例：bootstrap 建教師檔、補登自己 role、isDirector／isApprover／config 讀取的白名單後備、
+    // actorRoleOk 的白名單 director）。旗標只能由 client 設 true、不可改回或刪除（見 config/{docId} 規則），
+    // 最後的後備是 platformAdmin（isPlatformAdmin，見 isDirector）。旗標缺席 = 尚未確立，沿用舊行為。
     function isInitialDirector(schoolId) {
       return isEmailVerified()
         && configExists(schoolId)
+        && configDoc(schoolId).get('directorEstablished', false) != true
         && listHasItem(configDoc(schoolId).initialAdminEmails, userEmail().lower());
     }
 
@@ -260,6 +298,10 @@ service cloud.firestore {
 
     // platformAdmins/{uid} 完全禁止 client 寫入（見下方頂層 match 區塊），只能由開發者以
     // gcloud/REST 離線建立，是本次新增功能中唯一的信任根——理由與範圍見該 match 區塊註解。
+    // v2.17：權限面擴充——platformAdmin 在每一所學校都等同主任（isDirector／isApprover 的最後一個分支，
+    // 讀取走 canReadSchool），不需要是該校成員，也不受該校任何名冊、角色、白名單、刪除操作影響
+    // （本函式只看 platformAdmins/{uid}，與任何 schoolId 無關；那份文件 client 不可寫、不可刪）。
+    // 職務分離（isValidApproverUpdate）對 platformAdmin 同樣適用。
     // 沒有 schoolId 參數：platformAdmin 身份與「哪一所學校」無關，是跨校的平台層概念，
     // 因此定義在 schools/{schoolId} 的 match 樹之外也適用（helpers 區在 match 樹外共用）。
     function isPlatformAdmin() {
@@ -340,7 +382,13 @@ service cloud.firestore {
     // 首登尚未綁定 mapping 者的例外：白名單初始主任。isInitialDirector 內部用 get() 讀
     // config，屬規則內部呼叫、不受 read 規則限制，因此收緊 config 的 read 不會讓白名單失效。
     function isMemberOrBootstrapDirector(schoolId) {
-      return isMember(schoolId) || isInitialDirector(schoolId);
+      return isMember(schoolId) || isInitialDirector(schoolId) || isPlatformAdmin();
+    }
+
+    // v2.17：「可讀取該校資料」＝成員，或 platformAdmin（跨校最高管理員不需成員資格）。
+    // 所有原本 `allow read: if isMember(schoolId)` 的地方改用這個；寫入不改，仍各自靠 isApprover／isDirector。
+    function canReadSchool(schoolId) {
+      return isMember(schoolId) || isPlatformAdmin();
     }
 
     // v2.12：myTeacherId 只在「有效成員」時回傳 teacherId，否則回傳 ''（既有規則用
@@ -385,9 +433,11 @@ service cloud.firestore {
     }
 
     // 教務主任：白名單 OR teacher.role in ['director', 'admin']（admin 為舊資料兼容）
+    // v2.17：最後一個分支 isPlatformAdmin()＝全系統最高管理員，每所學校都視同主任。
     function isDirector(schoolId) {
       return isInitialDirector(schoolId)
-        || (isMember(schoolId) && myTeacherDoc(schoolId).role in ['director', 'admin']);
+        || (isMember(schoolId) && myTeacherDoc(schoolId).role in ['director', 'admin'])
+        || isPlatformAdmin();
     }
 
     // legacyMigrationService.js 一次性遷移舊 V1 個人資料時，substituteRecords 的 date 可能
@@ -417,7 +467,8 @@ service cloud.firestore {
     // 具核准權（director + section_chief，舊 admin 兼容）
     function isApprover(schoolId) {
       return isInitialDirector(schoolId)
-        || (isMember(schoolId) && myTeacherDoc(schoolId).role in ['director', 'section_chief', 'admin']);
+        || (isMember(schoolId) && myTeacherDoc(schoolId).role in ['director', 'section_chief', 'admin'])
+        || isPlatformAdmin();
     }
 
     // 相容 alias：v2.1 期間程式碼語意中的「admin」現在等同「approver」。
@@ -664,6 +715,37 @@ service cloud.firestore {
     //     approvedByName／statusUpdatedAt，approvedBy 必須是自己。
     //   - → rejected：只能寫 status／rejectedAt／rejectedBy／rejectedByName／rejectNote／
     //     statusUpdatedAt，rejectedBy 必須是自己。
+    // v2.17（SB-I7 職務分離）：approver 不可核准 initiatedBy 是自己的申請，唯一例外是 isSelfOnlyRequest（自我調課、
+    // 換走與換進的教師都是本人、沒有其他同意人）。「自己」＝登入者 uid（platformAdmin 的前端身分 teacherId 就是 uid）
+    // 或登入者 mapping 的 teacherId；兩者都比，platformAdmin 同時是成員時也不能換個身分核准自己發起的申請。
+    // 駁回不受限（發起人駁回自己的申請等同撤回，無風險）。approvedBy／rejectedBy 必須是本人（isActorId，不可掛別人名字）。
+    // 組長代教師發起：initiatedBy＝被代發的教師，不是核准者本人，不受此限。
+    function isActorId(me, id) {
+      return id is string && ((me != '' && id == me) || (isPlatformAdmin() && id == request.auth.uid));
+    }
+
+    function isSelfOnlyRequest(od, id) {
+      return od.get('isSelfSwap', false) == true
+        && od.get('originalTeacherId', null) == id
+        && od.get('swapTeacherId', null) in [null, id]
+        && od.get('substituteTeacherId', null) in [null, id]
+        && od.get('pendingConsentTeacherIds', []).size() == 0
+        && od.get('requiredApproverId', null) in [null, id];
+    }
+
+    function isOwnRequestBlocked(od, me) {
+      let ini = od.get('initiatedBy', '');
+      return (ini == request.auth.uid || ini == me) && !isSelfOnlyRequest(od, ini);
+    }
+
+    // 核准／駁回時的「本人」檢查（approvedBy／rejectedBy 必須是本人；核准另需通過職務分離）。me 只在狀態真的轉換時才求值
+    // （規則的 let 是即時求值，不放在 isValidApproverUpdate 開頭，避免同意人更新等其他路徑白白多算一次 myTeacherId）。
+    function approvalActorOk(schoolId, nd, od) {
+      let me = myTeacherId(schoolId);
+      return (nd.status != 'approved' || (isActorId(me, nd.approvedBy) && !isOwnRequestBlocked(od, me)))
+        && (nd.status != 'rejected' || isActorId(me, nd.rejectedBy));
+    }
+
     function isValidApproverUpdate(schoolId) {
       let nd = request.resource.data;
       let od = resource.data;
@@ -685,8 +767,7 @@ service cloud.firestore {
           )
         )
         && isApprover(schoolId)
-        && (nd.status != 'approved' || nd.approvedBy == myMapping(schoolId).linkedTeacherId)
-        && (nd.status != 'rejected' || nd.rejectedBy == myMapping(schoolId).linkedTeacherId);
+        && (nd.status == od.status || approvalActorOk(schoolId, nd, od));
     }
 
     // 稽核日誌 create 的完整驗證（M3）。對齊 operationLogger.log() 實際寫入的 7 個欄位：
@@ -700,7 +781,9 @@ service cloud.firestore {
     // 日誌寫入會被拒（日誌寫入失敗不阻擋業務流程，會在操作日誌頁籤顯示寫入失敗橫幅）。
     function isValidOperationLog(schoolId, d) {
       let me = myTeacherId(schoolId);
-      return me != ''
+      // v2.17：platformAdmin（可以不是成員、沒有教師檔）以 uid 當 teacherId 寫日誌（actor.name 為自訂字串、role 只能是 director／空）；
+      // 成員身分與 platformAdmin 身分兩條分支任一成立即可（同時是成員的 platformAdmin 兩種都能寫）。
+      return (me != '' || isPlatformAdmin())
         && d.keys().hasOnly(['action', 'actor', 'timestamp', 'targetType', 'targetId', 'details', 'semesterId'])
         && d.action is string && d.action.matches('^[a-z0-9_]{1,64}$')
         && isRecentIsoString(d.timestamp)
@@ -711,10 +794,17 @@ service cloud.firestore {
         && d.actor is map
         && d.actor.keys().hasOnly(['uid', 'email', 'name', 'role', 'teacherId'])
         && d.actor.get('uid', request.auth.uid) == request.auth.uid
-        && d.actor.teacherId == me
         && d.actor.get('email', null) in [null, userEmail().lower()]
-        && d.actor.get('name', null) == myTeacherDoc(schoolId).name
-        && actorRoleOk(schoolId, d.actor.get('role', null));
+        && (
+          (me != ''
+            && d.actor.teacherId == me
+            && d.actor.get('name', null) == myTeacherDoc(schoolId).name
+            && actorRoleOk(schoolId, d.actor.get('role', null)))
+          || (isPlatformAdmin()
+            && d.actor.teacherId == request.auth.uid
+            && string(d.actor.get('name', '')).size() <= 100
+            && d.actor.get('role', null) in [null, 'director'])
+        );
     }
 
     // v2.12b（M-2）：actor.role 須與登入者教師檔的 role 一致（舊 'admin' 視同 'director'，與前端
@@ -852,27 +942,41 @@ service cloud.firestore {
         || isCurrentSemester(schoolId, get(/databases/$(database)/documents/schools/$(schoolId)/pendingRequests/$(reqId)).data.semesterId);
     }
 
+    // v2.17（SB-L9）：config/main.directorEstablished 的單向閘。新值必須是布林；舊值為 true 時新值必須仍為 true。
+    // 只在 config 寫入時評估（不在熱路徑）。resource 為 null＝create。
+    function directorFlagKept(docId) {
+      return docId != 'main'
+        || (request.resource.data.get('directorEstablished', false) is bool
+            && (resource == null
+                || resource.data.get('directorEstablished', false) != true
+                || request.resource.data.get('directorEstablished', false) == true));
+    }
+
     // ================ V2: schools/{schoolId} ================
 
     match /schools/{schoolId} {
       // 學校根佔位文件（Stage 0 R1：任何登入者可讀會讓別校 schoolId 被探測，改為成員限定）
-      allow read:  if isMember(schoolId);
+      allow read:  if canReadSchool(schoolId);
       allow write: if isDirector(schoolId);
 
       // ----- 設定（學校名稱、白名單） -----
       match /config/{docId} {
         // Stage 0 R2：成員或白名單初始主任可讀（後者靠 isInitialDirector 內部 get()
         // 繞過本 read 規則，白名單主任首登仍讀得到，見 isMemberOrBootstrapDirector 定義）
-        // ⚠ Stage 4：platformAdmin 不在這條 read 規則的任何分支——如實對齊檔頭第 9 點的
-        // 權限面設計，platformAdmin 不能讀任何學校（含自己核准建立的新學校）的 config 內容，
-        // 只有下面的 create 寫入權限。
+        // v2.17：platformAdmin 可讀任何學校的 config（isMemberOrBootstrapDirector 的 isPlatformAdmin 分支；
+        // config/settlement 另走 isApprover，platformAdmin 也成立）。這取代 Stage 4 原設計「platformAdmin 不能讀
+        // 學校 config」——使用者 2026-11-17 決定把 platformAdmin 升為全系統最高管理員，見檔頭第 18 點。
         // v2.8：config/settlement 內含日曆 API key，僅 approver 可讀（一般教師讀取一律拒絕）；
         // 其他 config 文件讀取維持原狀。isApprover 含 isInitialDirector，白名單主任首登仍可讀。
         allow read:  if isMemberOrBootstrapDirector(schoolId)
           && (docId != 'settlement' || isApprover(schoolId));
         // 僅 director 可改學校名稱、白名單（不含 settlement，settlement 走下方有欄位驗證的規則）
-        allow create, update: if isDirector(schoolId) && docId != 'settlement';
-        allow delete: if isDirector(schoolId);
+        // v2.17（SB-L9）：config/main.directorEstablished 旗標只進不退——一旦為 true，任何 client（含主任、platformAdmin）
+        // 都不可改回 false、改成非布林或把整個欄位拿掉（整份覆寫、merge 缺欄位皆算），也不可刪除 config/main
+        // （刪掉再重建就能重開白名單）。旗標只可由 Admin 腳本（owner 憑證，不受 rules）重設。
+        allow create, update: if isDirector(schoolId) && docId != 'settlement' && directorFlagKept(docId);
+        allow delete: if isDirector(schoolId)
+          && (docId != 'main' || resource.data.get('directorEstablished', false) != true);
         // v2.14（P6）：成立紀錄的序號鎖（見檔頭第 15 點，含涵蓋範圍與例外）。approver 可寫；seq 只能從無到 1、之後每次剛好加 1。
         // 本規則不檢查「新增紀錄是否同交易遞增 seq」，那是前端協定；教師自我調課、備份還原、舊資料遷移不遞增 seq。
         allow create, update: if docId == 'recordsLock'
@@ -926,15 +1030,12 @@ service cloud.firestore {
               || ('email' in request.auth.token
                   && request.resource.data.updatedBy.lower() == request.auth.token.email.lower()));
         // Stage 4（多租戶開通，§4.2-4.4）：platformAdmin 核准學校申請時，代為建立全新學校的
-        // config/main（initialAdminEmails=[申請者 email]）。僅開放 create——Firestore 的
-        // create 語意只在文件「尚不存在」時成立，這正是本設計依賴的 schoolId 衝突防線：
-        // 若 docId 對應的學校已存在（不論是既有 inhu 還是別的已核准學校），這筆寫入會被
-        // Firestore 判定為 update 而非 create，本規則不涵蓋 update，寫入直接被拒
-        // （permission-denied），不需要額外的樂觀鎖或版本欄位，細節見
-        // schoolApplicationService.approveApplication() 檔頭註解。
-        // 不與上面的 `allow write: if isDirector(schoolId);` 衝突——Firestore 規則對同一
-        // 操作只要有任一條 allow 通過即放行，這裡是新增一條「OR」分支：新校此刻還沒有
-        // director，isDirector(schoolId) 必為 false，兩條分支不會同時命中同一次請求。
+        // config/main（initialAdminEmails=[申請者 email]）。（v2.17 註：這條 create 分支現在是冗餘的——platformAdmin
+        // 已是 isDirector 的一員，上面的 create/update 規則就放行；保留它只為不改動 Stage 4 的驗證形狀 isValidNewSchoolConfigWrite。）
+        // 原設計「僅 create、對已存在學校寫入會被判成 update 而被拒」的 schoolId 衝突防線在 v2.17 已不成立：
+        // platformAdmin 現在對既有學校的 config/main 也有 update 權限，所以「不得覆寫既有學校」改由前端
+        // schoolApplicationService.approveApplication() 在 transaction 內先讀、已存在就中止（見該函式註解）。
+        // 兩條分支（isDirector 與本分支）對 platformAdmin 可同時成立，Firestore 對同一操作任一條 allow 通過即放行。
         // opus 驗收 L2：補 `docId == 'main'`——原版只驗證了 request.resource.data 的內容，
         // 沒有限制 platformAdmin 可以對 config/ 底下「哪一個」docId 寫入；雖然目前 client
         // 只會呼叫 configDocForSchool() 組出 .../config/main，但規則本身應該獨立於「client
@@ -1003,7 +1104,7 @@ service cloud.firestore {
         // 配套是 §3.4a 的 emailIndex——authGuardV2.resolveIdentity 改成
         // 「先用 emailIndex 查到的 teacherId upsert mapping，再讀教師檔本體」，
         // 順序見 authGuardV2.js 內的說明。
-        allow read: if isMember(schoolId);
+        allow read: if canReadSchool(schoolId);
 
         // 建立：director；或初始主任第一次登入自建 director 教師檔（bootstrap）
         // Phase 3 資安收緊：isValidRoleValue() 併入驗證，杜絕寫入列舉外的 role 字串
@@ -1060,7 +1161,7 @@ service cloud.firestore {
       // ----- 全校課表（舊：單一文件，Stage 2 起僅供讀取 fallback，見下方 schedules） -----
       match /data/{docId} {
         // Stage 0 R4：改為成員限定可讀（原「任何登入者」會讓他校完整課表被下載）
-        allow read:  if isMember(schoolId);
+        allow read:  if canReadSchool(schoolId);
         // Stage 2：schoolDataService.saveSchedule() 已改寫 schedules/{semesterId}，不再有任何
         // client 路徑寫入這個舊文件；write 規則維持不變（無成本，也不需要收緊——沒有寫入路徑
         // 可用，收緊與否不影響任何實際行為，維持原樣減少本次變更範圍）。
@@ -1074,7 +1175,7 @@ service cloud.firestore {
       // schools/{schoolId}/schedules/{semesterId}：每學期各自一份文件，換學期不再覆蓋舊資料。
       match /schedules/{semesterId} {
         // 讀取：校內成員（含歷史學期——歷史課表仍可被全校成員唯讀查詢，供對照舊學期排課）
-        allow read: if isMember(schoolId);
+        allow read: if canReadSchool(schoolId);
         // 建立/更新：approver，且僅能寫「目前學期」那一份文件——歷史學期課表唯讀鎖（§6.1）。
         // semesterId 取自路徑本身（wildcard），不需讀 request.resource.data，成本同上方
         // isCurrentSemester() 的説明（相依文件 config/main 在同一請求的 isApprover() 判斷鏈
@@ -1105,7 +1206,7 @@ service cloud.firestore {
         // ----- 課表匯入版本紀錄（v2.10）：schedules/{semesterId}/imports/{importId} -----
         // 每次匯入／還原一筆（中繼資料 + 快照）。只新增、不可改；歷史學期唯讀鎖與主文件一致。
         match /imports/{importId} {
-          allow read: if isMember(schoolId);
+          allow read: if canReadSchool(schoolId);
           allow create: if isApprover(schoolId) && isCurrentSemester(schoolId, semesterId);
           allow update: if false;
           // 封存清理（Stage 5）：僅 director、僅非目前學期；目前學期的紀錄不可刪。
@@ -1117,7 +1218,7 @@ service cloud.firestore {
       match /substituteRecords/{recordId} {
         // Stage 0 R5：改為成員限定可讀（校內全員可讀維持不變，敏感欄位已私有化到
         // private/detail；教師端仍由 roleService.filterRecordsForCurrent 過濾）
-        allow read: if isMember(schoolId);
+        allow read: if canReadSchool(schoolId);
 
         // 建立：僅 approver（adminCreate 代發起 / approveRequest 核准後 runTransaction 建立）；
         // 或教師自己對自己的「自我調課」——沿用既有 writeV2Record 快速路徑，不需組長/主任審核。
@@ -1258,7 +1359,7 @@ service cloud.firestore {
       // ----- 待同意 / 待核准請求 -----
       match /pendingRequests/{reqId} {
         // Stage 0 R6：改為成員限定可讀（原「任何登入者」會讓他校待審請求被讀取）
-        allow read: if isMember(schoolId);
+        allow read: if canReadSchool(schoolId);
 
         // 建立：approver（代發，較寬但同樣不可自帶已核准欄位）；或發起人本人。
         // Phase 3 資安收緊（create 端）：發起人本人 create 必須符合狀態機初始狀態——
@@ -1535,9 +1636,9 @@ service cloud.firestore {
       //   - list：僅 platformAdmin（例如未來若要做「列出所有學校」的管理功能）。
       allow get:  if isSignedIn();
       allow list: if isPlatformAdmin();
-      // 寫入：僅 platformAdmin，且僅 create（與 config/main 的 create-only 設計對稱——
+      // 寫入：僅 platformAdmin，且僅 create（schoolDirectory 本身仍是 create-only：
       // 一旦某個 schoolId 已被使用，這筆寫入會被 Firestore 判定為 update 而非 create，
-      // 本規則不涵蓋 update，天然拒絕「用同一個 schoolId 二次核准」）。不開放 update：校名
+      // 本規則不涵蓋 update，天然拒絕「用同一個 schoolId 二次核准」；config/main 則已不再有此保護，見第 18 點）。不開放 update：校名
       // 一旦公告不應被悄悄改掉，真要改名屬於例外情況，留給開發者離線處理；不開放 delete
       // 避免 schoolId 這個「一旦用過就永久佔用」的槽位被騰出來給另一所學校重複使用（沿用中
       // 的 userDirectory/teachers 等資料仍會指向舊的 schoolId，delete 後產生的混淆遠大於好處）。
@@ -1587,7 +1688,7 @@ service cloud.firestore {
       //             檔頭說明），或核准後才發現需要撤銷，platformAdmin 可把已核准的申請改回
       //             駁回狀態，讓申請人得以重新申請（走下面 (b) 分支換一個代碼）。⚠ 這個
       //             分支**不會**復原已經建立的學校資料（config/schoolDirectory）——那些
-      //             寫入是 create-only、client 規則沒有任何刪除路徑，需要的話得靠開發者
+      //             寫入（schoolDirectory 是 create-only 無刪除路徑；config/main 在未確立 directorEstablished 前 platformAdmin 以主任身分可刪，v2.17）；需要的話得靠開發者
       //             離線用 gcloud/REST 清理，見 docs/STAGE4-DEPLOY.md「已知限制」。
       //       兩條路徑皆只能動流程欄位（status/updatedAt/reviewedAt/reviewedBy/
       //       rejectReason），不能改申請人填寫的內容（schoolName/desiredSchoolId 等）——

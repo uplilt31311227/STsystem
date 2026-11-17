@@ -141,7 +141,14 @@ async function resolveSchoolIdForUid(uid) {
     return { schoolId: null, existed: false, readFailed: false };
 }
 
-async function getInitialDirectorEmails() {
+/**
+ * 讀 config/main 的白名單狀態。
+ * v2.17（SB-L9）：config.directorEstablished === true 表示學校已有正式主任，白名單整個失效——
+ * emails 回傳空陣列，後面所有白名單分支（bootstrap 建檔、補登自己 role）都不會觸發，
+ * 與 firestore.rules 的 isInitialDirector 一致（rules 擋下、前端也不再嘗試，避免登入時多一次 permission-denied）。
+ * @returns {Promise<{emails: string[], established: boolean, cfg: object|null}>}
+ */
+async function getInitialDirectorInfo() {
     let cfg;
     try {
         cfg = await dataSvc.getConfig();
@@ -152,8 +159,28 @@ async function getInitialDirectorEmails() {
         cfg = null;
     }
     // 欄位名稱維持 initialAdminEmails 以兼容既有 Firestore config 文件
-    const raw = cfg?.initialAdminEmails || cfg?.initialDirectorEmails || [];
-    return raw.map(e => (e || '').toLowerCase().trim()).filter(Boolean);
+    const established = cfg?.directorEstablished === true;
+    const raw = established ? [] : (cfg?.initialAdminEmails || cfg?.initialDirectorEmails || []);
+    return { emails: raw.map(e => (e || '').toLowerCase().trim()).filter(Boolean), established, cfg };
+}
+
+/**
+ * 正式主任登入後補設 config.directorEstablished（SB-L9）：教師檔 role 為 director（含舊 admin）、且 mapping 已存在
+ * （呼叫端保證，三條路徑都已 upsert mapping 或已讀到既有 mapping）＝學校已有正式主任，白名單從此失效。
+ * 涵蓋所有產生正式主任的路徑：白名單 bootstrap 建檔、白名單補登自己 role、他人經 setRole／名冊匯入被設為主任後的首次登入、
+ * 既有正式庫主任的下一次登入（補旗標腳本之外的自癒路徑）。失敗不阻擋登入（下次登入再補）。
+ * config 讀不到（此時還不是成員）就再讀一次——mapping 已建立，這次讀得到。
+ */
+async function ensureDirectorEstablished(teacher, info) {
+    if (!teacher || normalizeRole(teacher.role) !== ROLES.DIRECTOR) return;
+    if (info?.established) return;
+    try {
+        const cfg = info?.cfg || await dataSvc.getConfig();
+        if (!cfg || cfg.directorEstablished === true) return;
+        await dataSvc.markDirectorEstablished();
+    } catch (e) {
+        console.warn('[v2] 補設 directorEstablished 旗標失敗（不阻擋登入，下次登入再補）：', e?.message || e);
+    }
 }
 
 function buildMappingPatch(email, googleUser, providerId) {
@@ -177,8 +204,8 @@ function buildMappingPatch(email, googleUser, providerId) {
  * 本函式內部所有 dataSvc 呼叫都依賴這個值。
  */
 async function attemptResolveTeacherForActiveSchool(email, googleUser, mappingPatch) {
-    const initialDirectors  = await getInitialDirectorEmails();
-    const isInitialDirector = initialDirectors.includes(email);
+    const dirInfo           = await getInitialDirectorInfo();
+    const isInitialDirector = dirInfo.emails.includes(email);
 
     // Stage 0：先查 emailIndex（get 自己那一份，不需成員資格），拿到既有 teacherId 才知道
     // 「已有教師檔、只是還沒 mapping」與「全新教師/全新學校」的區別。
@@ -252,6 +279,7 @@ async function attemptResolveTeacherForActiveSchool(email, googleUser, mappingPa
         await dataSvc.upsertUserMapping(googleUser.uid, { ...mappingPatch, linkedTeacherId: teacher.teacherId });
     }
 
+    await ensureDirectorEstablished(teacher, dirInfo);
     return teacher;
 }
 
@@ -346,6 +374,43 @@ export async function resolveIdentity(googleUser) {
     roleSvc.setCurrentIdentity(identity);
     return identity;
 }
+
+/**
+ * 全系統最高管理員（platformAdmins/{uid}）進入指定學校：以主任身分（role=director）操作，沒有教師檔，teacherId 用 uid。
+ * 呼叫端（v2-app.js）已確認 uid 在 platformAdmins；rules 對 platformAdmin 開放該校全部讀寫（v2.17）。
+ * 不寫 userMappings／userDirectory（不是該校成員，也不能改變自己平常所屬學校的歸屬）。
+ * @throws 學校不存在或讀不到 config 時丟錯，呼叫端留在選校畫面並顯示原因
+ */
+export async function resolvePlatformAdminIdentity(googleUser, schoolId) {
+    if (!googleUser?.uid || !googleUser.email) throw new Error('尚未登入');
+    if (typeof schoolId !== 'string' || !/^[a-z0-9_-]{1,50}$/.test(schoolId)) throw new Error('學校代碼格式不正確');
+    setActiveSchoolId(schoolId);
+    let cfg;
+    try {
+        cfg = await dataSvc.getConfig();
+    } catch (e) {
+        resetActiveSchoolId();
+        throw e;
+    }
+    if (!cfg) {
+        resetActiveSchoolId();
+        throw new Error(`找不到學校「${schoolId}」`);
+    }
+    const identity = {
+        uid:       googleUser.uid,
+        email:     googleUser.email.toLowerCase().trim(),
+        teacherId: googleUser.uid,
+        name:      PLATFORM_ADMIN_NAME,
+        role:      ROLES.DIRECTOR,
+        authProvider: googleUser.providerId || null,
+        isPlatformAdmin: true,
+        schoolName: cfg.schoolName || schoolId,
+    };
+    roleSvc.setCurrentIdentity(identity);
+    return identity;
+}
+
+export const PLATFORM_ADMIN_NAME = '平台管理員';
 
 export function clear() {
     roleSvc.clearCurrentIdentity();

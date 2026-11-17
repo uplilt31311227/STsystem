@@ -192,9 +192,17 @@ export function consentActions(r) {
          <button class="btn btn-secondary btn-sm v2-reject-btn" data-id="${id}">拒絕</button>`;
 }
 
-export function approvalActions(r) {
+/**
+ * 核准／駁回按鈕。blockedReason 非空（職務分離：自己發起的申請，見 approvalPolicy.js）時，核准鈕停用並以文字說明原因，
+ * 駁回鈕保留（發起人自行駁回等同撤回，不受職務分離限制）。
+ */
+export function approvalActions(r, blockedReason = '') {
     const id = escapeHtml(r.reqId);
-    return `<button class="btn btn-primary btn-sm v2-final-approve-btn" data-id="${id}">核准並產生 PDF</button>
+    const approve = blockedReason
+        ? `<button class="btn btn-primary btn-sm v2-final-approve-btn" data-id="${id}" disabled aria-disabled="true" style="opacity:0.55;cursor:not-allowed;" title="${escapeHtml(blockedReason)}">核准並產生 PDF</button>
+         <span class="muted v2-approve-blocked-note">${escapeHtml(blockedReason)}</span>`
+        : `<button class="btn btn-primary btn-sm v2-final-approve-btn" data-id="${id}">核准並產生 PDF</button>`;
+    return `${approve}
          <button class="btn btn-secondary btn-sm v2-reject-btn" data-id="${id}">駁回</button>`;
 }
 

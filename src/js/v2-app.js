@@ -29,6 +29,7 @@ import * as semesterState from './modules/v2/semesterState.js';
 import { escapeHtml, toNum, pickAllowed } from './modules/htmlEscape.js';
 import { assertRuleSafeCaseText } from './modules/v2/caseTextRule.js';
 import { filterSameBatch } from './modules/v2/batchGuard.js';
+import { checkApprovalSeparation } from './modules/v2/approvalPolicy.js';
 import {
     fmtDate, renderLogRow, renderRecordRow, renderPendingCard, renderConsentDetail, renderApprovalDetail,
     consentActions, approvalActions, mineActions, ROLE_CLASS_WHITELIST, impactMetaHtml
@@ -101,6 +102,9 @@ let _v2ApplyState = null;
 // 無條件查一次 platformAdmins/{uid}（即使絕大多數使用者都不是，也是一次白白的讀取）；
 // 改到「設定」頁籤第一次被打開時才查一次並快取結果，見 renderPlatformAdminReviewTab()。
 let _v2IsPlatformAdmin = null;
+// P9 A2：全系統最高管理員（platformAdmins）的選校畫面狀態；非 null 時遮罩顯示「選擇要進入的學校」。
+// { uid, email, loading, schools: [{schoolId, schoolName}], error }
+let _v2PlatformPick = null;
 let _v2GateError = false;
 // opus 重驗 4：resolveIdentity() 拋出的錯誤訊息（例如 resolveSchoolIdForUid() 的 readFailed
 // 分支，見 authGuardV2.js），讓遮罩顯示具體原因而不是永遠只有通用的「登入驗證時發生錯誤」。
@@ -179,6 +183,7 @@ function renderAuthGate() {
         : '';
     const key = _v2GateError ? 'error:' + (_v2GateErrorMessage || '')
               : _v2UnverifiedState ? 'unverified:' + _v2UnverifiedState.email
+              : _v2PlatformPick ? `platform:${_v2PlatformPick.uid}:${_v2PlatformPick.loading}:${_v2PlatformPick.schools.length}:${_v2PlatformPick.error || ''}`
               : _v2ApplyState ? applyKey
               : 'default';
     if (gate.dataset.renderKey === key) return;   // 相同狀態免重繪 / 重綁監聽
@@ -199,6 +204,12 @@ function renderAuthGate() {
         return;
     }
 
+    if (_v2PlatformPick) {
+        gate.innerHTML = renderPlatformPickContent(_v2PlatformPick);
+        bindPlatformPickActions(gate);
+        return;
+    }
+
     if (_v2ApplyState) {
         gate.innerHTML = renderApplyGateContent(_v2ApplyState);
         bindApplyGateActions(gate);
@@ -209,6 +220,100 @@ function renderAuthGate() {
         `<p>本系統為全校共用，請先登入以使用。</p>` + renderGateSignInActions()
     );
     bindGateSignInActions(gate);
+}
+
+/* ===== P9 A2：全系統最高管理員（platformAdmins）選校 ===== */
+
+// 選校結果存在本機（每個 uid 一份）：學校代碼，或 '__normal__'＝以一般教師身分登入自己所屬的學校。
+const PLATFORM_CHOICE_NORMAL = '__normal__';
+function platformChoiceKey(uid) { return `stsystem.platformSchool.${uid}`; }
+function readPlatformChoice(uid) {
+    try { return localStorage.getItem(platformChoiceKey(uid)); } catch (_) { return null; }
+}
+function writePlatformChoice(uid, value) {
+    try {
+        if (value) localStorage.setItem(platformChoiceKey(uid), value);
+        else localStorage.removeItem(platformChoiceKey(uid));
+    } catch (_) { /* 私密視窗或封鎖儲存：下次登入重新選校即可 */ }
+}
+
+/** 平台管理員尚未選校（或選的校進不去）→ 鎖住 app，顯示選校畫面。 */
+async function enterPlatformPickFlow(user, errorMessage = null) {
+    _v2PlatformPick = {
+        uid: user.uid,
+        email: (user.email || '').toLowerCase().trim(),
+        loading: true, schools: [], error: errorMessage,
+    };
+    _v2ApplyState = null;
+    lockV2App();
+    renderAuthGate();
+    try {
+        _v2PlatformPick.schools = await schoolAppSvc.listSchoolDirectory();
+    } catch (e) {
+        console.warn('[v2] 讀取學校名錄失敗（仍可手動輸入學校代碼）:', e);
+    } finally {
+        if (_v2PlatformPick) _v2PlatformPick.loading = false;
+        renderAuthGate();
+    }
+}
+
+function renderPlatformPickContent(state) {
+    const schoolButtons = state.schools.map(s => `
+        <button class="btn btn-secondary btn-sm v2-platform-pick-btn" data-school="${escapeHtml(s.schoolId)}">${escapeHtml(s.schoolName)}（${escapeHtml(s.schoolId)}）</button>`).join('');
+    return renderDefaultGateShell(`
+        <p><strong>平台管理員</strong>（${escapeHtml(state.email)}）：請選擇要進入的學校。進入後以該校主任身分操作，操作紀錄會標示為平台管理員。</p>
+        ${state.error ? `<p class="v2-gate-denied">⚠ ${escapeHtml(state.error)}</p>` : ''}
+        ${state.loading ? '<p>讀取學校名單中…</p>' : (schoolButtons ? `<div class="v2-auth-gate-actions">${schoolButtons}</div>` : '<p class="muted">學校名錄沒有資料，請直接輸入學校代碼。</p>')}
+        <div style="margin-top:0.8rem;">
+            <label>學校代碼
+                <input type="text" id="v2-platform-school-id" maxlength="50" placeholder="例如 inhu" style="width:100%;margin-top:0.2rem;">
+            </label>
+            <div class="v2-auth-gate-actions" style="margin-top:0.6rem;">
+                <button id="v2-platform-enter" class="btn btn-primary btn-sm">進入這所學校</button>
+                <button id="v2-platform-normal" class="btn btn-ghost btn-sm">以一般教師身分登入我所屬的學校</button>
+                <button id="v2-platform-logout" class="btn btn-ghost btn-sm">登出，改用其他帳號</button>
+            </div>
+        </div>
+    `);
+}
+
+function bindPlatformPickActions(gate) {
+    const uid = _v2PlatformPick?.uid;
+    const choose = (value) => { writePlatformChoice(uid, value); window.location.reload(); };
+    gate.querySelectorAll('.v2-platform-pick-btn').forEach(btn =>
+        btn.addEventListener('click', () => choose(btn.dataset.school)));
+    gate.querySelector('#v2-platform-enter')?.addEventListener('click', () => {
+        const id = (gate.querySelector('#v2-platform-school-id')?.value || '').trim().toLowerCase();
+        if (!schoolAppSvc.isValidSchoolIdFormat(id)) { notify('學校代碼格式不正確（小寫英數、底線、連字號，最多 50 字）', 'warning'); return; }
+        choose(id);
+    });
+    gate.querySelector('#v2-platform-normal')?.addEventListener('click', () => choose(PLATFORM_CHOICE_NORMAL));
+    gate.querySelector('#v2-platform-logout')?.addEventListener('click', async () => {
+        try { await authMod.signOutWithButton(gate.querySelector('#v2-platform-logout')); }
+        catch (err) { notifyError(err, '登出'); }
+    });
+}
+
+/** 畫面頂端的「平台管理員」橫幅（只在平台管理員身分時存在）：標示目前所在學校與切換入口。 */
+function renderPlatformBanner(identity) {
+    let el = document.getElementById('v2-platform-banner');
+    if (!identity?.isPlatformAdmin) { el?.remove(); return; }
+    if (!el) {
+        el = document.createElement('div');
+        el.id = 'v2-platform-banner';
+        el.setAttribute('role', 'status');
+        el.style.cssText = 'background:#4a148c;color:#fff;padding:0.4rem 0.8rem;font-size:0.9rem;display:flex;gap:0.8rem;align-items:center;justify-content:center;flex-wrap:wrap;';
+        document.body.insertBefore(el, document.body.firstChild);
+    }
+    const text = document.createElement('span');
+    text.textContent = `平台管理員模式：目前在「${identity.schoolName || getActiveSchoolId()}（${getActiveSchoolId()}）」以主任身分操作`;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn btn-secondary btn-sm';
+    btn.id = 'v2-platform-switch-school';
+    btn.textContent = '切換學校';
+    btn.addEventListener('click', () => { writePlatformChoice(identity.uid, null); window.location.reload(); });
+    el.replaceChildren(text, btn);
 }
 
 /**
@@ -820,7 +925,7 @@ async function renderPendingTab() {
         <div class="v2-section-header" style="margin-top:2rem;">
             <h3>待我審核 ${!pendingSourceError && approvalQueue.length ? `<span class="v2-badge">${approvalQueue.length}</span>` : ''}</h3>
         </div>
-        ${pendingSourceError ? pendingErrorCard('待我審核') : renderList(approvalQueue, 'incoming', '目前沒有待核准的申請', approvalActions, null, approvalDetailFn)}
+        ${pendingSourceError ? pendingErrorCard('待我審核') : renderList(approvalQueue, 'incoming', '目前沒有待核准的申請', (r) => approvalActions(r, checkApprovalSeparation(r, me).reason), null, approvalDetailFn)}
         ` : ''}
 
         <div class="v2-section-header" style="margin-top:2rem;"><h3>我的申請</h3></div>
@@ -5582,7 +5687,7 @@ async function bootstrap() {
             // 呼叫點）會誤用到上一所學校的 key。用 delete 還原成 App.prototype 上的預設方法
             // （見 app.js getLocalStorageKey() 定義處：預設回傳未加前綴的舊 key）。
             if (window.app) delete window.app.getLocalStorageKey;
-            document.body.classList.remove('v2-admin', 'v2-director', 'v2-section-chief', 'v2-teacher', 'v2-approver');
+            document.body.classList.remove('v2-admin', 'v2-director', 'v2-section-chief', 'v2-teacher', 'v2-approver', 'v2-platform-admin');
             _v2RecordsCache = [];
             _v2PendingCache = [];
             _v2DetailCache.clear();
@@ -5602,6 +5707,8 @@ async function bootstrap() {
             // 避免下一位登入者（不同 uid）短暫看到上一位使用者殘留的申請資訊。
             _v2ApplyState = null;
             _v2UnverifiedState = null;
+            _v2PlatformPick = null;
+            renderPlatformBanner(null);
             // M4：登出重置為「尚未查過」（null），不是 false——下一位登入者可能是也可能不是
             // 平台管理者，false 會誤導成「已查過、確定不是」，導致設定頁永遠不再查詢。
             _v2IsPlatformAdmin = null;
@@ -5620,11 +5727,33 @@ async function bootstrap() {
         try {
             // Phase 1.6.c：抓登入 provider（google.com / password），由 authGuardV2 寫入 teachers.authProvider
             const providerId = user.providerData?.[0]?.providerId || null;
-            const identity = await authGuard.resolveIdentity({
+            const googleUser = {
                 uid: user.uid, email: user.email,
                 displayName: user.displayName, photoURL: user.photoURL,
                 providerId,
-            });
+            };
+            // P9 A2：全系統最高管理員（platformAdmins/{uid}）先於一般解析：選校後以主任身分進入該校（不需是成員）；
+            // 選「以一般教師身分登入」則照舊走 resolveIdentity。查詢失敗視同非平台管理員（isPlatformAdmin 內部降級）。
+            _v2PlatformPick = null;
+            _v2IsPlatformAdmin = await schoolAppSvc.isPlatformAdmin(user.uid);
+            const platformChoice = _v2IsPlatformAdmin ? readPlatformChoice(user.uid) : null;
+            if (_v2IsPlatformAdmin && !platformChoice) {
+                await enterPlatformPickFlow(user);
+                return;
+            }
+            let identity;
+            if (_v2IsPlatformAdmin && platformChoice !== PLATFORM_CHOICE_NORMAL) {
+                try {
+                    identity = await authGuard.resolvePlatformAdminIdentity(googleUser, platformChoice);
+                } catch (e) {
+                    console.warn('[v2] 平台管理員進入學校失敗:', e);
+                    writePlatformChoice(user.uid, null);
+                    await enterPlatformPickFlow(user, `無法進入學校「${platformChoice}」：${e?.message || e}`);
+                    return;
+                }
+            } else {
+                identity = await authGuard.resolveIdentity(googleUser);
+            }
             if (!identity) {
                 // Stage 4（RESEARCH-multitenancy-semester.md §4.4 變體 B）：未綁定任何學校，
                 // 不再直接登出——改導向「申請開通新學校」流程，保留登入 session 供使用者在
@@ -5652,9 +5781,10 @@ async function bootstrap() {
             //   v2-director / v2-section-chief / v2-teacher 三選一
             //   v2-approver = director ∪ section_chief（CSS .v2-approver-only 用）
             //   v2-admin    = 舊 alpha 類別，繼續寫入以兼容既有 CSS / DOM 查詢
-            document.body.classList.remove('v2-director', 'v2-section-chief', 'v2-teacher', 'v2-approver', 'v2-admin');
+            document.body.classList.remove('v2-director', 'v2-section-chief', 'v2-teacher', 'v2-approver', 'v2-admin', 'v2-platform-admin');
             if (identity.role === ROLES.DIRECTOR) {
                 document.body.classList.add('v2-director', 'v2-approver', 'v2-admin');
+                if (identity.isPlatformAdmin) document.body.classList.add('v2-platform-admin');
             } else if (identity.role === ROLES.SECTION_CHIEF) {
                 document.body.classList.add('v2-section-chief', 'v2-approver', 'v2-admin');
             } else {
@@ -5671,6 +5801,8 @@ async function bootstrap() {
             installSettlementConfigStore();
             installGrade9ConfigStore();
 
+            renderPlatformBanner(identity);
+            // 平台管理員的 identity.name 就是「平台管理員」（見 authGuardV2.PLATFORM_ADMIN_NAME），角色標籤沿用「教務主任」（以主任身分操作）
             const roleLabelMap = { director: '教務主任', section_chief: '教學組長', teacher: '教師' };
             const nameSpan = document.getElementById('user-name');
             if (nameSpan) {

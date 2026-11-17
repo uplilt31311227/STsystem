@@ -234,10 +234,15 @@ await suite.case('X-5 archives 生命週期：director 可 create；組長不可
     denied(await updateDoc(path, { jsonHash: 'tampered' }, as(dir)), '主任 update');
     denied(await deleteDoc(path, as(dir)), '主任 delete');
 });
-await suite.case('X-6 已知缺口（非本階段）：組長可改任意教師檔欄位（含主任的 name）——前端 H2（innerHTML 輸出姓名）的 source', async () => {
-    // 規則目前只鎖 role／email 不可由組長改；name 等欄位不受限。前端輸出跳脫由另一階段處理。
-    allowed(await mergeDoc(`${P.teachers}/${dir.teacherId}`, { name: '左大俠' }, as(chief)), '組長改主任 name（同值，不污染資料）');
-}, { knownGap: '組長可寫教師檔任意欄位（teachers update 的 approver 分支只鎖 role／email）；建議後續加 hasOnly 與字元限制' });
+await suite.case('X-6 組長不可改主任的 name（P9-A 已補：teachers update 組長分支改欄位白名單）', async () => {
+    // 原為 knownGap 且寫入同值，什麼都沒測到；改為不同值須 DENY，並讀回確認姓名未變。
+    // 完整的欄位白名單案例見 rules-teacher-fields.mjs。
+    denied(await mergeDoc(`${P.teachers}/${dir.teacherId}`, { name: '改名測試' }, as(chief)), '組長改主任 name（不同值）');
+    const after = await getDoc(`${P.teachers}/${dir.teacherId}`, as(dir));
+    allowed(after, '主任讀回自己的教師檔');
+    const nameField = after.data?.name;
+    if (nameField !== '左大俠') throw new Error(`主任 name 被改動：${nameField}`);
+});
 
 suite.print();
 process.exit(suite.failed ? 1 : 0);

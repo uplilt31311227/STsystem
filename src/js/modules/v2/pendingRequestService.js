@@ -28,6 +28,7 @@ import { verifyNoAssignmentConflict, buildApprovalConflictMessage, buildAdminCre
 import { runWithRecordsGuard, assertSeqUnchanged } from './recordsGuard.js';
 import { checkBatchApprovable, checkBatchWithdrawable } from './batchDependency.js';
 import { filterSameBatch } from './batchGuard.js';
+import { checkApprovalSeparation } from './approvalPolicy.js';
 import {
     LOG_ACTIONS,
     LOG_TARGET_TYPES,
@@ -384,6 +385,17 @@ export async function approveRequest(reqId) {
     const normalizedPre = normalizeLegacyRequest(preReq);
     if (normalizedPre.status !== REQUEST_STATUS.PENDING_APPROVAL) {
         throw new RequestAlreadyProcessedError('此請求已被處理（可能已被其他核准人核准或駁回）');
+    }
+    // 職務分離（SB-I7）：不可核准自己發起的申請（自我調課且無他人牽涉例外）；與 firestore.rules v2.17 對齊，
+    // 這裡先擋下，給明確訊息，不等 rules 回 permission-denied。
+    const separation = checkApprovalSeparation(normalizedPre, me);
+    if (!separation.ok) {
+        await logger.log(LOG_ACTIONS.PERMISSION_DENIED, LOG_TARGET_TYPES.PENDING_REQUEST, reqId, {
+            reason: 'approve_own_request',
+        });
+        const e = new Error(separation.reason);
+        e.code = 'APPROVE_OWN_REQUEST';
+        throw e;
     }
 
     // Firestore 對單一 transaction 的 rules document access 有共用配額限制（約 20 次，

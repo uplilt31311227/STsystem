@@ -1,11 +1,24 @@
 ---
 created: 2026-03-12
-updated: 2026-11-16
+updated: 2026-11-17
 tags:
   - changelog
 ---
 
 # 版本紀錄
+
+---
+
+## [2026-11-17] 資安審計 P9 批次 A2（rules v2.17 與前端，尚未部署）
+
+使用者 2026-11-17 的三項權限決定。
+
+- **初始主任白名單在學校有正式主任後自動失效**（SB-L9）：`config/main.directorEstablished` 旗標為 true 時，`isInitialDirector` 恆為 false，白名單的所有特例（bootstrap 建教師檔、補登自己 role、config 讀取後備、日誌 actor.role 後備）一併失效。旗標只進不退：client（含主任、platformAdmin）不可改回 false、改成非布林、拿掉欄位，也不可刪除已確立的 `config/main`。前端 `authGuardV2` 在「教師檔為 director（或舊 admin）且已有 mapping」的使用者登入時補設旗標，涵蓋所有產生正式主任的路徑；旗標為 true 時也不再走白名單分支。既有正式庫另有 `scripts/set-director-established.js`（預設 dry-run、`--apply` 才寫；沒有已登入過的正式主任時預設拒絕）。
+- **platformAdmin 為全系統最高、不可移除的管理員**：每所學校都視同主任（`isDirector`／`isApprover` 加 `isPlatformAdmin()` 分支，讀取走 `canReadSchool`），不需是成員，不受該校名冊、角色、白名單、旗標、刪除操作影響。`platformAdmins/{uid}` 維持 client 完全不可寫（create／update／delete 全擋，含 platformAdmin 本人）；不保留、也不存在「platformAdmin 建立 platformAdmin」的路徑，新增只能由 `scripts/bootstrap-platform-admin.js`（Admin 憑證，信箱以參數給、不寫進 repo）。這取代檔頭第 9 點「platformAdmin 不能讀任何學校的 config」的舊設計，相關說明與註解已同步更新。前端：platformAdmin 登入後先選學校（學校名錄＋手動輸入代碼；也可選「以一般教師身分登入我所屬的學校」），進入後以主任身分操作，頂端橫幅與名稱標示「平台管理員」，可隨時「切換學校」。platformAdmin 沒有教師檔，前端以 uid 當 teacherId，`approvedBy`／`rejectedBy`／日誌 `actor.teacherId` 接受 uid。**核准開通新學校**原本靠「config/main 對 platformAdmin 只有 create 權限」擋住覆寫既有學校，v2.17 起改由前端建校前明確檢查 `config/main` 是否已存在。
+- **職務分離：核准者不可核准自己發起的申請**（SB-I7）：`pendingRequests` 核准轉換要求 `initiatedBy` 不是核准者自己（登入 uid 或 mapping 的 teacherId），唯一例外是自我調課且不牽涉他人（`isSelfSwap`、換走與換進教師都是本人、無同意人）；組長代教師發起的申請（`initiatedBy` 是被代發的教師）不受影響；駁回不受限；platformAdmin 同樣適用。前端在自己發起的申請上停用「核准並產生 PDF」並說明原因（新增 `approvalPolicy.js`，與 rules 逐條對齊），`approveRequest` 也先擋下。範圍：組長／主任的「代發」（`adminCreate`）是直接成立紀錄、不經核准，不在此規則涵蓋範圍。
+- **測試**：新增 `test/emulator/rules-p9-authz`（20 案，每個攻擊案例配前端形狀的 ALLOW 對照組，每案獨立建新學校與帳號）、`test/emulator/mutate-p9`（變異測試：暫時拿掉新限制，確認對應攻擊案例轉為 ALLOW 而失敗，並還原後位元組比對）、`test/emulator/scripts-p9-admin`（兩支 Admin 腳本對 emulator 實跑）、`test/emulator/probe-rules-limits`（文件存取與運算式上限量測，v2.16 對照 v2.17）、`test/test-p9-authz`（前端：職務分離、authGuard 旗標、platformAdmin 身分、核准開校守門，38 項）。另新增瀏覽器 e2e `test/e2e/e2e-11-platform-admin`（platformAdmin 選校、以主任身分進入甲／乙校、橫幅與名稱標示、自己發起的申請核准鈕停用、核准他人申請後 approvedBy 為 uid、不存在的學校代碼進不去），已掛進 `run-e2e`。
+- **文件存取量測**（emulator，單筆請求上限 10、batch／transaction 上限 20）：v2.17 最壞路徑為「組長核准交易」16／20，與 v2.16 相同；platformAdmin 核准交易 14／20；首次登入自建 userMappings 由 4 增為 5／10（多一次 platformAdmins 的 exists）；其餘路徑與 v2.16 相同。運算式上限（1000）：emulator 無法直接回報用量，以追加探針單位量剩餘額度，v2.17 比 v2.16 多用 0～4 個探針單位（核准交易 19→17、config 更新 57→53，其餘 0～1），最壞路徑仍有餘裕；詳見 DEPLOYMENT.md「rules v2.17」。
+- **需要處理的既有測試**：`test/scenarios/scenario-04-isolation.mjs` 的「平台管理者不可讀取任何學校的業務資料」斷言 platformAdmin 讀 config 與紀錄會被拒，與使用者的新決定直接衝突，依指示未修改，交由協調者處理（`test:scenarios` 為 95/96，唯一失敗即此案）。
 
 ---
 

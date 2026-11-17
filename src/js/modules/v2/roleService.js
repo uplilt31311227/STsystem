@@ -77,6 +77,14 @@ export function isTeacher() {
     );
 }
 
+/**
+ * 全系統最高管理員（platformAdmins/{uid}）：登入後以主任身分（role=director）進入任一學校，
+ * identity.isPlatformAdmin 為 true、teacherId 為 uid（沒有教師檔）。見 authGuardV2.resolvePlatformAdminIdentity。
+ */
+export function isPlatformAdmin() {
+    return currentIdentity?.isPlatformAdmin === true;
+}
+
 export function isSignedIn() {
     return !!currentIdentity;
 }

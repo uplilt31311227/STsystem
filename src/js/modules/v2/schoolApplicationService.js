@@ -73,12 +73,26 @@ export async function isPlatformAdmin(uid) {
 /* ===== schoolDirectory（公開名錄，申請頁查重用） ===== */
 
 /**
+ * 平台管理員專用：列出 schoolDirectory 全部學校（rules：list 僅 platformAdmin），供選校畫面使用。
+ * 注意名錄只含 Stage 4 之後核准建立的學校；Stage 4 之前就存在的學校（如 inhu）可能不在名錄內，
+ * 選校畫面因此另提供「輸入學校代碼」。
+ * @returns {Promise<Array<{schoolId: string, schoolName: string}>>}
+ */
+export async function listSchoolDirectory() {
+    const fs   = await getV2Firestore();
+    const snap = await fs.getDocs(fs.collection(fs.db, 'schoolDirectory'));
+    const list = snap.docs.map(d => ({ schoolId: d.id, schoolName: d.data().schoolName || d.id }));
+    list.sort((a, b) => a.schoolId.localeCompare(b.schoolId));
+    return list;
+}
+
+/**
  * 這個 schoolId 是否已被使用（schoolDirectory 中已有記錄）。
  * ⚠ 已知限制（見 docs/STAGE4-DEPLOY.md「已知限制」一節）：schoolDirectory 只在 Stage 4
  * 核准流程中才會被寫入，既有的 'inhu' 學校（Stage 4 之前就存在）預設不會出現在這裡——
  * 除非部署時額外手動補一筆（建議做法見部署文件）。即使沒有補，實際的資料安全仍由
- * firestore.rules 的 config/main create-only 語意保護（approveApplication() 對已存在的
- * config 寫入必定被拒，見該函式檔頭），這裡只是「申請當下的即時提示」，不是唯一防線。
+ * approveApplication() 在建校前明確檢查 config/main 是否已存在（v2.17 起 platformAdmin 視同每校主任，
+ * 不再由 rules 的 create-only 語意擋住覆寫，改由該函式檢查），這裡只是「申請當下的即時提示」，不是唯一防線。
  */
 export async function isSchoolIdTaken(schoolId) {
     if (!isValidSchoolIdFormat(schoolId)) return true; // 格式都不合法，直接視為不可用
@@ -294,7 +308,8 @@ export async function revertApprovedApplication(application, { reviewer, reason 
 /**
  * 平台管理者專用：核准申請，開通新學校。
  *
- * ⚠ 刻意分兩個 writeBatch 循序執行、不是單一原子批次，理由：
+ * ⚠ 刻意分兩步循序執行、不是單一原子操作：第一步是 transaction（預讀 config/main＋建立 config 與
+ *   schoolDirectory），第二步是 writeBatch（申請狀態與 userDirectory）。理由：
  *   1. 第二批（userDirectory 指向新校）依賴的 configExists(schoolId) 規則檢查，讀的是
  *      「這次提交之前」資料庫的已提交狀態——Firestore 對同一個 writeBatch 內的多個操作，
  *      規則的 exists()/get() 並不保證能看到同一批次內「更早的操作」剛寫入的效果（這點
@@ -303,10 +318,11 @@ export async function revertApprovedApplication(application, { reviewer, reason 
  *      檢查極可能仍讀到「批次提交前」的舊狀態（school 尚不存在），導致整批被規則拒絕。
  *      拆成兩批、第一批先 commit，第二批送出時 config 已經是「已提交」的狀態，
  *      configExists() 才能可靠地讀到 true。
- *   2. 這個設計本身就是本次實作依賴的 schoolId 衝突防線（見 firestore.rules 檔頭第 9
- *      點）：第一批的 config/main create 若 schoolId 已被占用，Firestore 會把這筆寫入
- *      判定為 update（因為文件已存在）而非 create，platformAdmin 的 create-only 權限規則
- *      直接拒絕整個 batch（batch 內任一操作被拒，整批失敗，不會產生半套資料）。
+ *   2. schoolId 衝突防線：v2.16 以前靠 rules（config/main 對 platformAdmin 只有 create 權限，已存在的
+ *      文件會被判定為 update 而被拒）。v2.17 起 platformAdmin 視同每校主任（見 firestore.rules 檔頭第 18
+ *      點），rules 不再擋，改由第一步的 transaction 內先讀 config/main，已存在就中止（含不在
+ *      schoolDirectory 的既有學校，如 inhu）；schoolDirectory 的 create-only（update 恆 false）仍在，
+ *      transaction 內任一寫入被拒即整筆失敗，不會產生半套資料。
  *
  * 失敗與重試（fail-closed 原則，比照 Stage 5 封存流程「任何讀取/比對失敗一律中止」）：
  *   - 第一批失敗：完全沒有副作用（schoolApplications 狀態仍是 pending），可直接重新呼叫
@@ -363,9 +379,9 @@ export async function approveApplication(application, { reviewer, confirmedSkipF
 
     // ---- 第一批：建立 config/main + schoolDirectory ----
     // 判斷是否需要執行第一批，依據是 schoolDirectory（公開可讀，platformAdmin 讀得到）
-    // 而不是 config/main 本身——platformAdmin 對 config 的 read 規則沒有開任何分支（見
-    // firestore.rules config/{docId}），嘗試讀 config 只會得到 permission-denied，無法
-    // 用來判斷是否存在。
+    // 而不是只看 config/main：schoolDirectory 只涵蓋 Stage 4 之後建立的學校，既有學校（如 inhu）
+    // 不在名錄內。v2.17 起 platformAdmin 可讀任何學校的 config，所以另外明確檢查 config/main 是否已存在
+    // （見下方 firstBatchNeeded 區塊）。
     let firstBatchNeeded = true;
     let existingDirectoryEntry = null;
     try {
@@ -403,22 +419,38 @@ export async function approveApplication(application, { reviewer, confirmedSkipF
     }
 
     if (firstBatchNeeded) {
-        const batch1 = fs.writeBatch(fs.db);
+        // v2.17：platformAdmin 視同每校主任，config/main 不再靠「create-only 權限」擋住覆寫既有學校
+        // （對已存在的文件，寫入會被規則判為 update，而 platformAdmin 現在有 update 權限）。
+        // 改由 transaction 保證：先 tx.get config/main，已存在（含不在 schoolDirectory 的既有學校，如 inhu）就中止，
+        // 不存在才在同一個 transaction 內寫入 config/main 與 schoolDirectory——預讀與寫入原子化，
+        // 不會在檢查與寫入之間被別人建立而覆寫。
         const now = new Date().toISOString();
-        batch1.set(fs.doc(fs.db, SCHEMA_PATHS.configDocForSchool(desiredSchoolId)), {
-            schoolName,
-            currentSemester:    semesterUtils.todaySemesterId(),
-            initialAdminEmails: [applicantEmail],
-            createdAt: now,
-            updatedAt: now,
-        });
-        batch1.set(fs.doc(fs.db, SCHEMA_PATHS.schoolDirectoryDoc(desiredSchoolId)), {
-            schoolName,
-            createdAt: now,
-        });
+        const configRef = fs.doc(fs.db, SCHEMA_PATHS.configDocForSchool(desiredSchoolId));
         try {
-            await batch1.commit();
+            await fs.runTransaction(fs.db, async (tx) => {
+                const snap = await tx.get(configRef);
+                if (snap.exists()) {
+                    const e = new Error(
+                        `核准中止：學校代碼「${desiredSchoolId}」已有學校設定（config/main 已存在，可能是既有學校），` +
+                        `核准會覆寫它。請駁回本申請並請申請人更換代碼。`
+                    );
+                    e.code = 'SCHOOL_CONFIG_EXISTS';
+                    throw e;
+                }
+                tx.set(configRef, {
+                    schoolName,
+                    currentSemester:    semesterUtils.todaySemesterId(),
+                    initialAdminEmails: [applicantEmail],
+                    createdAt: now,
+                    updatedAt: now,
+                });
+                tx.set(fs.doc(fs.db, SCHEMA_PATHS.schoolDirectoryDoc(desiredSchoolId)), {
+                    schoolName,
+                    createdAt: now,
+                });
+            });
         } catch (e) {
+            if (e?.code === 'SCHOOL_CONFIG_EXISTS') throw e;
             throw new Error(
                 `核准中止（第一批寫入失敗，尚未產生任何副作用，可重新嘗試核准）：${e?.message || e}`
             );

@@ -102,6 +102,11 @@ export async function getConfigFromServer() {
     return snap.exists() ? snap.data() : null;
 }
 
+/** 學校已有正式主任：設定 config/main.directorEstablished = true（只進不退，rules 禁止改回；SB-L9）。 */
+export async function markDirectorEstablished() {
+    await upsertConfig({ directorEstablished: true });
+}
+
 export async function upsertConfig(patch) {
     const fs  = await getV2Firestore();
     const ref = fs.doc(fs.db, SCHEMA_PATHS.config());
