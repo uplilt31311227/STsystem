@@ -1,6 +1,6 @@
 rules_version = '2';
 
-// STsystem V2 權限系統 Firestore 規則（v2.15（P7：config/settlement 增加逐人超鐘點門檻欄位、config/grade9 九年級畢業設定）、v2.14（含 v2.13-A／B、v2.14 成立紀錄序號鎖，皆已納入本檔，P5／P6 未部署）— 身分與授權修補 + 三層角色 + 敏感欄位私有化 + 學期唯讀鎖 + 封存生命週期 + schoolId 反查目錄 + 多租戶開通 + 月結算設定開放 approver + 主任不可改自己的 role + 課表匯入版本紀錄 + 組長可刪除目前學期紀錄 + 開新學期原子建立課表 + 課表版本號）
+// STsystem V2 權限系統 Firestore 規則（v2.16（P9 批次 A：組長改教師檔欄位白名單、主任不可刪自己的教師檔、approver／發起人可刪 private/detail）、v2.15（P7：config/settlement 增加逐人超鐘點門檻欄位、config/grade9 九年級畢業設定）、v2.14（含 v2.13-A／B、v2.14 成立紀錄序號鎖，皆已納入本檔，P5／P6 未部署）— 身分與授權修補 + 三層角色 + 敏感欄位私有化 + 學期唯讀鎖 + 封存生命週期 + schoolId 反查目錄 + 多租戶開通 + 月結算設定開放 approver + 主任不可改自己的 role + 課表匯入版本紀錄 + 組長可刪除目前學期紀錄 + 開新學期原子建立課表 + 課表版本號）
 //
 // 設計原則：
 //   1. 兩條根路徑物理隔離
@@ -176,6 +176,23 @@ rules_version = '2';
 //      本次新增的欄位檢查合計約 14 個。
 //      ⚠ 部署順序：新前端寫 weeklyBaseByTeacher／config/grade9 需要本規則；舊規則下這兩項儲存會被拒（其餘功能不受影響）。
 //        與 v2.13＋v2.14 一起同時上線即可，沒有新增順序約束。
+//
+//  17. v2.16（P9 批次 A；測試見 test/emulator/rules-teacher-fields）：
+//      A. teachers delete：director 不可刪除自己的教師檔（myTeacherId != teacherId），避免把自己鎖在系統外。
+//         bootstrap 白名單主任沒有 mapping 時 myTeacherId 為 ''，不受影響；刪別人照舊。
+//      B. teachers update 的 approver（組長）分支加欄位白名單：affectedKeys 只能是 domains／homeroomClass／partTime／updatedAt
+//         （教師管理頁組長實際會寫的欄位），並限制型別與長度（isValidChiefTeacherPatch）。name／email／role／createdAt 及任何
+//         多餘欄位組長一律不可改，因此組長改不了主任（或任何人）的姓名與角色。director 分支與自己改 authProvider 的分支不變，
+//         主任權限不縮減。⚠ 日後教師檔新增由組長可編輯的欄位，必須同步加進白名單，否則教師管理頁該欄位儲存會被拒。
+//      C. substituteRecords／pendingRequests 的 private/detail delete 放寬：除 director 外，approver 可刪（紀錄側限目前學期，與父文件
+//         delete 同鎖；父文件已不存在視為孤兒清理，放行）；pendingRequests 側另允許發起人本人
+//         （只限未結案或已駁回的申請；被邀請人不開放）。前端撤回、關閉駁回通知、刪紀錄時以交易／batch 同時刪 private/detail 與父文件，避免留下假別事由孤兒。
+//      D. pendingRequests 父文件新增可選欄位 hasDetail（bool）：前端建立有私有明細的申請時標記，核准時若標記為真卻讀不到明細就中止。
+//      運算式成本：teachers update 組長分支新增約 60 個運算式（含 idList20），只在組長改教師檔時評估；delete 規則多 1 次
+//      myTeacherId（已被 isDirector 讀過同批文件，不增加文件存取數）。substituteRecords／pendingRequests 熱路徑未動。
+//      ⚠ 部署順序：v2.16 增量本身沒有順序要求；整體仍照 v2.13＋v2.14 的同時上線步驟（先推前端、緊接著發布 rules，見 docs/DEPLOYMENT.md）。
+//        新 rules 對舊前端無相容問題；新前端在舊 rules 下：刪 private 被拒時前端退回只刪父文件並記錄 detail_delete_failed，不阻擋撤回／刪除，
+//        但送出有明細的申請會因 hasDetail 欄位不在舊 rules 白名單而被拒——這正是前端與 rules 須同時上線的理由之一（空窗以分鐘計）。
 //
 // 部署：透過 gcloud REST API 或 Firebase Console（見 docs/V2_PERMISSION_SYSTEM.md）
 
@@ -415,6 +432,19 @@ service cloud.firestore {
       return role in ['director', 'section_chief', 'teacher', 'admin'];
     }
 
+    // v2.16（PL-T1）：組長（section_chief）可寫的教師檔欄位。來源：v2-app.js 教師管理頁的
+    // 領域（domains）、導師班級（homeroomClass）、兼課（partTime）三個即存欄位，經 schoolDataService.updateTeacher 附帶 updatedAt。
+    // 只比對「有變動」的欄位（affectedKeys），所以未動的既有欄位（name、createdAt…）不受影響；型別與長度只檢查被改動的欄位，
+    // 避免舊資料某欄位本來就超長時組長改別的欄位被誤擋。updatedAt 必為近期 ISO 字串（isRecentIsoString）。
+    function isValidChiefTeacherPatch(d, old) {
+      let k = d.diff(old).affectedKeys();
+      return k.hasOnly(['domains', 'homeroomClass', 'partTime', 'updatedAt'])
+        && (!k.hasAny(['domains']) || (idList20(d.domains) && d.domains.join('').size() <= 400))
+        && (!k.hasAny(['homeroomClass']) || (d.homeroomClass is string && d.homeroomClass.size() <= 30 && d.homeroomClass.matches('[^<>"]*')))
+        && (!k.hasAny(['partTime']) || d.partTime is bool)
+        && (!k.hasAny(['updatedAt']) || isRecentIsoString(d.updatedAt));
+    }
+
     // ================ v2.12：欄位白名單／型別／長度／時間戳共用 helpers ================
     // 設計取捨（為什麼不改成 serverTimestamp）：前端所有時間欄位（createdAt、timestamp、approvedAt…）
     // 都是 new Date().toISOString() 字串，並被 orderBy('createdAt')／where('timestamp','>=',字串)
@@ -545,8 +575,9 @@ service cloud.firestore {
              'batchId', 'batchSize',
              'originalTeacherId', 'substituteTeacherId', 'swapTeacherId', 'requiredApproverId', 'requiredApproverName',
              'requestType', 'status', 'pendingConsentTeacherIds', 'swapConsents',
-             'initiatedBy', 'initiatedByName', 'createdAt', 'semesterId', 'affectedTeacherIds'])
+             'initiatedBy', 'initiatedByName', 'createdAt', 'semesterId', 'affectedTeacherIds', 'hasDetail'])
         && d.initiatedBy is string
+        && d.get('hasDetail', true) is bool
         && hasSafeCaseText(d)
         && hasValidCaseIds(d)
         && d.requestType in ['substitute', 'swap', 'multi_swap']
@@ -1007,9 +1038,10 @@ service cloud.firestore {
               && isValidRoleValue(request.resource.data.role)
             )
             || (
+              // v2.16（PL-T1）：組長只能改教師管理頁會寫的欄位（domains／homeroomClass／partTime／updatedAt），
+              // name／email／role 與其他欄位一律不可動（不論目標是不是主任）。
               isApprover(schoolId)
-              && request.resource.data.role == resource.data.role
-              && request.resource.data.email == resource.data.email
+              && isValidChiefTeacherPatch(request.resource.data, resource.data)
             )
             || (
               isSignedIn()
@@ -1021,8 +1053,8 @@ service cloud.firestore {
             )
           );
 
-        // 刪除：只有 director 能刪教師
-        allow delete: if isDirector(schoolId);
+        // 刪除：只有 director 能刪教師；v2.16（SB-L8）主任不可刪除自己的教師檔，避免把自己鎖在系統外
+        allow delete: if isDirector(schoolId) && myTeacherId(schoolId) != teacherId;
       }
 
       // ----- 全校課表（舊：單一文件，Stage 2 起僅供讀取 fallback，見下方 schedules） -----
@@ -1215,7 +1247,11 @@ service cloud.firestore {
                           && isValidPrivateDetailWrite(request.resource.data)
                           && idList30(request.resource.data.allowedTeacherIds)
                           && parentSubstituteRecordCurrentSemester(schoolId, recordId);
-          allow delete: if isDirector(schoolId);
+          // v2.16（LF-L2）：approver 可刪（前端刪紀錄時先刪 private/detail 再刪父文件，避免假別事由孤兒）。
+          // 學期鎖與父文件 delete 同款（parentAllowsNewPrivateDetail：父文件不存在＝孤兒清理、無 semesterId 舊資料、
+          // 或屬目前學期才放行），歷史學期的假別事由不可被事後刪除而影響結算。director 不受限（維持原行為）。
+          allow delete: if isDirector(schoolId)
+                          || (docId == 'detail' && isApprover(schoolId) && parentAllowsNewPrivateDetail(schoolId, recordId));
         }
       }
 
@@ -1316,7 +1352,18 @@ service cloud.firestore {
                           && isValidPrivateDetailWrite(request.resource.data)
                           && idList30(request.resource.data.allowedTeacherIds)
                           && parentPendingRequestCurrentSemester(schoolId, reqId);
-          allow delete: if isDirector(schoolId);
+          // v2.16（LF-L2）：approver，或發起人本人（限未結案或已駁回的申請，父文件必須仍存在；前端撤回／關閉駁回通知時
+          // 與父文件在同一個原子寫入內一起刪）。被邀請人（requiredApproverId）不開放：前端 canCancelRequest 不給被邀請人撤回，
+          // 開放只會讓代課教師悄悄刪掉待核准申請的假別明細。director 維持原行為。
+          allow delete: if isDirector(schoolId)
+                          || (docId == 'detail' && isApprover(schoolId))
+                          || (
+                            docId == 'detail'
+                            && myTeacherId(schoolId) != ''
+                            && exists(/databases/$(database)/documents/schools/$(schoolId)/pendingRequests/$(reqId))
+                            && get(/databases/$(database)/documents/schools/$(schoolId)/pendingRequests/$(reqId)).data.status in ['pending', 'pending_swap_consent', 'pending_approval', 'rejected']
+                            && get(/databases/$(database)/documents/schools/$(schoolId)/pendingRequests/$(reqId)).data.initiatedBy == myTeacherId(schoolId)
+                          );
         }
       }
 

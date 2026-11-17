@@ -167,7 +167,8 @@ export function buildPendingRequestDocs(payload, semesterId, me) {
     const allowed = buildAffectedList(req);
     const { publicPart, privatePart, hasSensitive } = splitSensitive(req, allowed);
     const reqId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
-    const publicDoc = { ...publicPart, semesterId, createdAt: publicPart.createdAt || iso() };
+    // pendingRequestService.createRequest：有私有明細時父文件帶 hasDetail:true（P9）
+    const publicDoc = { ...publicPart, ...(hasSensitive ? { hasDetail: true } : {}), semesterId, createdAt: publicPart.createdAt || iso() };
     return { reqId, publicDoc, privateDoc: hasSensitive ? privatePart : null };
 }
 

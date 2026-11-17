@@ -208,6 +208,9 @@ export const LOG_ACTIONS = Object.freeze({
     // 雲端完整備份的匯出／還原（2026-11）。rules 對 action 只限 ^[a-z0-9_]{1,64}$，不需改規則。
     EXPORT_BACKUP:      'export_backup',
     RESTORE_BACKUP:     'restore_backup',
+    // P9（LF-L2）：撤回／關閉駁回／刪紀錄時，連帶刪除 private/detail（假別事由）失敗。
+    // 失敗不阻擋原本的撤回或刪除，只留下這筆稽核紀錄；rules 對 action 只限 ^[a-z0-9_]{1,64}$。
+    DETAIL_DELETE_FAILED: 'detail_delete_failed',
 });
 
 export const LOG_TARGET_TYPES = Object.freeze({

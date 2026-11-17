@@ -118,6 +118,12 @@ emulator 模式（設了 `FIRESTORE_EMULATOR_HOST`）不需要帳號。`firestor
 
 為了防範點擊劫持（審計 L4），`src/js/v2-redirect.js` 在頁面被嵌入 `<iframe>` 時會嘗試把最上層導回本頁，導不了就把整份文件隱藏（`display: none`）。因此**本站無法被其他網站（含自己的其他頁面）以 iframe 內嵌**；若日後有內嵌需求（例如儀表板），必須先修改該檔的框架偵測邏輯。
 
+### rules v2.16（P9 批次 A）：教師檔欄位白名單、主任不可刪自己、private/detail 可刪
+
+三項改動都在 `firestore.rules`：（1）教師檔 delete：主任不可刪自己的教師檔；（2）教師檔 update：教學組長只能改 `domains`、`homeroomClass`、`partTime`、`updatedAt`（教師管理頁會寫的欄位），改不了任何人的姓名、email、角色與其他欄位，主任權限不變；（3）`substituteRecords`、`pendingRequests` 底下 `private/detail` 的 delete：approver 可刪（紀錄側限目前學期），申請側另開放發起人本人（限未結案或已駁回；被邀請人不開放）。
+
+**部署順序：v2.16 增量本身沒有順序要求；整體仍照下方 v2.13＋v2.14 的同時上線步驟（先推前端、緊接著發布 rules）。** 新前端在撤回、關閉駁回通知、刪除紀錄時，以交易或 batch 同時刪 `private/detail` 與父文件；舊 rules 下這一步會被拒，前端退回只刪父文件並留下操作日誌（action `detail_delete_failed`，僅在父文件已刪、明細沒刪成時記錄），不阻擋撤回與刪除。新前端送出有私有明細的申請時，父文件帶可選欄位 `hasDetail`（核准時若標記為真卻讀不到明細就中止），舊 rules 不認得此欄位，空窗期內送出申請會被拒，所以請依同時上線步驟處理。舊前端搭新 rules 沒有相容問題。日後教師檔新增「組長可編輯」的欄位，必須同步加進 rules 的 `isValidChiefTeacherPatch` 白名單，否則該欄位儲存會被拒。上線後確認：組長在教師管理頁改領域、導師班級、兼課可儲存；撤回一筆申請後該申請的 `private/detail` 一併消失。
+
 ### rules v2.15（P7）：逐人超鐘點門檻與九年級畢業設定
 
 `config/settlement` 增加可選欄位 `weeklyBaseByTeacher`、新增 `config/grade9`。沒有新增順序約束：與 v2.13＋v2.14 同一批、與前端同時上線即可。舊 rules 下新前端儲存「九年級已畢業」會被拒；儲存逐人門檻（有填任何一筆時）也會被拒，但沒有填逐人門檻時只儲存週數，不帶該欄位，週數設定在舊 rules 下仍可儲存；新 rules 下舊前端不受影響。上線後第一次使用前，到設定頁確認「每人每週基本授課節數」與「九年級已畢業」可以儲存。月結算回頭結算其他學期的月份時，需要該學期的課表文件存在（`schedules/{學期}`），否則會提示找不到課表並中止；該學期課表文件存在但是空的（例如「開新學期」產生、尚未匯入課表的學期）也視為沒有課表，同樣中止。歷史學期為唯讀，無法補匯入課表。
@@ -128,7 +134,7 @@ emulator 模式（設了 `FIRESTORE_EMULATOR_HOST`）不需要帳號。`firestor
 
 1. 部署前備份正式庫與現行 rules 原文（`backups/firestore/`、`backups/rules/`）。
 2. 選上課日以外的時段。先把新前端 push 到 GitHub Pages 並等建置完成，**不要在中間停留**，緊接著發布 `firestore.rules`（`node scripts/firestore-deploy-rules.js --apply --confirm=<專案ID>`），兩個動作間隔以分鐘計。
-3. 兩者之間的空窗期內，組長的核准與代發會暫時失敗（可重試），教師自行調課與其他功能不受影響；舊頁面寫課表會被拒，請教務人員重新整理頁面。
+3. 兩者之間的空窗期內，組長的核准與代發會暫時失敗（可重試）；教師送出帶假別事由的代課與調課申請也會被拒（v2.16 起，舊 rules 不認得 `hasDetail`），請教師稍後重送；舊頁面寫課表會被拒，請教務人員重新整理頁面。
 4. 部署後確認：組長核准一筆測試申請成功、`config/recordsLock` 的 `seq` 有遞增、教師自我調課仍可成立。
 5. 序號鎖的涵蓋範圍與例外見 `firestore.rules` 檔頭第 15 點。
 

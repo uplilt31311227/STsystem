@@ -109,6 +109,8 @@ export const writeBatch = () => {
             const f = F();
             f.commits = (f.commits || 0) + 1;
             if (f.failBatchAt === f.commits) { const e = new Error('simulated batch failure'); e.code = 'unavailable'; throw e; }
+            // 測試用：__fake.denyPrivateDelete = true 模擬舊 rules——含 private 子文件刪除的批次整批被拒（原子，不套用任何操作）
+            if (f.denyPrivateDelete && ops.some(o => o.op === 'delete' && o.ref.path.includes('/private/'))) { const e = new Error('Missing or insufficient permissions.'); e.code = 'permission-denied'; throw e; }
             for (const o of ops) {
                 if (o.op === 'set') { f.writes.push({ op: 'batch.set', path: o.ref.path, data: o.data }); applySet(o.ref, o.data, o.opts); }
                 else if (o.op === 'update') { f.writes.push({ op: 'batch.update', path: o.ref.path, data: o.patch }); f.docs.set(o.ref.path, { ...(f.docs.get(o.ref.path) || {}), ...o.patch }); }
@@ -127,6 +129,7 @@ export const runTransaction = async (db, fn) => {
         update: (ref, patch) => { pending.push({ op: 'tx.update', ref, patch }); },
         delete: (ref) => { pending.push({ op: 'tx.delete', ref }); },
     });
+    if (F().denyPrivateDelete && pending.some(o => o.op === 'tx.delete' && o.ref.path.includes('/private/'))) { const e = new Error('Missing or insufficient permissions.'); e.code = 'permission-denied'; throw e; }
     if (F().beforeTxCommit) { const h = F().beforeTxCommit; F().beforeTxCommit = null; h(); }
     for (const o of pending) {
         if (o.op === 'tx.set') { F().writes.push({ op: 'tx.set', path: o.ref.path, data: o.data }); applySet(o.ref, o.data, o.opts); }

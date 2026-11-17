@@ -37,6 +37,43 @@ import {
 } from './schemaConstants.js';
 
 /**
+ * P9（LF-L2）：撤回／關閉駁回／刪紀錄時，private/detail（假別、事由）與父文件在「同一個原子寫入」內一起刪，
+ * 避免父文件消失後留下無人可管的孤兒明細，也避免「明細先被刪、組長隨後核准」讀到 null 造成假別遺失。
+ * 舊 rules（尚未開放刪明細）會回 permission-denied：退回只刪父文件，並記錄 detail_delete_failed——
+ * 只有「父文件刪除成功、明細沒刪成」才記這筆，原本的撤回或刪除不會因此被擋下。
+ * @param {'pendingRequest'|'substituteRecord'} kind
+ */
+async function logDetailDeleteFailed(kind, id, reason, e) {
+    console.warn('[V2] 刪除私有明細失敗（父文件已刪除，可能留下孤兒明細）：', kind, id, e);
+    try {
+        await logger.log(LOG_ACTIONS.DETAIL_DELETE_FAILED, kind, id, {
+            reason, error: String((e && (e.code || e.message)) || e).slice(0, 200),
+        });
+    } catch (_) { /* 日誌也寫不進去就只留 console */ }
+}
+
+function isPermissionDenied(e) {
+    return !!e && (e.code === 'permission-denied' || e.code === 'PERMISSION_DENIED');
+}
+
+async function deleteParentWithDetail(kind, parentRef, detailRef, id, reason) {
+    const fs = await getV2Firestore();
+    let denied = null;
+    try {
+        const batch = fs.writeBatch(fs.db);
+        batch.delete(detailRef);
+        batch.delete(parentRef);
+        await batch.commit();
+        return;
+    } catch (e) {
+        if (!isPermissionDenied(e)) throw e;
+        denied = e;
+    }
+    await fs.deleteDoc(parentRef);
+    await logDetailDeleteFailed(kind, id, reason, denied);
+}
+
+/**
  * 交易併發衝突（核准/同意時請求已不在預期狀態）時丟出的特定錯誤。
  * UI 依 err.code === 'ALREADY_PROCESSED' 顯示「已被處理」並刷新列表，而非泛用 alert。
  */
@@ -234,7 +271,8 @@ export async function createRequest(payload) {
     if (hasSensitive) {
         await fs.setDoc(fs.doc(fs.db, SCHEMA_PATHS.pendingDetailDoc(reqId)), privatePart);
     }
-    const saved = await dataSvc.createPendingRequest(publicPart, reqId);
+    // hasDetail：父文件標記「這筆申請有私有明細」，核准時若標記為真卻讀到 null，代表明細遺失，須中止（見 approveRequest）。
+    const saved = await dataSvc.createPendingRequest(hasSensitive ? { ...publicPart, hasDetail: true } : publicPart, reqId);
 
     await logger.log(
         LOG_ACTIONS.CREATE_REQUEST,
@@ -382,6 +420,13 @@ export async function approveRequest(reqId) {
                         e.cause = readErr;
                         throw e;
                     }
+                    if (!reqDetail && preReq.hasDetail === true) {
+                        // 縱深防護：申請建立時標記過有明細，現在卻讀不到（被撤回流程誤刪、孤立、人為刪除）。
+                        // 不可成立一筆沒有假別的紀錄（公假、喪假會被月結算誤扣時數）。舊申請沒有標記，無從判斷，維持原行為。
+                        const e = new Error('這筆申請的假別明細已遺失，為避免月結算誤扣時數，已中止核准。請通知申請人重新送出申請');
+                        e.code = 'DETAIL_MISSING';
+                        throw e;
+                    }
                     if (reqDetail) {
                         // 複製請求的私有明細到新紀錄底下（同一批當事人，approver 本來就不受 ACL 限制，
                         // 不需要因為核准動作而擴增名單）。
@@ -417,6 +462,7 @@ export async function approveRequest(reqId) {
                     delete record.pendingConsentTeacherIds;
                     delete record.swapConsents;
                     delete record.__legacyPending;
+                    delete record.hasDetail;
                     // 敏感欄位一律不落父文件（已於上方複製到新紀錄的 private/detail）；新流程的
                     // request 父文件本就不含這三欄位，這裡刪除純屬防禦性寫法。
                     for (const field of dataSvc.SENSITIVE_RECORD_FIELDS) delete record[field];
@@ -570,7 +616,9 @@ export async function dismissRejectedRequest(reqId) {
     if (!roleSvc.canCancelRequest(req)) {
         throw new Error('您不是發起人，無法關閉');
     }
-    await dataSvc.deletePendingRequest(reqId);
+    const fs = await getV2Firestore();
+    await deleteParentWithDetail(LOG_TARGET_TYPES.PENDING_REQUEST,
+        fs.doc(fs.db, SCHEMA_PATHS.pendingDoc(reqId)), fs.doc(fs.db, SCHEMA_PATHS.pendingDetailDoc(reqId)), reqId, 'dismiss_rejected');
 }
 
 /**
@@ -602,10 +650,10 @@ export async function cancelRequest(reqId, note = '') {
         siblings = res.openSiblings.filter(r => r.reqId && r.reqId !== reqId);
     }
 
-    await deleteRequestIfOpen(reqId);
+    await deleteRequestIfOpen(reqId, 'cancel');
     const cascaded = [];
     for (const sib of siblings) {
-        try { await deleteRequestIfOpen(sib.reqId); cascaded.push(sib.reqId); }
+        try { await deleteRequestIfOpen(sib.reqId, 'cancel_batch'); cascaded.push(sib.reqId); }
         catch (e) { console.warn('[V2] 同批申請撤回失敗：', sib.reqId, e); }
     }
     await logger.log(
@@ -624,9 +672,21 @@ export async function cancelRequest(reqId, note = '') {
 }
 
 /** 交易內確認仍在途才刪除申請；已核准或已被處理丟 RequestAlreadyProcessedError。 */
-async function deleteRequestIfOpen(reqId) {
+async function deleteRequestIfOpen(reqId, reason = 'cancel') {
     const fs  = await getV2Firestore();
     const ref = fs.doc(fs.db, SCHEMA_PATHS.pendingDoc(reqId));
+    const detailRef = fs.doc(fs.db, SCHEMA_PATHS.pendingDetailDoc(reqId));
+    // 同一個交易內連明細一起刪（原子）；舊 rules 回 permission-denied 時退回只刪父文件並記錄。
+    try {
+        await deleteRequestTx(fs, ref, detailRef, reqId);
+    } catch (e) {
+        if (!isPermissionDenied(e)) throw e;
+        await deleteRequestTx(fs, ref, null, reqId);
+        await logDetailDeleteFailed(LOG_TARGET_TYPES.PENDING_REQUEST, reqId, reason, e);
+    }
+}
+
+async function deleteRequestTx(fs, ref, detailRef, reqId) {
     await fs.runTransaction(fs.db, async (tx) => {
         const snap = await tx.get(ref);
         if (!snap.exists()) throw new Error('找不到此請求（可能已被撤回）');
@@ -638,6 +698,7 @@ async function deleteRequestIfOpen(reqId) {
             throw new RequestAlreadyProcessedError('此申請已被處理，無法撤回，請重新整理列表');
         }
         tx.delete(ref);
+        if (detailRef) tx.delete(detailRef);
     });
 }
 
@@ -779,7 +840,9 @@ export async function adminDeleteRecord(recordId) {
     }
     const before = await dataSvc.getSubstituteRecord(recordId);
     if (!before) return;
-    await dataSvc.deleteSubstituteRecord(recordId);
+    const fs = await getV2Firestore();
+    await deleteParentWithDetail(LOG_TARGET_TYPES.SUBSTITUTE_RECORD,
+        fs.doc(fs.db, SCHEMA_PATHS.substituteDoc(recordId)), fs.doc(fs.db, SCHEMA_PATHS.substituteDetailDoc(recordId)), recordId, 'admin_delete');
     await logger.log(
         LOG_ACTIONS.DELETE,
         LOG_TARGET_TYPES.SUBSTITUTE_RECORD,
