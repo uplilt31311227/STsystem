@@ -148,11 +148,15 @@ await suite.case('F6 組長代發（adminCreate）：直接成立紀錄，含 pr
     allowed(r.priv, 'private/detail'); allowed(r.parent, '紀錄');
 });
 
-await suite.case('F7 組長代發起申請（createRequest 走 pending，initiatedBy 為他人）', async () => {
+// rules v2.18（P9-A2-2）移除 pendingRequests create 的 approver 分支：前端組長／主任一律走 adminCreate（F6），
+// 從不以 approver 身分呼叫 createRequest（v2-app.js writeV2Record 的 isAdmin 判斷）。此案改為確認該路徑已關閉。
+// ⚠ 此形狀即使 approver 分支被加回，也會先撞 1000 運算式上限而被拒，偵測不到回歸；真正的回歸防線是
+//   rules-p9-authz.mjs SOD-ALLOW 的 proxy2。
+await suite.case('F7 組長以 approver 身分建立 pending 申請（initiatedBy 為他人）→ DENY（v2.18 已移除；代發改走 F6）', async () => {
     const rec = appSwapRecord({ teacherA: t1.name, teacherB: t2.name });
     const built = buildPendingRequestDocs(writeV2Payload(rec, idsFor(rec), chief, { admin: true, adminOnBehalfOf: t1.teacherId }), semesterId, chief);
     const r = await submitPending(chief, built);
-    allowed(r.priv, 'private'); allowed(r.parent, '父文件');
+    denied(r.parent, '組長建立 pending 父文件');
 });
 
 await suite.case('F8 教師自我調課：直接成立（private 先於父文件，三個 id 皆為本人）', async () => {

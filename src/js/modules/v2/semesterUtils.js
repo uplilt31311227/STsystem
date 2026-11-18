@@ -117,3 +117,110 @@ export function nextSemesterId(sid) {
     if (!p) return null;
     return p.semester === 1 ? `${p.rocYear}-2` : `${p.rocYear + 1}-1`;
 }
+
+/**
+ * 上一個學期的 semesterId（nextSemesterId 的反向）。
+ * 第 2 學期 → 同年度第 1 學期；第 1 學期 → 前一學年度第 2 學期。
+ * @param {string} sid
+ * @returns {string|null} 格式不合法時回傳 null
+ */
+export function prevSemesterId(sid) {
+    const p = parseSemesterId(sid);
+    if (!p) return null;
+    return p.semester === 2 ? `${p.rocYear}-1` : `${p.rocYear - 1}-2`;
+}
+
+/** 西元 YYYY-MM-DD 是否為真實存在的日期（不做學期推算）。 */
+function isRealIsoDate(dateStr) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr || '');
+    if (!m) return false;
+    const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
+    const rt = new Date(y, mo - 1, d);
+    return rt.getFullYear() === y && rt.getMonth() === mo - 1 && rt.getDate() === d;
+}
+
+/**
+ * 依「紀錄／申請的日期」推算它所屬的學期（LC-L7／LF-M8，2026-11-17 使用者決定：
+ * 學期歸屬依該筆日期，不再取「建立當下的目前學期」）。純函式，不讀任何全域狀態。
+ *
+ * semesters（可選）：[{ id:'115-1', startDate:'2026-08-01', endDate:'2027-01-31' }, ...]。
+ *   - 有「同時具備 startDate、endDate」的學期時：日期落在某學期的 [startDate, endDate]（含頭尾）
+ *     內才歸該學期；落在兩學期之間的空檔（寒暑假）或沒有任何學期涵蓋、或同時落在兩個學期
+ *     （範圍重疊）時，一律回 ok:false，由呼叫端阻止送出——不猜。
+ *   - 沒有任何學期帶起訖日（目前正式資料的現況：學期只存 config.currentSemester 一個字串，
+ *     沒有起訖日）時，退回台灣學制預設（8/1–翌年 1/31 為上學期，2/1–7/31 為下學期，
+ *     即 dateToSemesterId）。此預設把全年每一天都歸入某學期，因此不會出現「空檔」；
+ *     若要讓寒暑假被擋，須先補學期起訖日資料（需協調者決定）。
+ *
+ * @param {string} dateStr 西元 YYYY-MM-DD
+ * @param {Array<{id:string,startDate?:string,endDate?:string}>|null} [semesters]
+ * @returns {{ok:true, semesterId:string, source:'range'|'default'}
+ *          |{ok:false, reason:'invalid-date'|'gap'|'overlap', message:string}}
+ */
+export function semesterIdForDate(dateStr, semesters = null) {
+    if (typeof dateStr !== 'string' || !isRealIsoDate(dateStr)) {
+        return { ok: false, reason: 'invalid-date', message: `日期「${dateStr ?? ''}」格式不正確，無法判斷所屬學期。請確認日期後再送出。` };
+    }
+    const ranged = (Array.isArray(semesters) ? semesters : [])
+        .filter(s => s && typeof s.id === 'string' && isRealIsoDate(s.startDate) && isRealIsoDate(s.endDate) && s.startDate <= s.endDate);
+    if (ranged.length === 0) {
+        return { ok: true, semesterId: dateToSemesterId(dateStr), source: 'default' };
+    }
+    const hits = ranged.filter(s => dateStr >= s.startDate && dateStr <= s.endDate);
+    if (hits.length === 1) return { ok: true, semesterId: hits[0].id, source: 'range' };
+    if (hits.length > 1) {
+        return { ok: false, reason: 'overlap', message: `日期 ${dateStr} 同時落在多個學期（${hits.map(h => h.id).join('、')}）的範圍內，無法判斷所屬學期。請教務主任檢查學期起訖日設定。` };
+    }
+    return { ok: false, reason: 'gap', message: `日期 ${dateStr} 不在任何學期的起訖日範圍內（寒暑假或尚未設定的學期），無法登記。請改選學期內的日期，或請教務主任先設定該學期。` };
+}
+
+/**
+ * 寫入前的完整檢查：推算日期所屬學期，並確認它落在 rules 允許寫入的範圍
+ * （目前學期，或與目前學期相鄰的前／後一個學期）。供前端所有寫入路徑在送出前呼叫；
+ * ok:false 時 message 可直接顯示給使用者。
+ * @returns {{ok:true, semesterId:string}|{ok:false, reason:string, message:string}}
+ */
+export function resolveWritableSemester(dateStr, currentSemesterId, semesters = null) {
+    const r = semesterIdForDate(dateStr, semesters);
+    if (!r.ok) return r;
+    if (typeof currentSemesterId !== 'string' || !currentSemesterId) {
+        return { ok: false, reason: 'no-current', message: '目前學期尚未確定，無法判斷日期所屬學期。請重新整理頁面後再試一次。' };
+    }
+    if (!isValidSemesterId(currentSemesterId)) {
+        // 目前學期不是標準 'NNN-1/2' 格式（測試資料或手動設定的特殊值）：無法算相鄰學期，
+        // 退回舊行為（歸目前學期）。對應 rules v2.18 的 fail-closed：非標準 current 只允許 semesterId == current。
+        return { ok: true, semesterId: currentSemesterId };
+    }
+    const gap = semesterOrdinal(r.semesterId) - semesterOrdinal(currentSemesterId);
+    if (!(gap >= -1 && gap <= 1)) {
+        return {
+            ok: false, reason: 'out-of-window',
+            message: `日期 ${dateStr} 屬於「${r.semesterId}」學期，與目前學期「${currentSemesterId}」相隔太遠；只能登記目前學期及其前後相鄰一個學期的日期。`,
+        };
+    }
+    return { ok: true, semesterId: r.semesterId };
+}
+
+/** 學期序數（roc*2 + (semester-1)），連續學期相差 1；格式不合法回 NaN。與 firestore.rules semesterOrd 同式。 */
+export function semesterOrdinal(sid) {
+    const p = parseSemesterId(sid);
+    return p ? p.rocYear * 2 + (p.semester - 1) : NaN;
+}
+
+/**
+ * 切換目前學期前，哪些在途申請必須先處理（v2.18）。
+ * 切換到 newId 後 rules 只允許操作 newId±1 的學期；落在這個窗口外的在途申請會變成無法核准、
+ * 待辦也看不到的孤兒。另外沿用舊規則：屬於「目前學期」的在途申請一律先處理完才可切換。
+ * 申請的 semesterId 格式不合法或缺漏者視為孤兒風險，一併列出。
+ * @param {Array<{semesterId?:string}>} requests 全部在途申請（不分學期）
+ * @returns {Array} 需先處理的申請（保持原順序）
+ */
+export function pendingBlockingSemesterSwitch(requests, currentSid, newId) {
+    const n = semesterOrdinal(newId);
+    return (Array.isArray(requests) ? requests : []).filter(r => {
+        const o = semesterOrdinal(r && r.semesterId);
+        if (!Number.isFinite(o) || !Number.isFinite(n)) return true;
+        if (r.semesterId === currentSid) return true;
+        return o < n - 1 || o > n + 1;
+    });
+}

@@ -285,7 +285,7 @@ const logConsole = console.log; console.log = () => {};
     semesterState.setCurrentSemesterId('s1');
     const created = await dataSvc.createSubstituteRecord({ ...evil, type: '代課', date: '2026-11-10' });
     check('(c) createSubstituteRecord 回傳的 recordId 是新 ID，不是資料內的偽造值', created.recordId.startsWith('rec_') && created.recordId !== 'EVIL_recordId', created.recordId);
-    const createdReq = await dataSvc.createPendingRequest({ ...evil, status: 'pending_approval' });
+    const createdReq = await dataSvc.createPendingRequest({ ...evil, date: '2026-11-10', status: 'pending_approval' });  // P9-A2-2：學期依日期推算，須帶 date
     check('(c) createPendingRequest 回傳的 reqId 是新 ID', createdReq.reqId.startsWith('req_') && createdReq.reqId !== 'EVIL_reqId', createdReq.reqId);
 
     // 核准：複製申請內容進紀錄時，剔除 reqId／recordId；保留 id

@@ -1,6 +1,6 @@
 rules_version = '2';
 
-// STsystem V2 權限系統 Firestore 規則（v2.17（P9 批次 A2：初始主任白名單在學校有正式主任後失效、platformAdmin 為全系統最高管理員、核准者職務分離）、v2.16（P9 批次 A：組長改教師檔欄位白名單、主任不可刪自己的教師檔、approver／發起人可刪 private/detail）、v2.15（P7：config/settlement 增加逐人超鐘點門檻欄位、config/grade9 九年級畢業設定）、v2.14（含 v2.13-A／B、v2.14 成立紀錄序號鎖，皆已納入本檔，P5／P6 未部署）— 身分與授權修補 + 三層角色 + 敏感欄位私有化 + 學期唯讀鎖 + 封存生命週期 + schoolId 反查目錄 + 多租戶開通 + 月結算設定開放 approver + 主任不可改自己的 role + 課表匯入版本紀錄 + 組長可刪除目前學期紀錄 + 開新學期原子建立課表 + 課表版本號）
+// STsystem V2 權限系統 Firestore 規則（v2.18（LC-L7／LF-M8：紀錄與申請的學期歸屬改依日期推算，寫入窗口放寬為目前學期＋相鄰學期）、v2.17（P9 批次 A2：初始主任白名單在學校有正式主任後失效、platformAdmin 為全系統最高管理員、核准者職務分離）、v2.16（P9 批次 A：組長改教師檔欄位白名單、主任不可刪自己的教師檔、approver／發起人可刪 private/detail）、v2.15（P7：config/settlement 增加逐人超鐘點門檻欄位、config/grade9 九年級畢業設定）、v2.14（含 v2.13-A／B、v2.14 成立紀錄序號鎖，皆已納入本檔，P5／P6 未部署）— 身分與授權修補 + 三層角色 + 敏感欄位私有化 + 學期唯讀鎖 + 封存生命週期 + schoolId 反查目錄 + 多租戶開通 + 月結算設定開放 approver + 主任不可改自己的 role + 課表匯入版本紀錄 + 組長可刪除目前學期紀錄 + 開新學期原子建立課表 + 課表版本號）
 //
 // 設計原則：
 //   1. 兩條根路徑物理隔離
@@ -212,7 +212,7 @@ rules_version = '2';
 //         都接受 uid（isActorId、isValidOperationLog 的 platformAdmin 分支）。
 //      C. 職務分離（SB-I7）：isValidApproverUpdate 的核准分支要求申請的 initiatedBy 不是核准者自己（uid 或 mapping teacherId），
 //         唯一例外 isSelfOnlyRequest（isSelfSwap、換走與換進教師都是本人、無其他同意人）。對 platformAdmin 同樣適用。
-//         組長代教師發起的申請 initiatedBy 是被代發的教師，不受影響。駁回不受限。
+//         （v2.18 起 pendingRequests create 已無 approver 分支，approver 不能建立申請，也就不能偽造 initiatedBy 來繞過本規則，見第 19.A2 點。）駁回不受限。
 //         ⚠ 已知範圍：組長／主任的「代發」（adminCreate）是直接成立 substituteRecords，不經 pendingRequests、不經核准，因此本規則
 //         管不到（approver 本來就能直接建立任意紀錄，initiatedBy 由 client 填）；真正的職務分離只涵蓋 pendingRequests 的核准轉換。
 //      ⚠ 如實揭露（使用者已接受，不在 rules 堵）：職務分離只是「防止誠實操作下的誤用」，不是安全邊界——
@@ -226,6 +226,31 @@ rules_version = '2';
 //        行為不變（旗標缺席）、platformAdmin 舊前端不會用到、核准按鈕舊前端仍會顯示於自己的申請但被 rules 擋下（permission-denied）。
 //        新前端在舊 rules 下：寫 directorEstablished 旗標在 v2.16 rules 下是允許的（config 任意欄位 director 可寫）但無作用；
 //        platformAdmin 進入學校會因舊 rules 拒讀而失敗（不影響一般使用者）。
+//
+//  19. v2.18（2026-11-17，LC-L7／LF-M8，使用者決定：紀錄與申請的學期歸屬依「該筆的 date」推算，不再取建立當下的目前學期；
+//      測試見 test/emulator/rules-semester-by-date；前端推算規則見 src/js/modules/v2/semesterUtils.js semesterIdForDate）：
+//      A. substituteRecords／pendingRequests 的 create：semesterId 除了「等於目前學期」（原行為，不變），另允許「與目前學期
+//         相鄰（前一個或後一個學期）、且 semesterId 與該筆 date 依台灣學制（8/1–翌年 1/31 上學期、2/1–7/31 下學期）推算的
+//         結果完全一致」的寫入（semesterOfDate／canWriteSemester）。date 必須是 YYYY-MM-DD 且月日
+//         合法；前一個學期另要求 archives/{semesterId} 不存在（已封存學期不可再補寫），下一個學期不可能已封存故省略該次
+//         exists()。兩個以上學期遠的日期、semesterId 與 date 對不上的寫入一律拒絕。isDeclaredLegacyWrite 豁免不變。
+//      A2. （A2-2 驗收補修）兩個集合的「等於目前學期」分支也要求 date 合法且推算學期等於 semesterId（目前學期為標準格式時）；
+//         update 改 date 時新日期推算的學期須仍等於 semesterId。
+//         ⚠ pendingRequests create 移除 approver 分支：只剩 isTeacherPendingCreate（發起人必須是本人）。原因：approver 分支在
+//         運算式預算上已無餘量（組長代發調課申請目前學期剩 0、相鄰學期超過 1000 被拒），而前端沒有任何路徑會走到它
+//         （組長與主任＝roleSvc.isAdmin() 寫入一律走 adminCreate 直接成立紀錄；非 approver 才呼叫 createRequest；platformAdmin 以
+//         director 身分同樣走 adminCreate）。同時封住 A2-1 揭露的「approver 建申請可偽造 initiatedBy 以繞過職務分離」。
+//         第 18.C 點所述「組長代教師發起申請」的 pendingRequests 路徑因此不再存在（approver 要代發只能走 adminCreate）。
+//      B. substituteRecords 的 update／delete（approver 分支）與四個 private/detail 父文件學期函式：原「須屬目前學期」放寬為
+//         「目前學期或其下一個學期」（isCurrentOrFutureSemester，上限目前學期＋1）。理由：預先登記的下學期紀錄尚未結算，組長要能更正／刪除登記
+//         錯誤的預登紀錄；已過去學期（含換學期後補登的上學期紀錄）仍唯讀，組長不可改刪，director 刪除不受限（不變）。
+//      C. 不變：archives 的 create-only／不可改刪；schedules／imports 的目前學期鎖與 delete 限非目前學期；
+//         semesterId 建立後不可變。update 規則沒有新增「改 date 須同步 semesterId」的檢查（adminEditRecord 無 UI 呼叫點，
+//         且月結算依 date 取資料，不受 semesterId 影響），列為已知殘留。
+//      運算式／存取成本：A 對「semesterId＝目前學期」的原路徑只多 1 次短路求值（不增加文件存取）；相鄰學期路徑只讀已被
+//         讀過的 config/main，前一個學期另加 1 次 archives exists()。
+//      ⚠ 部署順序：與 v2.13–v2.17 同一套程序，前端與 rules 同時上線。新前端在舊 rules 下：依日期歸屬到相鄰學期的寫入會被拒
+//        （permission-denied，目前學期內的日期不受影響）；舊前端在新 rules 下：行為不變（舊前端仍寫目前學期）。
 //
 // 部署：透過 gcloud REST API 或 Firebase Console（見 docs/V2_PERMISSION_SYSTEM.md）
 
@@ -430,6 +455,57 @@ service cloud.firestore {
     // 成本：多 1 次文件存取呼叫（getAfter），schedules create 路徑最壞約 7~9 次，低於 20 次上限。
     function isCurrentSemesterAfter(schoolId, sid) {
       return getAfter(/databases/$(database)/documents/schools/$(schoolId)/config/main).data.currentSemester == sid;
+    }
+
+    // ---- v2.18（LC-L7／LF-M8）：學期歸屬依 date 推算 ----
+    // 標準學期代碼（'115-1'）。非標準值（測試資料、手動設定的特殊值）一律走舊行為（只認 semesterId == 目前學期）。
+    function isStdSemester(s) {
+      return s is string && s.matches('^[0-9]{2,3}-[12]$');
+    }
+
+    // cur 的下一學期代碼（cur 須先過 isStdSemester）。直接組字串，運算式比序數／清單比較省。
+    function nextSemester(cur) {
+      let p = cur.split('-');
+      return p[1] == '1' ? p[0] + '-2' : string(int(p[0]) + 1) + '-1';
+    }
+
+    function isIsoDateString(ds) {
+      return ds is string && ds.matches('^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$');
+    }
+
+    // 台灣學制：8～12 月＝民國(西元-1911)學年上學期、1 月＝民國(西元-1912)學年上學期、2～7 月＝(西元-1912)學年下學期。
+    // 與 src/js/modules/v2/semesterUtils.js dateToSemesterId 同式。呼叫前須先過 isIsoDateString。
+    function semesterOfDate(ds) {
+      let p = ds.split('-');
+      let late = p[1] >= '08';
+      return string(int(p[0]) - (late ? 1911 : 1912)) + ((late || p[1] == '01') ? '-1' : '-2');
+    }
+
+    // create 用：semesterId 等於目前學期（原行為）或與目前學期相鄰（v2.18）。
+    // 目前學期為標準格式時，兩條路徑都要求 date 是合法日期且依台灣學制推算的學期等於 semesterId——
+    // 擋下「把已封存學期、已結算月份的日期、很久以前的日期、沒有 date 標成目前學期」的注入。
+    // 目前學期不是標準格式時維持舊行為：只認 semesterId == 目前學期。
+    // 相鄰判斷：sid 已等於 semesterOfDate(date)（必為標準格式），直接與「下一學期／上一學期」字串比對（cur 只 split 一次）；
+    // 上一學期另要求 archives/{sid} 不存在（已封存不可再補寫），下一學期不可能已封存故省略 exists()。
+    // substituteRecords 與 pendingRequests 的 create 共用（pendingRequests 的 approver 分支已移除，見檔頭第 19.A2 點）。
+    function canWriteSemester(schoolId, d) {
+      let cur = configDoc(schoolId).currentSemester;
+      let sid = d.semesterId;
+      let cp = cur.split('-');
+      let ds = d.get('date', '');
+      return cur.matches('^[0-9]{2,3}-[12]$')
+        ? (ds.matches('^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$') && sid == semesterOfDate(ds)
+            && (sid == cur
+                || sid == (cp[1] == '1' ? cp[0] + '-2' : string(int(cp[0]) + 1) + '-1')
+                || (sid == (cp[1] == '2' ? cp[0] + '-1' : string(int(cp[0]) - 1) + '-2')
+                    && !exists(/databases/$(database)/documents/schools/$(schoolId)/archives/$(sid)))))
+        : sid == cur;
+    }
+
+    // update／delete／private-detail 父文件用：目前學期，或目前學期的下一個學期（預登，尚未結算）；過去學期唯讀。
+    function isCurrentOrFutureSemester(schoolId, sid) {
+      let cur = configDoc(schoolId).currentSemester;
+      return sid == cur || (isStdSemester(cur) && sid == nextSemester(cur));
     }
 
     // 教務主任：白名單 OR teacher.role in ['director', 'admin']（admin 為舊資料兼容）
@@ -876,7 +952,7 @@ service cloud.firestore {
     // exists() 檢查放寬。
     function parentSubstituteRecordCurrentSemester(schoolId, recordId) {
       let parent = get(/databases/$(database)/documents/schools/$(schoolId)/substituteRecords/$(recordId)).data;
-      return !('semesterId' in parent) || isCurrentSemester(schoolId, parent.semesterId);
+      return !('semesterId' in parent) || isCurrentOrFutureSemester(schoolId, parent.semesterId);
     }
 
     // 驗收修復（R2，opus 重驗）：private/detail 的 create 也要擋「approver 為已鎖定的歷史
@@ -900,7 +976,7 @@ service cloud.firestore {
     function parentAllowsNewPrivateDetail(schoolId, recordId) {
       return !exists(/databases/$(database)/documents/schools/$(schoolId)/substituteRecords/$(recordId))
         || !('semesterId' in get(/databases/$(database)/documents/schools/$(schoolId)/substituteRecords/$(recordId)).data)
-        || isCurrentSemester(schoolId, get(/databases/$(database)/documents/schools/$(schoolId)/substituteRecords/$(recordId)).data.semesterId);
+        || isCurrentOrFutureSemester(schoolId, get(/databases/$(database)/documents/schools/$(schoolId)/substituteRecords/$(recordId)).data.semesterId);
     }
 
     // v2.12（M2）：教師自建 substituteRecords/private/detail 時，父文件必須「尚未存在」或「是本人的
@@ -933,13 +1009,13 @@ service cloud.firestore {
     // 「歷史學期的 pendingRequests 被事後補建/竄改私有明細」。
     function parentPendingRequestCurrentSemester(schoolId, reqId) {
       let parent = get(/databases/$(database)/documents/schools/$(schoolId)/pendingRequests/$(reqId)).data;
-      return !('semesterId' in parent) || isCurrentSemester(schoolId, parent.semesterId);
+      return !('semesterId' in parent) || isCurrentOrFutureSemester(schoolId, parent.semesterId);
     }
 
     function parentAllowsNewPendingRequestPrivateDetail(schoolId, reqId) {
       return !exists(/databases/$(database)/documents/schools/$(schoolId)/pendingRequests/$(reqId))
         || !('semesterId' in get(/databases/$(database)/documents/schools/$(schoolId)/pendingRequests/$(reqId)).data)
-        || isCurrentSemester(schoolId, get(/databases/$(database)/documents/schools/$(schoolId)/pendingRequests/$(reqId)).data.semesterId);
+        || isCurrentOrFutureSemester(schoolId, get(/databases/$(database)/documents/schools/$(schoolId)/pendingRequests/$(reqId)).data.semesterId);
     }
 
     // v2.17（SB-L9）：config/main.directorEstablished 的單向閘。新值必須是布林；舊值為 true 時新值必須仍為 true。
@@ -1261,7 +1337,7 @@ service cloud.firestore {
             (('isLegacy' in request.resource.data) && isDeclaredLegacyWrite(schoolId, request.resource.data))
             || (
               ('semesterId' in request.resource.data)
-              && isCurrentSemester(schoolId, request.resource.data.semesterId)
+              && canWriteSemester(schoolId, request.resource.data)
             )
           );
 
@@ -1296,7 +1372,14 @@ service cloud.firestore {
             !('semesterId' in resource.data)
             || (
               request.resource.data.semesterId == resource.data.semesterId
-              && isCurrentSemester(schoolId, resource.data.semesterId)
+              && isCurrentOrFutureSemester(schoolId, resource.data.semesterId)
+              // v2.18：改 date 時，新日期推算的學期必須仍等於這筆的 semesterId（否則等於把紀錄偷偷搬到別的學期／月份）；
+              // semesterId 不是標準格式的舊資料不套用。
+              && (
+                !request.resource.data.diff(resource.data).affectedKeys().hasAny(['date'])
+                || !isStdSemester(resource.data.semesterId)
+                || (isIsoDateString(request.resource.data.get('date', '')) && semesterOfDate(request.resource.data.date) == resource.data.semesterId)
+              )
             )
           );
 
@@ -1306,7 +1389,7 @@ service cloud.firestore {
         allow delete: if isDirector(schoolId)
           || (
             isApprover(schoolId)
-            && (!('semesterId' in resource.data) || isCurrentSemester(schoolId, resource.data.semesterId))
+            && (!('semesterId' in resource.data) || isCurrentOrFutureSemester(schoolId, resource.data.semesterId))
           );
 
         // ----- 私有明細（假別／事由）-----
@@ -1383,15 +1466,9 @@ service cloud.firestore {
         // 評估順序刻意先教師分支、後 approver 分支：一般教師（絕大多數寫入）命中教師分支即短路，
         // 不必再付 isApprover 的運算式額度（規則引擎每次請求最多評估 1000 個運算式）。
         allow create: if isValidPendingRequestCreate(request.resource.data)
-          && (
-            isTeacherPendingCreate(schoolId, request.resource.data)
-            || (
-              isApprover(schoolId)
-              && request.resource.data.status != 'approved'
-            )
-          )
+          && isTeacherPendingCreate(schoolId, request.resource.data)
           && ('semesterId' in request.resource.data)
-          && isCurrentSemester(schoolId, request.resource.data.semesterId);
+          && canWriteSemester(schoolId, request.resource.data);
 
         // 更新：
         //  - approver：核准 / 駁回，僅能動工作流欄位（不可竄改申請內容：節次/日期/教師等，

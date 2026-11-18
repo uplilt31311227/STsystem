@@ -10,6 +10,7 @@
 import { getV2Firestore } from './firebaseV2.js';
 import { SCHEMA_PATHS, REQUEST_STATUS } from './schemaConstants.js';
 import * as semesterState from './semesterState.js';
+import { resolveWritableSemester, nextSemesterId, prevSemesterId } from './semesterUtils.js';
 import {
     assertScheduleWrite, scheduleVersionOf, nextScheduleVersion, isScheduleDocEmpty,
 } from './scheduleWriteGuard.js';
@@ -26,6 +27,43 @@ const OPEN_REQUEST_STATUSES = [
     REQUEST_STATUS.PENDING_SWAP_CONSENT,
     REQUEST_STATUS.PENDING_APPROVAL,
 ];
+
+/**
+ * LC-L7／LF-M8（2026-11-17 使用者決定，rules v2.18）：紀錄／申請的學期歸屬依「該筆的日期」推算，
+ * 不再取建立當下的目前學期。日期推不出學期（格式錯、寒暑假空檔、與目前學期相隔 >1 學期）時丟出
+ * name='SemesterUnresolvable' 的 Error，message 為可直接顯示給使用者的白話說明；所有寫入路徑
+ * 在寫入任何文件「之前」呼叫，避免留下孤兒私有明細。
+ * 目前正式資料沒有學期起訖日，semesters 傳 null → 退回台灣學制預設（見 semesterUtils.semesterIdForDate）。
+ * @param {string} date 西元 YYYY-MM-DD
+ * @returns {string} semesterId
+ */
+export function resolveSemesterIdForDate(date, semesters = null) {
+    const r = resolveWritableSemester(date, semesterState.getCurrentSemesterId(), semesters);
+    if (!r.ok) {
+        throw Object.assign(new Error(r.message), { name: 'SemesterUnresolvable', reason: r.reason });
+    }
+    return r.semesterId;
+}
+
+/**
+ * 即時視窗（待審請求、紀錄列表）要涵蓋的學期：目前學期 + 因「依日期歸屬」而可能出現的預先登記下學期，
+ * 待審請求另含上一學期（換學期後補登上學期的申請仍須讓核准者看得到）。目前學期未確定時回 []（不加條件）。
+ */
+function liveSemesterIds({ includePrev = false } = {}) {
+    const cur = semesterState.getCurrentSemesterId();
+    if (!cur) return [];
+    const ids = [cur, nextSemesterId(cur)];
+    if (includePrev) ids.unshift(prevSemesterId(cur));
+    return ids.filter(Boolean);
+}
+
+/** 套上學期範圍條件：明確指定單一學期 → ==；否則依預設涵蓋範圍用 in（單一元素時退化為 ==）。 */
+function semesterConstraint(fs, semesterId, defaultIds) {
+    if (semesterId) return fs.where('semesterId', '==', semesterId);
+    if (defaultIds.length === 1) return fs.where('semesterId', '==', defaultIds[0]);
+    if (defaultIds.length > 1) return fs.where('semesterId', 'in', defaultIds);
+    return null;
+}
 
 export function genId(prefix) {
     return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
@@ -640,11 +678,13 @@ export async function listAllSubstituteRecordsForClear() {
 // loadMoreRecordsTabPage 接續同一個 cursor），兩者的學期範圍必須一致，否則「載入更多」
 // 會在使用者不知情的狀況下把上一學期的紀錄混進同一份列表，違背「歷史學期唯讀、需另外
 // 明確切換檢視」的設計（§6.1）。semesterId 未帶時退回 semesterState 快取的目前學期。
-export async function listSubstituteRecordsPage({ pageSize = DEFAULT_PAGE_SIZE, afterCursor = null, semesterId = semesterState.getCurrentSemesterId() } = {}) {
+export async function listSubstituteRecordsPage({ pageSize = DEFAULT_PAGE_SIZE, afterCursor = null, semesterId = null } = {}) {
     const fs   = await getV2Firestore();
     const col  = fs.collection(fs.db, SCHEMA_PATHS.substituteCol());
     const constraints = [fs.orderBy('createdAt', 'desc')];
-    if (semesterId) constraints.unshift(fs.where('semesterId', '==', semesterId));
+    // v2.18：預設涵蓋「目前學期 + 預先登記的下學期」（紀錄依日期歸屬後，下學期的預登紀錄也要看得到）
+    const sc = semesterConstraint(fs, semesterId, liveSemesterIds());
+    if (sc) constraints.unshift(sc);
     if (afterCursor) constraints.push(fs.startAfter(afterCursor));
     constraints.push(fs.limit(pageSize));
     const q      = fs.query(col, ...constraints);
@@ -983,13 +1023,11 @@ export async function getSubstituteRecord(recordId) {
 export function buildSubstituteRecordWrite(record) {
     const recordId = genId('rec');
     const now      = new Date().toISOString();
-    const semesterId = record.semesterId || semesterState.getCurrentSemesterId();
-    // 驗收修復（中 7）：semesterState 尚未初始化（例如 bootstrap 的「學期設定」步驟失敗）時，
-    // 不要送出一筆帶 semesterId:null 的寫入去讓 Firestore 規則模糊地拒絕——那樣使用者只會
-    // 看到不明所以的 permission-denied。改為 client 端先明確擋下並給出可理解的錯誤訊息。
-    if (!semesterId) {
-        throw new Error('createSubstituteRecord: 目前學期尚未確定，無法建立紀錄。請重新整理頁面後再試一次。');
-    }
+    // v2.18：semesterId 依 record.date 推算（resolveSemesterIdForDate；推不出來會丟 SemesterUnresolvable，
+    // 含「目前學期尚未確定」）。唯一例外是 legacyMigrationService 的歷史遷移（isLegacy+migratedFrom，
+    // 已自行依日期推算，且 rules 以 isDeclaredLegacyWrite 豁免），沿用其帶入的值。
+    const isLegacyMigration = record.isLegacy === true && !!record.migratedFrom && typeof record.semesterId === 'string' && !!record.semesterId;
+    const semesterId = isLegacyMigration ? record.semesterId : resolveSemesterIdForDate(record.date);
     const base     = { ...record, semesterId, createdAt: record.createdAt || now, approvedAt: record.approvedAt || now };
 
     const allowedTeacherIds = deriveAllowedTeacherIds(base);
@@ -1302,15 +1340,27 @@ export async function listAllPendingRequestsForClear() {
  * （不用 onSnapshot 首次快照前的空窗期）。
  * Stage 2：加 semesterId==目前學期條件，理由與 subscribePendingRequests 相同（見該處註解）。
  */
-export async function listOpenPendingRequests(semesterId = semesterState.getCurrentSemesterId()) {
+export async function listOpenPendingRequests(semesterId = null) {
     const fs   = await getV2Firestore();
     const col  = fs.collection(fs.db, SCHEMA_PATHS.pendingCol());
     const constraints = [
         fs.where('status', 'in', OPEN_REQUEST_STATUSES),
         fs.orderBy('createdAt', 'desc'),
     ];
-    if (semesterId) constraints.unshift(fs.where('semesterId', '==', semesterId));
+    const sc = semesterConstraint(fs, semesterId, liveSemesterIds({ includePrev: true }));
+    if (sc) constraints.unshift(sc);
     const q    = fs.query(col, ...constraints);
+    const snap = await fs.getDocs(q);
+    return snap.docs.map(d => ({ ...d.data(), reqId: d.id }));
+}
+
+/**
+ * v2.18：不分學期列出全部在途申請（開新學期前的孤兒檢查用；沿用既有 (status, createdAt) 索引）。
+ */
+export async function listAllOpenPendingRequests() {
+    const fs   = await getV2Firestore();
+    const col  = fs.collection(fs.db, SCHEMA_PATHS.pendingCol());
+    const q    = fs.query(col, fs.where('status', 'in', OPEN_REQUEST_STATUSES), fs.orderBy('createdAt', 'desc'));
     const snap = await fs.getDocs(q);
     return snap.docs.map(d => ({ ...d.data(), reqId: d.id }));
 }
@@ -1352,11 +1402,8 @@ export async function getPendingRequest(reqId) {
 export async function createPendingRequest(req, reqId = genId('req')) {
     const fs   = await getV2Firestore();
     const ref   = fs.doc(fs.db, SCHEMA_PATHS.pendingDoc(reqId));
-    const semesterId = req.semesterId || semesterState.getCurrentSemesterId();
-    // 驗收修復（中 7）：理由同 createSubstituteRecord 的同款守門。
-    if (!semesterId) {
-        throw new Error('createPendingRequest: 目前學期尚未確定，無法建立申請。請重新整理頁面後再試一次。');
-    }
+    // v2.18：依申請日期推算學期（同 buildSubstituteRecordWrite）；推不出來丟 SemesterUnresolvable。
+    const semesterId = resolveSemesterIdForDate(req.date);
     const data  = { ...req, semesterId, createdAt: req.createdAt || new Date().toISOString() };
     await fs.setDoc(ref, data);
     return { ...data, reqId };
@@ -1616,14 +1663,16 @@ export async function listLogs({ limit: lim = DEFAULT_PAGE_SIZE, since = null } 
 // 的在途申請；歷史學期在規則層已鎖唯讀，理論上不會再有該學期的 pending 文件殘留，但加上
 // 這個條件同時也收斂了訂閱涵蓋範圍，與 substituteRecords 的即時視窗保持同一個「目前學期」
 // 語意。semesterId 未帶時退回 semesterState 快取的目前學期（呼叫端一般不需要自行傳入）。
-export async function subscribePendingRequests(callback, onError, { semesterId = semesterState.getCurrentSemesterId() } = {}) {
+export async function subscribePendingRequests(callback, onError, { semesterId = null } = {}) {
     const fs  = await getV2Firestore();
     const col = fs.collection(fs.db, SCHEMA_PATHS.pendingCol());
     const constraints = [
         fs.where('status', 'in', OPEN_REQUEST_STATUSES),
         fs.orderBy('createdAt', 'desc'),
     ];
-    if (semesterId) constraints.unshift(fs.where('semesterId', '==', semesterId));
+    // v2.18：待審請求依日期歸屬後可能屬於相鄰學期，預設涵蓋 上一學期／目前學期／下一學期
+    const sc = semesterConstraint(fs, semesterId, liveSemesterIds({ includePrev: true }));
+    if (sc) constraints.unshift(sc);
     const q = fs.query(col, ...constraints);
     return fs.onSnapshot(q, (snap) => {
         callback(snap.docs.map(d => ({ ...d.data(), reqId: d.id })));
@@ -1639,11 +1688,12 @@ export async function subscribePendingRequests(callback, onError, { semesterId =
 // Stage 2（§5.4）：加 semesterId==目前學期條件——即時訂閱視窗只該涵蓋當前學期，歷史學期
 // 改走 listSubstituteRecordsBySemester()（一次性查詢，見上）。與 listSubstituteRecordsPage
 // 共用同一個學期範圍，兩者合起來才是「目前學期的完整紀錄列表（即時視窗＋載入更多）」。
-export async function subscribeSubstituteRecords(callback, onError, { limit: lim = DEFAULT_PAGE_SIZE, semesterId = semesterState.getCurrentSemesterId() } = {}) {
+export async function subscribeSubstituteRecords(callback, onError, { limit: lim = DEFAULT_PAGE_SIZE, semesterId = null } = {}) {
     const fs  = await getV2Firestore();
     const col = fs.collection(fs.db, SCHEMA_PATHS.substituteCol());
     const constraints = [fs.orderBy('createdAt', 'desc'), fs.limit(lim)];
-    if (semesterId) constraints.unshift(fs.where('semesterId', '==', semesterId));
+    const sc = semesterConstraint(fs, semesterId, liveSemesterIds());
+    if (sc) constraints.unshift(sc);
     const q = fs.query(col, ...constraints);
     return fs.onSnapshot(q, (snap) => {
         const lastDoc = snap.docs.length ? snap.docs[snap.docs.length - 1] : null;

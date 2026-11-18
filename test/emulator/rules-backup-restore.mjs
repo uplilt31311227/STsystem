@@ -38,6 +38,7 @@ import { Suite, allowed, denied, eq, ok } from '../scenarios/harness.mjs';
 import { assertScheduleWrite, expectedFromDoc, ScheduleConflictError, ScheduleEmptyOverwriteError } from '../../src/js/modules/v2/scheduleWriteGuard.js';
 import { buildPreImportBackup, getRestorableSnapshot } from '../../src/js/modules/scheduleImportHistory.js';
 import * as fmt from '../../src/js/modules/v2/backupFormat.js';
+import { dateToSemesterId } from '../../src/js/modules/v2/semesterUtils.js';
 
 await assertEmulator();
 
@@ -249,8 +250,14 @@ await suite.case('(g) 組長不能還原：不能建立教師／emailIndex、不
 });
 
 await suite.case('(g) 不會還原的資料確實寫不進去：歷史學期紀錄、過期的待審申請（連主任也不行）', async () => {
+    // P9-A2-2（rules v2.18，使用者決定學期依日期推算）：相鄰的上一學期、日期一致且未封存時允許補登，
+    // 所以攻擊案例改用「日期往前推一年」的更早學期（與目前學期相隔 2 學期以上），仍須被拒。
+    // 歷史學期紀錄不經還原寫回，改由前端 planRestore 負責（見 (f) 的 plan.records.historical）。
     const old = fixture.previousSemesterRecords[0];
-    denied(await createDoc(`${ROOT}/substituteRecords`, 'rec_zz_hist', { ...old.public }, as(dir)), '主任建立歷史學期紀錄');
+    const olderDate = `${Number(old.public.date.slice(0, 4)) - 1}${old.public.date.slice(4)}`;
+    const olderSid = dateToSemesterId(olderDate);
+    ok(olderSid && olderSid !== prevSemester && olderSid !== semesterId, `更早學期（${olderSid}）與目前、上一學期不同`);
+    denied(await createDoc(`${ROOT}/substituteRecords`, 'rec_zz_hist', { ...old.public, date: olderDate, semesterId: olderSid }, as(dir)), '主任建立兩學期以前的紀錄');
     const req = fixture.pendingRequests[0].public;
     denied(await createDoc(`${ROOT}/pendingRequests`, 'req_zz_old', { ...req, createdAt: '2026-03-02T00:00:00.000Z' }, as(dir)), '主任建立舊時間的待審申請');
 });

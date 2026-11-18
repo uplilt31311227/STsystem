@@ -9,6 +9,20 @@ tags:
 
 ---
 
+## [2026-11-17] 紀錄與申請的學期歸屬改依日期推算（rules v2.18 與前端，尚未部署）
+
+使用者 2026-11-17 決定（LC-L7／LF-M8）：`semesterId` 依該筆 `date` 推算，不再取建立（核准）當下的目前學期。
+
+- **推算**：新增 `semesterUtils.semesterIdForDate(date, semesters)`（純函式）與 `resolveWritableSemester`。學期有起訖日時依起訖日判斷，空檔或重疊回 `ok:false`；正式資料沒有起訖日，退回台灣學制預設（8/1–1/31 上學期、2/1–7/31 下學期）。寫入前另檢查落在目前學期±1 的窗口內。
+- **前端**：自我調課、申請建立、核准成立、組長代發與批次都經 `schoolDataService.resolveSemesterIdForDate`；推不出來在寫入前丟 `SemesterUnresolvable`。待審申請與紀錄列表的即時視窗改涵蓋相鄰學期（待審含上一學期）。開新學期前的「在途申請」檢查仍只算目前學期。
+- **rules v2.18**：create 允許目前學期或「相鄰且與 date 一致」的學期（前一學期須未封存）；組長 update／delete 與四個 private/detail 父文件鎖由「目前學期」放寬為「目前學期或更晚」。archives、課表鎖、主任刪除不變。
+- **既有資料**：新增 `scripts/realign-semester-id.js`（預設 dry-run，`--apply` 才寫，已封存學期不自動改）。月結算依日期取資料，不受 `semesterId` 影響。
+- **測試**：`test/emulator/rules-semester-by-date`（17 案，掛進 `test:rules-all`，變異測試見回報）、`test/test-semester-for-date`、`test/test-realign-semester-id`。
+- **A2-2 驗收補修**：開新學期前檢查全部在途申請（`pendingBlockingSemesterSwitch`）；rules「等於目前學期」分支也要求 date 與 semesterId 一致、update 改 date 須仍屬同學期、update／delete／private 父文件上限為目前學期＋1；核准先推算學期再寫明細；待辦卡片標示補登／預登；備份還原只放行日期屬於目前學期的紀錄；realign 腳本加未知旗標檢查與 updateTime 前置條件；預登申請核准時改用該學期自己的課表（不退回舊版單一文件）。
+- **需要處理的既有測試**：`test/test-html-escape.mjs` 第 288 行 `createPendingRequest({ ...evil, status })` 沒有 `date`，新語意下無法推算學期而丟錯；測試輸入需補 `date: '2026-11-10'`（期望值不變）。
+
+---
+
 ## [2026-11-17] 資安審計 P9 批次 A2（rules v2.17 與前端，尚未部署）
 
 使用者 2026-11-17 的三項權限決定。

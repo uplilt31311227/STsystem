@@ -23,6 +23,7 @@ import * as dataSvc        from './schoolDataService.js';
 import * as logger         from './operationLogger.js';
 import * as roleSvc        from './roleService.js';
 import * as semesterState  from './semesterState.js';
+import { dateToSemesterId, compareSemesterId } from './semesterUtils.js';
 import { getV2Firestore }  from './firebaseV2.js';
 import { verifyNoAssignmentConflict, buildApprovalConflictMessage, buildAdminCreateConflictMessage } from './assignmentConflict.js';
 import { runWithRecordsGuard, assertSeqUnchanged } from './recordsGuard.js';
@@ -110,9 +111,25 @@ export class AssignmentConflictError extends Error {
 async function assertNoAssignmentConflict(req, { logTargetType, logTargetId, logContext, forAdminCreate = false }) {
     // 含 swapDate 索引的查詢：遠距調課（date 與 swapDate 相差 >31 天）的「移入」也要抓到；每次都讀當下資料，不吃快取
     // 週課表只在「可能是協同教學」時才讀（命中且申請方既非換走也非換進的教師），一般核准不增加讀取
-    const loadSchedule = async () => (await dataSvc.getSchedule(req.semesterId || semesterState.getCurrentSemesterId()))?.scheduleData || [];
+    // v2.18：預登的下學期申請，下學期課表通常還沒上傳。getSchedule 在 per-semester 文件不存在時會退回舊版單一
+    // 文件（可能是過期的別學期課表），拿來判斷協同教學並不安全，所以改用 Strict 只認該學期自己的課表；
+    // 讀不到或為空時回 []，verifyNoAssignmentConflict 會維持擋下並標記 scheduleUnavailable（fail-closed，
+    // 訊息請組長先上傳該學期課表）。這只發生在「班級時段已有人、需要課表才能判斷是否協同教學」的命中情況，
+    // 沒有命中的一般預登申請不會讀課表，不受影響。
+    const loadSchedule = async () => {
+        const cur = semesterState.getCurrentSemesterId();
+        const sid = req.semesterId || cur;
+        const doc = sid === cur ? await dataSvc.getSchedule(sid) : await dataSvc.getScheduleForSemesterStrict(sid);
+        return doc?.scheduleData || [];
+    };
     const hit = await verifyNoAssignmentConflict(req, (range) => dataSvc.queryRecordsOccupyingRange(range), loadSchedule);
     if (!hit) return;
+    // 預登下學期：下學期課表在開新學期之前無法匯入（schedules 的 rules 只允許寫目前學期），讀不到課表時給專屬訊息
+    if (hit.scheduleUnavailable) {
+        const sid = req.semesterId || dateToSemesterId(req.date);
+        const cur = semesterState.getCurrentSemesterId();
+        if (sid && cur && compareSemesterId(sid, cur) > 0) hit.nextSemesterSchedule = true;
+    }
     const message = forAdminCreate ? buildAdminCreateConflictMessage(hit, req) : buildApprovalConflictMessage(hit);
     try {
         await logger.log(LOG_ACTIONS.APPROVE_BLOCKED_CONFLICT, logTargetType, logTargetId, {
@@ -220,6 +237,10 @@ export async function createRequest(payload) {
         });
         throw new Error('無權代替此教師發起');
     }
+
+    // v2.18（LC-L7／LF-M8）：學期歸屬依申請日期推算，推不出來（寒暑假空檔、日期錯誤、與目前學期相隔
+    // 太遠）就在寫入任何文件前丟 SemesterUnresolvable，避免先寫的私有明細變孤兒。
+    dataSvc.resolveSemesterIdForDate(payload.date);
 
     let status;
     let pendingConsentTeacherIds = [];
@@ -386,6 +407,23 @@ export async function approveRequest(reqId) {
     if (normalizedPre.status !== REQUEST_STATUS.PENDING_APPROVAL) {
         throw new RequestAlreadyProcessedError('此請求已被處理（可能已被其他核准人核准或駁回）');
     }
+    // v2.18：在寫任何文件（含 private/detail）之前先推算學期；推不出來（寒暑假空檔、與目前學期相隔太遠）
+    // 直接丟 SemesterUnresolvable，什麼都不寫。交易內會再算一次，結果必然相同（純函式、同一份 date）。
+    const targetSemester = dataSvc.resolveSemesterIdForDate(normalizedPre.date);
+    // 推算學期已封存（archives/{id} 存在）：封存後該學期不應再出現紀錄，在寫入任何資料之前中止。
+    if (targetSemester !== semesterState.getCurrentSemesterId()) {
+        let archived = null;
+        try { archived = await dataSvc.getArchiveRecord(targetSemester); }
+        catch (readErr) {
+            const e = new Error(`無法確認「${targetSemester}」學期是否已封存，為安全起見已中止核准，請稍後再試`);
+            e.code = 'ARCHIVE_CHECK_FAILED'; e.cause = readErr; throw e;
+        }
+        if (archived) {
+            const e = new Error(`這筆申請的日期屬於「${targetSemester}」學期，該學期已封存，不能再新增紀錄。請駁回這筆申請。`);
+            e.code = 'SEMESTER_ARCHIVED';
+            throw e;
+        }
+    }
     // 職務分離（SB-I7）：不可核准自己發起的申請（自我調課且無他人牽涉例外）；與 firestore.rules v2.17 對齊，
     // 這裡先擋下，給明確訊息，不等 rules 回 permission-denied。
     const separation = checkApprovalSeparation(normalizedPre, me);
@@ -486,14 +524,11 @@ export async function approveRequest(reqId) {
                     record.createdAt       = record.createdAt || now;
                     record.affectedTeacherIds = buildAffectedList(data);
                     // Stage 2（§6.1）：this bypasses dataSvc.createSubstituteRecord()（直接 tx.set），
-                    // 故不會經過該函式的「semesterId 未帶時自動蓋目前學期」邏輯——必須在這裡手動蓋。
-                    // 刻意用「核准當下」的目前學期，不沿用申請（data）建立當時的 semesterId：若申請
-                    // 在途期間跨過學期切換，申請當時的學期可能已不是 currentSemester，沿用舊值會被
-                    // substituteRecords 的建立規則（semesterId == config.currentSemester）擋下。
-                    // 已知限制：這代表「核准時間」而非「申請時間」決定紀錄歸屬的學期，多數情況下兩者
-                    // 相同（申請與核准通常在同一學期內完成），只有「申請在途、期間學期切換」這種邊界
-                    // 情境才會有差異。
-                    record.semesterId = semesterState.getCurrentSemesterId();
+                    // 故不會經過 buildSubstituteRecordWrite，必須在這裡手動蓋 semesterId。
+                    // v2.18（LC-L7／LF-M8）：改依「紀錄日期」推算學期（不再取核准當下的目前學期，也不沿用
+                    // 申請建立時的 semesterId——舊資料以舊語意寫入，核准時一併校正）。推不出來
+                    // （寒暑假空檔、與目前學期相隔 >1 學期）丟 SemesterUnresolvable，交易不提交。
+                    record.semesterId = dataSvc.resolveSemesterIdForDate(record.date);
 
                     tx.set(recordRef, record);
                     tx.set(lockRef, { seq: nextSeq, updatedAt: now });

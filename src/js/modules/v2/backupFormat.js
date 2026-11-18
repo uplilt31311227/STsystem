@@ -26,6 +26,9 @@
  */
 
 import { computeFingerprint } from '../scheduleImportHistory.js';
+import { dateToSemesterId, semesterOrdinal } from './semesterUtils.js';
+
+const SEMESTER_STD_RE = /^[0-9]{2,3}-[12]$/;
 
 export const BACKUP_FORMAT = 'stsystem-cloud-backup';
 export const BACKUP_FORMAT_VERSION = 1;
@@ -263,16 +266,21 @@ export function stripReservedFields(data) {
 }
 
 /**
- * 一筆調代課紀錄在目前 rules 下能不能被還原（director 身分）。
- *   - semesterId 等於目前學期：可（rules 的學期唯讀鎖只放行目前學期）
+ * 一筆調代課紀錄在目前 rules（v2.18）下能不能被還原（director 身分）。
+ *   - semesterId 等於目前學期，且 date 依台灣學制推算也是該學期：可（v2.18 起 rules 要求「目前學期」的紀錄
+ *     date 與 semesterId 一致；目前學期不是標準格式時維持只比對 semesterId）
  *   - 標明 isLegacy 且帶 migratedFrom（V1 遷移紀錄）：可（rules 對 director 豁免學期鎖）
- *   - 其餘（歷史學期、缺 semesterId）：不可
+ *   - 其餘（非目前學期的紀錄，含相鄰學期；或目前學期但日期對不上；缺 semesterId）：不可。
+ *     相鄰學期雖然 rules 允許新增，但還原是整批提交，一筆被拒（例如該學期已封存）會讓整批失敗，保守起見不還原。
  * @returns {'ok'|'historical'|'no-semester'}
  */
 export function classifyRecordForRestore(data, currentSemesterId) {
     const sid = data && data.semesterId;
     if (typeof sid !== 'string' || !sid) return 'no-semester';
-    if (sid === currentSemesterId) return 'ok';
+    if (sid === currentSemesterId) {
+        if (!SEMESTER_STD_RE.test(currentSemesterId)) return 'ok';
+        return dateToSemesterId(data.date) === sid ? 'ok' : 'historical';
+    }
     if (data.isLegacy === true && data.migratedFrom) return 'ok';
     return 'historical';
 }
@@ -355,7 +363,7 @@ export function planRestore({ backup, cloud, currentSemesterId, restoreEmailInde
         teachers: { backup: b.teachers.length, cloud: cloud.teachers.length, create: [], createList: [], restoreEmailIndex: !!restoreEmailIndex, existingId: 0, emailTaken: [], emailCleared: [] },
         config: { main: 'none', settlement: 'none' },
         schedules: [],
-        records: { backup: b.substituteRecords.length, cloud: cloud.recordIds.length, create: [], exists: 0, historical: 0, noSemester: 0 },
+        records: { backup: b.substituteRecords.length, cloud: cloud.recordIds.length, create: [], exists: 0, historical: 0, noSemester: 0, mismatch: 0, mismatchSkipped: 0, relabel: {} },
         pending: { backup: b.pendingRequests.length, cloud: cloud.pendingIds.length, exists: 0, notRestored: 0 },
         scheduleImports: { backup: b.scheduleImports.length },
         notRestored: [],
@@ -402,7 +410,26 @@ export function planRestore({ backup, cloud, currentSemesterId, restoreEmailInde
         if (cloudRec.has(r.id)) { plan.records.exists++; continue; }
         const cls = classifyRecordForRestore(r.data, currentSemesterId);
         if (cls === 'ok') plan.records.create.push(r.id);
-        else if (cls === 'historical') plan.records.historical++;
+        else if (cls === 'historical') {
+            // 標目前學期、但日期屬別學期（v2.18 之前以舊語意寫入）：依日期重新標學期再還原。
+            // 條件：推算結果在目前學期±1 內；上一學期須「確定未封存」（cloud.archivedSemesterIds 提供時才判斷，
+            // 沒提供就保守略過）；下一學期不可能已封存。其餘略過並計入 mismatchSkipped。
+            const sid0 = r.data && r.data.semesterId;
+            if (sid0 && sid0 === currentSemesterId && SEMESTER_STD_RE.test(currentSemesterId)) {
+                plan.records.mismatch++;
+                const to = dateToSemesterId(r.data.date);
+                const diff = to ? semesterOrdinal(to) - semesterOrdinal(currentSemesterId) : NaN;
+                const archivedKnown = Array.isArray(cloud.archivedSemesterIds);
+                if (diff === 1 || (diff === -1 && archivedKnown && !cloud.archivedSemesterIds.includes(to))) {
+                    plan.records.create.push(r.id);
+                    plan.records.relabel[r.id] = to;
+                } else {
+                    plan.records.mismatchSkipped++;
+                }
+            } else {
+                plan.records.historical++;
+            }
+        }
         else plan.records.noSemester++;
     }
 
@@ -434,7 +461,11 @@ export function describeNotRestored(plan) {
         out.push(`${blockedEmpty.map(s => s.semesterId).join('、')} 的備份課表是空白、雲端課表有內容：為避免清空現有課表，不覆寫。`);
     }
     if (plan.records.historical) {
-        out.push(`歷史學期的調代課紀錄 ${plan.records.historical} 筆：安全規則不允許新增歷史學期的紀錄。`);
+        out.push(`歷史學期的調代課紀錄 ${plan.records.historical} 筆：還原只放行日期屬於目前學期的紀錄，非目前學期的（含相鄰學期）與日期對不上學期的不還原。`);
+    }
+    if (plan.records.mismatch) {
+        const n = Object.keys(plan.records.relabel).length;
+        out.push(`日期與學期不一致的調代課紀錄 ${plan.records.mismatch} 筆（標為目前學期、日期卻屬別的學期）：${n} 筆會依日期改標學期後還原，${plan.records.mismatchSkipped} 筆略過（超出目前學期前後一學期、或上一學期是否已封存無法確認）。建議先執行 scripts/realign-semester-id.js 校正雲端資料。`);
     }
     if (plan.records.noSemester) {
         out.push(`缺少學期欄位的調代課紀錄 ${plan.records.noSemester} 筆：安全規則要求紀錄必須帶學期。`);

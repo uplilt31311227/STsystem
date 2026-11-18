@@ -101,9 +101,11 @@ await suite.case('6-g 申請：requestType 與 type 不一致、狀態機欄位�
     denied(await tryPending(t1, d => ({ ...d, swapConsents: { [t2.teacherId]: { consentedAt: iso() } } }), { type: 'swap' }), '預填 swapConsents');
     denied(await tryPending(t1, d => ({ ...d, initiatedBy: t2.teacherId })), '冒名發起');
 });
-await suite.case('6-h approver（組長）代發申請：前端形狀 → ALLOW；帶保留欄位 reqId → DENY', async () => {
+// rules v2.18（P9-A2-2）移除 pendingRequests create 的 approver 分支（前端組長代發一律走 adminCreate）。
+// ⚠ 此形狀即使分支被加回也會先撞 1000 運算式上限而被拒，偵測不到回歸；回歸防線是 rules-p9-authz.mjs 的 proxy2。
+await suite.case('6-h approver（組長）以 pending 申請代發 → DENY（v2.18 已移除該分支）；帶保留欄位 reqId → DENY', async () => {
     const p = pendingDoc(chief, { type: 'swap' });
-    allowed(await createDoc(P.pending, rid('req'), { ...p.doc, initiatedBy: t1.teacherId, initiatedByName: t1.name }, as(chief)), '組長代發');
+    denied(await createDoc(P.pending, rid('req'), { ...p.doc, initiatedBy: t1.teacherId, initiatedByName: t1.name }, as(chief)), '組長以 pending 代發');
     denied(await createDoc(P.pending, rid('req'), { ...p.doc, reqId: 'x' }, as(chief)), '組長帶 reqId');
 });
 

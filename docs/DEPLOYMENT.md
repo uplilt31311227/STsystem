@@ -118,6 +118,28 @@ emulator 模式（設了 `FIRESTORE_EMULATOR_HOST`）不需要帳號。`firestor
 
 為了防範點擊劫持（審計 L4），`src/js/v2-redirect.js` 在頁面被嵌入 `<iframe>` 時會嘗試把最上層導回本頁，導不了就把整份文件隱藏（`display: none`）。因此**本站無法被其他網站（含自己的其他頁面）以 iframe 內嵌**；若日後有內嵌需求（例如儀表板），必須先修改該檔的框架偵測邏輯。
 
+### rules v2.18（LC-L7／LF-M8）：紀錄與申請的學期歸屬改依日期推算
+
+使用者 2026-11-17 決定：`substituteRecords`／`pendingRequests` 的 `semesterId` 依該筆的 `date` 推算，不再取「建立（核准）當下的目前學期」。台灣學制固定切法：8/1–翌年 1/31 為上學期、2/1–7/31 為下學期（`semesterUtils.dateToSemesterId`）；正式資料目前沒有學期起訖日，所以沒有「寒暑假空檔」，每個日期都歸入某個學期。
+
+- **rules**：`substituteRecords` 與 `pendingRequests` 的 create，`semesterId` 必須等於 `date` 依台灣學制推算的學期（兩個集合都是 strict，連「等於目前學期」也要驗；目前學期不是標準格式時維持舊行為），且屬於目前學期或與目前學期相鄰；前一學期另要求 `archives/{id}` 不存在。相隔兩個學期以上、與日期對不上、日期格式不合法一律拒絕。substituteRecords update 改 `date` 時，新日期推算的學期須仍等於 `semesterId`。組長的 update／delete 與四個 `private/detail` 父文件鎖，上限是**目前學期＋1**（目前學期與下一學期可改刪，已過去學期唯讀）；主任刪除不受限，archives、課表鎖、`semesterId` 不可變都不變。**pendingRequests create 移除了 approver 分支**（只剩發起人本人）：組長與主任寫入一律走 adminCreate 直接成立紀錄，前端本來就沒有 approver 建申請的路徑；這同時封住 A2-1 揭露的「approver 建申請可偽造 initiatedBy 以繞過職務分離」。
+- **前端**：所有寫入路徑（自我調課、申請建立、核准成立、組長代發與批次）改由 `schoolDataService.resolveSemesterIdForDate(date)` 推算，推不出來或超出相鄰窗口就在寫入前丟錯並提示。待審申請與紀錄列表的即時視窗改涵蓋「上一學期（僅待審）／目前學期／下一學期」，否則預登下學期的申請核准者看不到。
+- **部署順序**：與 v2.13–v2.17 同一套程序，**前端與 rules 同時上線**（先推前端、等建置完成後立刻發布 rules）。新前端 × 舊 rules：目前學期內的日期不受影響；日期落在相鄰學期的寫入會被舊 rules 拒絕（permission-denied），空窗期內請暫緩預登下學期或補登上學期。新 rules × 舊前端：舊前端仍寫目前學期，行為不變。
+- **操作說明（給組長與主任）**：
+  - 學期以日期切分：8/1–翌年 1/31 為上學期、2/1–7/31 為下學期。**暑輔等 7 月的日期會歸入下學期**（例如 114 學年度 7 月屬 114-2）。
+  - **8/1 起、但尚未開新學期時登記的紀錄，會成為「預登下學期」**：紀錄歸入新學期，待辦卡片標示「（115-1 預登）」，開新學期後才成為目前學期。換學期後補登上一學期的日期則標示「（114-2 補登）」，紀錄在「紀錄」頁切換到該學期查看。
+  - 可登記的日期範圍是目前學期及其前後相鄰一個學期；更早或更晚的日期、日期格式錯誤，送出前就會被擋下並提示。
+  - 開新學期前，系統會檢查全部在途申請：目前學期的一律要先處理完；換學期後落在「新學期前後一個學期」以外的申請也會擋下並列出，避免變成無法核准的孤兒。
+  - 預登下學期的申請在核准時，若班級時段已有他人、需要下學期課表判斷是否協同教學，而下學期課表尚未匯入，核准會擋下並提示「下學期課表要在開新學期後才能匯入，屆時再核准；這不是衝堂，請勿駁回」。rules 在開新學期之前不允許寫入下學期課表（schedules create 要求「提交後」的目前學期等於該學期），所以只能等開新學期、匯入課表後再核准。核准前系統也會檢查推算學期是否已封存，已封存就在寫入任何資料前中止並提示駁回。
+- **上線當天必做**：`scripts/realign-semester-id.js`（見下方「既有資料」）。v2.18 之前以舊語意寫入、日期與 `semesterId` 不一致的紀錄與申請，在新 rules 下會被「等於目前學期也驗日期」與備份還原的檢查視為異常；請在前端與 rules 上線後當天先 dry-run 檢視、再 `--apply`。`--apply` 以 `:commit` 帶 `currentDocument.updateTime` 前置條件，列出之後文件若被改動會拒寫（重跑 dry-run 即可）。備份還原遇到「標目前學期、日期屬別學期」的紀錄會依日期改標到目前學期±1 內（上一學期須確認未封存）後還原，其餘略過並在預覽單獨列出、提示先跑 realign。
+- **不需要新增索引**：新增的 `in` 查詢沿用既有的 `(semesterId, createdAt)` 與 `(semesterId, status, createdAt)` 複合索引。
+- **既有資料**：v2.18 之前以舊語意寫入、日期與 `semesterId` 不一致的文件，用 `scripts/realign-semester-id.js` 校正（預設 dry-run，列出不一致者；加 `--apply` 才寫；推算學期已封存者不自動改）。月結算依日期取資料，不受 `semesterId` 影響，
+  ```bash
+  node scripts/realign-semester-id.js --account=<操作者信箱> --school=inhu            # dry-run
+  node scripts/realign-semester-id.js --account=<操作者信箱> --school=inhu --apply    # 實際寫入
+  ```
+- **測試**：`test/emulator/rules-semester-by-date`（21 案，掛進 `test:rules-all`）、`test/test-semester-for-date`、`test/test-realign-semester-id`。
+
 ### rules v2.17（P9 批次 A2）：白名單主任失效、platformAdmin 最高管理員、核准職務分離
 
 三項使用者決定（2026-11-17）：

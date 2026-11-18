@@ -410,10 +410,11 @@ await suite.case('SOD-ALLOW 對照：核准別人發起的申請不受影響—�
     const teacher = await addMember(S, { role: 'teacher', name: '乙教師', tag: 'sd3' });
     allowed(await updateDoc(await seedPending(S, 'ok1', { initiatedBy: teacher.teacherId }), approvePatch(c.teacherId, c.name), as(c)), '組長核准教師的申請');
     allowed(await updateDoc(await seedPending(S, 'ok2', { initiatedBy: teacher.teacherId }), approvePatch(d.teacherId, d.name), as(d)), '主任核准教師的申請');
-    // 組長代發（createRequest，approver 建立，initiatedBy＝被代發教師），再由同一位組長核准：requesterId 不是自己
+    // rules v2.18 起 approver 不能再以 pending 申請代發（前端代發走 adminCreate 直接成立）；
+    // 因此改以種子建立「initiatedBy＝被代發教師」的申請，驗證同一位組長仍可核准（requesterId 不是自己）。
+    allowed(await updateDoc(await seedPending(S, 'proxy1', { initiatedBy: teacher.teacherId, initiatedByName: teacher.name, originalTeacherId: teacher.teacherId }), approvePatch(c.teacherId, c.name), as(c)), '組長核准 initiatedBy 為他人的申請');
     const built = { ...recBase, requestType: 'substitute', status: 'pending_approval', pendingConsentTeacherIds: [], swapConsents: {}, initiatedBy: teacher.teacherId, initiatedByName: teacher.name, originalTeacherId: teacher.teacherId, substituteTeacherId: t1.teacherId, requiredApproverId: t1.teacherId, semesterId, createdAt: iso() };
-    allowed(await createDoc(S.pend, 'proxy1', built, as(c)), '組長代教師發起申請（approver 建立）');
-    allowed(await updateDoc(`${S.pend}/proxy1`, approvePatch(c.teacherId, c.name), as(c)), '同一位組長核准自己代發的申請（requesterId 是被代發的教師）');
+    denied(await createDoc(S.pend, 'proxy2', built, as(c)), '組長以 approver 身分建立 pending 申請（v2.18 已移除）');
     // 駁回自己發起的申請不受職務分離限制
     allowed(await updateDoc(await seedPending(S, 'rej1', { initiatedBy: c.teacherId, initiatedByName: c.name, originalTeacherId: c.teacherId }), rejectPatch(c.teacherId), as(c)), '組長駁回（等同撤回）自己的申請');
 });

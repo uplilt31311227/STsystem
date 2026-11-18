@@ -22,7 +22,7 @@ import {
     cloudStateFromSections, planRestore, summarizeRestorePlan, countPlannedWrites,
     restrictPlanToPreview, resolveCurrentSemester, backupErrorMessage,
 } from './backupFormat.js';
-import { collectCloudBackupSections, executeRestore, describeRestoreReport } from './backupService.js';
+import { collectCloudBackupSections, executeRestore, describeRestoreReport, readArchivedSemesterIds } from './backupService.js';
 
 /** 備份檔大小上限（超過多半是選錯檔） */
 const MAX_BACKUP_FILE_BYTES = 200 * 1024 * 1024;
@@ -228,6 +228,7 @@ async function runRestoreFlow(app, file, say) {
         say('讀取雲端現況，計算差異…');
         const cloudSections = await collectCloudBackupSections({ includeDetails: false, includeImports: false, onProgress: say });
         const cloud = cloudStateFromSections(cloudSections);
+        cloud.archivedSemesterIds = await readArchivedSemesterIds();
         // 目前學期取「剛從伺服器讀到的 config/main」，不取記憶體裡的學期狀態
         const currentSemesterId = resolveCurrentSemester(cloud, backup);
         if (!currentSemesterId) {
@@ -303,6 +304,7 @@ async function runRestoreFlow(app, file, say) {
 
         // ----- 重新讀取現況再算一次計畫（預覽到現在可能又有人改過）-----
         const freshCloud = cloudStateFromSections(pre.backup);
+        freshCloud.archivedSemesterIds = await readArchivedSemesterIds();
         const freshSemesterId = resolveCurrentSemester(freshCloud, backup) || currentSemesterId;
         const recomputed = planRestore({ backup, cloud: freshCloud, currentSemesterId: freshSemesterId, restoreEmailIndex: emailOpt.checked });
         // 補回的教師只限預覽列過的；重算後多出來的不補回，請使用者重新執行以檢視

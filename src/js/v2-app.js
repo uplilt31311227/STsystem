@@ -893,10 +893,17 @@ async function renderPendingTab() {
 
     // 課表／教師異動後受影響的在途申請（P6）：以目前課表與教師名單即時比對，只提示不改資料
     const impactMapPending = computeImpactMap({ requests: openAll });
+    // v2.18：申請的學期不是目前學期時標示（「（114-2 補登）」「（115-2 預登）」）
+    const semesterTag = (r) => {
+        const cur = semesterState.getCurrentSemesterId();
+        if (!r.semesterId || !cur || r.semesterId === cur) return '';
+        const back = semesterUtils.compareSemesterId(r.semesterId, cur) < 0;
+        return ` ・ <strong>（${escapeHtml(r.semesterId)} ${back ? '補登' : '預登'}）</strong>`;
+    };
     const renderList = (items, cls, emptyMsg, actionsFn, extraMetaFn, detailFn) =>
         items.length
             ? items.map(r => renderPendingCard(r, cls, actionsFn(r),
-                (extraMetaFn ? extraMetaFn(r) : '') + impactMetaHtml(impactNoteFor(impactMapPending, r)),
+                (extraMetaFn ? extraMetaFn(r) : '') + semesterTag(r) + impactMetaHtml(impactNoteFor(impactMapPending, r)),
                 detailFn ? detailFn(r) : '')).join('')
             : `<p class="muted">${escapeHtml(emptyMsg)}</p>`;
     // 卡片、同意／核准／撤回按鈕的組字已移到 modules/v2/htmlRows.js（data-id 皆已跳脫）。
@@ -2122,16 +2129,20 @@ async function renderSemesterAdminTab() {
         // update/delete），也會被規則卡住。與其讓使用者切換後才發現一批申請卡在無法妥善
         // 收斂的狀態，不如切換前就要求先清空。listOpenPendingRequests() 預設已經是「目前
         // 學期」範圍（見 schoolDataService.js），直接沿用不需額外指定。
-        let openCount = 0;
+        // v2.18：不只檢查目前學期。換學期後 rules 只允許操作新學期±1 的學期，落在窗口外的在途申請
+        // （例如換學期後才補登的上一學期申請，到下次換學期時相隔兩學期）會變成無法核准、待辦也看不到的孤兒，
+        // 所以改為列出全部在途申請，目前學期的一律先處理，窗口外的也一併擋下。
+        let blocking = [];
         try {
-            openCount = (await dataSvc.listOpenPendingRequests()).length;
+            blocking = semesterUtils.pendingBlockingSemesterSwitch(await dataSvc.listAllOpenPendingRequests(), cur, newId);
         } catch (err) {
             console.warn('[V2] 開新學期：檢查在途申請失敗，為安全起見暫停切換：', err);
             notify('無法確認目前是否有在途申請，請稍後再試（為安全起見已暫停本次切換）', 'error');
             return;
         }
-        if (openCount > 0) {
-            notify(`目前還有 ${openCount} 筆在途申請（待同意/待核准）尚未處理，請先在「待辦」頁籤處理完再開新學期`, 'warning', 6000);
+        if (blocking.length > 0) {
+            const list = blocking.slice(0, 5).map(r => `${r.semesterId || '未標學期'} ${r.date || ''} ${r.className || ''}${r.initiatedByName ? '（' + r.initiatedByName + '）' : ''}`).join('；');
+            notify(`還有 ${blocking.length} 筆在途申請（待同意/待核准）需先處理完才能切換到「${newId}」：${list}${blocking.length > 5 ? ' …' : ''}。請先在「待辦」頁籤處理。`, 'warning', 9000);
             return;
         }
 
@@ -3985,11 +3996,27 @@ async function writeV2RecordsBatch(records) {
     }
 }
 
+let _offSemesterHintAt = 0;
+/** 紀錄／申請歸屬的學期不是目前學期時給提示（批次送出 5 秒內只提示一次）。 */
+function hintOffSemesterWrite(sid) {
+    const cur = semesterState.getCurrentSemesterId();
+    if (!sid || !cur || sid === cur || Date.now() - _offSemesterHintAt < 5000) return;
+    _offSemesterHintAt = Date.now();
+    const back = semesterUtils.compareSemesterId(sid, cur) < 0;
+    notify(back
+        ? `這個日期屬於「${sid}」學期（補登）。紀錄成立後不會出現在目前學期的列表，請到「紀錄」頁的學期選單切換到「${sid}」查看。`
+        : `這個日期屬於「${sid}」學期（預登）。紀錄成立後會出現在列表，開新學期後歸入該學期。`, 'info', 7000);
+}
+
 async function writeV2Record(record) {
     const me = roleSvc.getCurrentIdentity();
     if (!me) throw new Error('尚未登入');
     // approver 代發走 adminCreate（直接建立紀錄），規則不對該分支做字元檢查
     if (!roleSvc.isAdmin()) assertRuleSafeCaseText(record);
+
+    // v2.18：學期歸屬依日期推算。推不出來（日期錯誤、與目前學期相隔太遠）在任何寫入與對話框之前就擋下並提示；
+    // 屬於相鄰學期時提醒使用者紀錄會歸到哪個學期、之後去哪裡看。
+    hintOffSemesterWrite(dataSvc.resolveSemesterIdForDate(record.date));
 
     // 教師清單整個送出流程只抓一次，供 promptAdditionalConsentTeachers 與 resolveApproverInfo 共用
     const teachers = await dataSvc.listTeachers();

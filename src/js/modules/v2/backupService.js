@@ -263,7 +263,8 @@ async function restoreRecords(fs, backup, plan, st, say) {
             // 先 private 後父文件的順序與 createSubstituteRecord 一致（批次內 rules 以提交前狀態評估，
             // parentAllowsNewPrivateDetail 看到父文件不存在即放行）
             if (r.private) batch.set(fs.doc(fs.db, SCHEMA_PATHS.substituteDetailDoc(r.id)), r.private);
-            batch.set(fs.doc(fs.db, SCHEMA_PATHS.substituteDoc(r.id)), stripReservedFields(r.data));
+            const relabeled = plan.records.relabel && plan.records.relabel[r.id];
+            batch.set(fs.doc(fs.db, SCHEMA_PATHS.substituteDoc(r.id)), relabeled ? { ...stripReservedFields(r.data), semesterId: relabeled } : stripReservedFields(r.data));
         }
         await batch.commit();
         st.done += chunk.length;
@@ -291,4 +292,13 @@ export function describeRestoreReport(report) {
     }
     if (!report.ok) lines.push('', '還原沒有全部完成。已寫入的部分不會自動復原；排除問題後可以再執行一次同一份備份，系統只會補上仍缺少的部分。');
     return lines.join('\n');
+}
+
+/**
+ * 已封存學期清單（archives/{id}）。供還原計畫判斷「依日期改標到上一學期」是否安全；讀取失敗回 undefined，
+ * 計畫端會保守略過上一學期的改標（不能判斷就不還原）。
+ */
+export async function readArchivedSemesterIds() {
+    try { return await dataSvc.listArchivedSemesterIds(); }
+    catch (e) { console.warn('[V2] 讀取已封存學期失敗，還原計畫對上一學期的改標將保守略過：', e); return undefined; }
 }

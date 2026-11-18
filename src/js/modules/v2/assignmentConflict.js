@@ -141,8 +141,12 @@ export function describeAssignmentConflict(hit) {
 /** 需要課表才能判斷是否為協同教學，但課表讀不到或為空：仍然擋下，但訊息明確區分，避免被當成真的衝堂而誤駁回 */
 export const SCHEDULE_UNAVAILABLE_MESSAGE = '無法確認當日課表（需判斷是否為協同教學），請稍後再試一次；這不是衝堂，請勿駁回';
 
+/** 預登「下學期」且需要下學期課表才能判斷協同教學，但下學期課表尚未匯入（rules 在開新學期之前不允許寫入下學期課表） */
+export const SCHEDULE_NEXT_SEMESTER_MESSAGE = '下學期課表要在開新學期後才能匯入，屆時再核准；這不是衝堂，請勿駁回';
+
 /** 核准失敗訊息（拋給使用者看）。呼叫端 UI 對此訊息不得再加「核准失敗：」類前綴。 */
 export function buildApprovalConflictMessage(hit) {
+    if (hit && hit.scheduleUnavailable && hit.nextSemesterSchedule) return SCHEDULE_NEXT_SEMESTER_MESSAGE;
     if (hit && hit.scheduleUnavailable) return SCHEDULE_UNAVAILABLE_MESSAGE;
     return `核准失敗：${describeAssignmentConflict(hit)}，請駁回或請申請人改選`;
 }
@@ -153,6 +157,7 @@ export function buildApprovalConflictMessage(hit) {
  * @param {Object} [req] - 原 payload；調課類型提示改選互換課程或日期
  */
 export function buildAdminCreateConflictMessage(hit, req = null) {
+    if (hit && hit.scheduleUnavailable && hit.nextSemesterSchedule) return SCHEDULE_NEXT_SEMESTER_MESSAGE;
     if (hit && hit.scheduleUnavailable) return SCHEDULE_UNAVAILABLE_MESSAGE;
     const advice = req?.type === '調課' ? '請重新選擇互換課程或日期' : '請改選代課教師';
     return `無法成立：${describeAssignmentConflict(hit)}，${advice}`;
