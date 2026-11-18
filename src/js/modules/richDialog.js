@@ -59,11 +59,21 @@ let _seq = 0;
  * @param {boolean} [o.confirmDisabled] 為 true 時確認鈕恆為停用（只能看、不能確認）
  * @param {string} [o.optionLabel]   有值時顯示「選填勾選」（不影響確認鈕），預設不勾
  * @param {{checked:boolean}} [o.optionRef] 選填勾選的狀態會寫進這個物件（呼叫端在 Promise 結束後讀取）
+ * @param {Array<{label:string, ref:{checked:boolean}, enablesConfirm?:boolean}>} [o.extraOptions] 其他選填勾選（同 optionLabel／optionRef，可多個）。
+ *   enablesConfirm: true 的項目被勾選時，即使 confirmDisabled 為 true 確認鈕也可按（該勾選本身就是一項要執行的動作）。
  */
+
+/**
+ * 確認鈕是否可按（純函式，供測試）。confirmDisabled 為 true 時，只有「enablesConfirm 的選項被勾選」才能解除。
+ */
+export function isConfirmEnabled({ confirmDisabled = false, ackOk = true, phraseOk = true, extraOptions = [] } = {}) {
+    const unlocked = (extraOptions || []).some(o => o && o.enablesConfirm && o.ref && o.ref.checked);
+    return (!confirmDisabled || unlocked) && !!ackOk && !!phraseOk;
+}
 export function openRichDialog({
     title = '確認', target = '', bodyHtml = '', checkboxLabel = '', phrase = '', phraseHint = '',
     confirmText = '確認', cancelText = '取消', danger = false, confirmDisabled = false,
-    optionLabel = '', optionRef = null,
+    optionLabel = '', optionRef = null, extraOptions = [],
 } = {}) {
     const id = `rich-dialog-${++_seq}`;
     const root = document.getElementById('modal-root') || document.body;
@@ -84,6 +94,7 @@ export function openRichDialog({
                 ${bodyHtml}
                 ${checkboxLabel ? `<label class="rich-dialog-check"><input type="checkbox" data-rd="ack"><span>${escapeHtml(checkboxLabel)}</span></label>` : ''}
                 ${optionLabel ? `<label class="rich-dialog-check"><input type="checkbox" data-rd="option"><span>${escapeHtml(optionLabel)}</span></label>` : ''}
+                ${(extraOptions || []).map((o, i) => `<label class="rich-dialog-check"><input type="checkbox" data-rd="option-extra-${i}"><span>${escapeHtml(o.label)}</span></label>`).join('')}
                 ${phrase ? `<label class="rich-dialog-check rich-dialog-check-block">${escapeHtml(phraseHint || '請輸入確認字樣：')}<strong> ${escapeHtml(phrase)}</strong><input type="text" class="rich-dialog-phrase" data-rd="phrase" autocomplete="off"></label>` : ''}
                 <div class="modal-actions">
                     <button type="button" class="btn btn-secondary" data-rd="cancel">${escapeHtml(cancelText)}</button>
@@ -101,11 +112,16 @@ export function openRichDialog({
     const refresh = () => {
         const ackOk = !ack || ack.checked;
         const phraseOk = !phraseInput || phraseInput.value.trim() === phrase;
-        confirmBtn.disabled = confirmDisabled || !(ackOk && phraseOk);
+        confirmBtn.disabled = !isConfirmEnabled({ confirmDisabled, ackOk, phraseOk, extraOptions });
     };
     const optionBox = q('option');
     if (optionRef) optionRef.checked = false;
     optionBox?.addEventListener('change', () => { if (optionRef) optionRef.checked = optionBox.checked; });
+    (extraOptions || []).forEach((o, i) => {
+        const box = q(`option-extra-${i}`);
+        if (o.ref) o.ref.checked = false;
+        box?.addEventListener('change', () => { if (o.ref) o.ref.checked = box.checked; refresh(); });
+    });
     ack?.addEventListener('change', refresh);
     phraseInput?.addEventListener('input', refresh);
     refresh();

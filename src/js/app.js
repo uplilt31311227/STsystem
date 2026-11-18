@@ -12,7 +12,10 @@
 import { DataManager } from './modules/dataManager.js';
 import { esc, toNum } from './modules/htmlEscape.js';
 import { formatLocalDate, parseLocalDate, todayLocal } from './modules/localDate.js';
-import { mergeTeacherAttributes } from './modules/teacherMerge.js';
+import { mergeTeacherAttributes, findAmbiguousTeacherNames } from './modules/teacherMerge.js';
+import { periodIndex } from './modules/periods.js';
+import { requiresDocNumber } from './modules/leaveTypes.js';
+import { grade9PendingLabel } from './modules/grade9Graduation.js';
 import {
     loadV1History, appendV1History, getRestorableSnapshot, makeSnapshot,
     computeFingerprint, formatImportDate, formatLastImport, formatSource, V1_HISTORY_KEY
@@ -29,7 +32,7 @@ import { PDFGenerator } from './modules/pdfGenerator.js';
 import { SettlementCalculator } from './modules/settlementCalculator.js';
 import { importWeeksFromCalendar, calendarErrorMessage } from './modules/schoolCalendar.js';
 import { isV2Enabled } from './modules/v2/envDetector.js';
-import { prepareSettlementInputs, settlementMissingMessage } from './modules/settlementInputs.js';
+import { prepareSettlementInputs, settlementMissingMessage, mergeBaseMapEdits } from './modules/settlementInputs.js';
 import { getCurrentSemesterId } from './modules/v2/semesterState.js';
 import { parseBaseMapText, formatBaseMapText } from './modules/settlementCalculator.js';
 import { filterSameBatch } from './modules/v2/batchGuard.js';
@@ -324,8 +327,8 @@ class SubstituteTeacherApp {
      */
     async handleGoogleSignIn() {
         try {
-            const user = await signInWithGoogle();
-            console.log('登入成功:', user);
+            await signInWithGoogle();
+            console.log('登入成功'); // 不印 user 物件（含 email 等個資，審計 SF-L6）
         } catch (error) {
             console.error('登入失敗:', error);
             this.showToast('登入失敗：' + error.message, 'error');
@@ -352,6 +355,8 @@ class SubstituteTeacherApp {
      * 認證狀態變更處理
      */
     async onAuthStateChanged(user) {
+        // V2 由 v2-app 自己處理登入；這裡若繼續會觸發 V1 個人雲端同步（審計 SF-V1）
+        if (isV2Enabled()) return;
         const loggedOut = document.getElementById('auth-logged-out');
         const loggedIn = document.getElementById('auth-logged-in');
 
@@ -409,6 +414,7 @@ class SubstituteTeacherApp {
      * 檢查並處理同步
      */
     async checkAndHandleSync() {
+        if (isV2Enabled()) return; // V2 不走 V1 個人雲端同步（審計 SF-V1）
         if (!isSignedIn()) return;
 
         try {
@@ -904,6 +910,7 @@ class SubstituteTeacherApp {
                 this.dataManager.setScheduleData(parseResult.scheduleData);
                 // 課表檔不含「兼課」「導師班級」「手動領域」，依正規化姓名從匯入前的名冊合併回來，
                 // 避免重新匯入就把組長設好的設定洗掉（審計 LC-M5；規則見 teacherMerge.js）
+                const ambiguousNames = findAmbiguousTeacherNames(this.dataManager.getTeachers(), parseResult.teachers);
                 const mergedTeachers = mergeTeacherAttributes(this.dataManager.getTeachers(), parseResult.teachers);
                 this.dataManager.setTeachers(mergedTeachers);
                 this.dataManager.setClasses(parseResult.classes);
@@ -930,6 +937,10 @@ class SubstituteTeacherApp {
 
                 // 儲存到 localStorage
                 this.saveDataToStorage();
+
+                if (ambiguousNames.length) {
+                    this.showToast(`有 ${ambiguousNames.length} 位教師（${ambiguousNames.slice(0, 3).map(a => a.name).join('、')}${ambiguousNames.length > 3 ? ' 等' : ''}）在舊名冊有多種寫法，導師班與領域未自動帶回，請到教師管理確認`, 'warning', 10000);
+                }
 
                 console.log('課表解析成功');
             } else {
@@ -991,6 +1002,13 @@ class SubstituteTeacherApp {
             listBlock('消失的教師', d.teachers.removed);
             listBlock('新增班級', d.classes.added);
             listBlock('消失的班級', d.classes.removed);
+        }
+
+        // LC-M5：既有名冊同一個人有多種寫法時無法自動合併導師班與領域，提示組長匯入後手動確認
+        const ambiguous = findAmbiguousTeacherNames(dm.getTeachers(), parseResult.teachers);
+        if (ambiguous.length) {
+            parts.push(rdNotice('warn', `有 ${ambiguous.length} 位教師在現有名冊中有多種寫法（空白或全形半形不同），系統無法判斷該沿用哪一筆的導師班與任教領域，這些人不會自動合併，匯入後請到教師管理手動確認：`));
+            parts.push(rdList(ambiguous.slice(0, 20).map(a => `${a.name}（現有名冊：${a.candidates.join('、')}）`)));
         }
 
         if (model.warnings.total > 0) {
@@ -1903,10 +1921,7 @@ ${lines.join(NL)}${more}
         const docNumberInput = document.getElementById('doc-number');
         const docNumberLabel = docNumberGroup.querySelector('label');
 
-        // 公付假別：公假、長期病假、喪假
-        const paidLeaveTypes = ['official', 'longsick', 'funeral'];
-
-        if (paidLeaveTypes.includes(leaveType)) {
+        if (requiresDocNumber(leaveType)) {
             // 公付假別：顯示並設為必填
             docNumberGroup.style.display = 'block';
             docNumberInput.required = true;
@@ -2690,8 +2705,7 @@ ${lines.join(NL)}${more}
 
         // 按節次排序
         const sortedCourses = [...this.selectedCourses].sort((a, b) => {
-            const periodOrder = ['第一節', '第二節', '第三節', '第四節', '第五節', '第六節', '第七節'];
-            return periodOrder.indexOf(a.period) - periodOrder.indexOf(b.period);
+            return periodIndex(a.period) - periodIndex(b.period); // 共用節次常數，含第八節（LC-L13）
         });
 
         tbody.innerHTML = sortedCourses.map(course => `
@@ -3021,8 +3035,7 @@ ${lines.join(NL)}${more}
             }
 
             // 公付假別必須填寫字號/證明
-            const paidLeaveTypes = ['official', 'longsick', 'funeral'];
-            if (paidLeaveTypes.includes(leaveType)) {
+            if (requiresDocNumber(leaveType)) {
                 const docNumber = document.getElementById('doc-number').value.trim();
                 if (!docNumber) {
                     const fieldName = leaveType === 'official' ? '公假字號' :
@@ -3110,7 +3123,6 @@ ${lines.join(NL)}${more}
             }
 
             const leaveType = document.getElementById('leave-type').value;
-            const paidLeaveTypes = ['official', 'longsick', 'funeral'];
             const reason = document.getElementById('sub-reason').value.trim();
 
             // 建立代課紀錄
@@ -3127,7 +3139,7 @@ ${lines.join(NL)}${more}
                 substituteTeacher: this.selectedSubstitute.teacher.name,
                 leaveType: this.getLeaveTypeName(leaveType),
                 leaveTypeName: this.getLeaveTypeName(leaveType),
-                docNumber: paidLeaveTypes.includes(leaveType) ? document.getElementById('doc-number').value.trim() : '',
+                docNumber: requiresDocNumber(leaveType) ? document.getElementById('doc-number').value.trim() : '',
                 reason: reason,
                 createdAt: new Date().toISOString()
             };
@@ -3212,7 +3224,6 @@ ${lines.join(NL)}${more}
         }
 
         const leaveType = document.getElementById('leave-type').value;
-        const paidLeaveTypes = ['official', 'longsick', 'funeral'];
         const reason = document.getElementById('sub-reason').value.trim();
 
         // 驗證所有課程的星期是否與日期相符
@@ -3226,8 +3237,7 @@ ${lines.join(NL)}${more}
 
         // 按節次排序
         const sortedCourses = [...this.selectedCourses].sort((a, b) => {
-            const periodOrder = ['第一節', '第二節', '第三節', '第四節', '第五節', '第六節', '第七節'];
-            return periodOrder.indexOf(a.period) - periodOrder.indexOf(b.period);
+            return periodIndex(a.period) - periodIndex(b.period); // 共用節次常數，含第八節（LC-L13）
         });
 
         // 建立多節課紀錄（使用相同的基礎 ID）
@@ -3245,7 +3255,7 @@ ${lines.join(NL)}${more}
             substituteTeacher: this.selectedSubstitute.teacher.name,
             leaveType: this.getLeaveTypeName(leaveType),
             leaveTypeName: this.getLeaveTypeName(leaveType),
-            docNumber: paidLeaveTypes.includes(leaveType) ? document.getElementById('doc-number').value.trim() : '',
+            docNumber: requiresDocNumber(leaveType) ? document.getElementById('doc-number').value.trim() : '',
             reason: reason,
             createdAt: new Date().toISOString(),
             // 多節課標記
@@ -4371,8 +4381,7 @@ ${lines.join(NL)}${more}
         `;
 
         // 公付假別顯示字號/證明
-        const paidLeaveNames = ['公假', '長期病假', '喪假'];
-        if (paidLeaveNames.includes(record.leaveType) && record.docNumber) {
+        if (requiresDocNumber(record.leaveType) && record.docNumber) {
             const labelText = record.leaveType === '公假' ? '公假字號' :
                               record.leaveType === '長期病假' ? '核准文號' : '喪假證明';
             detailHtml += `
@@ -4709,7 +4718,9 @@ ${lines.join(NL)}${more}
                     this.showToast('逐人基本節數格式有誤：' + parsed.errors.slice(0, 3).join('；'), 'warning', 6000);
                     return;
                 }
-                weeklyBaseByTeacher = parsed.map;
+                // PL-20：以儲存前重讀的雲端值為底，只套用這位使用者自己改過的人，
+                // 不整份覆寫另一位 approver 剛存的值（baseline = 載入設定頁時的值）
+                weeklyBaseByTeacher = mergeBaseMapEdits(this._settlementConfig?.weeklyBaseByTeacher, parsed.map, cfg.weeklyBaseByTeacher);
             }
             const payload = {
                 calendarId: document.getElementById('sw-calendar-id').value.trim(),
@@ -4980,7 +4991,8 @@ ${lines.join(NL)}${more}
         // === 九年級已畢業開關 ===
         const grade9Toggle = document.getElementById('grade9-disabled-toggle');
         if (grade9Toggle) {
-            grade9Toggle.checked = this.dataManager.isGrade9Disabled();
+            // V2：開關狀態由雲端設定決定（v2-app applyGrade9FromCloud），這裡不可用「目前是否生效」蓋掉（PL-21）
+            if (!this.grade9ConfigStore) grade9Toggle.checked = this.dataManager.isGrade9Disabled();
             grade9Toggle.addEventListener('change', (e) => {
                 this.handleGrade9Toggle(e.target.checked);
             });
@@ -5138,6 +5150,7 @@ ${lines.join(NL)}${more}
             this.dataManager.setGrade9Disabled(disabled);
         }
         this.saveDataToStorage();
+        this.updateGrade9StatusLabel();
 
         // 重新渲染所有受開關影響的可見區塊（課表灰底、推薦/調課面板）
         this.refreshGrade9DependentUI();
@@ -5153,6 +5166,20 @@ ${lines.join(NL)}${more}
      * 供本機切換開關與雲端同步翻轉開關時共用，確保 UI 即時反映
      */
     refreshGrade9DependentUI() {
+        // PL-18：只有「九年級目前是否被排除」這個實際狀態改變時才重設（改生效日、重存同樣的值、
+        // 雲端同步回來狀態沒變都不重設）。已選的課程（多半在步驟四）是依舊狀態選的，重畫課表格只會清掉
+        // 畫面上的選取，內部的 selectedCourse(s) 還在，之後會用舊選擇送出，所以一併重設，請使用者重選。
+        // resetStepsAfterBasic 除了課程，也會清掉假別、字號、代課教師並把異動類型改回代課（多重調課模式除外），
+        // 提示文字要把這些都講出來。
+        const grade9Now = !!this.dataManager.isGrade9Disabled();
+        const grade9Changed = (this._grade9SeenState ?? false) !== grade9Now;   // 預設狀態是「未排除」
+        this._grade9SeenState = grade9Now;
+        if (grade9Changed && (this.selectedCourse || (this.selectedCourses && this.selectedCourses.length))) {
+            this.resetStepsAfterBasic();
+            document.getElementById('selected-course-info')?.classList.add('hidden');
+            this.showToast('九年級設定已變更，已清除步驟三之後的選擇：選好的課程、假別與字號、代課教師，異動類型也回到「代課」，請重新選擇', 'info', 7000);
+        }
+
         // 課表編輯：教師週課表灰底
         if (this.editorCurrentTeacher) {
             this.renderEditableScheduleGrid();
@@ -5209,8 +5236,24 @@ ${lines.join(NL)}${more}
     syncGrade9Toggle() {
         const grade9Toggle = document.getElementById('grade9-disabled-toggle');
         if (grade9Toggle) {
-            grade9Toggle.checked = this.dataManager.isGrade9Disabled();
+            // V2：勾選狀態＝雲端有設定（含生效日在未來），由 applyGrade9FromCloud 決定；V1 才看本機是否生效
+            if (!this.grade9ConfigStore) grade9Toggle.checked = this.dataManager.isGrade9Disabled();
         }
+        this.updateGrade9StatusLabel();
+    }
+
+    /**
+     * 九年級設定「已設定但尚未生效」的說明文字（PL-21）。
+     * 勾選且有生效日、但今天還沒到時，顯示「已設定，X 月 X 日生效」。
+     */
+    updateGrade9StatusLabel() {
+        const el = document.getElementById('grade9-status');
+        if (!el) return;
+        const toggle = document.getElementById('grade9-disabled-toggle');
+        const date = document.getElementById('grade9-effective-date')?.value || '';
+        const text = grade9PendingLabel(!!toggle?.checked, date, this.dataManager.isGrade9Disabled());
+        el.textContent = text;
+        el.classList.toggle('hidden', !text);
     }
 
     /**
@@ -5648,7 +5691,8 @@ ${lines.join(NL)}${more}
      * 開啟課程編輯對話框
      */
     openCourseEditModal(weekday, period, isEdit, courseData = null) {
-        this.editorEditingCell = { weekday, period };
+        // className：編輯模式下的原班級，合班（同節多班）時用來精準定位要改／刪的那一筆（LC-L4）
+        this.editorEditingCell = { weekday, period, className: isEdit ? (courseData?.className ?? null) : null };
         this.editorIsEditMode = isEdit;
         this.clearCourseModalMsg();
 
@@ -5778,18 +5822,18 @@ ${lines.join(NL)}${more}
             return;
         }
 
-        const { weekday, period } = this.editorEditingCell;
+        const { weekday, period, className: originalClassName } = this.editorEditingCell;
         const teacherName = this.editorCurrentTeacher;
 
         if (this.editorIsEditMode) {
-            // 更新現有課程
+            // 更新現有課程（以原班級定位，改班級也找得到原那一筆）
             this.dataManager.updateScheduleEntry(teacherName, weekday, period, {
                 className,
                 subject,
                 rawSubject: subject,
                 courseName: subject,
                 domain
-            });
+            }, originalClassName);
         } else {
             // 新增課程
             this.dataManager.addScheduleEntry({
@@ -5840,7 +5884,7 @@ ${lines.join(NL)}${more}
      */
     async editorDeleteCourse() {
         if (!this.editorEditingCell) return;
-        const { weekday, period } = this.editorEditingCell;
+        const { weekday, period, className: originalClassName } = this.editorEditingCell;
         const teacherName = this.editorCurrentTeacher;
 
         const ok = await this.confirmDialog({
@@ -5853,7 +5897,7 @@ ${lines.join(NL)}${more}
             return;
         }
 
-        this.dataManager.removeScheduleEntry(teacherName, weekday, period);
+        this.dataManager.removeScheduleEntry(teacherName, weekday, period, originalClassName);
 
         // 更新班級清單
         this.dataManager.refreshClasses();

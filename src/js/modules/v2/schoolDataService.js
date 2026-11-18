@@ -159,17 +159,24 @@ export async function upsertConfig(patch) {
 export async function getSettlementConfig() {
     const fs   = await getV2Firestore();
     const ref  = fs.doc(fs.db, SCHEMA_PATHS.settlementConfig());
-    // 剛登入、連線尚未建立時 getDoc 會以 unavailable（client is offline）失敗，短暫重試；
-    // 其他錯誤（權限等）直接拋出。月結算金額不可在讀不到設定時悄悄退回預設週數。
+    return getDocDataWithRetry(fs, ref);
+}
+
+/**
+ * 讀單一設定文件，遇 unavailable 短暫重試（審計 PL-03：getSettlementConfig、getGrade9Config 共用）。
+ * 剛登入、連線尚未建立時 getDoc 會以 unavailable（client is offline）失敗；其他錯誤（權限等）直接拋出。
+ * 月結算金額不可在讀不到設定時悄悄退回預設週數。retryDelayMs 供測試縮短等待。
+ */
+export async function getDocDataWithRetry(fs, ref, { attempts = 3, retryDelayMs = 2000 } = {}) {
     let lastErr = null;
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < attempts; i++) {
         try {
             const snap = await fs.getDoc(ref);
             return snap.exists() ? snap.data() : null;
         } catch (err) {
             lastErr = err;
             if (err?.code !== 'unavailable') throw err;
-            await new Promise(r => setTimeout(r, 2000));
+            if (i < attempts - 1) await new Promise(r => setTimeout(r, retryDelayMs));
         }
     }
     throw lastErr;
@@ -187,8 +194,7 @@ export async function saveSettlementConfig({ calendarId = '', calendarApiKey = '
 /** 九年級畢業設定（config/grade9）；不存在回 null。所有成員可讀。 */
 export async function getGrade9Config() {
     const fs   = await getV2Firestore();
-    const snap = await fs.getDoc(fs.doc(fs.db, SCHEMA_PATHS.grade9Config()));
-    return snap.exists() ? snap.data() : null;
+    return getDocDataWithRetry(fs, fs.doc(fs.db, SCHEMA_PATHS.grade9Config()));
 }
 
 export async function saveGrade9Config({ semesterId, enabled, effectiveDate = '' }, updatedBy = null) {

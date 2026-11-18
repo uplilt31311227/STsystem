@@ -414,10 +414,12 @@ export class DataManager {
      * @param {string} weekday - 星期
      * @param {string} period - 節次
      * @param {Object} updates - 要更新的欄位
+     * @param {string} [className] - 原班級。合班（同教師同節多班）時用來定位；省略、null 或空字串（課表列沒有班級時 data-class 為空）都沿用舊行為（第一筆）
      */
-    updateScheduleEntry(teacher, weekday, period, updates) {
+    updateScheduleEntry(teacher, weekday, period, updates, className) {
         const index = this.scheduleData.findIndex(c =>
-            c.teacher === teacher && c.weekday === weekday && c.period === period
+            c.teacher === teacher && c.weekday === weekday && c.period === period &&
+            (!className || c.className === className)
         );
         if (index !== -1) {
             Object.assign(this.scheduleData[index], updates);
@@ -429,10 +431,12 @@ export class DataManager {
      * @param {string} teacher - 教師姓名
      * @param {string} weekday - 星期
      * @param {string} period - 節次
+     * @param {string} [className] - 班級。合班時用來定位；省略則沿用舊行為（第一筆）
      */
-    removeScheduleEntry(teacher, weekday, period) {
+    removeScheduleEntry(teacher, weekday, period, className) {
         const index = this.scheduleData.findIndex(c =>
-            c.teacher === teacher && c.weekday === weekday && c.period === period
+            c.teacher === teacher && c.weekday === weekday && c.period === period &&
+            (!className || c.className === className)
         );
         if (index !== -1) {
             this.scheduleData.splice(index, 1);

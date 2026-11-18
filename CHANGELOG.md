@@ -1,5 +1,24 @@
 # 版本紀錄 (Changelog)
 
+## [2026-11-18] 資安審計 P9 批次 C（前端流程與設定，尚未部署）
+
+- **V1 同步防護**（SF-V1）：`app.js` 的 `onAuthStateChanged`、`checkAndHandleSync` 開頭加 `isV2Enabled()` 防護，V2 不會觸發 V1 個人雲端同步。
+- **本機伺服器**（SF-L5）：`start-server.py` 只綁 127.0.0.1。
+- **console 去個資**（SF-L6）：`authService.js`、`app.js` 不再印 email 與整個 user 物件；新增靜態掃描測試，`src/js` 內任何 console 呼叫帶 email 或 user 物件就失敗。
+- **刪除死碼**（SF-I4）：移除 `googleSheetsAPI.js`（無任何 import 或 script 引用）。
+- **重匯課表**（LC-M5）：B 批已把 `teacherMerge.js` 接上 app.js，本批只驗證接線。補上驗收建議：既有名冊中「正規化後同名、原字串不同」的多筆舊資料不自動合併（新名冊原樣保留），新增 `findAmbiguousTeacherNames`，匯入預覽與匯入完成都提示組長手動確認。
+- **日期**（LC-M6）：app.js 已無 `new Date('YYYY-MM-DD')`（B 批已改完），本批加靜態檢查鎖住。
+- **合班課表編輯**（LC-L4）：`updateScheduleEntry`、`removeScheduleEntry` 新增選填的 `className` 參數（省略時維持舊行為取第一筆）；app.js 編輯對話框記住原班級，更新與刪除兩個呼叫端都傳入。v2-app 的 patch 以 `...args` 轉送，不需改。
+- **節次共用常數**（LC-L13，UX-M9 共用）：新增 `periods.js`（`PERIOD_ORDER` 含第八節、`periodIndex`）；多節代課的兩處排序改用它；`recommendationEngine.js` 改從它匯出，對外名稱不變。
+- **設定讀取重試**（PL-03）：`getGrade9Config` 與 `getSettlementConfig` 共用 `getDocDataWithRetry`（unavailable 重試 3 次，其他錯誤立即丟出）。
+- **備份還原**（PL-10a/b/c/d、PL-24）：還原教師只寫欄位白名單（白名單是前端實際會寫的教師欄位聯集，也涵蓋 rules v2.16 的組長 patch 白名單；rules 對教師檔 create 本身沒有欄位白名單，這是還原端自己的保守過濾）；正式執行前重算計畫時若目前學期與預覽不同即中止並請重新預覽；還原失敗訊息改為中文（`friendlyErrorDetail`，不顯示 SDK 英文）；備份裡的月結算設定比雲端舊（以 updatedAt 判斷）時預設不覆寫，預覽多一個勾選項，勾選後才覆寫（若這是唯一的差異，勾選才會解除「開始還原」鈕，說明文字也不再說「沒有需要還原的項目」；驗收修正）；備份與還原納入 `config/grade9`（含雲端較新時不覆寫），格式版本 2 僅在含 grade9 時寫入，舊格式備份（沒有 grade9）可照常驗證與還原，且內容雜湊不變。順手修正還原預覽「學校設定」備份筆數恆為 2 的計數錯誤。**未改 rules**。
+- **九年級設定**（PL-18、PL-21）：只有「九年級目前是否被排除」的實際狀態改變、且已有選課時，才重設步驟三之後的選擇（課程、假別與字號、代課教師，異動類型回到代課），提示文字說明這些；改生效日、重存同樣的值、雲端同步回來狀態沒變都不會重設；生效日在未來時，V2 開關維持勾選並顯示「已設定，X 月 X 日生效」。
+- **逐人門檻存檔**（PL-20）：存檔前重讀雲端，與載入時的值做三方合併，只套用自己改過的人，不覆寫另一位 approver 剛存的值。合併語意：雙方改同一人，後存的贏；我刪除 A、另一方同時改 A，A 被刪除；另一方刪除 A、我同時改 A，A 會被加回。重讀到寫入之間仍有極短視窗，未改 transaction。
+- **證明文號假別**（PL-23）：`leaveTypes.js` 新增 `requiresDocNumber`，app.js 四處寫死清單改讀它；新假別是否要求證明文號待使用者決定，維持現有行為（不要求），已寫註解。
+- **測試與版本**：新增 `test/test-p9c-frontend.mjs` 與 `test/test-p9c-restore-flow.mjs`（直接執行 `runRestoreFlow`，以假 SDK 與對話框替身驗證 PL-10b、PL-10d，已做變異測試確認條件被拿掉會失敗；helpers 為 `restore-flow-loader.mjs`、`richdialog-stub.mjs`），都掛進 `npm test`；`test-backup-restore.mjs` 中「批次失敗錯誤訊息」斷言由英文原文改為中文（PL-10c 的預期變更）；`app.js`、`v2-app.js` 快取參數升為 1.14.7、0.1.19。驗收後補修：`updateScheduleEntry`／`removeScheduleEntry` 的 className 為空字串視同省略（課表列沒有班級時不致無動作）；teacherMerge 新名冊姓名與既有某筆原字串完全相同時優先用那一筆，不算歧義；新假別不要求證明文號已由使用者於 2026-11-18 決定；docs/DEPLOYMENT.md 補備份格式 formatVersion 2 的部署提醒。
+
+---
+
 ## [2026-11-18] 資安審計 P9 批次 B（純邏輯模組，尚未部署）
 
 - **教師姓名比對用正規化**（LC-M2、LC-L10）：新增 `teacherName.js` 的 `normalizeTeacherName`（NFKC、去零寬字元、CJK 字之間的空白去除、西文姓名內單一空格保留）。**只用於比對，絕不改寫存檔的姓名**：課表解析與新增教師仍存原字串（只 trim），因為名冊、紀錄、rules 的自我調課姓名檢查（isSelfSwapNamesOk）、`importFromLegacyTeachers`、刪除教師前的有課檢查、`getTeacherWeeklyHours` 都以儲存的姓名精確比對，改寫會讓它們對不上（驗收發現後由「寫入正規化姓名」改為此做法）。專案目前有**兩套**比對用正規化：本檔（較寬鬆）用於 V1 推薦與衝堂判斷、新增教師防重、重匯名冊合併；`v2/teacherIdentity.js` 與 `settlementCalculator.js` 的 `normName`（全形空白轉半形＋trim，較嚴）用於姓名到 teacherId 的解析與月結算。後兩者未併入新函式，避免動到月結算黃金值。括號註記（「李小華(代理)」）不自動合併。

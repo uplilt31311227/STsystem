@@ -262,8 +262,8 @@ const val = await fmt.parseAndValidateBackupText(built.text, { schoolId: 't' });
     const report = await svc.executeRestore({ backup: val.backup, plan, cloud: cloudNow, me: null });
     const st = report.stages.find(s => s.key === 'records');
     const BATCH = svc.RESTORE_RECORD_BATCH;
-    check(`B 批次失敗：records 階段 failed、已完成 ${2 * BATCH} 筆（前兩批，每批 ${BATCH}）、錯誤訊息保留`,
-        !report.ok && st.status === 'failed' && st.done === 2 * BATCH && st.planned === 650 && /simulated/.test(st.error), JSON.stringify(st));
+    check(`B 批次失敗：records 階段 failed、已完成 ${2 * BATCH} 筆（前兩批，每批 ${BATCH}）、錯誤訊息轉成中文（PL-10c，不顯示 SDK 英文）`,
+        !report.ok && st.status === 'failed' && st.done === 2 * BATCH && st.planned === 650 && st.error === '無法連到伺服器' && !/simulated/.test(st.error), JSON.stringify(st));
     const text2 = svc.describeRestoreReport(report);
     check(`B 失敗報告白話：列出已完成 ${2 * BATCH}／650 並提示可重跑`, text2.includes(`已完成 ${2 * BATCH}／650`) && text2.includes('可以再執行一次'));
     const written = [...F.docs.keys()].filter(k => /\/substituteRecords\/[^/]+$/.test(k)).length;

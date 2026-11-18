@@ -15,11 +15,17 @@
  *   family      家庭照顧假：併入事假計算，扣
  *   menstrual   生理假：併入病假計算，扣
  * 未知的假別代碼或缺假別一律扣（維持既有行為）。
+ *
+ * requiresDocNumber: true = 申請時必須填字號／證明文號（申請表單、送出檢核、紀錄詳情顯示都讀這個欄位）。
+ * 目前只有公假、長期病假、喪假要求，這是既有行為，維持不變。
+ * 新增的婚假、產假、陪產假、公傷假、流產假是否要求證明文號：使用者已於 2026-11-18 決定「不要求」
+ * （沒有 requiresDocNumber 欄位＝不要求）。日後若要改，只需在對應項目加上
+ *   requiresDocNumber: true，並在 app.js 的 onLeaveTypeChanged 與紀錄詳情補上標籤與提示文字（審計 PL-23）。
  */
 export const LEAVE_TYPES = [
-    { code: 'official',    label: '公假',           deduct: false, group: 'paid' },
-    { code: 'longsick',    label: '長期病假',       deduct: false, group: 'paid' },
-    { code: 'funeral',     label: '喪假',           deduct: false, group: 'paid' },
+    { code: 'official',    label: '公假',           deduct: false, group: 'paid', requiresDocNumber: true },
+    { code: 'longsick',    label: '長期病假',       deduct: false, group: 'paid', requiresDocNumber: true },
+    { code: 'funeral',     label: '喪假',           deduct: false, group: 'paid', requiresDocNumber: true },
     { code: 'marriage',    label: '婚假',           deduct: false, group: 'paid', isNew: true },
     { code: 'maternity',   label: '產假',           deduct: false, group: 'paid', isNew: true },
     { code: 'paternity',   label: '陪產假',         deduct: false, group: 'paid', isNew: true },
@@ -47,6 +53,12 @@ export function noDeductCodesAndLabels() {
 /** 以代碼或中文名稱找假別，找不到回 null。 */
 export function findLeaveType(codeOrLabel) {
     return LEAVE_TYPES.find(t => t.code === codeOrLabel || t.label === codeOrLabel) || null;
+}
+
+/** 這個假別申請時是否必須填字號／證明文號（代碼或中文名稱皆可；未知假別回 false）。 */
+export function requiresDocNumber(codeOrLabel) {
+    const t = findLeaveType(codeOrLabel);
+    return !!(t && t.requiresDocNumber === true);
 }
 
 export function leaveTypeLabel(code) {

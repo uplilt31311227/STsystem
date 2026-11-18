@@ -29,3 +29,19 @@ export function buildGrade9Config(currentSemesterId, enabled, effectiveDate) {
     }
     return { semesterId: String(currentSemesterId || ''), enabled: !!enabled, effectiveDate: eff };
 }
+
+/**
+ * 已設定但生效日在未來時，開關旁顯示的文字（審計 PL-21）。
+ * 開關是否勾選看「有沒有設定」，不看「現在是否生效」；尚未生效時另外用這行字說明，
+ * 避免組長設定好之後看到開關是未勾，以為沒存成功。
+ * @param {boolean} enabled - 設定是否啟用
+ * @param {string} effectiveDate - YYYY-MM-DD 或空白
+ * @param {boolean} active - 目前是否已生效（isGrade9GraduationActive 的結果）
+ * @returns {string} 未生效時的說明；其他情況回傳空字串
+ */
+export function grade9PendingLabel(enabled, effectiveDate, active) {
+    if (!enabled || active) return '';
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(effectiveDate || ''));
+    if (!m) return '';
+    return `已設定，${Number(m[2])} 月 ${Number(m[3])} 日生效`;
+}

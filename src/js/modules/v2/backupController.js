@@ -20,7 +20,7 @@ import { openRichDialog, rdText, rdHeading, rdList, rdNotice, rdTable } from '..
 import {
     buildBackupFile, serializeBackup, backupFileName, parseAndValidateBackupText,
     cloudStateFromSections, planRestore, summarizeRestorePlan, countPlannedWrites,
-    restrictPlanToPreview, resolveCurrentSemester, backupErrorMessage,
+    restrictPlanToPreview, resolveCurrentSemester, backupErrorMessage, semesterChangedSincePreview,
 } from './backupFormat.js';
 import { collectCloudBackupSections, executeRestore, describeRestoreReport, readArchivedSemesterIds } from './backupService.js';
 
@@ -201,7 +201,7 @@ export function renderBackupAdmin(app) {
 
 /* ===== 還原流程 ===== */
 
-async function runRestoreFlow(app, file, say) {
+export async function runRestoreFlow(app, file, say) {
     if (!roleSvc.isSignedIn() || !roleSvc.isDirector()) {
         notify('僅教務主任可執行還原', 'error');
         return;
@@ -255,7 +255,9 @@ async function runRestoreFlow(app, file, say) {
             ]),
             rdHeading('各集合與雲端現況'),
             rdTable(['集合', '備份檔', '雲端現有', '將還原', '說明'], rows),
-            writes === 0
+            writes === 0 && plan.config.settlementBackupOlder
+                ? rdNotice('warn', '這份備份裡沒有雲端缺少的項目；唯一的差異是月結算設定（備份檔的比雲端現有的舊）。預設不會覆寫，要用備份檔的月結算設定請勾選下方的選項，勾選後才能按「開始還原」。')
+                : writes === 0
                 ? rdNotice('warn', '這份備份裡沒有任何需要還原的項目（雲端已經有相同內容，或剩下的都是規則不允許還原的資料）。')
                 : rdNotice('danger', '還原只會「補回雲端缺少的資料」並取代目前學期的課表，不會刪除雲端現有的任何紀錄。目前學期的課表被取代前，系統會自動存一份「匯入前自動備份」到課表匯入紀錄。'),
             ...(plan.teachers.createList.length ? [
@@ -268,6 +270,14 @@ async function runRestoreFlow(app, file, say) {
         ].join('');
 
         const emailOpt = { checked: false };
+        const settlementOpt = { checked: false };
+        // PL-10d：備份裡的月結算設定比雲端舊時，預設不覆寫，使用者勾選後才覆寫。
+        // 若這是唯一的差異（writes === 0），勾選本身就是要執行的動作，所以勾選才解除確認鈕（enablesConfirm）
+        const extraOptions = plan.config.settlementBackupOlder ? [{
+            label: '備份檔裡的月結算設定比雲端現有的舊。勾選後才會用備份檔的月結算設定（上課週數、逐人門檻）覆寫雲端較新的設定；不勾選則保留雲端現有設定。',
+            ref: settlementOpt,
+            enablesConfirm: true,
+        }] : [];
         const confirmed = await openRichDialog({
             title: '確認還原備份',
             target: `還原到學校：${schoolId}`,
@@ -281,6 +291,7 @@ async function runRestoreFlow(app, file, say) {
                 optionLabel: '同時把上列教師的原信箱與登入綁定（emailIndex）一併恢復。不勾選時，教師檔會補回但信箱欄位留空，他們暫時無法登入。',
                 optionRef: emailOpt,
             } : {}),
+            extraOptions,
         });
         if (!confirmed) { notify('已取消還原，雲端資料沒有變動', 'info'); return; }
 
@@ -306,7 +317,18 @@ async function runRestoreFlow(app, file, say) {
         const freshCloud = cloudStateFromSections(pre.backup);
         freshCloud.archivedSemesterIds = await readArchivedSemesterIds();
         const freshSemesterId = resolveCurrentSemester(freshCloud, backup) || currentSemesterId;
-        const recomputed = planRestore({ backup, cloud: freshCloud, currentSemesterId: freshSemesterId, restoreEmailIndex: emailOpt.checked });
+        // PL-10b：預覽之後目前學期變了（別台裝置切換學期），預覽的清單已不適用，中止並請重新預覽
+        if (semesterChangedSincePreview(currentSemesterId, freshSemesterId)) {
+            say('');
+            await app?.confirmDialog?.({
+                title: '還原已中止',
+                message: `預覽之後雲端的目前學期已從 ${currentSemesterId} 變成 ${freshSemesterId}，預覽的內容已不適用。沒有寫入任何資料，請重新選擇備份檔、重新預覽後再還原。
+（還原前的備份已下載：${pre.fileName.replace('.json', '_還原前.json')}）`,
+                confirmText: '我知道了', cancelText: '關閉',
+            });
+            return;
+        }
+        const recomputed = planRestore({ backup, cloud: freshCloud, currentSemesterId: freshSemesterId, restoreEmailIndex: emailOpt.checked, overwriteNewerSettlement: settlementOpt.checked });
         // 補回的教師只限預覽列過的；重算後多出來的不補回，請使用者重新執行以檢視
         const { plan: freshPlan, dropped: droppedTeachers } = restrictPlanToPreview(recomputed, plan);
 

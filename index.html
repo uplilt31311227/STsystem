@@ -717,6 +717,7 @@
                         <div class="form-group form-group-inline v2-only mt-2" id="grade9-effective-wrap">
                             <label for="grade9-effective-date">生效日期（可留空）</label>
                             <input type="date" id="grade9-effective-date">
+                            <span class="hint hidden" id="grade9-status" role="status" aria-live="polite"></span>
                             <span class="hint">此設定存在雲端、只在設定當時的學期有效，換學期後自動恢復為未畢業；這個設定影響的是推薦與衝堂判斷；月結算不套用九年級設定，原定時數仍依課表照算。生效日期之前，推薦與衝堂判斷仍把九年級課程計入。</span>
                         </div>
                     </div>
@@ -1071,8 +1072,8 @@
          Firebase <script> 標籤——比照既有 Auth/Firestore SDK 的載入方式，見該檔
          initializeFirebase()、RECAPTCHA_V3_SITE_KEY 常數與 docs/STAGE4-DEPLOY.md
          「App Check 啟用步驟」。 -->
-    <script type="module" src="src/js/app.js?v=1.14.6"></script>
+    <script type="module" src="src/js/app.js?v=1.14.7"></script>
     <!-- V2 權限系統（?v2=1 或預覽站才啟用；對穩定版無影響） -->
-    <script type="module" src="src/js/v2-app.js?v=0.1.18"></script>
+    <script type="module" src="src/js/v2-app.js?v=0.1.19"></script>
 </body>
 </html>

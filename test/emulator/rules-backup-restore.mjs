@@ -94,6 +94,7 @@ async function readPrivate(path, user) {
 async function collectSections(user, { details = true, imports = true } = {}) {
     const cfgMain = (await getDoc(CFG, as(user)));
     const cfgSet = (await getDoc(`${ROOT}/config/settlement`, as(user)));
+    const cfgG9 = (await getDoc(`${ROOT}/config/grade9`, as(user)));   // PL-24：有文件才帶（沒有就省略鍵）
     const teachers = await readAllPaged('teachers', user);
     const schedules = await readAllPaged('schedules', user, { pageSize: 1 });
     const scheduleImports = [];
@@ -115,7 +116,7 @@ async function collectSections(user, { details = true, imports = true } = {}) {
         pending = pending.map(r => ({ ...r, private: null }));
     }
     return {
-        config: { main: cfgMain.ok ? cfgMain.data : null, settlement: cfgSet.ok ? cfgSet.data : null },
+        config: { main: cfgMain.ok ? cfgMain.data : null, settlement: cfgSet.ok ? cfgSet.data : null, ...(cfgG9.ok && cfgG9.data ? { grade9: cfgG9.data } : {}) },
         teachers, schedules, scheduleImports, substituteRecords: records, pendingRequests: pending,
     };
 }
@@ -174,7 +175,9 @@ async function restoreTeachersREST(user, backup, plan, { legacyKeepEmail = false
     for (const c of chunk(backup.teachers.filter(t => plan.teachers.create.includes(t.id)), RESTORE_TEACHER_BATCH)) {
         const writes = [];
         for (const t of c) {
-            writes.push({ set: `${ROOT}/teachers/${t.id}`, data: withLogin || legacyKeepEmail ? t.data : { ...t.data, email: null } });
+            // PL-10a：與 backupService.restoreTeachers 相同，只寫教師欄位白名單（驗證白名單的欄位 rules 都收）
+            const fields = fmt.pickTeacherFields(t.data);
+            writes.push({ set: `${ROOT}/teachers/${t.id}`, data: withLogin || legacyKeepEmail ? fields : { ...fields, email: null } });
             if (withLogin && t.data.email) writes.push({ set: `${ROOT}/emailIndex/${String(t.data.email).toLowerCase()}`, data: { teacherId: t.id } });
         }
         allowed(await commitBatch(writes, as(user)), '還原教師批次');
@@ -185,6 +188,11 @@ async function restoreTeachersREST(user, backup, plan, { legacyKeepEmail = false
 await mustSetDoc(`${ROOT}/config/settlement`, {
     calendarId: 'cal-1', calendarApiKey: 'key-1', weeksByYear: { 114: { 9: 4 } },
     updatedAt: iso(-1000), updatedBy: dir.email,
+});
+
+// PL-24：九年級畢業設定（config/grade9）一併納入備份
+await mustSetDoc(`${ROOT}/config/grade9`, {
+    semesterId, enabled: true, effectiveDate: '2099-01-02', updatedAt: iso(-900), updatedBy: dir.email,
 });
 
 const nRecCur = fixture.substituteRecords.length;
@@ -207,7 +215,8 @@ await suite.case('(e) 主任匯出：兩個學期的紀錄、private/detail、�
     eq(counts.pendingRequestDetails, nPendingDetails, '待審 private/detail 筆數');
     eq(counts.teachers, fixture.teachers.length, '教師筆數');
     eq(counts.schedules, 2, '課表份數（目前＋歷史學期）');
-    eq(counts.configDocs, 2, 'config／settlement');
+    eq(counts.configDocs, 3, 'config／settlement／grade9');
+    ok(original.config.grade9 && original.config.grade9.enabled === true, '匯出含 config/grade9（PL-24）');
     ok(original.substituteRecords.some(r => r.data.semesterId === prevSemester), '含歷史學期紀錄');
     ok(original.substituteRecords.some(r => r.data.semesterId === semesterId), '含目前學期紀錄');
     ok(original.substituteRecords.some(r => r.private && r.private.leaveType), '含 private/detail 內容（假別）');
@@ -282,6 +291,7 @@ await suite.case('(f) 模擬清除所有資料＋誤刪教師後，以備份還�
     }
     await mustSetDoc(SCHED(semesterId), { scheduleData: [], teachers: [], classes: [], subjectDomainMap: {}, schoolName: '', updatedAt: iso(), version: 9 });
     await deleteDoc(`${ROOT}/config/settlement`);
+    await deleteDoc(`${ROOT}/config/grade9`);
 
     // --- 還原（director；寫入形狀同 backupService.restore*）---
     const v = await fmt.parseAndValidateBackupText(fmt.serializeBackup(backupObj), { schoolId: SCHOOL });
@@ -301,6 +311,12 @@ await suite.case('(f) 模擬清除所有資料＋誤刪教師後，以備份還�
     allowed(await setDoc(`${ROOT}/config/settlement`, {
         calendarId: s.calendarId, calendarApiKey: s.calendarApiKey, weeksByYear: s.weeksByYear, updatedAt: iso(), updatedBy: dir.email,
     }, as(dir)), '還原 settlement');
+    // PL-24：還原 config/grade9（形狀同 backupService.restoreConfig → saveGrade9Config；rules v2.15 欄位白名單與型別檢查）
+    eq(plan.config.grade9, 'create', '計畫：雲端沒有 grade9 → create');
+    const g = backup.config.grade9;
+    allowed(await setDoc(`${ROOT}/config/grade9`, {
+        semesterId: g.semesterId, enabled: g.enabled === true, effectiveDate: g.effectiveDate || '', updatedAt: iso(), updatedBy: dir.email,
+    }, as(dir)), '還原 config/grade9（主任）');
     const bkSched = backup.schedules.find(x => x.id === semesterId).data;
     const { updatedAt: _u, version: _v, ...schedRest } = bkSched;
     const cur = (await getDoc(SCHED(semesterId))).data;
@@ -330,6 +346,7 @@ await suite.case('(f) 模擬清除所有資料＋誤刪教師後，以備份還�
     const S0 = original.schedules.find(x => x.id === semesterId).data, S1 = after.schedules.find(x => x.id === semesterId).data;
     ok(sameJson(S0.scheduleData, S1.scheduleData) && sameJson(S0.teachers, S1.teachers) && sameJson(S0.classes, S1.classes), '目前學期課表內容與原本一致');
     ok(after.config.settlement && after.config.settlement.calendarId === 'cal-1', 'settlement 已還原');
+    ok(after.config.grade9 && after.config.grade9.semesterId === semesterId && after.config.grade9.enabled === true && after.config.grade9.effectiveDate === '2099-01-02', 'config/grade9 已還原（PL-24）');
     ok((await getDoc(`${ROOT}/emailIndex/${removedTeachers.find(t => t.data.email).data.email}`)).ok, '勾選還原：emailIndex 已重建');
 });
 

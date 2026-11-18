@@ -3326,6 +3326,7 @@ async function applyGrade9FromCloud() {
     if (toggle) toggle.checked = sameSemester && cfg.enabled === true;
     const dateEl = document.getElementById('grade9-effective-date');
     if (dateEl) dateEl.value = sameSemester ? (cfg.effectiveDate || '') : '';
+    try { window.app.updateGrade9StatusLabel?.(); } catch (_) { /* 說明文字失敗不影響設定套用 */ }
     try { window.app.refreshGrade9DependentUI?.(); } catch (_) { /* 畫面刷新失敗不影響設定套用 */ }
 }
 

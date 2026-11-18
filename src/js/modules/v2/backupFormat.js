@@ -15,13 +15,15 @@
  *     excluded:[ 不在備份內的資料清單 ],
  *     contentHash: 'sha256:<hex>'    // 對下列六個區段（固定順序）的 JSON 計算，供還原前檢查檔案完整
  *   },
- *   config:           { main: {...}|null, settlement: {...}|null },
+ *   config:           { main: {...}|null, settlement: {...}|null, grade9?: {...} },   // grade9 為 formatVersion 2 新增，沒有該文件時整個鍵省略
  *   teachers:         [ { id, data } ],
  *   schedules:        [ { id: semesterId, data } ],
  *   scheduleImports:  [ { semesterId, id, data }  ]   // 只有中繼資料，不含快照
  *   substituteRecords:[ { id, data, private: {...}|null } ],
  *   pendingRequests:  [ { id, data, private: {...}|null } ]
  * }
+ * formatVersion：備份含 config/grade9 時寫 2，否則寫 1（舊版系統仍讀得懂沒有新內容的備份）；
+ * 本系統兩種都能讀（舊格式備份沒有 grade9，還原時不動雲端的九年級設定）。
  * data 是 Firestore 文件的原始欄位（不含 id）；private 是 private/detail 子文件。
  */
 
@@ -31,7 +33,8 @@ import { dateToSemesterId, semesterOrdinal } from './semesterUtils.js';
 const SEMESTER_STD_RE = /^[0-9]{2,3}-[12]$/;
 
 export const BACKUP_FORMAT = 'stsystem-cloud-backup';
-export const BACKUP_FORMAT_VERSION = 1;
+/** 本系統能讀的最高格式版本（2：新增 config/grade9）。 */
+export const BACKUP_FORMAT_VERSION = 2;
 
 /** 備份檔刻意不含的資料（寫進 meta.excluded，使用者與日後的人都看得到） */
 export const BACKUP_EXCLUDED = Object.freeze([
@@ -47,8 +50,12 @@ const SECTION_KEYS = ['config', 'teachers', 'schedules', 'scheduleImports', 'sub
 /** 補齊缺漏區段並固定順序，確保雜湊與序列化結果穩定。 */
 export function normalizeSections(sections = {}) {
     const cfg = sections.config || {};
+    // grade9 只在有內容時才出現：舊格式備份的內容雜湊是對「只有 main、settlement」的 config 算的，
+    // 補一個 grade9: null 會讓舊備份的雜湊對不上而被拒絕還原。
+    const config = { main: cfg.main ?? null, settlement: cfg.settlement ?? null };
+    if (cfg.grade9) config.grade9 = cfg.grade9;
     return {
-        config: { main: cfg.main ?? null, settlement: cfg.settlement ?? null },
+        config,
         teachers: Array.isArray(sections.teachers) ? sections.teachers : [],
         schedules: Array.isArray(sections.schedules) ? sections.schedules : [],
         scheduleImports: Array.isArray(sections.scheduleImports) ? sections.scheduleImports : [],
@@ -68,7 +75,7 @@ export function countSections(sections) {
         substituteRecordDetails: s.substituteRecords.filter(r => r && r.private).length,
         pendingRequests: s.pendingRequests.length,
         pendingRequestDetails: s.pendingRequests.filter(r => r && r.private).length,
-        configDocs: (s.config.main ? 1 : 0) + (s.config.settlement ? 1 : 0),
+        configDocs: (s.config.main ? 1 : 0) + (s.config.settlement ? 1 : 0) + (s.config.grade9 ? 1 : 0),
     };
 }
 
@@ -106,7 +113,7 @@ export async function buildBackupFile({ schoolId, exportedAt, exportedBy = null,
     const s = normalizeSections(sections);
     return {
         format: BACKUP_FORMAT,
-        formatVersion: BACKUP_FORMAT_VERSION,
+        formatVersion: s.config.grade9 ? 2 : 1,
         meta: {
             schoolId,
             exportedAt: exportedAt || new Date().toISOString(),
@@ -311,6 +318,7 @@ export function cloudStateFromSections(sections) {
         teachers: s.teachers.map(t => ({ id: t.id, email: t.data && t.data.email ? t.data.email : null })),
         configMainExists: !!s.config.main,
         settlement: s.config.settlement || null,
+        grade9: s.config.grade9 || null,
         schedules,
         recordIds: s.substituteRecords.map(r => r.id),
         pendingIds: s.pendingRequests.map(r => r.id),
@@ -356,12 +364,58 @@ export function normalizeTeacherEmail(email) {
     return email.trim().toLowerCase() || null;
 }
 
-export function planRestore({ backup, cloud, currentSemesterId, restoreEmailIndex = false }) {
+/**
+ * 教師檔還原時允許寫入的欄位（審計 PL-10a）。這份白名單是「前端實際會寫的教師欄位」的聯集
+ * （createTeacher／updateTeacher／authGuardV2）：
+ *   name、email、domains、homeroomClass、role、partTime、createdAt、updatedAt、authProvider；
+ * 同時也涵蓋 firestore.rules v2.16 的組長改教師檔欄位白名單（domains／homeroomClass／partTime／updatedAt）。
+ * 注意 rules 對教師檔 create 本身沒有欄位白名單（v2.16 只限制組長的 patch），所以這裡不是複製 rules，
+ * 而是還原端自己的保守過濾。備份檔若被手改或來自較新版本而帶了其他欄位，一律剔除，不原樣寫回雲端。
+ */
+export const TEACHER_RESTORE_FIELDS = Object.freeze(['name', 'email', 'domains', 'homeroomClass', 'role', 'partTime', 'createdAt', 'updatedAt', 'authProvider']);
+
+/** 只保留白名單內的教師欄位。 */
+export function pickTeacherFields(data) {
+    const out = {};
+    if (!data || typeof data !== 'object') return out;
+    // 依 data 自己的欄位順序走一遍、只留白名單內的（保持欄位順序與原文件一致）
+    for (const k of Object.keys(data)) {
+        if (TEACHER_RESTORE_FIELDS.includes(k) && data[k] !== undefined) out[k] = data[k];
+    }
+    return out;
+}
+
+/** 設定文件的 updatedAt 轉毫秒；缺漏或無法解析回 null。 */
+function tsOf(doc) {
+    const t = doc && typeof doc.updatedAt === 'string' ? Date.parse(doc.updatedAt) : NaN;
+    return Number.isFinite(t) ? t : null;
+}
+
+/**
+ * 備份裡的設定比雲端舊嗎（以 updatedAt 判斷）？雲端沒有 updatedAt 視為不比較（回 false，沿用原行為）；
+ * 雲端有、備份沒有或無法解析，保守視為備份較舊。
+ */
+export function isBackupConfigOlder(backupDoc, cloudDoc) {
+    const c = tsOf(cloudDoc);
+    if (c === null) return false;
+    const b = tsOf(backupDoc);
+    return b === null || b < c;
+}
+
+/**
+ * 預覽之後目前學期變了嗎（審計 PL-10b）：正式執行前重算計畫時比對。不同就必須中止並請使用者重新預覽，
+ * 否則預覽看到的「將還原」清單是依舊學期算的。
+ */
+export function semesterChangedSincePreview(previewSemesterId, freshSemesterId) {
+    return !!previewSemesterId && !!freshSemesterId && previewSemesterId !== freshSemesterId;
+}
+
+export function planRestore({ backup, cloud, currentSemesterId, restoreEmailIndex = false, overwriteNewerSettlement = false }) {
     const b = normalizeSections(backup);
     const plan = {
         currentSemesterId,
         teachers: { backup: b.teachers.length, cloud: cloud.teachers.length, create: [], createList: [], restoreEmailIndex: !!restoreEmailIndex, existingId: 0, emailTaken: [], emailCleared: [] },
-        config: { main: 'none', settlement: 'none' },
+        config: { main: 'none', settlement: 'none', settlementBackupOlder: false, grade9: 'none' },
         schedules: [],
         records: { backup: b.substituteRecords.length, cloud: cloud.recordIds.length, create: [], exists: 0, historical: 0, noSemester: 0, mismatch: 0, mismatchSkipped: 0, relabel: {} },
         pending: { backup: b.pendingRequests.length, cloud: cloud.pendingIds.length, exists: 0, notRestored: 0 },
@@ -389,7 +443,20 @@ export function planRestore({ backup, cloud, currentSemesterId, restoreEmailInde
 
     // 設定
     if (b.config.main) plan.config.main = cloud.configMainExists ? 'skip-exists' : 'create';
-    if (b.config.settlement) plan.config.settlement = sameJson(stripVolatile(b.config.settlement), stripVolatile(cloud.settlement)) ? 'same' : 'overwrite';
+    if (b.config.settlement) {
+        if (sameJson(stripVolatile(b.config.settlement), stripVolatile(cloud.settlement))) plan.config.settlement = 'same';
+        else if (cloud.settlement && isBackupConfigOlder(b.config.settlement, cloud.settlement)) {
+            // PL-10d：備份比雲端舊，預設不覆寫；使用者在預覽勾選後才覆寫
+            plan.config.settlementBackupOlder = true;
+            plan.config.settlement = overwriteNewerSettlement ? 'overwrite' : 'skip-newer';
+        } else plan.config.settlement = 'overwrite';
+    }
+    // PL-24：九年級畢業設定。雲端較新時不覆寫（不提供勾選：這項設定每學期都會重設，舊值沒有保留價值）
+    if (b.config.grade9) {
+        if (sameJson(stripVolatile(b.config.grade9), stripVolatile(cloud.grade9))) plan.config.grade9 = 'same';
+        else if (!cloud.grade9) plan.config.grade9 = 'create';
+        else plan.config.grade9 = isBackupConfigOlder(b.config.grade9, cloud.grade9) ? 'skip-newer' : 'overwrite';
+    }
 
     // 課表
     for (const s of b.schedules) {
@@ -479,6 +546,12 @@ export function describeNotRestored(plan) {
     if (plan.teachers.create.length && !plan.teachers.restoreEmailIndex) {
         out.push(`教師的登入信箱與登入綁定（emailIndex）：補回的 ${plan.teachers.create.length} 位教師只恢復教師檔，信箱欄位會留空、不恢復登入綁定，他們暫時無法登入；如需恢復請在預覽勾選，或之後由教務主任到教師管理逐一填回信箱。`);
     }
+    if (plan.config.settlement === 'skip-newer') {
+        out.push('月結算設定：雲端的設定比備份檔新，預設不覆寫（避免把較新的上課週數、逐人門檻改回舊值）；要用備份檔的設定請在預覽勾選覆寫。');
+    }
+    if (plan.config.grade9 === 'skip-newer') {
+        out.push('九年級畢業設定（config/grade9）：雲端的設定比備份檔新，不覆寫。');
+    }
     if (plan.config.main === 'skip-exists') {
         out.push('學校基本設定（config/main）：雲端已有設定，不覆寫（避免誤切目前學期或改動主任白名單）。');
     }
@@ -537,8 +610,35 @@ export function backupErrorMessage(err, kind) {
             default: return `無法連到伺服器，備份沒有產生。${retry}`;
         }
     }
-    const detail = (err && (err.message || err.code)) || '發生未知錯誤';
-    return `${GENERIC_WHY[kind] || '備份失敗'}：${detail}`;
+    return `${GENERIC_WHY[kind] || '備份失敗'}：${friendlyErrorDetail(err)}`;
+}
+
+const CJK_RE = /[㐀-鿿]/;
+const CODE_TEXT = {
+    'permission-denied': '安全規則拒絕了這次寫入（權限不足，或資料不符合規則）',
+    unavailable: '無法連到伺服器',
+    'deadline-exceeded': '伺服器回應逾時',
+    aborted: '寫入與其他人的變更衝突，已中止',
+    'failed-precondition': '資料狀態已改變，不符合寫入的前置條件',
+    'already-exists': '資料已存在',
+    'not-found': '找不到要寫入的資料',
+    'resource-exhausted': '超過使用額度或單次寫入上限',
+    unauthenticated: '登入已失效，請重新登入',
+    'invalid-argument': '資料格式不被接受',
+    cancelled: '操作被取消',
+    internal: '伺服器內部錯誤',
+};
+
+/**
+ * 把例外轉成給使用者看的中文（審計 PL-10c）：SDK 的英文訊息不直接顯示。
+ * 訊息本身含中文（本系統自己丟的錯誤）原樣保留；否則依 Firestore 錯誤代碼對照，對不上就只顯示代碼。
+ */
+export function friendlyErrorDetail(err) {
+    const msg = String((err && err.message) || '');
+    if (msg && CJK_RE.test(msg)) return msg;
+    const code = String((err && err.code) || '').replace(/^firestore\//, '');
+    if (CODE_TEXT[code]) return CODE_TEXT[code];
+    return code ? `發生未預期的錯誤（代碼：${code}）` : '發生未預期的錯誤';
 }
 
 /** 這份計畫實際會寫入多少東西（0 代表沒有需要還原的）。 */
@@ -546,6 +646,7 @@ export function countPlannedWrites(plan) {
     return plan.teachers.create.length
         + (plan.config.main === 'create' ? 1 : 0)
         + (plan.config.settlement === 'overwrite' ? 1 : 0)
+        + (plan.config.grade9 === 'create' || plan.config.grade9 === 'overwrite' ? 1 : 0)
         + plan.schedules.filter(s => s.action === 'overwrite' || s.action === 'create').length
         + plan.records.create.length;
 }
@@ -555,8 +656,9 @@ export function summarizeRestorePlan(plan) {
     const scheduleWritable = plan.schedules.filter(s => s.action === 'overwrite' || s.action === 'create').length;
     return [
         { label: '教師名冊', backup: plan.teachers.backup, cloud: plan.teachers.cloud, willRestore: plan.teachers.create.length, note: '只補回雲端沒有的教師' },
-        { label: '學校設定', backup: (plan.config.main ? 1 : 0) + (plan.config.settlement ? 1 : 0), cloud: null,
-          willRestore: (plan.config.main === 'create' ? 1 : 0) + (plan.config.settlement === 'overwrite' ? 1 : 0), note: '月結算設定以備份為準；基本設定雲端已有則不動' },
+        { label: '學校設定', backup: (plan.config.main !== 'none' ? 1 : 0) + (plan.config.settlement !== 'none' ? 1 : 0) + (plan.config.grade9 !== 'none' ? 1 : 0), cloud: null,
+          willRestore: (plan.config.main === 'create' ? 1 : 0) + (plan.config.settlement === 'overwrite' ? 1 : 0) + (plan.config.grade9 === 'create' || plan.config.grade9 === 'overwrite' ? 1 : 0),
+          note: '月結算設定與九年級設定以備份為準（雲端較新的預設不覆寫）；基本設定雲端已有則不動' },
         { label: '學期課表', backup: plan.schedules.length, cloud: null, willRestore: scheduleWritable, note: '只有目前學期可寫入，會取代現有課表（先自動留備份）' },
         { label: '調代課紀錄', backup: plan.records.backup, cloud: plan.records.cloud, willRestore: plan.records.create.length, note: '只補回雲端沒有、且規則允許的紀錄' },
         { label: '待審申請', backup: plan.pending.backup, cloud: plan.pending.cloud, willRestore: 0, note: '不還原（暫態資料）' },

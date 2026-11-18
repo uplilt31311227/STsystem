@@ -46,3 +46,24 @@ export async function prepareSettlementInputs({ calculator, dataManager, year, m
     };
     return { records, opts, semesterId };
 }
+
+/**
+ * 逐人超鐘點門檻的三方合併（審計 PL-20）：存檔前重讀雲端後，只套用「這位使用者自己改過的人」。
+ *   baseline = 使用者開啟（載入）設定頁時的值；edited = 使用者現在文字框解析出的值；cloud = 存檔前重讀的雲端值。
+ *   - edited 與 baseline 不同的人（新增、改值）：用 edited
+ *   - baseline 有、edited 沒有的人（使用者刪除）：從結果移除
+ *   - 其餘：保留 cloud 的值（含另一位 approver 剛新增或修改的人）
+ * 純函式，不修改傳入物件。
+ */
+export function mergeBaseMapEdits(baseline, edited, cloud) {
+    const base = baseline || {}, ed = edited || {};
+    const out = { ...(cloud || {}) };
+    for (const k of new Set([...Object.keys(base), ...Object.keys(ed)])) {
+        if (Object.prototype.hasOwnProperty.call(ed, k)) {
+            if (base[k] !== ed[k]) out[k] = ed[k];
+        } else {
+            delete out[k];
+        }
+    }
+    return out;
+}

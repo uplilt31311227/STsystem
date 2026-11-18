@@ -16,7 +16,7 @@ import { getV2Firestore } from './firebaseV2.js';
 import { SCHEMA_PATHS } from './schemaConstants.js';
 import * as dataSvc from './schoolDataService.js';
 import { buildPreImportBackup } from '../scheduleImportHistory.js';
-import { stripReservedFields, normalizeTeacherEmail } from './backupFormat.js';
+import { stripReservedFields, normalizeTeacherEmail, pickTeacherFields, friendlyErrorDetail } from './backupFormat.js';
 
 /** 各集合每頁筆數。課表文件可能接近 1MB，頁數開小一點以控制記憶體。 */
 export const PAGE_SIZES = Object.freeze({ default: 300, schedules: 5, imports: 20 });
@@ -104,9 +104,10 @@ export async function collectCloudBackupSections({ onProgress = null, includeDet
     const say = (m) => { if (onProgress) onProgress(m); };
 
     say('讀取學校設定…');
-    const [cfgMain, cfgSettlement] = await Promise.all([
+    const [cfgMain, cfgSettlement, cfgGrade9] = await Promise.all([
         readDocOrNull(SCHEMA_PATHS.config()),
         readDocOrNull(SCHEMA_PATHS.settlementConfig()),
+        readDocOrNull(SCHEMA_PATHS.grade9Config()),
     ]);
 
     say('讀取教師名冊…');
@@ -142,7 +143,8 @@ export async function collectCloudBackupSections({ onProgress = null, includeDet
     }
 
     return {
-        config: { main: cfgMain, settlement: cfgSettlement },
+        // grade9 沒有文件時整個鍵省略（見 backupFormat.normalizeSections 的雜湊相容說明）
+        config: { main: cfgMain, settlement: cfgSettlement, ...(cfgGrade9 ? { grade9: cfgGrade9 } : {}) },
         teachers, schedules, scheduleImports,
         substituteRecords: records,
         pendingRequests: pending,
@@ -168,7 +170,7 @@ export async function executeRestore({ backup, plan, cloud, me, onProgress = nul
     const say = (m) => { if (onProgress) onProgress(m); };
     const stages = [
         { key: 'teachers',  label: '教師名冊', planned: plan.teachers.create.length, done: 0, status: 'pending', error: null },
-        { key: 'config',    label: '學校設定', planned: (plan.config.main === 'create' ? 1 : 0) + (plan.config.settlement === 'overwrite' ? 1 : 0), done: 0, status: 'pending', error: null },
+        { key: 'config',    label: '學校設定', planned: (plan.config.main === 'create' ? 1 : 0) + (plan.config.settlement === 'overwrite' ? 1 : 0) + (plan.config.grade9 === 'create' || plan.config.grade9 === 'overwrite' ? 1 : 0), done: 0, status: 'pending', error: null },
         { key: 'schedules', label: '學期課表', planned: plan.schedules.filter(s => s.action === 'overwrite' || s.action === 'create').length, done: 0, status: 'pending', error: null },
         { key: 'records',   label: '調代課紀錄', planned: plan.records.create.length, done: 0, status: 'pending', error: null },
     ];
@@ -185,7 +187,7 @@ export async function executeRestore({ backup, plan, cloud, me, onProgress = nul
             st.status = 'done';
         } catch (e) {
             st.status = 'failed';
-            st.error = (e && e.message) || String(e);
+            st.error = friendlyErrorDetail(e);   // PL-10c：不把 SDK 英文原文給使用者
             stopped = true;
         }
     }
@@ -205,7 +207,8 @@ async function restoreTeachers(fs, backup, plan, st, say) {
             // 是否等於登入 email」，所以未勾選時連教師檔的 email 也寫成 null（與 createTeacher 的「無信箱」寫法一致）；
             // 原信箱只出現在預覽與結果訊息，由教務主任之後到教師管理填回（updateTeacher 會同時建立 emailIndex）。
             // 使用者在預覽明確勾選才連同 email 與 emailIndex 在同一批提交。
-            batch.set(fs.doc(fs.db, SCHEMA_PATHS.teacherDoc(t.id)), { ...t.data, email: withLogin ? email : null });
+            // PL-10a：只寫教師欄位白名單內的欄位（與 rules v2.16 一致），備份檔多出來的欄位不寫回
+            batch.set(fs.doc(fs.db, SCHEMA_PATHS.teacherDoc(t.id)), { ...pickTeacherFields(t.data), email: withLogin ? email : null });
             if (email && withLogin) batch.set(fs.doc(fs.db, SCHEMA_PATHS.emailIndexDoc(email)), { teacherId: t.id });
         }
         await batch.commit();
@@ -228,6 +231,16 @@ async function restoreConfig(fs, backup, plan, st, me, say) {
         await dataSvc.saveSettlementConfig(
             { calendarId: s.calendarId || '', calendarApiKey: s.calendarApiKey || '', weeksByYear: s.weeksByYear || {}, weeklyBaseByTeacher: s.weeklyBaseByTeacher || null },
             me?.email || me?.uid || null,
+        );
+        st.done++;
+    }
+    if (plan.config.grade9 === 'create' || plan.config.grade9 === 'overwrite') {
+        say('還原九年級畢業設定…');
+        const g = backup.config.grade9 || {};
+        // PL-24：欄位與型別依 rules（config/grade9 的 hasAll／型別檢查）整理；updatedAt 由 saveGrade9Config 重新蓋
+        await dataSvc.saveGrade9Config(
+            { semesterId: g.semesterId, enabled: g.enabled === true, effectiveDate: g.effectiveDate || '' },
+            me?.email || me?.uid || '',
         );
         st.done++;
     }

@@ -34,7 +34,7 @@ print("按 Ctrl+C 停止伺服器")
 # 自動開啟瀏覽器
 webbrowser.open(f'http://localhost:{PORT}')
 
-with socketserver.TCPServer(("", PORT), Handler) as httpd:
+with socketserver.TCPServer(("127.0.0.1", PORT), Handler) as httpd:
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

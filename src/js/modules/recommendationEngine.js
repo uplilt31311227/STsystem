@@ -15,6 +15,7 @@
  * （公平性 tie-break，不改分數、不會壓過上述任何一層），最後依姓名排序以保持穩定。
  */
 
+import { PERIOD_ORDER, periodIndex } from './periods.js';
 import { applySwapsToSchedule } from './slotOccupancy.js';
 import { normalizeTeacherName } from './teacherName.js';
 
@@ -161,12 +162,8 @@ export function findSwapDateConflict({ teacherA, dateA, periodA, teacherB, dateB
     return null;
 }
 
-/** 節次順序（排序用）；不在清單內的節次排最後，彼此維持原順序 */
-export const PERIOD_ORDER = ['第一節', '第二節', '第三節', '第四節', '第五節', '第六節', '第七節', '第八節'];
-export function periodIndex(period) {
-    const i = PERIOD_ORDER.indexOf(period);
-    return i < 0 ? PERIOD_ORDER.length : i;
-}
+/** 節次順序（排序用）；常數集中在 periods.js，這裡維持原匯出名稱以相容既有呼叫端 */
+export { PERIOD_ORDER, periodIndex };
 
 const CN_DIGITS = { '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9 };
 

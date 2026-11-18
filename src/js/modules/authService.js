@@ -75,7 +75,7 @@ async function initAuthService() {
     // 監聽認證狀態變更
     onAuthStateChanged(auth, (user) => {
         currentUser = user;
-        console.log('認證狀態變更:', user ? user.email : '未登入');
+        console.log('認證狀態變更:', user ? '已登入' : '未登入'); // 不印 email（審計 SF-L6）
 
         // 切換帳號偵測：同一瀏覽器上次登入的 uid 與這次不同 → 先清掉前一人的本機快取再繼續，
         // 不得讓 B 的畫面（離線快取、localStorage 課表鏡像）殘留 A 的資料。清完會整頁重新載入。
@@ -136,7 +136,7 @@ async function signInWithGoogle() {
         const result = await signInWithPopup(auth, provider);
         currentUser = result.user;
 
-        console.log('Google 登入成功:', currentUser.email);
+        console.log('Google 登入成功'); // 不印 email（審計 SF-L6）
 
         return {
             uid: currentUser.uid,
