@@ -17,6 +17,7 @@ import * as dataSvc    from './schoolDataService.js';
 import * as logger     from './operationLogger.js';
 import * as roleSvc    from './roleService.js';
 import { LOG_ACTIONS, LOG_TARGET_TYPES, ROLES, VALID_ROLES, normalizeRole } from './schemaConstants.js';
+import { normalizeTeacherName } from '../teacherName.js';
 
 /**
  * 測試替身掛鉤（僅供 Node 單元測試使用，見 test/test-roster-import.mjs）。
@@ -294,11 +295,14 @@ export async function createTeacher(payload) {
     const svc = __testHooks.dataSvc;
     const log = __testHooks.logger;
 
+    // 存檔姓名只 trim、不改寫（理由同 scheduleParser）；防重比對才用 normalizeTeacherName
     const name = String(payload?.name ?? '').trim();
     if (!name) throw new Error('教師姓名不可為空');
+    const nameKey = normalizeTeacherName(name);
 
     const existing = await svc.listTeachers();
-    if (existing.some(t => t.name === name)) {
+    // 兩邊都經共用正規化：既有「王大明 」、「李　小華」與新輸入的「王大明」、「李小華」要視為同一人
+    if (existing.some(t => normalizeTeacherName(t.name) === nameKey)) {
         throw new Error(`教師「${name}」已存在於名單中，請直接編輯該列，不要重複新增`);
     }
 

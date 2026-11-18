@@ -16,6 +16,7 @@
  */
 
 import { applySwapsToSchedule } from './slotOccupancy.js';
+import { normalizeTeacherName } from './teacherName.js';
 
 /**
  * 衝堂訊息用的「在途」標示：V2 把待同意／待核准的申請轉成佔用紀錄（帶 __pendingLabel）後，
@@ -36,7 +37,7 @@ export function pendingTag(detail) {
  * 檢查兩件事（先「有課」後「已代課」）：
  *   (1) kind:'teaching' 該教師當星期當節原本有自己的課（scheduleData；呼叫端負責傳入有效課表）
  *   (2) kind:'covering' 該教師同日同節已被指派為代課(role:'代課')或調課(role:'調課')
- * 姓名比對皆去除前後空白。
+ * 姓名比對一律先經 normalizeTeacherName（全形空白、前後空白、零寬字元）。
  *
  * @param {Object} p
  * @param {string} p.teacherName - 教師姓名
@@ -49,9 +50,9 @@ export function pendingTag(detail) {
  * @returns {{kind:'teaching', detail:Object}|{kind:'covering', detail:Object, role:string}|null}
  */
 export function findTeacherConflict({ teacherName, date, weekday, period, scheduleData = [], records = [], excludeRecordId = null }) {
-    const name = teacherName == null ? '' : String(teacherName).trim();
+    const name = normalizeTeacherName(teacherName);
     if (!name || !period) return null;
-    const same = v => v != null && String(v).trim() === name;
+    const same = v => v != null && normalizeTeacherName(v) === name;
 
     if (weekday) {
         const own = (scheduleData || []).find(c =>
@@ -80,14 +81,33 @@ export function findTeacherConflict({ teacherName, date, weekday, period, schedu
  * @returns {{kind:'covering', detail:Object, role:'調課'}|null}
  */
 export function findSwapInConflict({ teacherName, date, period, records = [], excludeRecordId = null }) {
-    const name = teacherName == null ? '' : String(teacherName).trim();
+    const name = normalizeTeacherName(teacherName);
     if (!name || !date || !period) return null;
     const hit = (records || []).find(r =>
         r && r.type === '調課' && r.id !== excludeRecordId &&
         r.swapDate === date && r.swapPeriod === period &&
-        r.originalTeacher != null && String(r.originalTeacher).trim() === name &&
-        String(r.swapTeacher == null ? '' : r.swapTeacher).trim() !== name);
+        r.originalTeacher != null && normalizeTeacherName(r.originalTeacher) === name &&
+        normalizeTeacherName(r.swapTeacher) !== name);
     return hit ? { kind: 'covering', detail: hit, role: '調課' } : null;
+}
+
+/**
+ * 請假判斷：教師在指定日期（有給 period 時限該節次）是否有自己的請假紀錄（originalTeacher、type 為代課、未被駁回）。
+ * 調課（含自我調課）是教師自行互換，不算請假。回傳請假節次（依節次排序，去重）。
+ *
+ * @returns {{kind:'leave', detail:Object, role:'請假', periods:string[]}|null}
+ */
+export function findLeaveOnDate({ teacherName, date, period = null, records = [], excludeRecordId = null }) {
+    const name = normalizeTeacherName(teacherName);
+    if (!name || !date) return null;
+    const hits = (records || []).filter(r =>
+        r && r.id !== excludeRecordId && r.date === date && r.originalTeacher != null && r.period &&
+        (!period || r.period === period) &&
+        r.status !== 'rejected' && r.type !== '調課' && !r.isSelfSwap &&
+        normalizeTeacherName(r.originalTeacher) === name);
+    if (hits.length === 0) return null;
+    const periods = [...new Set(hits.map(r => r.period))].sort((x, y) => periodIndex(x) - periodIndex(y));
+    return { kind: 'leave', detail: hits[0], role: '請假', periods };
 }
 
 /**
@@ -97,6 +117,10 @@ export function findSwapInConflict({ teacherName, date, period, records = [], ex
  * 本函式補上「實際日期」是否已被其他紀錄佔用：
  *   - 教師 B 要去上時段 A（dateA, periodA）：該日該節是否已被指派代課／調課，或已調課移入別班
  *   - 教師 A 要去上時段 B（dateB, periodB）：同上
+ * 另檢查（審計 LC-L12）：人在請假卻被調去上課。只在請假「節次涵蓋」要上的那一節才算衝突：
+ *   - 原任課教師 A 在 dateB 的請假節次含 periodB
+ *   - 互換教師 B 在 dateA 的請假節次含 periodA
+ * 同日其他節請假（例如上午公假、把課調到下午）不擋。命中時 role 為「請假」。
  * 自行調課（同一教師）不檢查。回傳第一個衝突，無衝突回傳 null。
  *
  * @param {Object} p
@@ -111,8 +135,8 @@ export function findSwapInConflict({ teacherName, date, period, records = [], ex
  * @returns {{teacher:string, date:string, period:string, role:string, detail:Object}|null}
  */
 export function findSwapDateConflict({ teacherA, dateA, periodA, teacherB, dateB, periodB, records = [], excludeRecordId = null }) {
-    const a = teacherA == null ? '' : String(teacherA).trim();
-    const b = teacherB == null ? '' : String(teacherB).trim();
+    const a = normalizeTeacherName(teacherA);
+    const b = normalizeTeacherName(teacherB);
     if (!a || !b || a === b) return null;
     const legs = [
         { teacher: b, date: dateA, period: periodA },
@@ -123,6 +147,17 @@ export function findSwapDateConflict({ teacherA, dateA, periodA, teacherB, dateB
             || findSwapInConflict({ teacherName: leg.teacher, date: leg.date, period: leg.period, records, excludeRecordId });
         if (hit) return { teacher: leg.teacher, date: leg.date, period: leg.period, role: hit.role, detail: hit.detail };
     }
+    const legsLeave = [
+        { teacher: a, date: dateB, period: periodB },
+        { teacher: b, date: dateA, period: periodA }
+    ];
+    for (const leg of legsLeave) {
+        if (!leg.date || !leg.period) continue;
+        const leave = findLeaveOnDate({ teacherName: leg.teacher, date: leg.date, period: leg.period, records, excludeRecordId });
+        if (leave) {
+            return { teacher: leg.teacher, date: leg.date, period: leg.period, role: leave.role, detail: { ...leave.detail, leavePeriods: leave.periods } };
+        }
+    }
     return null;
 }
 
@@ -131,6 +166,20 @@ export const PERIOD_ORDER = ['第一節', '第二節', '第三節', '第四節',
 export function periodIndex(period) {
     const i = PERIOD_ORDER.indexOf(period);
     return i < 0 ? PERIOD_ORDER.length : i;
+}
+
+const CN_DIGITS = { '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9 };
+
+/**
+ * 解析 1～99 的數字字串：阿拉伯數字（可有前導 0）或中文數字（一～九、十、十一～十九、二十～九十九）。
+ * 無法解析回傳 null。
+ */
+export function parseChineseInt(str) {
+    const s = String(str == null ? '' : str);
+    if (/^\d+$/.test(s)) return parseInt(s, 10);
+    const t = /^([一二三四五六七八九])?十([一二三四五六七八九])?$/.exec(s);
+    if (t) return (t[1] ? CN_DIGITS[t[1]] : 1) * 10 + (t[2] ? CN_DIGITS[t[2]] : 0);
+    return CN_DIGITS[s] || null;
 }
 
 export class RecommendationEngine {
@@ -201,6 +250,12 @@ export class RecommendationEngine {
                 rec.onLeaveToday = true;
                 rec.tags = [...rec.tags, 'onLeaveToday'];
                 rec.reasonText += (rec.reasonText ? '、' : '') + `⚠ 當日另有請假紀錄（${leavePeriods.join('、')}）`;
+                // 全天請假（使用者決定 f）：當天自己有課的每一節都已請假 → 不排除，但降到最後一層
+                if (this.isFullDayLeave(scheduleData, teacher.name, weekday, leavePeriods)) {
+                    rec.onLeaveFullDay = true;
+                    rec.tags = [...rec.tags, 'onLeaveFullDay'];
+                    rec.reasonText += '、⚠ 全天請假（已排至最後）';
+                }
             }
             if (monthCounts) {
                 // 有提供本月紀錄時一律標示：N>0 顯示「本月已代 N 節」，N=0 顯示「本月未代課」
@@ -211,9 +266,11 @@ export class RecommendationEngine {
             return rec;
         });
 
-        // 步驟 4：依分數降序；同分者「當日也請假」者排後，再比本月已代節數少者優先
+        // 步驟 4：全天請假者一律排最後一層（壓過分數，連兼課層都在其前）；其餘依分數降序；
+        // 同分者「當日也請假」者排後，再比本月已代節數少者優先
         // （皆只在同分內生效，因此不可能壓過任何一層）；最後依姓名排序以保持穩定
         scoredTeachers.sort((a, b) =>
+            (Number(!!a.onLeaveFullDay) - Number(!!b.onLeaveFullDay)) ||
             (b.score - a.score) ||
             (Number(!!a.onLeaveToday) - Number(!!b.onLeaveToday)) ||
             ((a.monthlyCount || 0) - (b.monthlyCount || 0)) ||
@@ -244,9 +301,10 @@ export class RecommendationEngine {
             if (name && !byName.has(name)) byName.set(name, t);
         });
         (scheduleData || []).forEach(course => {
-            const name = this.normalizeName(course.teacher);
-            if (name && !byName.has(name)) {
-                byName.set(name, { name, domains: [], homeroomClass: '' });
+            const key = this.normalizeName(course.teacher);
+            if (key && !byName.has(key)) {
+                // name 維持課表上的原字串（只 trim）：推薦結果的姓名之後會被存成紀錄的代課教師
+                byName.set(key, { name: String(course.teacher).trim(), domains: [], homeroomClass: '' });
             }
         });
         return [...byName.values()];
@@ -324,6 +382,28 @@ export class RecommendationEngine {
     }
 
     /**
+     * 全天請假判定：教師當天（weekday）在課表上至少有 2 節課，且每一節都有自己的請假紀錄。
+     * 只有 1 節課而請那 1 節，只是單節請假、不是「整天不在」，不算；沒課者無節次可比對，也不算；
+     * 半天假（只請其中幾節）不算。
+     *
+     * @param {Array} scheduleData - 當日有效課表
+     * @param {string} teacherName
+     * @param {string} weekday - 星期（與課表同格式）
+     * @param {string[]} leavePeriods - collectLeavePeriods 的結果（該教師當日請假節次）
+     * @returns {boolean}
+     */
+    isFullDayLeave(scheduleData, teacherName, weekday, leavePeriods) {
+        const name = this.normalizeName(teacherName);
+        const taught = new Set();
+        (scheduleData || []).forEach(c => {
+            if (c.weekday === weekday && c.period && this.normalizeName(c.teacher) === name) taught.add(c.period);
+        });
+        if (taught.size < 2) return false;
+        const leave = new Set(leavePeriods || []);
+        return [...taught].every(p => leave.has(p));
+    }
+
+    /**
      * 併班候選：同一星期同一節「正在上別班課」的教師（無人可代時的建議，僅供顯示）
      *
      * 排除原任課教師與目標班級自己的課；同年級優先，其次同科目，再依姓名排序。
@@ -353,7 +433,7 @@ export class RecommendationEngine {
             if (seen.has(key)) return;
             seen.add(key);
             options.push({
-                teacher,
+                teacher: String(course.teacher).trim(),
                 className: course.className,
                 subject: course.subject || course.rawSubject || '',
                 sameGrade: !!targetGrade && gradeOf(course.className) === targetGrade,
@@ -455,12 +535,12 @@ export class RecommendationEngine {
     }
 
     /**
-     * 標準化教師姓名（去除前後空白）
+     * 標準化教師姓名（共用 normalizeTeacherName：全形空白、前後空白、零寬字元）
      * @param {string} name - 教師姓名
      * @returns {string}
      */
     normalizeName(name) {
-        return name == null ? '' : String(name).trim();
+        return normalizeTeacherName(name);
     }
 
     /**
@@ -474,11 +554,13 @@ export class RecommendationEngine {
             return false;
         }
 
-        // 標準化領域名稱進行比對
+        // 標準化領域名稱進行比對；兩端任一為空（課程無領域、教師領域欄含空字串）都不算同領域
         const normalizedTarget = this.normalizeDomain(targetDomain);
-        return teacher.domains.some(d =>
-            this.normalizeDomain(d) === normalizedTarget
-        );
+        if (!normalizedTarget) return false;
+        return teacher.domains.some(d => {
+            const n = this.normalizeDomain(d);
+            return n !== '' && n === normalizedTarget;
+        });
     }
 
     /**
@@ -559,7 +641,7 @@ export class RecommendationEngine {
         if (!className) return '';
 
         // 移除空白並標準化格式
-        let normalized = className.replace(/\s+/g, '');
+        let normalized = String(className).replace(/\s+/g, '');
 
         // 處理常見格式變化：701 -> 7年1班, 七年一班 -> 7年1班
         const numberMatch = normalized.match(/^(\d)(\d{2})$/);
@@ -568,7 +650,16 @@ export class RecommendationEngine {
             return `${numberMatch[1]}年${parseInt(numberMatch[2])}班`;
         }
 
-        // 處理中文數字
+        // 「X年Y班」：X、Y 各自以整體解析（阿拉伯或中文數字，含十、十一～十九、二十～），
+        // 不可逐字替換（否則「十二」會變成「102」）
+        const m = normalized.match(/^([一二三四五六七八九十\d]+)年([一二三四五六七八九十\d]+)班$/);
+        if (m) {
+            const g = parseChineseInt(m[1]);
+            const c = parseChineseInt(m[2]);
+            if (g !== null && c !== null) return `${g}年${c}班`;
+        }
+
+        // 其他寫法（例如「七年級」）：維持逐字替換
         const chineseNumbers = {
             '一': '1', '二': '2', '三': '3', '四': '4', '五': '5',
             '六': '6', '七': '7', '八': '8', '九': '9', '十': '10'

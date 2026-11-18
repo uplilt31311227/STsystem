@@ -15,6 +15,8 @@
 // HTML 跳脫（教師姓名、課程、班級、校名皆來自課表匯入／Firestore，屬使用者可控字串）
 // 與 escapeDeep 統一由共用模組提供，全專案只有一份實作。
 import { escapeHtml, escapeDeep, safeFileName } from './htmlEscape.js';
+// 純日期（YYYY-MM-DD）一律以本地午夜解析；new Date('YYYY-MM-DD') 是 UTC 午夜，與本地取值混用會在非 UTC+8 時區差一天
+import { parseLocalDate } from './localDate.js';
 
 /**
  * 會以 innerHTML 組版面的公開產生函式。進入時把參數整份跳脫一次，內部各 HTML builder
@@ -279,7 +281,7 @@ export class PDFGenerator {
         const scheduleTableHTML = this.createMultiCourseScheduleTableHTML(teacherSchedule, records, sheet.teacher);
 
         // 格式化日期
-        const dateObj = new Date(baseRecord.date);
+        const dateObj = parseLocalDate(baseRecord.date);
         const formattedDate = `${dateObj.getFullYear()}/${String(dateObj.getMonth() + 1).padStart(2, '0')}/${String(dateObj.getDate()).padStart(2, '0')} (${baseRecord.weekday})`;
 
         // 列印日期
@@ -420,7 +422,7 @@ export class PDFGenerator {
         const emptyHeight = options.emptyHeight != null ? options.emptyHeight : 45;
         const fontSize = options.fontSize != null ? options.fontSize : 13;
         const cellRenderer = options.cellRenderer || ((r) => {
-            const dateObj = new Date(r.date);
+            const dateObj = parseLocalDate(r.date);
             const dateStr = `${dateObj.getMonth() + 1}/${dateObj.getDate()}`;
             const classInfo = `${r.className} ${r.subject || ''}`;
             const teacherInfo = r.type === '調課'
@@ -548,7 +550,7 @@ export class PDFGenerator {
         const scheduleTableHTML = this.createScheduleTableHTML(teacherSchedule, record, sheet.teacher);
 
         // 格式化日期
-        const dateObj = new Date(record.date);
+        const dateObj = parseLocalDate(record.date);
         const formattedDate = `${dateObj.getFullYear()}/${String(dateObj.getMonth() + 1).padStart(2, '0')}/${String(dateObj.getDate()).padStart(2, '0')} (${record.weekday})`;
 
         // 列印日期
@@ -582,11 +584,11 @@ export class PDFGenerator {
         let infoTableHTML;
         if (isSwap) {
             // 格式化時段 A 和 B 的日期
-            const dateAObj = new Date(record.date);
+            const dateAObj = parseLocalDate(record.date);
             const formattedDateA = `${dateAObj.getFullYear()}/${String(dateAObj.getMonth() + 1).padStart(2, '0')}/${String(dateAObj.getDate()).padStart(2, '0')}`;
 
             // 時段 B 日期（新增欄位）
-            const dateBObj = record.swapDate ? new Date(record.swapDate) : dateAObj;
+            const dateBObj = record.swapDate ? parseLocalDate(record.swapDate) : dateAObj;
             const formattedDateB = `${dateBObj.getFullYear()}/${String(dateBObj.getMonth() + 1).padStart(2, '0')}/${String(dateBObj.getDate()).padStart(2, '0')}`;
 
             // 調課模式：根據聯別決定網底（灰階版本）
@@ -760,7 +762,7 @@ export class PDFGenerator {
                 if (isSlotA) {
                     // 時段 A：深灰色網底標記
                     // 顯示格式：日期 + 班級/科目 + 原 OOO / 代 OOO
-                    const dateA = new Date(record.date);
+                    const dateA = parseLocalDate(record.date);
                     const dateAStr = `${dateA.getMonth() + 1}/${dateA.getDate()}`;
                     const classInfo = `${record.className} ${record.subject}`;
                     const teacherInfo = isSwap
@@ -780,7 +782,7 @@ export class PDFGenerator {
                 } else if (isSlotB) {
                     // 時段 B：淺灰色網底標記（調課時的另一時段）
                     // 顯示格式：日期 + 班級/科目 + 原 OOO / 調 OOO
-                    const dateBObj = record.swapDate ? new Date(record.swapDate) : new Date(record.date);
+                    const dateBObj = record.swapDate ? parseLocalDate(record.swapDate) : parseLocalDate(record.date);
                     const dateBStr = `${dateBObj.getMonth() + 1}/${dateBObj.getDate()}`;
                     const classInfoB = `${record.className} ${record.swapSubject || record.subject}`;
                     row += `<td style="
@@ -916,29 +918,36 @@ export class PDFGenerator {
         };
 
         const adminAll = [...records].sort(cmp);
-        // key 為班級／教師姓名（使用者可控字串）：用無原型物件避免 '__proto__' 等名稱干擾
-        const byClass = Object.create(null);
-        const byOriginalTeacher = Object.create(null);
-        const bySubstituteTeacher = Object.create(null);
+        // key 為班級／教師姓名（使用者可控字串）：以 Map 累積，'__proto__'、'constructor' 等名稱只是普通的鍵
+        const classMap = new Map();
+        const originalMap = new Map();
+        const substituteMap = new Map();
+        const push = (map, key, r) => {
+            if (!map.has(key)) map.set(key, []);
+            map.get(key).push(r);
+        };
 
         records.forEach(r => {
-            if (r.className) {
-                (byClass[r.className] = byClass[r.className] || []).push(r);
-            }
-            if (r.originalTeacher) {
-                (byOriginalTeacher[r.originalTeacher] = byOriginalTeacher[r.originalTeacher] || []).push(r);
-            }
+            if (r.className) push(classMap, r.className, r);
+            if (r.originalTeacher) push(originalMap, r.originalTeacher, r);
             const subT = r.swapTeacher || r.substituteTeacher;
-            if (subT && subT !== r.originalTeacher) {
-                (bySubstituteTeacher[subT] = bySubstituteTeacher[subT] || []).push(r);
-            }
+            if (subT && subT !== r.originalTeacher) push(substituteMap, subT, r);
         });
 
-        Object.values(byClass).forEach(arr => arr.sort(cmp));
-        Object.values(byOriginalTeacher).forEach(arr => arr.sort(cmp));
-        Object.values(bySubstituteTeacher).forEach(arr => arr.sort(cmp));
+        // 對外維持「鍵 → 紀錄陣列」的物件介面（呼叫端與既有測試以 obj[key] 讀取）；
+        // 以無原型物件承接，'__proto__' 成為一般屬性
+        const toDict = (map) => {
+            const dict = Object.create(null);
+            for (const [k, arr] of map) dict[k] = arr.sort(cmp);
+            return dict;
+        };
 
-        return { adminAll, byClass, byOriginalTeacher, bySubstituteTeacher };
+        return {
+            adminAll,
+            byClass: toDict(classMap),
+            byOriginalTeacher: toDict(originalMap),
+            bySubstituteTeacher: toDict(substituteMap)
+        };
     }
 
     /**
@@ -1089,7 +1098,7 @@ export class PDFGenerator {
             fontSize: 10,
             // 變動格：同時顯示原任課與代/調入兩位老師
             cellRenderer: (r) => {
-                const dateObj = new Date(r.date);
+                const dateObj = parseLocalDate(r.date);
                 const dateStr = `${dateObj.getMonth() + 1}/${dateObj.getDate()}`;
                 const classInfo = `${r.className} ${r.subject || ''}`;
                 const counterpart = r.type === '調課'
@@ -1186,7 +1195,7 @@ export class PDFGenerator {
             emptyHeight: 24,
             fontSize: 10,
             cellRenderer: (r) => {
-                const dateObj = new Date(r.date);
+                const dateObj = parseLocalDate(r.date);
                 const dateStr = `${dateObj.getMonth() + 1}/${dateObj.getDate()}`;
                 const subject = r.subject || '';
                 const change = r.type === '調課'
@@ -1539,7 +1548,7 @@ export class PDFGenerator {
             .join('');
 
         const byTeacher = this.groupNetMovesByTeacher(netMoves);
-        const teacherRows = Object.entries(byTeacher).map(([teacher, moves]) => moves.map((m, i) => `
+        const teacherRows = [...byTeacher.entries()].map(([teacher, moves]) => moves.map((m, i) => `
             <tr>
                 ${i === 0 ? `<td rowspan="${moves.length}" style="padding: 4px; border: 1px solid #333; font-size: 11px; text-align: center; font-weight: bold;">${teacher}</td>` : ''}
                 <td style="padding: 4px; border: 1px solid #333; font-size: 11px; text-align: center;">${m.className} ${m.subject}</td>
@@ -1593,7 +1602,7 @@ export class PDFGenerator {
             </table>
 
             <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-top: 16px; font-size: 11px;">
-                <div>列印日期：${printDate}　共 ${records.length} 筆對調、${Object.keys(byTeacher).length} 位教師異動</div>
+                <div>列印日期：${printDate}　共 ${records.length} 筆對調、${byTeacher.size} 位教師異動</div>
                 <div style="display: flex; gap: 24px;">
                     <div>教學組長：__________</div>
                     <div>教務主任：__________</div>
@@ -1603,10 +1612,13 @@ export class PDFGenerator {
         `;
     }
 
-    /** 依教師分組（保留 computeSwapNetMoves 的排序） */
+    /** 依教師分組（保留 computeSwapNetMoves 的排序）。回傳 Map：教師姓名為使用者可控字串，不可當物件鍵 */
     groupNetMovesByTeacher(netMoves) {
-        const byTeacher = Object.create(null);
-        netMoves.forEach(m => { (byTeacher[m.teacher] = byTeacher[m.teacher] || []).push(m); });
+        const byTeacher = new Map();
+        netMoves.forEach(m => {
+            if (!byTeacher.has(m.teacher)) byTeacher.set(m.teacher, []);
+            byTeacher.get(m.teacher).push(m);
+        });
         return byTeacher;
     }
 
@@ -1968,7 +1980,7 @@ export class PDFGenerator {
             doc.addImage(adminCanvas.toDataURL('image/jpeg', 0.95), 'JPEG', (210 - w) / 2, 0, w, h);
 
             const halfSheets = [
-                ...Object.entries(this.groupNetMovesByTeacher(netMoves)).map(([t, moves]) => this.createSwapTeacherSheetHTML(t, moves)),
+                ...[...this.groupNetMovesByTeacher(netMoves).entries()].map(([t, moves]) => this.createSwapTeacherSheetHTML(t, moves)),
                 ...grid[0].classes.map(c => this.createSwapClassSheetHTML(c.className, grid))
             ];
             for (let i = 0; i < halfSheets.length; i += 2) {
@@ -1978,45 +1990,6 @@ export class PDFGenerator {
             }
 
             doc.save(`多重調課通知_${records[0].date.replace(/-/g, '')}_${records.length}筆.pdf`);
-        } finally {
-            document.body.removeChild(container);
-        }
-    }
-
-    /**
-     * 生成月結算報表 PDF
-     */
-    async generateSettlementReport(settlementData, year, month) {
-        const { jsPDF } = window.jspdf;
-        const doc = new jsPDF('l', 'mm', 'a4'); // 橫向
-
-        // 建立 HTML
-        const html = this.createSettlementHTML(settlementData, year, month);
-
-        // 建立隱藏容器
-        const container = document.createElement('div');
-        container.style.cssText = 'position: absolute; left: -9999px; top: 0; width: 1100px;';
-        container.innerHTML = html;
-        document.body.appendChild(container);
-
-        try {
-            await new Promise(resolve => setTimeout(resolve, 100));
-
-            const canvas = await html2canvas(container, {
-                scale: 2,
-                useCORS: true,
-                logging: false
-            });
-
-            const imgData = canvas.toDataURL('image/jpeg', 0.95);
-            const imgWidth = 297; // A4 橫向寬度
-            const imgHeight = (canvas.height * imgWidth) / canvas.width;
-
-            doc.addImage(imgData, 'JPEG', 0, 0, imgWidth, Math.min(imgHeight, 210));
-
-            const fileName = `授課時數結算表_${year}學年度_${month}月.pdf`;
-            doc.save(fileName);
-
         } finally {
             document.body.removeChild(container);
         }

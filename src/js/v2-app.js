@@ -23,7 +23,7 @@ import * as authMod from './modules/authService.js';
 import * as cloudSyncSvc from './modules/cloudSyncService.js';
 import { notify, notifyError, setSyncStatus, resetSyncStatus } from './modules/v2/uiFeedback.js';
 import * as semesterUtils from './modules/v2/semesterUtils.js';
-import { todayLocal } from './modules/localDate.js';
+import { todayLocal, parseLocalDate } from './modules/localDate.js';
 import { isGrade9GraduationActive, buildGrade9Config } from './modules/grade9Graduation.js';
 import * as semesterState from './modules/v2/semesterState.js';
 import { escapeHtml, toNum, pickAllowed } from './modules/htmlEscape.js';
@@ -4722,7 +4722,7 @@ function patchDataManager() {
             records = records.filter(r =>
                 r.originalTeacher === teacherFilter || r.substituteTeacher === teacherFilter);
         }
-        records.sort((a, b) => new Date(b.date) - new Date(a.date));
+        records.sort((a, b) => parseLocalDate(b.date) - parseLocalDate(a.date));
         return records;
     };
 
@@ -4751,7 +4751,7 @@ function patchDataManager() {
             records = records.filter(r =>
                 r.originalTeacher === teacherFilter || r.substituteTeacher === teacherFilter);
         }
-        records = [...records].sort((a, b) => new Date(b.date) - new Date(a.date));
+        records = [...records].sort((a, b) => parseLocalDate(b.date) - parseLocalDate(a.date));
         return records;
     };
 

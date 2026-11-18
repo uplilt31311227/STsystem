@@ -132,6 +132,10 @@ export function findAssignmentConflict(req, records, excludeRecordId = null, sch
 export function describeAssignmentConflict(hit) {
     if (hit.kind === 'classSlot') return describeClassSlotConflict(hit);
     const d = hit.detail || {};
+    if (hit.role === '請假') {
+        const periods = (d.leavePeriods || []).join('、');
+        return `${hit.teacher} ${hit.date} 已有請假紀錄${periods ? `（${periods}）` : ''}${pendingTag(d)}，不能調去上課`;
+    }
     const where = hit.role === '調課' && d.swapDate === hit.date && d.swapPeriod === hit.period && d.originalTeacher === hit.teacher
         ? `已調課移入${d.className || ''}`
         : `已被指派為${d.className || ''}的${hit.role}`;

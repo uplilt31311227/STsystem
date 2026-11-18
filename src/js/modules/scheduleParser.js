@@ -226,6 +226,8 @@ export class ScheduleParser {
             // Excel 數字儲存格（如班級 701）讀進來是 number，先轉字串再 trim
             const cell = (key) => (row[key] === undefined || row[key] === null) ? '' : String(row[key]).trim();
             const className = cell(fieldMap.className);
+            // 存檔的教師姓名維持原字串（只 trim）：名冊、紀錄、rules 的自我調課姓名檢查、結算與刪除前的
+            // 有課檢查都以「儲存的姓名」精確比對，改寫會讓它們對不上。正規化只用在比對（見 teacherName.js）
             const teacher = cell(fieldMap.teacher);
             const domain = cell(fieldMap.domain);
             const rawSubject = cell(fieldMap.subject);
@@ -334,18 +336,23 @@ export class ScheduleParser {
      */
     detectFieldMapping(headers) {
         const fieldMap = {};
+        // 空標題（例如列尾多餘逗號產生的 ''）不參與對應：空字串會被任何名稱 includes 命中
+        const usable = (headers || []).filter(h => h != null && String(h).trim() !== '');
 
         for (const [standardField, possibleNames] of Object.entries(this.fieldMappings)) {
-            for (const header of headers) {
-                const headerLower = header.toLowerCase().trim();
-                for (const name of possibleNames) {
-                    if (header === name || headerLower === name.toLowerCase() ||
-                        header.includes(name) || name.includes(header)) {
-                        fieldMap[standardField] = header;
-                        break;
-                    }
+            // 第一輪：完全相等（依 possibleNames 順序，忽略大小寫與前後空白）
+            for (const name of possibleNames) {
+                const exact = usable.find(h => String(h).trim().toLowerCase() === name.toLowerCase());
+                if (exact !== undefined) { fieldMap[standardField] = exact; break; }
+            }
+            if (fieldMap[standardField] !== undefined) continue;
+            // 第二輪：包含（標題含名稱，或名稱含標題）；只在沒有完全相等的標題時才用
+            for (const header of usable) {
+                const h = String(header).trim();
+                if (possibleNames.some(name => h.includes(name) || name.includes(h))) {
+                    fieldMap[standardField] = header;
+                    break;
                 }
-                if (fieldMap[standardField]) break;
             }
         }
 

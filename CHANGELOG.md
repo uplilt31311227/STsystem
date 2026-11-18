@@ -1,5 +1,18 @@
 # 版本紀錄 (Changelog)
 
+## [2026-11-18] 資安審計 P9 批次 B（純邏輯模組，尚未部署）
+
+- **教師姓名比對用正規化**（LC-M2、LC-L10）：新增 `teacherName.js` 的 `normalizeTeacherName`（NFKC、去零寬字元、CJK 字之間的空白去除、西文姓名內單一空格保留）。**只用於比對，絕不改寫存檔的姓名**：課表解析與新增教師仍存原字串（只 trim），因為名冊、紀錄、rules 的自我調課姓名檢查（isSelfSwapNamesOk）、`importFromLegacyTeachers`、刪除教師前的有課檢查、`getTeacherWeeklyHours` 都以儲存的姓名精確比對，改寫會讓它們對不上（驗收發現後由「寫入正規化姓名」改為此做法）。專案目前有**兩套**比對用正規化：本檔（較寬鬆）用於 V1 推薦與衝堂判斷、新增教師防重、重匯名冊合併；`v2/teacherIdentity.js` 與 `settlementCalculator.js` 的 `normName`（全形空白轉半形＋trim，較嚴）用於姓名到 teacherId 的解析與月結算。後兩者未併入新函式，避免動到月結算黃金值。括號註記（「李小華(代理)」）不自動合併。
+- **重新匯入課表保留導師班與領域**（LC-M5）：新增 `teacherMerge.js`，依正規化姓名把既有 homeroomClass、domains、partTime 合併回新名冊；app.js 匯入流程改呼叫它。規則：導師班新有值用新、空白保留舊；**領域取聯集，課表上已不再出現的過時領域需手動刪除**；**不在新課表的既有教師不加回名冊（與審計建議不同）**，因為名冊同時是代課推薦的候選來源，加回會讓已離開者以全天空堂身分出現在推薦。
+- **日期**（LC-M6、LC-L1）：pdfGenerator.js 10 處、app.js 8 處、v2-app.js 與 dataManager 排序共 3 處，`new Date('YYYY-MM-DD')` 改 `parseLocalDate`。`normalizeDate` 對不存在的日期（2/31、4/31、非閏年 2/29、13 月）原樣回傳，不再進位成別天。
+- **推薦與解析**：班級中文數字改正則整體解析（七年十二班 → 7年12班；LC-L2）；`isSameDomain` 兩端為空回 false（LC-L3）；`detectFieldMapping` 先完全相等再 includes、忽略空標題（LC-L5）。
+- **調課請假衝突**（LC-L12）：修在 `findSwapDateConflict`，送出前攔截與核准重驗都會擋。只在請假**節次涵蓋要上的那一節**時才擋：原任課教師 A 在 swapDate 的請假含 swapPeriod，或互換教師 B 在 date 的請假含 period；同日其他節請假（例如上午公假、把課調到下午）放行，不阻擋送出或核准。
+- **使用者決定 (f)**（LC-M3）：全天請假者不排除，排到推薦最後一層，標記 `onLeaveFullDay`。判定：當天課表上至少 2 節課，且每一節都有自己的請假紀錄；只有 1 節課而請那 1 節只是單節請假，不算全天；半天假維持原行為（同層內排後）。
+- **其他**：`groupNetMovesByTeacher` 回傳 Map、`groupRecordsByRecipient` 內部以 Map 累積（SF-M6；對外仍是物件以相容既有測試。原本就是無原型物件，餵 `__proto__` 修前也不會出錯，此項為防禦性改寫，測試在修前也會通過）；刪除未使用且未跳脫的 `generateSettlementReport`（SF-L2）；`app.js`、`v2-app.js` 快取參數升為 1.14.6、0.1.18。
+- **測試**：新增 `test/test-p9b-logic.mjs`（子行程分別以 Asia/Taipei、America/Los_Angeles 各跑一次，含跨模組姓名一致性案例），掛進 `npm test`。
+
+---
+
 ## [2026-11-17] 資安審計 P9 批次 A2（rules v2.17 與前端，尚未部署）
 
 使用者 2026-11-17 的三項權限決定。

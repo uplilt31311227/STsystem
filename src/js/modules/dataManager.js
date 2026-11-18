@@ -567,7 +567,7 @@ export class DataManager {
         console.log('篩選後紀錄數:', records.length);
 
         // 按日期排序
-        records.sort((a, b) => new Date(b.date) - new Date(a.date));
+        records.sort((a, b) => parseLocalDate(b.date) - parseLocalDate(a.date));
 
         return records;
     }
@@ -712,7 +712,16 @@ export class DataManager {
      */
     normalizeDate(dateStr) {
         if (!dateStr) return '';
-        // 處理可能的各種日期格式
+        // YYYY-MM-DD、YYYY/MM/DD：直接驗證並重組，不經 Date 進位。不存在的日期（2/31、4/31、2025/2/29、13 月）
+        // 視為無效，與無法解析的字串一樣原樣回傳，不可默默換成別天（審計 LC-L1）
+        const m = /^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/.exec(String(dateStr).trim());
+        if (m) {
+            const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
+            const rt = new Date(y, mo - 1, d);
+            if (rt.getFullYear() !== y || rt.getMonth() !== mo - 1 || rt.getDate() !== d) return dateStr;
+            return `${m[1]}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+        }
+        // 其他格式（含時間的字串等）：沿用原本的容錯解析
         const date = parseLocalDate(dateStr);
         if (isNaN(date.getTime())) return dateStr;
         return formatLocalDate(date);

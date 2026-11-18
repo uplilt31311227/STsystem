@@ -12,6 +12,7 @@
 import { DataManager } from './modules/dataManager.js';
 import { esc, toNum } from './modules/htmlEscape.js';
 import { formatLocalDate, parseLocalDate, todayLocal } from './modules/localDate.js';
+import { mergeTeacherAttributes } from './modules/teacherMerge.js';
 import {
     loadV1History, appendV1History, getRestorableSnapshot, makeSnapshot,
     computeFingerprint, formatImportDate, formatLastImport, formatSource, V1_HISTORY_KEY
@@ -901,13 +902,10 @@ class SubstituteTeacherApp {
 
                 // 儲存解析後的資料到 DataManager
                 this.dataManager.setScheduleData(parseResult.scheduleData);
-                // 課表檔不含「兼課」資訊，依姓名從匯入前的教師資料帶回，避免重新匯入就被清掉
-                const partTimeNames = new Set(this.dataManager.getTeachers()
-                    .filter(t => t.partTime).map(t => String(t.name).trim()));
-                parseResult.teachers.forEach(t => {
-                    if (partTimeNames.has(String(t.name).trim())) t.partTime = true;
-                });
-                this.dataManager.setTeachers(parseResult.teachers);
+                // 課表檔不含「兼課」「導師班級」「手動領域」，依正規化姓名從匯入前的名冊合併回來，
+                // 避免重新匯入就把組長設好的設定洗掉（審計 LC-M5；規則見 teacherMerge.js）
+                const mergedTeachers = mergeTeacherAttributes(this.dataManager.getTeachers(), parseResult.teachers);
+                this.dataManager.setTeachers(mergedTeachers);
                 this.dataManager.setClasses(parseResult.classes);
 
                 // 記錄匯入日期／檔名／計數（須在 set* 之後、saveDataToStorage 之前）
@@ -1934,7 +1932,7 @@ ${lines.join(NL)}${more}
         if (!slotAInfo || !this.selectedCourse) return;
 
         const dateA = document.getElementById('sub-date').value;
-        const formattedDateA = dateA ? new Date(dateA).toLocaleDateString('zh-TW', {
+        const formattedDateA = dateA ? parseLocalDate(dateA).toLocaleDateString('zh-TW', {
             year: 'numeric', month: 'long', day: 'numeric'
         }) : '';
 
@@ -2185,6 +2183,10 @@ ${lines.join(NL)}${more}
      */
     describeSwapDateConflict(hit) {
         const d = hit.detail || {};
+        if (hit.role === '請假') {
+            const periods = (d.leavePeriods || []).join('、');
+            return `${hit.teacher}在${hit.date}已有請假紀錄${periods ? `（${periods}）` : ''}${pendingTag(d)}，不能調去上課`;
+        }
         const where = hit.role === '調課' && d.swapDate === hit.date && d.swapPeriod === hit.period && d.originalTeacher === hit.teacher
             ? `已調課移入${d.className || ''}`
             : `已被指派為${d.className || ''}的${hit.role}`;
@@ -2279,10 +2281,10 @@ ${lines.join(NL)}${more}
         const dateA = document.getElementById('sub-date').value;
         const dateB = document.getElementById('swap-date').value;
 
-        const formattedDateA = dateA ? new Date(dateA).toLocaleDateString('zh-TW', {
+        const formattedDateA = dateA ? parseLocalDate(dateA).toLocaleDateString('zh-TW', {
             year: 'numeric', month: 'long', day: 'numeric'
         }) : '';
-        const formattedDateB = dateB ? new Date(dateB).toLocaleDateString('zh-TW', {
+        const formattedDateB = dateB ? parseLocalDate(dateB).toLocaleDateString('zh-TW', {
             year: 'numeric', month: 'long', day: 'numeric'
         }) : '';
 
@@ -3073,11 +3075,11 @@ ${lines.join(NL)}${more}
         const dateWeekday = this.getDateWeekday(date);
 
         if (dateWeekday !== courseWeekday) {
-            const formattedDate = new Date(date).toLocaleDateString('zh-TW', {
+            const formattedDate = parseLocalDate(date).toLocaleDateString('zh-TW', {
                 year: 'numeric', month: 'long', day: 'numeric'
             });
             const suggestedDate = this.findNextMatchingDate(courseWeekday, date);
-            const suggestedFormatted = new Date(suggestedDate).toLocaleDateString('zh-TW', {
+            const suggestedFormatted = parseLocalDate(suggestedDate).toLocaleDateString('zh-TW', {
                 year: 'numeric', month: 'long', day: 'numeric'
             });
 
@@ -3478,7 +3480,7 @@ ${lines.join(NL)}${more}
      * 顯示日期已調整的提示
      */
     showDateAdjustmentHint(weekday, newDate) {
-        const formattedDate = new Date(newDate).toLocaleDateString('zh-TW', {
+        const formattedDate = parseLocalDate(newDate).toLocaleDateString('zh-TW', {
             year: 'numeric', month: 'long', day: 'numeric'
         });
         console.log(`日期已調整為 ${formattedDate}（${weekday}）`);
@@ -3539,7 +3541,7 @@ ${lines.join(NL)}${more}
         const hint = document.getElementById('date-adjustment-hint');
 
         if (dateWeekday !== courseWeekday) {
-            const formattedDate = new Date(date).toLocaleDateString('zh-TW', {
+            const formattedDate = parseLocalDate(date).toLocaleDateString('zh-TW', {
                 year: 'numeric', month: 'long', day: 'numeric'
             });
             warning.innerHTML = `⚠️ 日期不符：${esc(formattedDate)} 是「${esc(dateWeekday)}」，但課程是「${esc(courseWeekday)}」的課`;
@@ -3549,7 +3551,7 @@ ${lines.join(NL)}${more}
             warning.style.display = 'none';
             // 日期正確，隱藏提示並顯示確認訊息
             if (hint) {
-                const formattedDate = new Date(date).toLocaleDateString('zh-TW', {
+                const formattedDate = parseLocalDate(date).toLocaleDateString('zh-TW', {
                     year: 'numeric', month: 'long', day: 'numeric'
                 });
                 hint.innerHTML = `✅ ${esc(formattedDate)}（${esc(courseWeekday)}）`;
