@@ -318,6 +318,12 @@ button.recommendation-item {
     cursor: pointer;
     color: var(--color-text-muted);
     line-height: 1;
+    /* UX-L1：觸控目標至少 44×44（WCAG 2.5.5），視覺上仍是原本的 × */
+    min-width: 44px;
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
 }
 .modal-close:hover { color: var(--c-danger-600); }
 
@@ -562,6 +568,10 @@ button.recommendation-item {
     font-size: var(--fs-lg);
     padding: 0 0 0 var(--sp-2);
     line-height: 1;
+    /* UX-L1：觸控目標至少 44×44；用負邊距抵銷，不讓通知變高 */
+    min-width: 44px;
+    min-height: 44px;
+    margin: -12px -8px -12px 0;
 }
 .toast-close:hover { color: var(--color-text); }
 
@@ -700,4 +710,27 @@ button.recommendation-item {
 .data-table input:not([type="checkbox"]):not([type="radio"]):focus,
 .data-table select:focus {
     border-color: var(--color-accent);
+}
+
+/* ===== UX-L5：尊重「減少動態效果」的系統設定（前庭敏感、低效能裝置） ===== */
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
+}
+
+/* ===== UX-L6：列印時只留內容（隱藏頁首、頁籤、按鈕、通知與頁尾），表格不被切斷 ===== */
+@media print {
+    .header, .nav-tabs, .footer, #toast-container, #v2-auth-gate, #v2-sync-status-badge,
+    .v2-submit-banner, .modal, .btn, button, .day-switcher, .tab-btn {
+        display: none !important;
+    }
+    body, .app-container { background: #fff !important; color: #000 !important; }
+    .card { box-shadow: none !important; border: 1px solid #999 !important; break-inside: avoid; }
+    tr { break-inside: avoid; }
+    .table-wrap { overflow: visible !important; }
+    a[href]::after { content: none !important; }
 }

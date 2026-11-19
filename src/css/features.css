@@ -45,6 +45,13 @@
     }
 }
 
+/* UX-L12：手機單日檢視一欄很寬，格子字級由 11px 放大到 14px（桌機六欄維持原字級）。
+   只放大 .schedule-grid-single，避免裸 .schedule-grid 的六欄橫捲版被撐破。 */
+@media (max-width: 639px) {
+    .schedule-grid-single .schedule-cell { font-size: var(--fs-md); min-height: 56px; }
+    .schedule-grid-single .course-subject { font-size: var(--fs-sm); }
+}
+
 /* ===================================
    課表手機單日檢視（Stage 4）
    .is-day-active 是純結構標記（JS 依 highlightWeekday／editorActiveDay 算出），只用來讓
@@ -74,6 +81,13 @@
     }
 }
 
+.schedule-cell.editor-empty:focus-visible,
+.schedule-cell.editor-course:focus-visible {
+    outline: 3px solid var(--focus-ring);
+    outline-offset: -3px;
+    position: relative;
+    z-index: 1;
+}
 .schedule-header { background-color: var(--color-bg); font-weight: var(--fw-semibold); }
 .schedule-header.active-day { background-color: var(--c-warning-100); color: var(--c-warning-800); font-weight: var(--fw-bold); }
 .schedule-period { background-color: var(--color-bg); font-weight: var(--fw-medium); }
@@ -859,6 +873,16 @@ body.v2-locked #v2-auth-gate {
 .v2-auth-gate-card p { margin: 0 0 var(--sp-6); color: var(--c-n-500); font-size: var(--fs-lg); line-height: var(--lh-base); }
 .v2-auth-gate-card p.v2-gate-denied { color: var(--c-danger-800); font-weight: var(--fw-semibold); }
 .v2-auth-gate-actions { display: flex; flex-direction: column; gap: 0.8rem; align-items: center; }
+/* UX-L3：申請遮罩內的輸入框與 .form-group 同一套外觀（原本是行內樣式、沒有邊框與焦點框） */
+.v2-auth-gate-card .form-group { text-align: left; margin-top: var(--sp-2); }
+.v2-auth-gate-card .form-group input,
+.v2-auth-gate-card input[type="text"] {
+    width: 100%; padding: var(--sp-2) var(--sp-3); border: var(--bd); border-radius: var(--r-sm);
+    font-size: var(--fs-lg); font-family: inherit; box-sizing: border-box;
+}
+.v2-auth-gate-card input[type="text"]:focus {
+    outline: 2px solid var(--focus-ring); outline-offset: 1px; border-color: var(--color-accent); box-shadow: var(--sh-focus);
+}
 
 .v2-roster-summary { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin: 0.8rem 0; }
 .v2-roster-stat { padding: 4px var(--sp-3); border-radius: var(--r-sm); font-size: var(--fs-sm); font-weight: var(--fw-semibold); background: var(--c-n-100); color: var(--c-n-700); }
@@ -967,3 +991,17 @@ body.v2-locked #v2-auth-gate {
 .rich-dialog-phrase { display: block; width: 100%; margin-top: var(--sp-1); }
 .rich-dialog-pre { white-space: pre-wrap; font-size: var(--fs-sm); margin: var(--sp-2) 0; }
 .backup-status { margin-top: var(--sp-2); }
+
+/* UX-M6：教師送出申請後留在頁面上的持續性提示（toast 約 6 秒就消失，這則要自己關） */
+.v2-submit-banner {
+    display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--sp-2) var(--sp-4);
+    margin-bottom: var(--sp-4); padding: var(--sp-3) var(--sp-4);
+    border: 1px solid var(--c-success-200, var(--color-border)); border-radius: var(--r-md);
+    background: var(--c-success-100); color: var(--c-success-800);
+}
+.v2-submit-banner-text { margin: 0; flex: 1 1 260px; font-size: var(--fs-md); line-height: var(--lh-base); }
+.v2-submit-banner-actions { display: flex; gap: var(--sp-2); }
+
+/* V2 設定頁：左欄只有 V1 雲端同步卡（v1-only），V2 隱藏它時整欄收起，右欄獨佔 */
+body.v2-active .settings-left { display: none; }
+body.v2-active .settings-layout { grid-template-columns: 1fr; }

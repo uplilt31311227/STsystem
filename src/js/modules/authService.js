@@ -8,6 +8,7 @@
  */
 
 import { initializeFirebase, getAuthInstance, getDbInstance, isFirebaseInitialized } from './firebaseConfig.js';
+import { friendlyErrorMessage } from './errorText.js';
 import { wipeLocalUserData, wipeAfterPassiveSignOut, hasPendingWrites, LAST_UID_KEY } from './localDataCleanup.js';
 
 // 當前使用者
@@ -155,10 +156,10 @@ async function signInWithGoogle() {
         } else if (error.code === 'auth/cancelled-popup-request') {
             throw new Error('登入請求已取消');
         } else if (error.code === 'auth/unauthorized-domain') {
-            throw new Error('此網域未經授權，請在 Firebase 控制台新增此網域');
+            throw new Error('此網址尚未授權登入，請聯絡系統管理者');
         }
 
-        throw error;
+        throw friendlyAuthError(error, '登入失敗，請稍後再試');
     }
 }
 
@@ -349,7 +350,7 @@ async function signInWithEmail(email, password) {
         } else if (error.code === 'auth/user-disabled') {
             throw new Error('此帳號已被停用，請聯絡教務主任');
         }
-        throw error;
+        throw friendlyAuthError(error, '登入失敗，請稍後再試');
     }
 }
 
@@ -397,7 +398,7 @@ async function registerWithEmail(email, password) {
         } else if (error.code === 'auth/invalid-email') {
             throw new Error('Email 格式錯誤');
         }
-        throw error;
+        throw friendlyAuthError(error, '註冊失敗，請稍後再試');
     }
 }
 
@@ -455,6 +456,14 @@ async function createTeacherAuthAndSendReset(email) {
         try { await deleteApp(secondaryApp); } catch (_) {}
     }
     return { accountCreated, emailSent: true };
+}
+
+/** 把 Firebase 的英文錯誤包成中文訊息，保留 code 供呼叫端判斷（UX-M24） */
+function friendlyAuthError(error, fallback) {
+    const e = new Error(friendlyErrorMessage(error, fallback));
+    e.code = error && error.code;
+    e.cause = error;
+    return e;
 }
 
 export {

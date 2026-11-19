@@ -58,7 +58,7 @@ function buildMethod(name, scope) {
     const mkDm = (log) => new Proxy({}, { get: (_t, prop) => (...a) => { log.push(String(prop)); return Promise.resolve({}); } });
     for (const [label, v2] of [['V2', true], ['V1', false]]) {
         const log = [];
-        const doc = { getElementById: () => ({ classList: { add() { log.push('dom'); }, remove() { log.push('dom'); } }, querySelector: () => null, set src(v) {}, set textContent(v) {} }) };
+        const doc = { getElementById: () => ({ classList: { add() { log.push('dom'); }, remove() { log.push('dom'); } }, querySelector: () => null, addEventListener() {}, set src(v) {}, set textContent(v) {} }) };
         const ctx = {
             dataManager: mkDm(log),
             updateSyncStatusSection() { log.push('updateSync'); },
@@ -71,7 +71,7 @@ function buildMethod(name, scope) {
         const ctx2 = { dataManager: mkDm(sync), enableRealtimeSyncAndListen() {}, refreshUIAfterSync() {}, saveDataToStorage() {} };
         await buildMethod('checkAndHandleSync', scope).call(ctx2);
         if (v2) {
-            check('SF-V1：V2 時 onAuthStateChanged（登入與登出）完全不動 dataManager／畫面／同步', log.length === 0, log.join(','));
+            check('SF-V1：V2 時 onAuthStateChanged（登入與登出）不動 dataManager／同步，只更新頁首顯示', log.filter(x => x !== 'dom').length === 0 && log.includes('dom'), log.join(','));
             check('SF-V1：V2 時 checkAndHandleSync 直接返回，不碰 dataManager', sync.length === 0, sync.join(','));
         } else {
             check('SF-V1：V1 時 onAuthStateChanged 照舊（登入會呼叫 checkAndHandleSync、登出會停用即時同步）',

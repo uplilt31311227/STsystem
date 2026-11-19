@@ -154,7 +154,9 @@ check('(b) 操作日誌列：details 為 undefined／null／循環結構不丟�
 })());
 check('(b) 操作日誌列：正常資料顯示內容一致', (() => {
     const h = renderLog(logBenign);
-    return h.includes('王老師') && h.includes('<span class="v2-role-tag director">director</span>') && h.includes('substitute_record / 234567') && h.includes('{&quot;k&quot;:&quot;v&quot;}');
+    // UX-M15：畫面顯示中文（主任／核准／調代課紀錄），原始代碼與 JSON 保留在 title 供稽核對照
+    return h.includes('王老師') && h.includes('<span class="v2-role-tag director">主任</span>') && h.includes('>核准</td>') && h.includes('title="approve"')
+        && h.includes('調代課紀錄 / 234567') && h.includes('title="substitute_record"') && h.includes('title="{&quot;k&quot;:&quot;v&quot;}"');
 })(), renderLog(logBenign));
 
 // 紀錄列
@@ -242,7 +244,7 @@ check('(b) 待辦卡片：cls 不在白名單時被清空（屬性集合不變�
     check('(b2) v2-app.js 以 renderPendingCard 輸出待辦卡片', /renderPendingCard\(r, cls,/.test(v2));
     check('(b2) v2-app.js 不再有 `${l.actor`／`${l.action}`／`${r.className ||` 之類未跳脫插值',
         !/\$\{l\.(actor|action|targetType|targetId|details)/.test(v2) && !/<td[^>\n]*>\$\{r\./.test(v2) && !/data-id="\$\{r\.reqId\}"/.test(v2));
-    check('(b2) 頁首姓名不再用 innerHTML（改 DOM API）', !/nameSpan\.innerHTML/.test(v2) && /createTextNode\(String\(identity\.name/.test(v2));
+    check('(b2) 頁首姓名不再用 innerHTML（改 DOM API）', !/nameSpan\.innerHTML/.test(v2) && /nameText\.textContent = String\(identity\.name/.test(v2));
     const app = read('src/js/app.js');
     check('(b2) app.js 課表編輯格線的 className／subject／domain／title 皆 esc()',
         /data-class="\$\{esc\(course\.className\)\}"/.test(app) && /data-subject="\$\{esc\(course\.subject\)\}"/.test(app)

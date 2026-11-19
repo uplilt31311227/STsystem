@@ -203,8 +203,30 @@ body {
     border: 2px solid var(--color-border);
 }
 
+.header-title h1 { margin-bottom: var(--sp-1); }
+.header-context {
+    margin: 0;
+    font-size: var(--fs-md);
+    color: var(--color-text-muted);
+}
+
+/* UX-L2：頭像載入失敗時改顯示姓名首字圓章（JS 綁 error 事件，CSP 不允許 inline onerror） */
+.user-avatar-fallback {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    background: var(--c-primary-600);
+    color: var(--color-text-invert);
+    font-size: var(--fs-md);
+    font-weight: var(--fw-semibold);
+    line-height: 1;
+}
+
 .user-name {
-    display: none;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-1);
     font-size: var(--fs-md);
     font-weight: var(--fw-medium);
     color: var(--color-text);
@@ -214,8 +236,10 @@ body {
     white-space: nowrap;
 }
 
+/* UX-M2：手機只收起姓名文字，角色標籤仍顯示；桌機姓名與角色並列 */
+.user-name-text { display: none; }
 @media (min-width: 640px) {
-    .user-name { display: inline; }
+    .user-name-text { display: inline; }
 }
 
 /* ===== 導覽頁籤（Stage 2 起：手機可捲 tab bar，取代舊 flex-wrap 版；

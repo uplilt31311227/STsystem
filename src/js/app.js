@@ -14,6 +14,7 @@ import { esc, toNum } from './modules/htmlEscape.js';
 import { formatLocalDate, parseLocalDate, todayLocal } from './modules/localDate.js';
 import { mergeTeacherAttributes, findAmbiguousTeacherNames } from './modules/teacherMerge.js';
 import { periodIndex } from './modules/periods.js';
+import { friendlyErrorMessage } from './modules/errorText.js';
 import { requiresDocNumber } from './modules/leaveTypes.js';
 import { grade9PendingLabel } from './modules/grade9Graduation.js';
 import {
@@ -331,7 +332,7 @@ class SubstituteTeacherApp {
             console.log('登入成功'); // 不印 user 物件（含 email 等個資，審計 SF-L6）
         } catch (error) {
             console.error('登入失敗:', error);
-            this.showToast('登入失敗：' + error.message, 'error');
+            this.showToast('登入失敗：' + friendlyErrorMessage(error, '請稍後再試'), 'error');
         }
     }
 
@@ -355,8 +356,9 @@ class SubstituteTeacherApp {
      * 認證狀態變更處理
      */
     async onAuthStateChanged(user) {
-        // V2 由 v2-app 自己處理登入；這裡若繼續會觸發 V1 個人雲端同步（審計 SF-V1）
-        if (isV2Enabled()) return;
+        // V2：只更新頁首的登入／登出顯示；不碰 dataManager 與 V1 個人雲端同步（審計 SF-V1）。
+        // 姓名與角色標籤由 v2-app 身分解析後填入，這裡不覆寫。
+        const v2 = isV2Enabled();
         const loggedOut = document.getElementById('auth-logged-out');
         const loggedIn = document.getElementById('auth-logged-in');
 
@@ -371,14 +373,31 @@ class SubstituteTeacherApp {
             const userName = document.getElementById('user-name');
 
             // 只接受 https 圖片網址（img 不會執行 javascript:，這裡再多一層協定驗證）
-            if (avatarImg && userInfo?.photoURL && /^https:[/][/]/i.test(userInfo.photoURL)) {
-                avatarImg.src = userInfo.photoURL;
+            const avatarFallback = document.getElementById('user-avatar-fallback');
+            const showAvatarFallback = () => {
+                // UX-L2：破圖時改顯示姓名首字圓章（首字取自顯示名稱，沒有名稱就用 Email 第一個字）
+                const label = (userInfo?.displayName || userInfo?.email || '?').trim();
+                if (avatarFallback) avatarFallback.textContent = Array.from(label)[0] || '?';
+                avatarImg?.classList.add('hidden');
+                avatarFallback?.classList.remove('hidden');
+            };
+            if (avatarImg && !avatarImg._errorBound) {
+                avatarImg._errorBound = true;
+                avatarImg.addEventListener('error', showAvatarFallback);   // CSP 禁 inline onerror，改用事件綁定
             }
-            if (userName && userInfo?.displayName) {
+            if (avatarImg && userInfo?.photoURL && /^https:[/][/]/i.test(userInfo.photoURL)) {
+                avatarImg.classList.remove('hidden');
+                avatarFallback?.classList.add('hidden');
+                avatarImg.src = userInfo.photoURL;
+            } else {
+                showAvatarFallback();   // 沒有頭像網址：直接顯示圓章
+            }
+            if (!v2 && userName && userInfo?.displayName) {
                 userName.textContent = userInfo.displayName;
             }
 
             // 更新設定頁籤的雲端同步狀態
+            if (v2) return;
             this.updateSyncStatusSection(true);
 
             // 檢查同步狀態
@@ -388,6 +407,7 @@ class SubstituteTeacherApp {
             loggedOut?.classList.remove('hidden');
             loggedIn?.classList.add('hidden');
 
+            if (v2) return;
             // 更新設定頁籤的雲端同步狀態
             this.updateSyncStatusSection(false);
 
@@ -405,7 +425,7 @@ class SubstituteTeacherApp {
 
         const formatted = formatSyncStatus(status);
 
-        syncStatusElement.className = 'sync-status ' + status;
+        syncStatusElement.className = 'sync-status v1-only ' + status;   // v1-only：V2 隱藏（UX-M3）
         syncStatusElement.querySelector('.sync-icon').textContent = formatted.icon;
         syncStatusElement.querySelector('.sync-text').textContent = formatted.text;
     }
@@ -949,7 +969,7 @@ class SubstituteTeacherApp {
         } catch (error) {
             dismissParsing?.();
             console.error('檔案處理錯誤:', error);
-            this.showError('檔案處理錯誤: ' + error.message);
+            this.showError('檔案處理錯誤：' + friendlyErrorMessage(error, '檔案內容無法讀取，請確認格式後重試'));
         } finally {
             resetInput();
         }
@@ -1675,13 +1695,31 @@ ${lines.join(NL)}${more}
 
         // 日期變更
         document.getElementById('sub-date').addEventListener('change', () => {
-            this.onTeacherOrDateChanged();
+            // UX-M8：只改日期時保留異動類型、假別、公假字號（它們與日期無關）；選好的課程仍會清空，須依新日期重選
+            this.onTeacherOrDateChanged({ keepRequestFields: true });
+            // 日期變了：步驟四摘要、時段 B 的日期與互換課程都是舊日期算的，一併清掉
+            document.getElementById('selected-course-info')?.classList.add('hidden');
+            const sd = document.getElementById('swap-date'); if (sd) sd.value = '';
+            const sc = document.getElementById('swap-course'); if (sc) sc.innerHTML = '<option value="">請選擇要互換的課程</option>';
         });
 
         // 異動類型切換（調課/代課/多重調課）- 新版使用 radio button
         document.querySelectorAll('input[name="change-type-radio"]').forEach(radio => {
-            radio.addEventListener('change', (e) => {
+            radio.addEventListener('change', async (e) => {
                 const val = e.target.value;
+                // UX-M10：離開「多重調課」且批次裡已有項目時，先確認；取消就留在多重調課（批次保留）
+                if (val !== 'multi-swap' && this.isMultiSwapMode && this.swapBatch.length > 0) {
+                    const ok = await this.confirmDialog({
+                        title: '切換異動類型',
+                        message: `目前批次裡有 ${this.swapBatch.length} 筆調課組合，切換類型會清空這些組合，無法復原。確定要切換嗎？`,
+                        confirmText: '清空並切換', danger: true,
+                    });
+                    if (!ok) {
+                        const back = document.querySelector('input[name="change-type-radio"][value="multi-swap"]');
+                        if (back) back.checked = true;
+                        return;
+                    }
+                }
                 // 多重調課模式映射為 swap + 批次模式
                 if (val === 'multi-swap') {
                     this.isMultiSwapMode = true;
@@ -1754,12 +1792,12 @@ ${lines.join(NL)}${more}
     /**
      * 當教師或日期變更時觸發（新流程）
      */
-    onTeacherOrDateChanged() {
+    onTeacherOrDateChanged({ keepRequestFields = false } = {}) {
         const teacher = document.getElementById('sub-teacher').value;
         const date = document.getElementById('sub-date').value;
 
         // 重置後續步驟
-        this.resetStepsAfterBasic();
+        this.resetStepsAfterBasic({ keepRequestFields });
 
         if (!teacher || !date) {
             // 作廢先前送出、尚未回來的當日課表查詢，避免它回來後又打開步驟三
@@ -1776,7 +1814,7 @@ ${lines.join(NL)}${more}
     /**
      * 重置基本選擇之後的步驟
      */
-    resetStepsAfterBasic() {
+    resetStepsAfterBasic({ keepRequestFields = false } = {}) {
         this.selectedCourse = null;
         this.selectedSubstitute = null;
         this.selectedSwapCourse = null;
@@ -1791,7 +1829,7 @@ ${lines.join(NL)}${more}
             document.getElementById('substitute-options').classList.add('hidden');
             document.getElementById('swap-options').classList.remove('hidden');
             this.setSubmitButtonMode(true);
-        } else {
+        } else if (!keepRequestFields) {
             // 重置異動類型為代課
             const substituteRadio = document.querySelector('input[name="change-type-radio"][value="substitute"]');
             if (substituteRadio) {
@@ -2072,7 +2110,7 @@ ${lines.join(NL)}${more}
         });
 
         // 按節次排序
-        const sortByPeriod = (a, b) => a.period.localeCompare(b.period);
+        const sortByPeriod = (a, b) => periodIndex(a.period) - periodIndex(b.period);   // UX-M9：用節次常數排序，不用字串比較（第十節等不會排錯）
         eligibleCourses.sort(sortByPeriod);
         conflictCourses.sort((a, b) => sortByPeriod(a.course, b.course));
 
@@ -3283,6 +3321,8 @@ ${lines.join(NL)}${more}
         // 儲存所有紀錄：等寫入完成才往下（V2 寫入可能被 adminCreate 重驗擋下，回傳 false；
         // V1 為同步寫 localStorage，回傳 undefined，行為不變）。失敗時 V2 已顯示錯誤訊息，不產 PDF。
         const savedRecords = [];
+        this.dataManager.beginSubmitGroup?.();   // V2：多節送出只跳一則合併通知（UX-M7）；V1 沒有此方法
+        try {
         for (const record of records) {
             const ok = await this.dataManager.addSubstituteRecord(record);
             if (ok === false) {
@@ -3298,6 +3338,9 @@ ${lines.join(NL)}${more}
                 return;
             }
             savedRecords.push(record);
+        }
+        } finally {
+            this.dataManager.endSubmitGroup?.();
         }
         this.saveDataToStorage();
 
@@ -4053,7 +4096,7 @@ ${lines.join(NL)}${more}
                 console.error('多重調課 PDF 產生失敗:', err);
                 this.swapBatch = [];
                 this.resetSubstituteFlow();
-                this.showToast(`已完成 ${records.length} 筆多重調課，但 PDF 產生失敗：${err?.message || err}。紀錄已儲存，請勿重複送出，可至紀錄查詢重印`, 'error', 10000);
+                this.showToast(`已完成 ${records.length} 筆多重調課，但 PDF 產生失敗（${friendlyErrorMessage(err, '請稍後再試')}）。紀錄已儲存，請勿重複送出，可至紀錄查詢重印`, 'error', 10000);
                 return;
             }
         }
@@ -4230,7 +4273,7 @@ ${lines.join(NL)}${more}
             this.closeWeeklySummaryModal();
         } catch (err) {
             console.error('產生週彙整 PDF 失敗:', err);
-            this.showToast('產生 PDF 失敗，請查看 console', 'error', 5000);
+            this.showToast('產生 PDF 失敗，請稍後再試；若持續發生請聯絡系統管理者', 'error', 5000);
         } finally {
             confirmBtn.disabled = false;
             confirmBtn.textContent = originalText;
@@ -4511,7 +4554,7 @@ ${lines.join(NL)}${more}
             this.showToast('讀不到上課週數設定，未產生結算（為避免用預設週數算錯金額）。請檢查網路後重試', 'error', 6000);
             return;
         }
-        this.showToast('讀取月結算資料失敗，請查看 console', 'error', 5000);
+        this.showToast('讀取月結算資料失敗，請檢查網路後重試；若持續發生請聯絡系統管理者', 'error', 5000);
     }
 
     bindSettlementWeeksEvents() {
@@ -4736,7 +4779,7 @@ ${lines.join(NL)}${more}
             this.showToast('月結算上課週數已儲存', 'success');
         } catch (err) {
             console.error('儲存月結算週數失敗:', err);
-            this.showToast('儲存失敗：' + (err?.message || '請查看 console'), 'error', 5000);
+            this.showToast('儲存失敗：' + friendlyErrorMessage(err, '請檢查網路後重試'), 'error', 5000);
         } finally {
             btn.disabled = !store.canEdit?.() || !!this._swLoadFailed;
         }
@@ -5143,7 +5186,7 @@ ${lines.join(NL)}${more}
             } catch (err) {
                 console.error('儲存九年級畢業設定失敗:', err);
                 if (toggle) toggle.checked = !disabled;
-                this.showToast('儲存九年級設定失敗：' + (err?.message || '請查看 console'), 'error', 5000);
+                this.showToast('儲存九年級設定失敗：' + friendlyErrorMessage(err, '請檢查網路後重試'), 'error', 5000);
                 return;
             }
         } else {
@@ -5421,7 +5464,7 @@ ${lines.join(NL)}${more}
             location.reload();
         } catch (error) {
             console.error('匯入失敗:', error);
-            this.showToast('匯入失敗：' + error.message, 'error');
+            this.showToast('匯入失敗：' + friendlyErrorMessage(error, '檔案內容無法讀取，請確認是人力資源網匯出的課表'), 'error');
         }
     }
 
@@ -5610,6 +5653,8 @@ ${lines.join(NL)}${more}
                         : `點擊編輯：${course.className} ${course.subject}`;
                     html += `
                         <div class="${courseCellClass}"
+                             role="button" tabindex="0"
+                             aria-label="${esc(`編輯 ${dayName}${period} ${course.className} ${course.subject}`)}"
                              data-weekday="${dayName}"
                              data-period="${period}"
                              data-class="${esc(course.className)}"
@@ -5624,6 +5669,8 @@ ${lines.join(NL)}${more}
                     const emptyCellClass = isActiveDay ? 'schedule-cell editor-empty is-day-active' : 'schedule-cell editor-empty';
                     html += `
                         <div class="${emptyCellClass}"
+                             role="button" tabindex="0"
+                             aria-label="${esc(`新增課程 ${dayName}${period}`)}"
                              data-weekday="${dayName}"
                              data-period="${period}"
                              title="點擊新增課程">
@@ -5653,7 +5700,7 @@ ${lines.join(NL)}${more}
             daySwitcher.innerHTML = days.map(day => {
                 const dayName = '週' + day;
                 const isActive = dayName === this.editorActiveDay;
-                return `<button type="button" class="day-switcher-btn${isActive ? ' is-active' : ''}" data-weekday="${dayName}">${day}</button>`;
+                return `<button type="button" class="day-switcher-btn${isActive ? ' is-active' : ''}" data-weekday="${dayName}" aria-pressed="${isActive}" aria-label="${dayName}">${day}</button>`;
             }).join('');
 
             daySwitcher.querySelectorAll('.day-switcher-btn').forEach(btn => {
@@ -5662,6 +5709,24 @@ ${lines.join(NL)}${more}
                     this.renderEditableScheduleGrid();
                 });
             });
+        }
+
+        // P8-1：格子是 role=button 的 div，補鍵盤操作——Enter 或空白鍵等同點擊（原生 button 的行為）
+        grid.querySelectorAll('.editor-empty, .editor-course').forEach(cell => {
+            cell.addEventListener('keydown', (e) => {
+                if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+                e.preventDefault();   // 空白鍵預設會捲動頁面
+                cell.click();
+            });
+        });
+
+        // 重畫會把格子換成新節點；剛編輯完的格子重新取得焦點，鍵盤使用者才不會掉回頁首
+        const focusKey = this._editorFocusKey;
+        if (focusKey && (!document.activeElement || document.activeElement === document.body)) {
+            const target = Array.from(grid.querySelectorAll('.editor-empty, .editor-course'))
+                .find(c => c.dataset.weekday === focusKey.weekday && c.dataset.period === focusKey.period);
+            target?.focus({ preventScroll: true });
+            if (target) this._editorFocusKey = null;
         }
 
         // 綁定格子點擊事件
@@ -5693,6 +5758,7 @@ ${lines.join(NL)}${more}
     openCourseEditModal(weekday, period, isEdit, courseData = null) {
         // className：編輯模式下的原班級，合班（同節多班）時用來精準定位要改／刪的那一筆（LC-L4）
         this.editorEditingCell = { weekday, period, className: isEdit ? (courseData?.className ?? null) : null };
+        this._editorFocusKey = { weekday, period };   // 關閉後把焦點還給這一格（P8-1）
         this.editorIsEditMode = isEdit;
         this.clearCourseModalMsg();
 
@@ -5776,6 +5842,14 @@ ${lines.join(NL)}${more}
         document.getElementById('course-edit-modal').classList.add('hidden');
         this.editorEditingCell = null;
         this.clearCourseModalMsg();
+        // 對話框釋放焦點時，原本那一格可能已被重畫換掉；稍後若焦點掉到頁面最上層，改回該格（P8-1）
+        setTimeout(() => {
+            if (document.activeElement && document.activeElement !== document.body) return;
+            const k = this._editorFocusKey;
+            if (!k) return;
+            document.querySelector(`#editor-schedule-grid [data-weekday="${CSS.escape(k.weekday)}"][data-period="${CSS.escape(k.period)}"]`)?.focus({ preventScroll: true });
+            this._editorFocusKey = null;
+        }, 250);
     }
 
     /**

@@ -29,18 +29,67 @@ export function detailsToText(details, max = 160) {
     return String(s ?? '').slice(0, max);
 }
 
+/* ===== 操作日誌的中文對照（UX-M15）：畫面給人看中文，原始代碼與 JSON 放在 title，供稽核對照 ===== */
+
+export const LOG_ACTION_LABELS = Object.freeze({
+    create_request: '送出申請', swap_consent: '同意調課', approve: '核准', approve_blocked_conflict: '核准被擋（衝堂）',
+    reject: '拒絕／駁回', cancel: '撤回申請', admin_create: '組長／主任代發', edit: '修改', delete: '刪除',
+    teacher_bind_email: '綁定教師 Email', role_change: '變更角色', permission_denied: '權限被拒',
+    teacher_create: '新增教師', teacher_delete: '刪除教師', schedule_import: '匯入課表', roster_import: '匯入教師名單',
+    data_migrate: '遷移舊資料', clear_all_data: '清空資料', semester_switch: '切換學期', semester_archive: '封存學期',
+    export_backup: '匯出備份', restore_backup: '還原備份', detail_delete_failed: '假別事由刪除失敗',
+});
+export const LOG_TARGET_LABELS = Object.freeze({
+    substituteRecord: '調代課紀錄', substitute_record: '調代課紀錄', pendingRequest: '待辦申請', pending_request: '待辦申請',
+    teacher: '教師', schedule: '課表', auth: '登入', system: '系統',
+});
+export const LOG_ROLE_LABELS = Object.freeze({
+    admin: '主任', director: '主任', section_chief: '組長', teacher: '教師',
+});
+const LOG_DETAIL_KEY_LABELS = Object.freeze({
+    reason: '原因', note: '備註', initiatedBy: '發起人', requestType: '類型', rejectedBy: '處理人', selfApproved: '自行成立',
+    fileName: '檔名', semesterId: '學期', from: '從', to: '到', attemptedTeacher: '嘗試代為申請的教師', myTeacher: '本人',
+    count: '筆數', counts: '筆數統計', affectedTeacherIds: '受影響教師', source: '來源', teacherId: '教師',
+});
+
+/** 日誌摘要：把 details 的鍵值轉成「原因：xxx；類型：yyy」的一行中文；看不懂的鍵直接略過，不顯示原始 JSON。 */
+export function summarizeLogDetails(details, max = 120) {
+    let obj = details;
+    if (typeof details === 'string') {
+        try { obj = JSON.parse(details); } catch { return details.slice(0, max); }
+    }
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return '';
+    const parts = [];
+    for (const [k, v] of Object.entries(obj)) {
+        const label = LOG_DETAIL_KEY_LABELS[k];
+        if (!label || v == null || v === '') continue;
+        let text;
+        if (Array.isArray(v)) text = `${v.length} 項`;
+        else if (typeof v === 'object') continue;
+        else if (typeof v === 'boolean') text = v ? '是' : '否';
+        else text = String(v);
+        parts.push(`${label}：${text}`);
+    }
+    return parts.join('；').slice(0, max);
+}
+
 /** 操作日誌表格的一列（renderLogsTab）。 */
 export function renderLogRow(l) {
     const role = l.actor?.role;
     const targetId = l.targetId ? ' / ' + String(l.targetId).slice(-6) : '';
+    const actionText = Object.hasOwn(LOG_ACTION_LABELS, l.action) ? LOG_ACTION_LABELS[l.action] : l.action;
+    const targetText = Object.hasOwn(LOG_TARGET_LABELS, l.targetType) ? LOG_TARGET_LABELS[l.targetType] : (l.targetType || '');
+    const roleText = typeof role === 'string' && Object.hasOwn(LOG_ROLE_LABELS, role) ? LOG_ROLE_LABELS[role] : (role || '—');
+    const raw = detailsToText(l.details, 400);
+    const summary = summarizeLogDetails(l.details) || (raw && raw !== '{}' ? '（詳見滑鼠提示）' : '');
     return `
                 <tr>
                     <td data-label="時間">${escapeHtml(fmtDate(l.timestamp))}</td>
                     <td data-label="操作者">${escapeHtml(l.actor?.name || l.actor?.email || '—')}</td>
-                    <td data-label="角色"><span class="v2-role-tag ${pickAllowed(role, ROLE_CLASS_WHITELIST)}">${escapeHtml(role || '—')}</span></td>
-                    <td data-label="動作">${escapeHtml(l.action)}</td>
-                    <td data-label="對象">${escapeHtml(l.targetType || '')}${escapeHtml(targetId)}</td>
-                    <td data-label="詳情"><code style="font-size:0.75rem;">${escapeHtml(detailsToText(l.details))}</code></td>
+                    <td data-label="角色"><span class="v2-role-tag ${pickAllowed(role, ROLE_CLASS_WHITELIST)}">${escapeHtml(roleText)}</span></td>
+                    <td data-label="動作" title="${escapeHtml(String(l.action ?? ''))}">${escapeHtml(actionText)}</td>
+                    <td data-label="對象" title="${escapeHtml(String(l.targetType ?? ''))}">${escapeHtml(targetText)}${escapeHtml(targetId)}</td>
+                    <td data-label="詳情" title="${escapeHtml(raw)}">${escapeHtml(summary)}</td>
                 </tr>`;
 }
 
@@ -65,13 +114,23 @@ export function renderRecordRow(r, isApprover, impactNote = '') {
                 </tr>`;
 }
 
+/**
+ * 被退回的原因分兩種，用語拆開（UX-L9）：
+ *   對方教師不同意（rejectedBy 在同意名單內）→「對方未同意」；其餘（組長／主任）→「已被駁回」。
+ */
+export function rejectedLabel(r) {
+    const consenters = Array.isArray(r.pendingConsentTeacherIds) ? r.pendingConsentTeacherIds : [];
+    if (r.rejectedBy && consenters.includes(r.rejectedBy)) return '對方未同意';
+    return '已被駁回';
+}
+
 /** 待辦卡片的階段標籤（常數 HTML，不含資料）。 */
 export function stageLabel(r) {
     switch (r.status) {
         case REQUEST_STATUS.PENDING_SWAP_CONSENT: return '<span class="v2-status-tag pending">⏳ 待同意</span>';
         case REQUEST_STATUS.PENDING_APPROVAL:      return '<span class="v2-status-tag pending">📋 待核准</span>';
         case REQUEST_STATUS.APPROVED:              return '<span class="v2-status-tag approved">✅ 已核准</span>';
-        case REQUEST_STATUS.REJECTED:              return '<span class="v2-status-tag rejected">❌ 被拒絕</span>';
+        case REQUEST_STATUS.REJECTED:              return `<span class="v2-status-tag rejected">${rejectedLabel(r)}</span>`;
         default: return '';
     }
 }
@@ -105,7 +164,7 @@ export function renderPendingCard(r, cls, actionsHtml, extraMeta = '', detailHtm
             ${detailHtml}
             <div class="v2-pending-meta">
                 發起：${escapeHtml(r.initiatedByName || r.initiatedBy || '')}${extraMeta} ・ ${escapeHtml(fmtDate(r.createdAt))}
-                ${r.status === REQUEST_STATUS.REJECTED && r.rejectNote ? `<br>拒絕原因：${escapeHtml(r.rejectNote)}` : ''}
+                ${r.status === REQUEST_STATUS.REJECTED && r.rejectNote ? `<br>${rejectedLabel(r) === '對方未同意' ? '不同意' : '駁回'}原因：${escapeHtml(r.rejectNote)}` : ''}
             </div>
             <div class="v2-pending-actions">${actionsHtml}</div>
         </div>`;
@@ -189,7 +248,7 @@ export function renderApprovalDetail(r, detail, { detailState = '', detailError 
 export function consentActions(r) {
     const id = escapeHtml(r.reqId);
     return `<button class="btn btn-primary btn-sm v2-consent-btn" data-id="${id}">同意</button>
-         <button class="btn btn-secondary btn-sm v2-reject-btn" data-id="${id}">拒絕</button>`;
+         <button class="btn btn-secondary btn-sm v2-reject-btn" data-id="${id}">不同意</button>`;
 }
 
 /**

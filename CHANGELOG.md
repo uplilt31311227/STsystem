@@ -1,5 +1,40 @@
 # 版本紀錄 (Changelog)
 
+## [2026-11-19] 資安審計 P9 批次 D（使用者體驗，尚未部署）
+
+**D1 文案與回饋**
+- **錯誤訊息**（UX-M24）：新增 `errorText.js`（Firebase 與登入錯誤碼對照、英文或工程詞改用白話備用文字，原始錯誤只留 console）。`uiFeedback.notifyError`、`authService` 三處登入／註冊、`app.js` 與 `v2-app.js` 的 12 處提示改用它；移除 4 處「請查看 console」。
+- **送出回饋**（UX-M6、UX-M7）：一般教師的送出鈕改為「送出申請」（主任與組長維持「確認並產生表單」）；送出後除 toast 外，申請頁上方留一則持續性提示，附「前往待辦」。多節代課與多重調課批次逐筆建立申請時，通知合併成一則（`submitSummary.js`、`beginSubmitGroup`／`endSubmitGroup`）。
+- **用語**（UX-L9、LF-M10）：被退回的申請依對象顯示「對方未同意」或「已被駁回」；同意人按鈕為「同意／不同意」。追加同意教師對話框改為說明只需知悉並同意、不產生異動紀錄，三方輪調請用多重調課。
+- **回饋與後果**（UX-M23）：撤回、拒絕／駁回、清除已拒絕、刪除紀錄成功後都有提示；刪除紀錄的確認說明對月結算與 PDF 的影響。
+- **表單**（UX-M8、UX-M9、UX-M10）：只改日期時保留異動類型、假別、公假字號（改教師仍完整重置）；互換下拉改用 `periodIndex` 排序；離開多重調課且批次非空時先確認，取消則留在原模式。
+- **教師管理**（UX-M13）：Email 存檔前驗格式（新增教師對話框同）；角色變更前確認並說明該角色的權限。
+- **操作日誌**（UX-M15）：動作、對象、角色改顯示中文，詳情改為中文摘要，原始代碼與 JSON 放在 title。
+- **V2 隱藏 V1 專屬元素**（UX-M3、UX-M14、UX-L7）：header 的 `#sync-status`、設定頁的 V1 雲端同步說明卡、課表編輯器的「儲存課表」鈕在 V2 隱藏（V2 改顯示「每次修改都會立即同步給全校」）；頁尾移除寫死的過時版本號。
+- **課表尚未匯入**（UX-M1）：三處提示依角色換文案，教師看到「請聯絡教學組長或教務主任」，不再被指到看不到的「課表管理」。
+
+**D2 無障礙與樣式**
+- **header**（UX-M2）：V2 登入後顯示「學校｜學期」；手機只收起姓名文字，角色標籤仍顯示。
+- **載入**（UX-M4）：第一次登入狀態回報之前，遮罩顯示「載入中」，不先畫出登入按鈕；10 秒仍無回報時退回顯示登入按鈕。
+- **頭像**（UX-L2）：alt 改空字串；破圖時由 JS 綁 error 事件換成姓名首字圓章（CSP 不允許 inline 事件處理器）。
+- **樣式**（UX-L1、L3、L5、L6、L12）：關閉鈕觸控目標至少 44×44；申請遮罩輸入框套 `.form-group`；加 `prefers-reduced-motion` 與 `@media print`；手機單日課表字級由 11px 放大到 14px。
+- **鍵盤**（P8-1、P8-3）：課表編輯器格子加 `role="button"`、`tabindex="0"`、`aria-label`，Enter 或空白鍵開啟編輯，編輯後焦點回到該格；星期切換器移除不完整的 tablist，改為有名稱的按鈕群組並標 `aria-pressed`。
+- **UX-L4**：Email 登入表單的 label 原本就以 for／id 關聯，不需修改，已加靜態檢查鎖住。
+
+**驗收後修正（同日）**
+- **頁首登入狀態迴歸**（批次 C 的 SF-V1 造成）：`onAuthStateChanged` 的 `isV2Enabled()` 早退連頁首的登入／登出切換一起跳過，V2 登入後頁首仍顯示「Google 登入／Email 登入」。改為 V2 只略過 V1 個人雲端同步與 dataManager，頁首（頭像、登出鈕、顯示切換）照常更新；姓名與角色標籤仍由 v2-app 填入。新增 e2e-10 案例鎖住。
+- **UX-M2**：學校名改取 `config.schoolName`，沒有學校名時只顯示學期。
+- **UX-M4**：逾時計時器移到 `initAuthService` 之前，init 丟錯時直接顯示登入按鈕並提示；「載入中」與「確認身分中」分開 key。新增 SDK 被擋的 e2e 案例。
+- V2 設定頁左欄收起；改日期時清掉步驟四摘要與時段 B；「不同意」toast 文案；角色確認在沒有 confirmDialog 時改用原生 confirm；課表格焦點 key 用 `CSS.escape` 並於還原後清除。
+- cache 版本：CSS 2.8.1、app.js 1.14.9、v2-app.js 0.1.21。
+
+**測試與版本**
+- 新增 `test/test-p9d-ux.mjs`（63 項靜態與純函式檢查）與 `test/test-p9d-richdialog-dom.mjs`（Playwright 實際 DOM：勾選 enablesConfirm 選項後確認鈕解除；已做變異測試，拿掉 `refresh()` 會失敗），掛進 `npm test`。`test-html-escape.mjs` 的日誌列與頁首姓名斷言配合新輸出更新；`test-p9c-frontend.mjs` 的 DOM 替身補 `addEventListener`。
+- `e2e-10-keyboard.mjs`：教師送出案例增加送出鈕文字、持續性提示、header 學校｜學期檢查；新增課表編輯器鍵盤案例（Enter／空白鍵開啟、Esc 回到原格、新增與刪除）。
+- cache 版本：CSS 2.8.0、app.js 1.14.8、v2-app.js 0.1.20。
+
+---
+
 ## [2026-11-18] 資安審計 P9 批次 C（前端流程與設定，尚未部署）
 
 - **V1 同步防護**（SF-V1）：`app.js` 的 `onAuthStateChanged`、`checkAndHandleSync` 開頭加 `isV2Enabled()` 防護，V2 不會觸發 V1 個人雲端同步。

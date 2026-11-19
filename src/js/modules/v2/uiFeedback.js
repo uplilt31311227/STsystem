@@ -16,25 +16,11 @@
  */
 
 import { escapeHtml } from '../htmlEscape.js';
+import { ERROR_CODE_MESSAGES, normalizeErrorCode, friendlyErrorMessage } from '../errorText.js';
 
 const SYNC_BADGE_ID = 'v2-sync-status-badge';
 const VALID_TYPES    = new Set(['info', 'success', 'warning', 'error']);
 
-const ERROR_CODE_MESSAGES = {
-    'permission-denied':   '權限不足或身份已變更，請重新登入後再試',
-    'unavailable':         '目前無法連線，恢復網路後會自動同步',
-    // 驗收修復（輕 #E）：failed-precondition 原本與 unavailable 共用「無法連線，恢復網路後
-    // 會自動同步」——這句話對 failed-precondition 是誤導。這個錯誤碼在本專案的實際觸發情境
-    // 幾乎都是「查詢需要的複合索引還沒建好」（見 firestore.indexes.json、
-    // docs/STAGE0-DEPLOY.md「索引必須先於 client 上線」一節），跟網路無關，恢復網路也不會
-    // 自動好——網路正常時再查一百次一樣是這個錯，只有等索引建好或換一種不需要該索引的查詢
-    // 方式才會恢復。原訊息會讓使用者誤以為「等等就會自己好」而不會通報，問題永遠不會被發現。
-    'failed-precondition': '查詢所需的資料庫索引尚未建立，請聯絡管理者',
-    'unauthenticated':     '登入已過期，請重新登入',
-    'not-found':           '找不到資料，可能已被刪除或搬移',
-    'already-exists':      '資料已存在，請重新整理頁面後再試',
-    'resource-exhausted':  '系統目前忙碌中，請稍後再試',
-};
 
 
 /** fallback 路徑：window.app.showToast 不可用時，仍共用 #toast-container 與 .toast class
@@ -81,19 +67,13 @@ export function notify(message, type = 'info', durationMs = 4000) {
     }
 }
 
-function normalizeCode(code) {
-    if (!code) return '';
-    const s = String(code);
-    return s.includes('/') ? s.split('/').pop() : s;
-}
-
-/** 把 Firebase 錯誤碼翻成人話；context 是中文情境詞（如「即時同步」），會前綴在訊息中。 */
+/** 把 Firebase 錯誤碼翻成人話；context 是中文情境詞（如「即時同步」），會前綴在訊息中。
+ * 訊息是英文或工程詞時不顯示原文（UX-M24），原始錯誤只留在 console。 */
 export function notifyError(err, context = '') {
     try {
         const prefix = context ? `${context}失敗：` : '';
-        const human  = ERROR_CODE_MESSAGES[normalizeCode(err && err.code)];
-        const message = human ? `${prefix}${human}` : `${prefix}${(err && (err.message || err.code)) || '發生未知錯誤'}`;
-        notify(message, 'error');
+        if (!ERROR_CODE_MESSAGES[normalizeErrorCode(err && err.code)]) console.error('[notifyError]', context, err);
+        notify(`${prefix}${friendlyErrorMessage(err)}`, 'error');
     } catch (_) {
         // 防禦
     }

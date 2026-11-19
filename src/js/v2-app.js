@@ -22,6 +22,8 @@ import { LOG_ACTIONS, LOG_TARGET_TYPES, ROLES, REQUEST_STATUS, REQUEST_TYPES, ge
 import * as authMod from './modules/authService.js';
 import * as cloudSyncSvc from './modules/cloudSyncService.js';
 import { notify, notifyError, setSyncStatus, resetSyncStatus } from './modules/v2/uiFeedback.js';
+import { friendlyErrorMessage, emailFormatError } from './modules/errorText.js';
+import { composeSubmitSummary } from './modules/v2/submitSummary.js';
 import * as semesterUtils from './modules/v2/semesterUtils.js';
 import { todayLocal, parseLocalDate } from './modules/localDate.js';
 import { isGrade9GraduationActive, buildGrade9Config } from './modules/grade9Graduation.js';
@@ -118,6 +120,11 @@ let _v2UnverifiedState = null;
 
 // HTML 逸出 escapeHtml() 已移到共用模組 modules/htmlEscape.js（全專案唯一實作）。
 
+// UX-M4：Firebase 第一次回報登入狀態之前，遮罩不能先畫出「請先登入」按鈕（已登入的人重新整理會看到它閃一下）。
+// 'pending'＝尚未收到第一次回報；'out'＝確定未登入；'in'＝已登入、身分確認中。
+let _v2GateAuthState = 'pending';
+const GATE_PENDING_FALLBACK_MS = 10000;   // 萬一一直收不到回報，10 秒後改顯示登入按鈕，不讓人卡在載入中
+
 /** 注入登入遮罩元素（只需一次）。實際顯隱由 body.v2-locked + .app-container[inert] 控制。 */
 function injectV2AuthGate() {
     if (document.getElementById('v2-auth-gate')) return;
@@ -185,7 +192,8 @@ function renderAuthGate() {
               : _v2UnverifiedState ? 'unverified:' + _v2UnverifiedState.email
               : _v2PlatformPick ? `platform:${_v2PlatformPick.uid}:${_v2PlatformPick.loading}:${_v2PlatformPick.schools.length}:${_v2PlatformPick.error || ''}`
               : _v2ApplyState ? applyKey
-              : 'default';
+              : _v2GateAuthState === 'out' ? 'default'
+              : 'loading:' + _v2GateAuthState;
     if (gate.dataset.renderKey === key) return;   // 相同狀態免重繪 / 重綁監聽
     gate.dataset.renderKey = key;
 
@@ -216,6 +224,12 @@ function renderAuthGate() {
         return;
     }
 
+    if (_v2GateAuthState !== 'out') {
+        gate.innerHTML = renderDefaultGateShell(
+            `<p role="status" id="v2-gate-loading">${_v2GateAuthState === 'in' ? '確認身分中，請稍候…' : '載入中，請稍候…'}</p>`
+        );
+        return;
+    }
     gate.innerHTML = renderDefaultGateShell(
         `<p>本系統為全校共用，請先登入以使用。</p>` + renderGateSignInActions()
     );
@@ -451,7 +465,7 @@ function renderApplyGateContent(state) {
 
     if (state.error) {
         return renderDefaultGateShell(
-            `<p class="v2-gate-denied">⚠ 無法確認申請狀態：${escapeHtml((state.error && state.error.message) || '未知錯誤')}</p>` +
+            `<p class="v2-gate-denied">無法確認申請狀態：${escapeHtml(friendlyErrorMessage(state.error, '請檢查網路後重新整理頁面'))}</p>` +
             `<div class="v2-auth-gate-actions"><button id="v2-gate-apply-retry" class="btn btn-secondary btn-sm">重試</button></div>` +
             logoutBtn
         );
@@ -535,15 +549,17 @@ function renderApplyGateContent(state) {
             <strong>申請開通新學校（僅學校負責人使用）</strong>
             <p class="hint">一般教師不需要填這一區，請用上方的學校代碼加入。若您的學校尚未開通，可在此送出申請；平台管理者審核通過後即可使用（一所學校僅需申請一次）。</p>
             ${rejectedNote}
-            <label style="display:block;margin-top:0.4rem;">學校名稱
+            <div class="form-group">
+                <label for="v2-apply-school-name">學校名稱</label>
                 <input type="text" id="v2-apply-school-name" placeholder="例如：新竹市立內湖國民中學"
-                       value="${escapeHtml(app?.schoolName || '')}" style="width:100%;margin-top:0.2rem;">
-            </label>
-            <label style="display:block;margin-top:0.6rem;">學校代碼（僅小寫英數字、底線、連字號）
+                       value="${escapeHtml(app?.schoolName || '')}">
+            </div>
+            <div class="form-group">
+                <label for="v2-apply-school-id">學校代碼（僅小寫英數字、底線、連字號）</label>
                 <input type="text" id="v2-apply-school-id" placeholder="例如：newschool"
-                       value="${escapeHtml(app?.desiredSchoolId || '')}" style="width:100%;margin-top:0.2rem;">
+                       value="${escapeHtml(app?.desiredSchoolId || '')}" aria-describedby="v2-apply-school-id-hint">
                 <span class="hint" id="v2-apply-school-id-hint"></span>
-            </label>
+            </div>
             <div class="v2-auth-gate-actions" style="margin-top:0.6rem;">
                 <button id="v2-gate-submit-apply" class="btn btn-primary btn-sm">送出申請</button>
             </div>
@@ -709,6 +725,17 @@ function setAppLocked(locked) {
     const appContainer = document.querySelector('.app-container');
     if (appContainer) appContainer.inert = locked;
     document.body.classList.toggle('v2-locked', locked);
+}
+
+/**
+ * UX-M6：組長／主任送出後會直接成立並產生 PDF，沿用「確認並產生表單」；
+ * 一般教師送出的是「申請」（要等同意與核准，不會馬上有表單），按鈕文字改成「送出申請」。
+ */
+function applySubmitButtonLabels() {
+    const teacher = !roleSvc.isAdmin();
+    const set = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
+    set('confirm-substitute-btn', teacher ? '送出申請' : '確認並產生表單');
+    set('batch-submit-btn', teacher ? '確認全部調課並送出申請' : '確認全部調課並產生表單');
 }
 
 /** 鎖定整個 app（未授權 / 登出 / 驗證錯誤）：渲染遮罩並封鎖底層互動。 */
@@ -1013,7 +1040,9 @@ async function renderPendingTab() {
             btn.disabled = true;
             try {
                 const batchReq = await dataSvc.getPendingRequest(btn.dataset.id).catch(() => null);
+                const verb = btn.textContent.trim() === '駁回' ? '駁回' : '不同意';
                 await requestSvc.rejectRequest(btn.dataset.id, note);
+                notify(verb === '不同意' ? `已表示不同意；發起人會在「待辦」看到${note ? '你填的原因' : '這項申請被退回'}。` : `已駁回這項申請；發起人會在「待辦」看到${note ? '你填的原因' : '這項申請被駁回'}。`, 'success', 5000);
                 await renderPendingTab();
                 await finalizeBatchAfterClose(batchReq);
             } catch (e) {
@@ -1038,6 +1067,7 @@ async function renderPendingTab() {
             try {
                 const batchReq = batchReq0;
                 await requestSvc.cancelRequest(btn.dataset.id);
+                notify(batchReq0?.batchId ? '已撤回這批申請；同意人與核准人不會再看到它們，也不會產生調代課單。' : '已撤回申請；同意人與核准人不會再看到它，也不會產生調代課單。', 'success', 5000);
                 await renderPendingTab();
                 await finalizeBatchAfterClose(batchReq);
             }
@@ -1051,7 +1081,7 @@ async function renderPendingTab() {
         })));
     host.querySelectorAll('.v2-dismiss-btn').forEach(btn =>
         btn.addEventListener('click', () => withBusyButton(btn, `dismiss:${btn.dataset.id}`, async () => {
-            try { await requestSvc.dismissRejectedRequest(btn.dataset.id); await renderPendingTab(); }
+            try { await requestSvc.dismissRejectedRequest(btn.dataset.id); notify('已清除這項被拒絕的申請。', 'success', 3000); await renderPendingTab(); }
             catch (e) { notifyError(e, '清除已拒絕請求'); }
         })));
 }
@@ -1165,13 +1195,29 @@ function deleteLegacyTeacher(name) {
  * 重繪，但改成每格 change 即存後，重繪會在使用者連續編輯途中把焦點與捲動位置清掉。
  * 因此改為局部更新受影響的顯示元素（角色標籤、待指派 email 徽章、列的醒目狀態）。
  */
-function bindAutoSaveField(el, buildTask, onSuccess) {
+/**
+ * @param {{validate?:(value:string)=>string|null, confirmChange?:(value:string, prev:string)=>Promise<boolean>}} [opts]
+ *   validate：存檔前檢查，回傳錯誤文字就不存、還原成上次的值並提示（UX-M13：Email 格式）；
+ *   confirmChange：存檔前確認，回 false 就不存、還原（UX-M13：角色變更會改權限）。
+ */
+function bindAutoSaveField(el, buildTask, onSuccess, opts = {}) {
     // 失敗時要還原成「上一次成功儲存的值」而非 render 當時的初始值：使用者連續改兩次、
     // 第一次成功第二次失敗時，還原到初始值會把已經存進去的第一次變更也一起抹掉，
     // 畫面與後端就此不一致。故每次成功後更新 lastSaved。
     let lastSaved = el.value;
     el.addEventListener('change', async () => {
         el.classList.remove('v2-field-error');
+        const invalid = opts.validate ? opts.validate(el.value) : null;
+        if (invalid) {
+            el.value = lastSaved;
+            el.classList.add('v2-field-error');
+            notify(invalid, 'warning', 5000);
+            return;
+        }
+        if (opts.confirmChange && !(await opts.confirmChange(el.value, lastSaved))) {
+            el.value = lastSaved;
+            return;
+        }
         el.classList.add('v2-field-saving');
         try {
             await buildTask();
@@ -1189,6 +1235,13 @@ function bindAutoSaveField(el, buildTask, onSuccess) {
         }
     });
 }
+
+// UX-M13：角色變更確認視窗裡的權限說明
+const ROLE_CHANGE_EXPLAIN = {
+    teacher: '教師：只能發起與處理自己的調代課申請，看不到全校紀錄與月結算。',
+    section_chief: '組長：可核准或駁回申請、查看全校紀錄與月結算、編輯課表與教師屬性，不能管理名單與角色。',
+    director: '主任：全部權限，包含管理教師名單、角色、學期與學校設定。',
+};
 
 /** 依表格現況重算表頭的「待指派 email」徽章（不重繪整表）。 */
 function refreshMissingEmailBadge(host) {
@@ -1363,7 +1416,8 @@ async function renderTeachersAdminTab() {
                     renderTeachersAdminTab().catch(e =>
                         console.warn('[V2] 教師管理表重繪失敗:', e));
                 }
-            });
+            },
+            { validate: emailFormatError });
     });
 
     /* ---- 角色：change 即存，成功後就地更新角色標籤 ---- */
@@ -1378,6 +1432,19 @@ async function renderTeachersAdminTab() {
                     tag.className = `v2-role-tag ${sel.value}`;
                     tag.textContent = roleLabel(sel.value);
                 }
+            },
+            {
+                // UX-M13：角色決定能看與能改什麼，選錯會立刻生效，所以先說明再存
+                confirmChange: (next) => (window.app?.confirmDialog ? window.app.confirmDialog.bind(window.app) : (o) => Promise.resolve(window.confirm(`${o.title}
+
+${o.message}`)))({
+                    title: '變更角色',
+                    message: `要把「${tr.dataset.name || ''}」的角色改為「${roleLabel(next)}」嗎？
+
+${ROLE_CHANGE_EXPLAIN[next] || ''}
+變更會立即生效，對方下次載入頁面時就會套用新權限。`,
+                    confirmText: '確定變更', danger: next === 'director',
+                }),
             });
     });
 
@@ -2058,7 +2125,7 @@ async function renderRecordsTab() {
         host.querySelectorAll('.v2-admin-delete').forEach(btn =>
             btn.addEventListener('click', () => withBusyButton(btn, `admin-delete:${btn.dataset.id}`, async () => {
                 const ok = await window.app?.confirmDialog?.({
-                    title: '刪除紀錄', message: '確定刪除此紀錄？此操作會寫入 log。', confirmText: '刪除', danger: true,
+                    title: '刪除紀錄', message: '確定刪除這筆調代課紀錄？\n\n刪除後：月結算的節數與金額會少算這一筆，已下載的調代課單 PDF 不會自動更新，且無法復原。此操作會寫入操作日誌。', confirmText: '刪除', danger: true,
                 });
                 if (!ok) return;
                 try {
@@ -2068,6 +2135,7 @@ async function renderRecordsTab() {
                     // _v2DateRangeQueryCache 裡快取的日期範圍查詢結果會繼續回傳「已刪除但快取
                     // 仍在」的舊資料，直接清空最保險。
                     clearV2RecordCaches();
+                    notify('已刪除這筆紀錄；月結算會依剩下的紀錄重新計算。', 'success', 5000);
                     await renderRecordsTab();
                 }
                 catch (e) { notifyError(e, '刪除紀錄'); }
@@ -2326,7 +2394,7 @@ async function switchToNewSemester(fromId, toId, { targetExists = false } = {}) 
     } catch (e) {
         throw new Error(
             `開新學期已中止：無法確認「${fromId}」目前的課表狀態，為避免覆寫/遺失資料，` +
-            `這次不會繼續切換。請確認網路連線後重試。（原始錯誤：${(e && e.message) || e}）`
+            `這次不會繼續切換。請確認網路連線後重試。（${friendlyErrorMessage(e, '讀取課表失敗')}）`
         );
     }
     const shell = {
@@ -3747,8 +3815,8 @@ function promptAdditionalConsentTeachers(record, allTeachers) {
                 <div class="modal-body">
                 <h3>還有其他教師需要一併同意嗎？</h3>
                 <p style="font-size:0.8rem;color:#6b7280;margin-top:-0.4rem;">
-                    若本次調課牽動其他教師課務（例如三方輪調），請勾選需一併同意的教師；
-                    只有雙方調課請按「僅雙方調課」。按「取消」會放棄這次送出。
+                    被勾選的教師只需要知悉並同意，系統不會替他們產生任何異動紀錄；
+                    三方輪調請改用「多重調課」逐筆新增。只有雙方調課請按「僅雙方調課」，按「取消」會放棄這次送出。
                 </p>
                 <div class="form-group">
                     <label for="v2-extra-consent-search">搜尋教師</label>
@@ -3901,6 +3969,13 @@ function promptNewTeacherModal() {
                 nameInput.focus();
                 return;
             }
+            const emailErr = emailFormatError(emailInput.value);   // UX-M13
+            if (emailErr) {
+                msgEl.textContent = emailErr.replace('這次沒有儲存。', '');
+                msgEl.style.display = 'block';
+                emailInput.focus();
+                return;
+            }
             cleanup({ name, email: emailInput.value.trim() || null });
         });
         // P8：含輸入的對話框點背景不關閉；Esc＝取消
@@ -3979,12 +4054,15 @@ async function writeV2RecordsBatch(records) {
         return;
     }
     const created = [];
+    beginSubmitGroup();
     try {
         for (const record of records) {
             const saved = await writeV2Record(record);
             created.push(saved);
         }
+        endSubmitGroup();
     } catch (err) {
+        _submitCollector = null;   // 失敗時不合併通知，由呼叫端顯示錯誤
         let undone = 0;
         for (const saved of created.reverse()) {
             if (saved && saved.reqId) {
@@ -4082,11 +4160,59 @@ async function writeV2Record(record) {
     const saved = await requestSvc.createRequest(payload);
     // 顯示正確的送出訊息（pending，尚未產 PDF；PDF 改到組長/主任核准後才產生）
     const extraCount = ids.additionalConsentTeacherIds.length;
-    const msg = ids.requestType === REQUEST_TYPES.SUBSTITUTE
-        ? `已送出，等待組長/主任核准。核准後才會正式成立並產生 PDF。`
-        : `已送出給 ${ids.requiredApproverName}${extraCount ? ` 等 ${1 + extraCount} 位教師` : ''}同意。全員同意並經組長/主任核准後才會正式成立並產生 PDF。`;
-    notify(msg, 'info', 5000);
+    const isSub = ids.requestType === REQUEST_TYPES.SUBSTITUTE;
+    const msg = isSub
+        ? `已送出，等待組長／主任核准。核准後才會正式成立並產生 PDF。`
+        : `已送出給 ${ids.requiredApproverName}${extraCount ? ` 等 ${1 + extraCount} 位教師` : ''}同意。全員同意並經組長／主任核准後才會正式成立並產生 PDF。`;
+    reportSubmitted(msg, isSub);   // 多節／批次送出時會合併成一則（UX-M7）
     return saved;
+}
+
+/* ===== 送出回饋：合併通知與持續性提示（UX-M6／UX-M7） ===== */
+
+// 非 null 時，writeV2Record 不逐筆通知，只把訊息收集起來，由 endSubmitGroup() 合併成一則。
+let _submitCollector = null;
+
+function beginSubmitGroup() { _submitCollector = []; }
+
+function endSubmitGroup() {
+    const entries = _submitCollector;
+    _submitCollector = null;
+    const msg = composeSubmitSummary(entries);
+    if (msg) announceSubmitted(msg);
+}
+
+function reportSubmitted(msg, isSubstitute) {
+    if (_submitCollector) { _submitCollector.push({ msg, isSubstitute }); return; }
+    announceSubmitted(msg);
+}
+
+/** 短暫 toast＋留在申請頁上方的持續性提示（附「前往待辦」），避免 5 秒後使用者不確定有沒有送成功。 */
+function announceSubmitted(msg) {
+    notify(msg, 'success', 6000);
+    try {
+        const tab = document.getElementById('substitute-tab');
+        if (!tab) return;
+        let banner = document.getElementById('v2-submit-banner');
+        if (!banner) {
+            banner = document.createElement('div');
+            banner.id = 'v2-submit-banner';
+            banner.className = 'v2-submit-banner';
+            banner.setAttribute('role', 'status');
+            banner.innerHTML = `<p class="v2-submit-banner-text"></p>
+                <div class="v2-submit-banner-actions">
+                    <button type="button" class="btn btn-primary btn-sm" data-act="go">前往待辦</button>
+                    <button type="button" class="btn btn-ghost btn-sm" data-act="close">關閉</button>
+                </div>`;
+            banner.querySelector('[data-act="go"]').addEventListener('click', () => {
+                banner.remove();
+                document.querySelector('.tab-btn[data-tab="v2-pending"]')?.click();
+            });
+            banner.querySelector('[data-act="close"]').addEventListener('click', () => banner.remove());
+            tab.prepend(banner);
+        }
+        banner.querySelector('.v2-submit-banner-text').textContent = msg;
+    } catch (_) { /* 提示失敗不影響送出流程 */ }
 }
 
 // 標示「正在處理的批次中含 pending」，讓 showToast 吞掉誤導訊息。
@@ -4578,6 +4704,9 @@ function patchDataManager() {
     dm.syncToCloud = async () => {};                       // 停用所有個人雲端寫入（含 saveDataToStorage 內）
     try { dm.disableRealtimeSync?.(); } catch (_) {}
 
+    // 多節代課（app.js confirmMultiCourseSubstitute）逐筆寫入前後呼叫，讓 N 筆結果只跳一則通知（UX-M7）
+    dm.beginSubmitGroup = beginSubmitGroup;
+    dm.endSubmitGroup = endSubmitGroup;
     const origAdd = dm.addSubstituteRecord.bind(dm);
     dm.addSubstituteRecord = function(record) {
         if (roleSvc.isSignedIn()) {
@@ -5351,7 +5480,7 @@ async function generatePdfForRecord(record) {
         await app.pdfGenerator.generateSubstituteForm(enriched, scheduleData, teachers);
     } catch (e) {
         console.error('[V2] PDF 產生失敗：', e);
-        app.showToast?.('PDF 產生失敗：' + e.message, 'error', 4000);
+        app.showToast?.('PDF 產生失敗：' + friendlyErrorMessage(e, '請稍後再試；紀錄已儲存，可至紀錄查詢重印'), 'error', 4000);
     }
 }
 
@@ -5623,7 +5752,7 @@ function openAuthModal(mode = 'signin') {
                     : '註冊成功，請在接下來的畫面按「重新寄送驗證信」並完成 email 驗證。', 'success', 8000);
             }
         } catch (e) {
-            showMsg(e.message || '操作失敗');
+            showMsg(friendlyErrorMessage(e, '操作失敗，請稍後再試'));
             btn.disabled = false;
         }
     });
@@ -5667,7 +5796,18 @@ async function bootstrap() {
     injectV2AuthGate();
     // 預設鎖定：授權身份解析成功前，整個 app（含底層月結算）都被遮罩 + inert 擋住。
     lockV2App();
-    await authMod.initAuthService();
+    // UX-M4：計時器必須在 init 之前註冊；SDK 載入失敗時 init 會丟錯，不能讓畫面永遠停在「載入中」
+    setTimeout(() => {
+        if (_v2GateAuthState === 'pending') { _v2GateAuthState = 'out'; renderAuthGate(); }
+    }, GATE_PENDING_FALLBACK_MS);
+    try {
+        await authMod.initAuthService();
+    } catch (e) {
+        console.error('[V2] 登入服務初始化失敗:', e);
+        _v2GateAuthState = 'out';
+        renderAuthGate();
+        notify('登入服務載入失敗，請檢查網路後重新整理頁面', 'error', 10000);
+    }
 
     // window.app 於此（initAuthService 之後）已由 app.js 的 DOMContentLoaded 建立。
     // 必須在註冊 onAuthStateChange 前套用 dataManager patch（含停用 V1 個人雲端 + 課表攔截），
@@ -5680,6 +5820,7 @@ async function bootstrap() {
     let lastAuthUid;   // 追蹤上一個登入 uid，區分「真的換人／登出」與 Firebase 對同帳號 re-emit
 
     authMod.onAuthStateChange(async (user) => {
+        _v2GateAuthState = user ? 'in' : 'out';
         clearSubs();
         // opus 重驗 3：不論這次 emit 是不是「身份實際改變」（identityChanged 尚未算出），
         // clearSubs() 剛把包含課表訂閱在內的所有既有 Firestore 監聽全部取消——舊訂閱不再
@@ -5740,6 +5881,7 @@ async function bootstrap() {
             // M4：登出重置為「尚未查過」（null），不是 false——下一位登入者可能是也可能不是
             // 平台管理者，false 會誤導成「已查過、確定不是」，導致設定頁永遠不再查詢。
             _v2IsPlatformAdmin = null;
+            document.getElementById('header-context')?.classList.add('hidden');
             // 登出即鎖定整個 app：遮罩 + .app-container inert 阻擋所有互動（含鍵盤跳至月結算下載）。
             // 不再 clearAll()——那只清記憶體不清 localStorage，反而會讓再登入資料看似遺失並有覆蓋風險。
             lockV2App();
@@ -5830,6 +5972,7 @@ async function bootstrap() {
             installGrade9ConfigStore();
 
             renderPlatformBanner(identity);
+            applySubmitButtonLabels();
             // 平台管理員的 identity.name 就是「平台管理員」（見 authGuardV2.PLATFORM_ADMIN_NAME），角色標籤沿用「教務主任」（以主任身分操作）
             const roleLabelMap = { director: '教務主任', section_chief: '教學組長', teacher: '教師' };
             const nameSpan = document.getElementById('user-name');
@@ -5839,7 +5982,10 @@ async function bootstrap() {
                 const roleTag = document.createElement('span');
                 roleTag.className = 'v2-role-tag ' + pickAllowed(identity.role, ROLE_CLASS_WHITELIST);
                 roleTag.textContent = Object.hasOwn(roleLabelMap, identity.role) ? roleLabelMap[identity.role] : '教師';
-                nameSpan.replaceChildren(document.createTextNode(String(identity.name ?? '') + ' '), roleTag);
+                const nameText = document.createElement('span');
+                nameText.className = 'user-name-text';
+                nameText.textContent = String(identity.name ?? '');
+                nameSpan.replaceChildren(nameText, roleTag);   // 手機只收起姓名文字，角色標籤留著（UX-M2）
             }
 
             // Stage 2（RESEARCH-multitenancy-semester.md §5/§8 Stage 2）：學期成為一級概念，
@@ -5880,6 +6026,13 @@ async function bootstrap() {
                 }
                 const resolved = cfg?.currentSemester || semesterUtils.todaySemesterId();
                 semesterState.setCurrentSemesterId(resolved);
+                // UX-M2：header 顯示「學校｜學期」，手機也看得到自己在哪所學校、哪個學期
+                const ctx = document.getElementById('header-context');
+                if (ctx) {
+                    const sn = cfg?.schoolName || identity.schoolName || '';
+                    ctx.textContent = sn ? `${sn}｜${resolved}` : resolved;
+                    ctx.classList.remove('hidden');
+                }
                 if (!cfg?.currentSemester) {
                     console.warn(`[V2] config.currentSemester 未設定，暫以今天日期推算為 ${resolved}`);
                 }
@@ -6055,7 +6208,7 @@ async function bootstrap() {
             // 的 readFailed 分支拋出的「無法確認使用者所屬學校」），不要只留通用的「登入驗證
             // 時發生錯誤」——具體原因能讓使用者/管理者判斷這是暫時性網路問題還是別的狀況。
             // e 不一定是 Error 實例（理論上任何值都可能被 throw），做防禦性字串化。
-            _v2GateErrorMessage = (e && e.message) ? String(e.message) : null;
+            _v2GateErrorMessage = friendlyErrorMessage(e, '') || null;
             lockV2App();
         }
     });

@@ -31,17 +31,21 @@
     <!-- html2canvas - HTML 轉圖片（用於 PDF 中文支援） -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js" integrity="sha384-ZZ1pncU3bQe8y31yfZdMFdSpttDoPmOZg2wguVK9almUodir1PghgT0eY7Mrty8H" crossorigin="anonymous" defer></script>
 
-    <link rel="stylesheet" href="src/css/tokens.css?v=2.7.0">
-    <link rel="stylesheet" href="src/css/base.css?v=2.7.0">
-    <link rel="stylesheet" href="src/css/components.css?v=2.7.0">
-    <link rel="stylesheet" href="src/css/features.css?v=2.7.0">
+    <link rel="stylesheet" href="src/css/tokens.css?v=2.8.1">
+    <link rel="stylesheet" href="src/css/base.css?v=2.8.1">
+    <link rel="stylesheet" href="src/css/components.css?v=2.8.1">
+    <link rel="stylesheet" href="src/css/features.css?v=2.8.1">
 </head>
 <body>
     <div class="app-container">
         <!-- 頂部導航 -->
         <header class="header">
             <div class="header-top">
-                <h1>國中調代課自動化系統</h1>
+                <div class="header-title">
+                    <h1>國中調代課自動化系統</h1>
+                    <!-- UX-M2：V2 登入後由 v2-app.js 填入「學校｜學期」 -->
+                    <p class="header-context hidden" id="header-context"></p>
+                </div>
                 <!-- 使用者登入狀態區塊 -->
                 <div class="user-auth-section" id="user-auth-section">
                     <!-- 未登入狀態 -->
@@ -58,12 +62,14 @@
                     </div>
                     <!-- 已登入狀態 -->
                     <div id="auth-logged-in" class="auth-state hidden">
-                        <div class="sync-status" id="sync-status" title="同步狀態">
+                        <!-- UX-M3：#sync-status 是 V1 個人雲端同步的狀態，V2 另有「即時同步中斷」徽章，故 V2 隱藏（v1-only） -->
+                        <div class="sync-status v1-only" id="sync-status" title="同步狀態">
                             <span class="sync-icon">☁️</span>
                             <span class="sync-text">已同步</span>
                         </div>
                         <div class="user-info">
-                            <img class="user-avatar" id="user-avatar" src="" alt="使用者頭像">
+                            <img class="user-avatar" id="user-avatar" src="" alt="">
+                            <span class="user-avatar user-avatar-fallback hidden" id="user-avatar-fallback" aria-hidden="true"></span>
                             <span class="user-name" id="user-name"></span>
                         </div>
                         <button class="btn btn-ghost btn-sm" id="signout-btn" title="登出">登出</button>
@@ -162,13 +168,15 @@
                                 <span class="editor-hours-badge">每週 <strong id="editor-weekly-hours">0</strong> 節</span>
                             </h3>
                             <div class="editor-schedule-actions">
-                                <button class="btn btn-primary btn-sm" id="editor-save-schedule-btn">儲存課表</button>
+                                <!-- UX-M14：V2 的每次修改都會即時同步全校，沒有「儲存」這個動作，故只在純 V1（本機）顯示 -->
+                                <button class="btn btn-primary btn-sm v1-only" id="editor-save-schedule-btn">儲存課表</button>
                             </div>
                         </div>
-                        <p class="hint">點擊空白格新增課程，點擊已有課程進行編輯或刪除</p>
+                        <p class="hint">點擊空白格新增課程，點擊已有課程進行編輯或刪除。<span class="v2-only">每次修改都會立即同步給全校，不需要另外儲存。</span></p>
 
                         <!-- 手機日切換器（640+ 由 .hidden-desktop 隱藏，桌機顯示完整週課表） -->
-                        <div class="day-switcher hidden-desktop" id="editor-day-switcher" role="tablist"></div>
+                        <!-- P8-3：原本宣告為頁籤列但子項沒有 role="tab"／aria-selected，語意不完整；改為一般按鈕群組（aria-pressed 標示目前選取的星期） -->
+                        <div class="day-switcher hidden-desktop" id="editor-day-switcher" role="group" aria-label="選擇要編輯的星期"></div>
 
                         <div class="schedule-grid" id="editor-schedule-grid">
                             <!-- 動態生成可編輯週課表 -->
@@ -226,7 +234,7 @@
                 <!-- 未載入資料提示 -->
                 <div id="substitute-no-data" class="card card-notice notice-card-compact">
                     <h3>尚未載入課表資料</h3>
-                    <p>請先至「課表管理」頁籤上傳課表檔案</p>
+                    <p><span class="v1-only v2-approver-only">請先至「課表管理」頁籤上傳課表檔案</span><span class="v2-only v2-teacher-only">本學期課表尚未匯入，請聯絡教學組長或教務主任。</span></p>
                 </div>
 
                 <div id="substitute-content" class="hidden">
@@ -502,7 +510,7 @@
                 <!-- 未載入資料提示 -->
                 <div id="records-no-data" class="card card-notice notice-card-compact">
                     <h3>尚未載入課表資料</h3>
-                    <p>請先至「課表管理」頁籤上傳課表檔案</p>
+                    <p><span class="v1-only v2-approver-only">請先至「課表管理」頁籤上傳課表檔案</span><span class="v2-only v2-teacher-only">本學期課表尚未匯入，請聯絡教學組長或教務主任。</span></p>
                 </div>
 
                 <div id="records-content" class="hidden">
@@ -559,7 +567,7 @@
                 <!-- 未載入資料提示 -->
                 <div id="settlement-no-data" class="card card-notice notice-card-compact">
                     <h3>尚未載入課表資料</h3>
-                    <p>請先至「課表管理」頁籤上傳課表檔案</p>
+                    <p><span class="v1-only v2-approver-only">請先至「課表管理」頁籤上傳課表檔案</span><span class="v2-only v2-teacher-only">本學期課表尚未匯入，請聯絡教學組長或教務主任。</span></p>
                 </div>
 
                 <div id="settlement-content" class="hidden">
@@ -634,7 +642,7 @@
                 <div class="settings-layout">
                 <!-- 左側：雲端同步 -->
                 <div class="settings-left">
-                <div class="card">
+                <div class="card v1-only">
                     <h3>雲端同步</h3>
                     <div class="cloud-sync-info cloud-sync-compact">
                         <div class="sync-feature">
@@ -849,7 +857,7 @@
 
         <!-- 底部資訊 -->
         <footer class="footer">
-            <p>國中調代課自動化系統 v1.9.0 | 適用於人力資源網2.0匯出之課表</p>
+            <p>國中調代課自動化系統 | 適用於人力資源網2.0匯出之課表</p>
             <p class="credit">內湖國中 藍奕麟老師 with Claude Code 製作</p>
         </footer>
     </div>
@@ -1072,8 +1080,8 @@
          Firebase <script> 標籤——比照既有 Auth/Firestore SDK 的載入方式，見該檔
          initializeFirebase()、RECAPTCHA_V3_SITE_KEY 常數與 docs/STAGE4-DEPLOY.md
          「App Check 啟用步驟」。 -->
-    <script type="module" src="src/js/app.js?v=1.14.7"></script>
+    <script type="module" src="src/js/app.js?v=1.14.9"></script>
     <!-- V2 權限系統（?v2=1 或預覽站才啟用；對穩定版無影響） -->
-    <script type="module" src="src/js/v2-app.js?v=0.1.19"></script>
+    <script type="module" src="src/js/v2-app.js?v=0.1.21"></script>
 </body>
 </html>

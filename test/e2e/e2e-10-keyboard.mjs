@@ -17,7 +17,7 @@
  */
 
 import {
-    ACCOUNTS, loginStable, shot, waitForText, waitForIdentityName, realErrors, newPage, login, loadedScheduleCount,
+    ACCOUNTS, APP_URL, loginStable, shot, waitForText, waitForIdentityName, realErrors, newPage, login, loadedScheduleCount,
 } from './helpers.mjs';
 import { Suite, eq, ok } from '../scenarios/harness.mjs';
 import { seedAll } from '../emulator/seed.mjs';
@@ -233,13 +233,19 @@ export async function run(browser) {
             await page.waitForTimeout(500);
             eq(await page.evaluate(() => document.activeElement.getAttribute('aria-pressed')), 'true', '選取後 aria-pressed=true');
 
-            // 送出：Tab 到「確認並產生表單」，Enter
+            // 送出：Tab 到送出鈕（一般教師端文字為「送出申請」，UX-M6），Enter
             const sendTab = await tabTo(page, '#confirm-substitute-btn', 60);
             ok(sendTab > 0, 'Tab 應到達送出鈕');
+            eq((await page.innerText('#confirm-substitute-btn')).trim(), '送出申請', '教師端送出鈕文字');
             await page.keyboard.press('Enter');
             ok(await waitForText(page, /已送出|待審核|申請成功|已建立|等待/, 15000), `送出後應有回饋（畫面：${(await page.innerText('body')).slice(0, 120)}）`);
+            // UX-M6：除了 5 秒就消失的 toast，頁面上要留一則持續性提示，並附「前往待辦」
+            await page.waitForSelector('#v2-submit-banner', { timeout: 10000 });
+            ok(/前往待辦/.test(await page.innerText('#v2-submit-banner')), '持續性提示含「前往待辦」');
+            // UX-M2：header 顯示「學校｜學期」
+            { const hc = (await page.innerText('#header-context')).trim(); ok(/^\S.*｜\d{3}-\d$/.test(hc), `header 顯示非空的學校｜學期（實際：${hc}）`); }
             await shot(page, '10-keyboard-substitute');
-            eq(errs.filter(e => !/favicon|ERR_|Failed to load resource/i.test(String(e))).length, 0, '不應有頁面錯誤');
+            { const bad = errs.filter(e => !/favicon|ERR_|Failed to load resource/i.test(String(e))); eq(bad.length, 0, `不應有頁面錯誤：${bad.join(' | ').slice(0, 300)}`); }
         } finally { await page.close(); }
     });
 
@@ -396,6 +402,96 @@ export async function run(browser) {
         } finally { await page.close(); }
     });
 
+
+    /* ===== 頁首登入狀態（批次 C 的 SF-V1 曾讓 V2 頁首停在未登入） ===== */
+
+    await suite.case('V2 登入後頁首：已登入區塊顯示、未登入區塊隱藏、有登出鈕與姓名角色', async () => {
+        const { page } = await loginStable(browser, ACCOUNTS.teacherA);
+        try {
+            await waitForIdentityName(page);
+            ok(await page.isVisible('#auth-logged-in'), '#auth-logged-in 應可見');
+            ok(!(await page.isVisible('#auth-logged-out')), '#auth-logged-out 應隱藏');
+            ok(await page.isVisible('#signout-btn'), '登出鈕應可見');
+            ok(await page.isVisible('#user-name .v2-role-tag'), '姓名旁應有角色標籤');
+            ok(await page.isVisible('#user-avatar-fallback') || await page.isVisible('#user-avatar'), '應有頭像或首字圓章');
+        } finally { await page.close(); }
+    });
+
+    await suite.case('Firebase SDK 載入失敗：12 秒內遮罩改顯示登入按鈕或錯誤，不停在「載入中」', async () => {
+        const page = await newPage(browser);
+        try {
+            await page.route('https://www.gstatic.com/firebasejs/**', (route) => route.abort());
+            await page.goto(APP_URL, { waitUntil: 'domcontentloaded' });
+            await page.waitForFunction(() => {
+                const g = document.getElementById('v2-auth-gate');
+                return g && (g.querySelector('#v2-gate-google, #v2-gate-email') || /失敗|錯誤/.test(g.innerText));
+            }, null, { timeout: 12000 });
+            ok(!/載入中/.test(await page.innerText('#v2-auth-gate')), '遮罩不應仍顯示「載入中」');
+        } finally { await page.close(); }
+    });
+
+    /* ===== 課表編輯器：格子可用鍵盤操作（P8-1） ===== */
+
+    await suite.case('課表編輯器：格子有 role／名稱，可用 Enter／空白鍵開啟編輯、Esc 關閉並回到原格、鍵盤完成新增與刪除', async () => {
+        const { page } = await loginStable(browser, ACCOUNTS.director, { needSchedule: true });
+        const errs = realErrors(page);
+        try {
+            await keyboardGotoTab(page, 'schedule');
+            await page.focus('.subview-switch-btn[data-subview="editor"]');
+            await page.keyboard.press('Enter');
+            await page.waitForSelector('#editor-teacher-select', { state: 'visible', timeout: 10000 });
+            await page.selectOption('#editor-teacher-select', { label: '巫阿福' });
+            await page.waitForSelector('#editor-schedule-grid .editor-empty', { timeout: 10000 });
+
+            // 取一個空格：有 role=button、tabindex=0、可讀名稱
+            const info = await page.evaluate(() => {
+                const el = document.querySelector('#editor-schedule-grid .editor-empty');
+                return { role: el.getAttribute('role'), tabindex: el.getAttribute('tabindex'), label: el.getAttribute('aria-label'), wd: el.dataset.weekday, pd: el.dataset.period };
+            });
+            eq(info.role, 'button', '空格 role=button');
+            eq(info.tabindex, '0', '空格可聚焦');
+            ok(/新增課程/.test(info.label || '') && (info.label || '').includes(info.wd) && (info.label || '').includes(info.pd), `空格有可讀名稱（${info.label}）`);
+            const courseLabel = await page.evaluate(() => document.querySelector('#editor-schedule-grid .editor-course')?.getAttribute('aria-label') || '');
+            ok(/^編輯 /.test(courseLabel), `課程格有可讀名稱（${courseLabel}）`);
+            const cell = `#editor-schedule-grid [data-weekday="${info.wd}"][data-period="${info.pd}"]`;
+
+            // Tab 能走到格子；Enter 開啟、Esc 關閉、焦點回到原格
+            await page.focus('#editor-teacher-select');
+            const n = await tabTo(page, '#editor-schedule-grid [role="button"]', 20);
+            ok(n > 0, 'Tab 應能從教師選單走到課表格子');
+            await page.focus(cell);
+            await page.keyboard.press('Enter');
+            await page.waitForSelector('#course-edit-modal:not(.hidden)', { timeout: 5000 });
+            ok((await activeInfo(page)).insideModal, 'Enter 後焦點應移進編輯對話框');
+            await page.keyboard.press('Escape');
+            await page.waitForSelector('#course-edit-modal.hidden', { state: 'attached', timeout: 5000 });
+            await page.waitForTimeout(500);
+            ok(await page.evaluate((sel) => document.activeElement === document.querySelector(sel), cell), 'Esc 關閉後焦點應回到原格');
+
+            // 空白鍵開啟（不應捲動頁面）、輸入、鍵盤按「儲存」，格子變成課程並保有焦點
+            await page.focus(cell);
+            await page.keyboard.press('Space');
+            await page.waitForSelector('#course-edit-modal:not(.hidden)', { timeout: 5000 });
+            await page.fill('#course-modal-class', '7年1班');
+            await page.fill('#course-modal-subject', '國文');
+            await page.focus('#course-modal-save-btn');
+            await page.keyboard.press('Enter');
+            await page.waitForSelector(`${cell}.editor-course`, { timeout: 8000 });
+            await page.waitForTimeout(500);
+            ok(await page.evaluate((sel) => document.activeElement === document.querySelector(sel), cell), '儲存後焦點應停在剛編輯的格子（重畫不讓焦點掉回頁首）');
+
+            // 清掉剛新增的課（同樣只用鍵盤），避免影響之後的案例
+            await page.keyboard.press('Enter');
+            await page.waitForSelector('#course-edit-modal:not(.hidden)', { timeout: 5000 });
+            await page.focus('#course-modal-delete-btn');
+            await page.keyboard.press('Enter');
+            await page.waitForSelector('#confirm-modal:not(.hidden)', { timeout: 5000 });
+            await page.focus('#confirm-modal-confirm-btn');
+            await page.keyboard.press('Enter');
+            await page.waitForSelector(`${cell}.editor-empty`, { timeout: 8000 });
+            { const bad = errs.filter(e => !/favicon|ERR_|Failed to load resource/i.test(String(e))); eq(bad.length, 0, `不應有頁面錯誤：${bad.join(' | ').slice(0, 300)}`); }
+        } finally { await page.close(); }
+    });
 
     /* ===== 待辦頁：明細讀取不擋畫面 ===== */
 
