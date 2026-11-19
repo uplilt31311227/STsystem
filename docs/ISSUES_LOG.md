@@ -622,6 +622,26 @@ master 維持 v1.11.0 不動，tag `v1.11.0-stable` 可隨時 `git checkout v1.1
 
 ## V2 權限系統（feature/permission-system）已知限制與待辦
 
+### 2026-11 審計 P9 第二批與 P10 處理結果（摘要）
+
+- **日期**: 2026-11-20
+- **狀態**: 🟡 已修，尚未部署（rules v2.16–v2.19 與前端需同時上線，見 `docs/DEPLOYMENT.md`）
+- **範圍**: 第二批分流 159 項（已修 49、仍存在 87、部分修 16、不適用 7），建議修約 55 項，分 A／A2／B／C／D 五批處理，詳表在 repo 外。P10 再對整條分支跑 code-review，修 7 項並加修驗收發現的 recordsLock 刪除重建漏洞。
+- **驗收中抓到、已修的問題**:
+  - B：半天假被誤擋、姓名正規化寫入存檔造成重複教師檔（改為只在比對時正規化）。
+  - C：只差較舊月結算設定的備份永遠無法還原（確認鈕停用）。
+  - C→D：V2 下停用 V1 同步時連帶讓頁首不切換登入狀態（D 批驗收發現並修正，新增 e2e 守門）。
+  - D：header 缺校名、Firebase SDK 載入失敗時永久卡在「載入中」。
+  - P10：主任可「刪除 recordsLock 再以 seq=1 重建」回退序號（v2.19 補 delete 排除）。
+- **刻意不修或留待使用者決定**:
+  - 同名教師的身分快取（同一申請兩個同名不同人會解析成同一位）：待使用者決定 (d)。
+  - 推薦引擎兼課教師到校時段與上限：列 backlog（業務規則不明）。
+  - 職務分離（SoD）定位為防誤、不是安全邊界：approver 可直接代發、可偽造 initiatedBy（使用者 2026-11-17 決定允許代發）。
+  - commitAdminRecords 的衝突查詢效能、calculate() 多餘參數：不急。
+  - 結算黃金值 fixture 沒有隔週課（隔週變異只有 test-p7-settlement 抓得到）：待補。
+- **本機測試環境已知不穩**（修前修後皆有，非程式回歸）: emulator 瀏覽器端第一次 `getDocs` 偶發停滯 30–70 秒，影響 e2e 01、02、03、05、07、09、10（調課案）與 04「全校清空」案。
+- **環境教訓**: 暫存 worktree 內有 junction 時，`Remove-Item -Recurse` 與 `git worktree remove --force` 都會順著 junction 刪光主目錄 node_modules（發生兩次，皆以 `npm ci` 重建）。之後對照 HEAD 一律用 `git archive` 解到獨立目錄並在內 `npm ci`。
+
 ### Firestore 規則由「測試版（任何登入者皆可讀寫）」收緊為 v2.1
 
 - **日期**: 2026-04-29
