@@ -48,6 +48,11 @@ check('(a) escapeDeep 遞迴跳脫字串、保留數字', JSON.stringify(escapeD
 check('(a) toNum：非有限數字 → 0', toNum('12') === 12 && toNum('<img>') === 0 && toNum(undefined) === 0 && toNum(NaN, 7) === 7);
 check('(a) safeUrl 擋 javascript:／data:', safeUrl('javascript:alert(1)') === '#' && safeUrl('data:text/html,x') === '#'
     && safeUrl('https://a.b/c?d="e') === 'https://a.b/c?d=&quot;e' && safeUrl('blob:https://x/1') === 'blob:https://x/1');
+check('(a2) P10 safeUrl 擋夾控制字元的 javascript:（tab、換行、空白、大小寫混用、開頭空白）',
+    ['java\tscript:alert(1)', '\njavascript:alert(1)', 'JaVaScRiPt:alert(1)', ' javascript:alert(1)', 'java\nscript:alert(1)', 'java\rscript:alert(1)',
+     'j a v a s c r i p t:alert(1)', '\x01javascript:alert(1)', 'da\tta:text/html,x', 'vb\tscript:x'].every(u => safeUrl(u) === '#'));
+check('(a3) P10 safeUrl 仍放行正常網址與相對路徑', safeUrl('./a/b.pdf') === './a/b.pdf' && safeUrl('mailto:a@b.c') === 'mailto:a@b.c'
+    && safeUrl('HTTPS://a.b') === 'HTTPS://a.b' && safeUrl('') === '' && safeUrl('#frag') === '#frag');
 check('(a) pickAllowed 白名單', pickAllowed('director', ['director']) === 'director' && pickAllowed('x" onclick="', ['director']) === '');
 
 /* ---------- (b) 渲染函式 ---------- */

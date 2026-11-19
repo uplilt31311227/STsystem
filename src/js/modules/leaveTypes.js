@@ -65,3 +65,11 @@ export function leaveTypeLabel(code) {
     const t = findLeaveType(code);
     return t ? t.label : code;
 }
+
+/**
+ * 紀錄 leaveType／leaveTypeName 欄位寫入用的名稱：假別代碼轉中文；'swap' 轉「調課」（調課不是假別，
+ * 不在 LEAVE_TYPES）；已是中文名稱或未知值原樣回傳。結算的 noDeductCodesAndLabels 以這些字串判定。
+ */
+export function leaveTypeDisplayName(code) {
+    return code === 'swap' ? '調課' : leaveTypeLabel(code);
+}

@@ -54,7 +54,10 @@ export function toNum(value, fallback = 0) {
  */
 export function safeUrl(url) {
     const s = String(url ?? '').trim();
-    if (/^(https?:|blob:|mailto:)/i.test(s) || /^(?![a-z][a-z0-9+.-]*:)/i.test(s)) {
+    // 瀏覽器解析網址時會忽略 tab、換行等控制字元（'java<TAB>script:' 仍是 javascript:），
+    // 所以判斷 scheme 要在移除 ASCII 控制字元與空白（0x00 到 0x20）之後做。
+    const probe = s.replace(/[\x00-\x20]/g, '');
+    if (/^(https?:|blob:|mailto:)/i.test(probe) || /^(?![a-z][a-z0-9+.-]*:)/i.test(probe)) {
         return escapeHtml(s);
     }
     return '#';

@@ -31,6 +31,7 @@
  */
 
 import { noDeductCodesAndLabels, LEAVE_TYPES } from './leaveTypes.js';
+import { periodIndex } from './periods.js';
 
 /** 姓名比對用正規化（與 v2/teacherIdentity.normalizeTeacherName 相同規則：全形空白轉半形、去前後空白）。 */
 function normName(name) {
@@ -50,6 +51,24 @@ function rowWeight(course) {
     const f = course && (course.frequency ?? course.biweekly);
     if (f === true || f === 2 || f === '2') return 0.5;
     return 1;
+}
+
+/**
+ * 把一列課表記入「星期＋節次」槽位表（getTeacherWeeklyHours 與 calculate 的每段每週節數共用）：
+ * 依 星期＋節次 去重（完全重複列、合班只算 1 節）；隔週課（rowWeight 0.5）以班級去重，不同班輪替才各算 0.5。
+ */
+function addCourseToSlots(slotMap, course) {
+    const slot = `${course.weekday}|${course.period}`;
+    const cur = slotMap.get(slot) || { weekly: false, half: new Set() };
+    if (rowWeight(course) === 1) cur.weekly = true; else cur.half.add(courseClass(course));
+    slotMap.set(slot, cur);
+}
+
+/** 槽位表的每週節數合計。 */
+function totalSlotUnits(slotMap) {
+    let total = 0;
+    for (const v of slotMap.values()) total += slotUnits(v);
+    return total;
 }
 
 /**
@@ -265,13 +284,9 @@ export class SettlementCalculator {
                 const n = normName(course && course.teacher);
                 if (!n) continue;
                 const keys = (idx.get(n) && idx.get(n).length) ? idx.get(n) : [addPerson('n:' + n, course.teacher, null, false).key];
-                const slot = `${course.weekday}|${course.period}`;
                 for (const key of keys) {
                     if (!slots.has(key)) slots.set(key, new Map());
-                    const m = slots.get(key);
-                    const cur = m.get(slot) || { weekly: false, half: new Set() };
-                    if (rowWeight(course) === 1) cur.weekly = true; else cur.half.add(courseClass(course));
-                    m.set(slot, cur);
+                    addCourseToSlots(slots.get(key), course);
                     const cn = courseClass(course);
                     if (cn) {
                         if (!classesByKey.has(key)) classesByKey.set(key, new Set());
@@ -280,11 +295,7 @@ export class SettlementCalculator {
                 }
             }
             const out = new Map();
-            for (const [key, m] of slots) {
-                let total = 0;
-                for (const v of m.values()) total += slotUnits(v);
-                out.set(key, total);
-            }
+            for (const [key, m] of slots) out.set(key, totalSlotUnits(m));
             return out;
         });
 
@@ -475,14 +486,9 @@ export class SettlementCalculator {
         const slots = new Map();
         for (const course of scheduleData) {
             if (normName(course.teacher) !== n) continue;
-            const slot = `${course.weekday}|${course.period}`;
-            const cur = slots.get(slot) || { weekly: false, half: new Set() };
-            if (rowWeight(course) === 1) cur.weekly = true; else cur.half.add(courseClass(course));
-            slots.set(slot, cur);
+            addCourseToSlots(slots, course);
         }
-        let total = 0;
-        for (const v of slots.values()) total += slotUnits(v);
-        return total;
+        return totalSlotUnits(slots);
     }
 
     /**
@@ -753,9 +759,7 @@ export class SettlementCalculator {
      */
     getMonthlyDetailRows(records, year, month) {
         const leaveLabels = Object.fromEntries([...LEAVE_TYPES.map(t => [t.code, t.label]), ['swap', '調課']]);
-        const periodOrder = ['第一節', '第二節', '第三節', '第四節', '第五節', '第六節', '第七節', '第八節'];
         const weekdayLabels = ['日', '一', '二', '三', '四', '五', '六'];
-        const periodIdx = p => { const i = periodOrder.indexOf(p); return i < 0 ? 99 : i; };
 
         return this.filterMonthlyRecords(records || [], year, month)
             .map(r => {
@@ -775,7 +779,7 @@ export class SettlementCalculator {
                     deducted: this.isDeductedFromOriginal(r)
                 };
             })
-            .sort((a, b) => a.date.localeCompare(b.date) || periodIdx(a.period) - periodIdx(b.period));
+            .sort((a, b) => a.date.localeCompare(b.date) || periodIndex(a.period) - periodIndex(b.period));
     }
 
     /**

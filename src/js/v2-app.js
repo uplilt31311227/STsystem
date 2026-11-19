@@ -18,6 +18,7 @@ import * as requestSvc          from './modules/v2/pendingRequestService.js';
 import * as logger              from './modules/v2/operationLogger.js';
 import * as legacyMigration     from './modules/v2/legacyMigrationService.js';
 import * as schoolAppSvc        from './modules/v2/schoolApplicationService.js';
+import { rollbackBatchRequests } from './modules/v2/batchDependency.js';
 import { LOG_ACTIONS, LOG_TARGET_TYPES, ROLES, REQUEST_STATUS, REQUEST_TYPES, getActiveSchoolId, resetActiveSchoolId, DEFAULT_SCHOOL_ID } from './modules/v2/schemaConstants.js';
 import * as authMod from './modules/authService.js';
 import * as cloudSyncSvc from './modules/cloudSyncService.js';
@@ -123,6 +124,8 @@ let _v2UnverifiedState = null;
 // UX-M4：Firebase 第一次回報登入狀態之前，遮罩不能先畫出「請先登入」按鈕（已登入的人重新整理會看到它閃一下）。
 // 'pending'＝尚未收到第一次回報；'out'＝確定未登入；'in'＝已登入、身分確認中。
 let _v2GateAuthState = 'pending';
+// SDK 載入失敗（initAuthService 丟錯）：遮罩本身就顯示失敗原因，不只靠會消失的 toast；此時登入鈕按了也沒用，不畫。
+let _v2GateSdkFailed = false;
 const GATE_PENDING_FALLBACK_MS = 10000;   // 萬一一直收不到回報，10 秒後改顯示登入按鈕，不讓人卡在載入中
 
 /** 注入登入遮罩元素（只需一次）。實際顯隱由 body.v2-locked + .app-container[inert] 控制。 */
@@ -192,6 +195,7 @@ function renderAuthGate() {
               : _v2UnverifiedState ? 'unverified:' + _v2UnverifiedState.email
               : _v2PlatformPick ? `platform:${_v2PlatformPick.uid}:${_v2PlatformPick.loading}:${_v2PlatformPick.schools.length}:${_v2PlatformPick.error || ''}`
               : _v2ApplyState ? applyKey
+              : _v2GateSdkFailed ? 'sdk-failed'
               : _v2GateAuthState === 'out' ? 'default'
               : 'loading:' + _v2GateAuthState;
     if (gate.dataset.renderKey === key) return;   // 相同狀態免重繪 / 重綁監聽
@@ -221,6 +225,15 @@ function renderAuthGate() {
     if (_v2ApplyState) {
         gate.innerHTML = renderApplyGateContent(_v2ApplyState);
         bindApplyGateActions(gate);
+        return;
+    }
+
+    if (_v2GateSdkFailed) {
+        gate.innerHTML = renderDefaultGateShell(
+            `<p class="v2-gate-denied" role="alert" id="v2-gate-sdk-failed">登入服務載入失敗，請檢查網路後重新整理頁面</p>
+             <button type="button" class="btn btn-primary" id="v2-gate-reload">重新整理</button>`
+        );
+        gate.querySelector('#v2-gate-reload')?.addEventListener('click', () => window.location.reload());
         return;
     }
 
@@ -4063,14 +4076,12 @@ async function writeV2RecordsBatch(records) {
         endSubmitGroup();
     } catch (err) {
         _submitCollector = null;   // 失敗時不合併通知，由呼叫端顯示錯誤
-        let undone = 0;
-        for (const saved of created.reverse()) {
-            if (saved && saved.reqId) {
-                try { await requestSvc.cancelRequest(saved.reqId, '批次送出失敗，自動撤回'); undone++; } catch (_) { /* 已被連帶撤回或無法撤回 */ }
-            }
-        }
+        // 第一筆撤回會連帶撤回整批在途申請，之後的「找不到」視為已撤回（見 rollbackBatchRequests）
+        const { undone, failed } = await rollbackBatchRequests(created, (id, note) => requestSvc.cancelRequest(id, note));
         err.batchUndone = undone;
-        err.batchCreated = created.length;
+        err.batchFailed = failed;                                            // 實際撤回失敗（真正的殘留）
+        err.batchCreated = created.filter(c => c && c.reqId).length;         // 在途申請數
+        err.batchKept = created.length - err.batchCreated;                   // 直接成立（自我調課）、無法自動撤回
         throw err;
     }
 }
@@ -4769,8 +4780,15 @@ function patchDataManager() {
             } else {
                 notifyError(err, '寫入調代課紀錄');
             }
-            if (err?.batchCreated > 0) {
-                notify(`批次中已建立 ${err.batchCreated} 筆申請，其中 ${err.batchUndone || 0} 筆已自動撤回；請至「待辦」確認是否有殘留的申請`, 'warning', 8000);
+            if (err?.batchCreated > 0 || err?.batchKept > 0) {
+                const kept = err.batchKept > 0 ? `；另有 ${err.batchKept} 筆自行調課已直接成立，不會自動撤回，如需更正請洽教學組` : '';
+                if (err.batchCreated > 0 && !err.batchFailed) {
+                    notify(`批次中已建立的 ${err.batchCreated} 筆申請已全部自動撤回${kept}`, kept ? 'warning' : 'info', 8000);
+                } else if (err.batchCreated > 0) {
+                    notify(`批次中已建立 ${err.batchCreated} 筆申請，其中 ${err.batchUndone || 0} 筆已自動撤回，${err.batchFailed} 筆撤回失敗，請至「待辦」確認殘留的申請${kept}`, 'warning', 8000);
+                } else {
+                    notify(`批次未完成${kept}`, 'warning', 8000);
+                }
             }
             return false;
         }
@@ -5805,6 +5823,7 @@ async function bootstrap() {
     } catch (e) {
         console.error('[V2] 登入服務初始化失敗:', e);
         _v2GateAuthState = 'out';
+        _v2GateSdkFailed = true;
         renderAuthGate();
         notify('登入服務載入失敗，請檢查網路後重新整理頁面', 'error', 10000);
     }
@@ -5821,6 +5840,8 @@ async function bootstrap() {
 
     authMod.onAuthStateChange(async (user) => {
         _v2GateAuthState = user ? 'in' : 'out';
+        // 超過 10 秒才收到回報時，遮罩已退回畫出登入鈕；狀態改變就重畫，已登入者看到「確認身分中」而不是登入鈕
+        renderAuthGate();
         clearSubs();
         // opus 重驗 3：不論這次 emit 是不是「身份實際改變」（identityChanged 尚未算出），
         // clearSubs() 剛把包含課表訂閱在內的所有既有 Firestore 監聽全部取消——舊訂閱不再
@@ -5987,6 +6008,10 @@ async function bootstrap() {
                 nameText.textContent = String(identity.name ?? '');
                 nameSpan.replaceChildren(nameText, roleTag);   // 手機只收起姓名文字，角色標籤留著（UX-M2）
             }
+            // 首字圓章改用教師姓名首字（app.js 在身分解析前只有 Google 顯示名稱或 Email 可用）
+            const avatarFb = document.getElementById('user-avatar-fallback');
+            const nameInitial = Array.from(String(identity.name ?? '').trim())[0];
+            if (avatarFb && nameInitial) avatarFb.textContent = nameInitial;
 
             // Stage 2（RESEARCH-multitenancy-semester.md §5/§8 Stage 2）：學期成為一級概念，
             // 每次身份解析成功後讀一次 config.currentSemester 並寫入 semesterState 快取，供本

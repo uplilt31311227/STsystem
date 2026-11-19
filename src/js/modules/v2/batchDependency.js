@@ -63,11 +63,43 @@ export function checkBatchApprovable(req, requests, records) {
  */
 export function checkBatchWithdrawable(req, requests, records) {
     if (!req || !req.batchId) return { ok: true, openSiblings: [] };
-    const legs = collectBatchLegs(req, requests, records);
+    // 自我調課是教師自行調課直接成立的紀錄（沒有對應申請、教師端也無法刪除），不算「核准成立的腿」：
+    // 否則批次內有自我調課時，其餘在途申請永遠撤不掉。（核准判斷 checkBatchApprovable 不受影響，自我調課照常算一條腿。）
+    const keptRecords = (records || []).filter(r => !(r && r.isSelfSwap === true));
+    const legs = collectBatchLegs(req, requests, keptRecords);
     const others = [...legs.values()].filter(l => l.key !== legKey(req));
     if (others.some(l => l.status === 'approved')) {
         return { ok: false, code: 'BATCH_PARTLY_APPROVED',
             message: '同批多重調課已有申請核准成立，不能單獨撤回剩下的申請，請洽教學組處理' };
     }
     return { ok: true, openSiblings: others.filter(l => l.status === 'open').map(l => l.ref) };
+}
+
+/**
+ * 批次送出失敗後的回滾：逐筆撤回已建立的在途申請，回傳實際撤回的筆數。
+ * cancelRequest 以批次為單位連帶撤回同批其餘在途申請（回傳 cascaded），之後對已被連帶撤回的申請再撤回
+ * 會丟「找不到此請求」；這種情況視為已撤回，並以 Set 去重避免重複計數。
+ * @param {Array<{reqId?:string}>} created - 已建立的結果（自我調課直接成立者沒有 reqId，略過）
+ * @param {(reqId:string, note:string)=>Promise<{cascaded?:string[]}|void>} cancelFn
+ * @returns {Promise<{undone:number, failed:number}>}
+ */
+export async function rollbackBatchRequests(created, cancelFn) {
+    const gone = new Set();
+    let failed = 0;
+    for (const saved of [...(created || [])].reverse()) {
+        const id = saved && saved.reqId;
+        if (!id || gone.has(id)) continue;
+        try {
+            const res = await cancelFn(id, '批次送出失敗，自動撤回');
+            gone.add(id);
+            for (const c of (res && res.cascaded) || []) gone.add(c);
+        } catch (e) {
+            if (/找不到此請求/.test((e && e.message) || '')) gone.add(id);   // 已被連帶撤回
+            else failed++;
+        }
+    }
+    // 只計入本次建立的申請（cascaded 理論上可能含其他 id，不應灌大數字）
+    const createdIds = new Set((created || []).map(s => s && s.reqId).filter(Boolean));
+    const undone = [...gone].filter(id => createdIds.has(id)).length;
+    return { undone, failed };
 }

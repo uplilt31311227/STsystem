@@ -98,5 +98,28 @@ await suite.case('同一次提交裡序號鎖寫壞（跳號）→ 整批 DENY�
     eq((await getDoc(REC('zz_lock_should_not_exist'))).ok, false, '紀錄未寫入');
 });
 
+// ---- v2.19：config 通用主任規則不再涵蓋 recordsLock（主任／platformAdmin 與組長一致：只能 +1） ----
+const PA = seed.platformAdmin;
+for (const [who, user] of [['主任', dir], ['platformAdmin', PA]]) {
+    await suite.case(`v2.19 ${who}：把 recordsLock 回退成 {seq:0} → DENY（修前被通用主任規則放行）`, async () => {
+        const cur = (await getDoc(LOCK)).data.seq;
+        denied(await setDoc(LOCK, { seq: 0, updatedAt: iso() }, as(user)), `${who} 回退 seq=0`);
+        denied(await setDoc(LOCK, { seq: cur - 1, updatedAt: iso() }, as(user)), `${who} 回退 -1`);
+        denied(await setDoc(LOCK, { seq: cur + 7, updatedAt: iso() }, as(user)), `${who} 跳號`);
+        eq((await getDoc(LOCK)).data.seq, cur, 'seq 未被改動');
+    });
+    await suite.case(`v2.19 ${who}：recordsLock seq +1 → ALLOW（專屬規則仍允許）`, async () => {
+        const cur = (await getDoc(LOCK)).data.seq;
+        allowed(await setDoc(LOCK, { seq: cur + 1, updatedAt: iso() }, as(user)), `${who} +1`);
+        eq((await getDoc(LOCK)).data.seq, cur + 1, 'seq +1');
+    });
+    await suite.case(`v2.19 ${who}：刪除 recordsLock 再以 seq=1 重建（迂迴回退）→ 刪除即 DENY`, async () => {
+        const cur = (await getDoc(LOCK)).data.seq;
+        const del = await fetch(`http://127.0.0.1:8080/v1/projects/demo-stsystem/databases/(default)/documents/${LOCK}`, { method: 'DELETE', headers: { Authorization: `Bearer ${user.idToken}` } });
+        eq(del.ok, false, `${who} 刪除 recordsLock`);
+        eq((await getDoc(LOCK)).data.seq, cur, 'seq 未被改動');
+    });
+}
+
 suite.print();
 process.exit(suite.failed ? 1 : 0);

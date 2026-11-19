@@ -76,5 +76,20 @@ await suite.case('grade9：缺欄位或夾帶白名單外欄位 → DENY', async
     denied(await setDoc(G9, grade9({ evil: 1 }), { idToken: chief.idToken }), '夾帶 evil');
 });
 
+// ---- v2.19：主任／platformAdmin 的 grade9 寫入同樣受白名單約束 ----
+const PAUSER = await signIn('platform.admin@demo.test');
+for (const [who, user] of [['主任', dir], ['platformAdmin', PAUSER]]) {
+    await suite.case(`v2.19 grade9：${who} 夾帶白名單外欄位／缺欄位 → DENY（修前被通用主任規則放行）`, async () => {
+        denied(await setDoc(G9, grade9({ evil: 1 }), { idToken: user.idToken }), `${who} 夾帶 evil`);
+        const { effectiveDate, ...missing } = grade9();
+        denied(await setDoc(G9, missing, { idToken: user.idToken }), `${who} 缺欄位`);
+        denied(await setDoc(G9, grade9({ enabled: 'yes' }), { idToken: user.idToken }), `${who} 型別錯`);
+    });
+    await suite.case(`v2.19 grade9：${who} 寫入合法白名單欄位 → ALLOW`, async () => {
+        allowed(await setDoc(G9, grade9({ enabled: false, updatedBy: 'x@demo.test' }), { idToken: user.idToken }), `${who} 合法 grade9`);
+        eq((await getDoc(G9)).data.enabled, false, '讀回');
+    });
+}
+
 suite.print();
 process.exit(suite.failed ? 1 : 0);

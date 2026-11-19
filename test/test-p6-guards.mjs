@@ -5,7 +5,7 @@
  */
 import { withBusyButton, runExclusive, isBusy } from '../src/js/modules/busyGuard.js';
 import { runWithRecordsGuard, assertSeqUnchanged, RecordsStaleError, BACKOFF_BASE_MS, BACKOFF_CAP_MS } from '../src/js/modules/v2/recordsGuard.js';
-import { checkBatchApprovable, checkBatchWithdrawable } from '../src/js/modules/v2/batchDependency.js';
+import { checkBatchApprovable, checkBatchWithdrawable, rollbackBatchRequests } from '../src/js/modules/v2/batchDependency.js';
 
 let failed = 0;
 function check(name, cond, detail = '') {
@@ -114,6 +114,32 @@ check('批次依賴：別人用同 batchId 塞的申請不算同批', checkBatch
 check('非批次申請不檢查', checkBatchApprovable({ reqId: 'z' }, [], []).ok === true);
 check('撤回依賴：同批已有核准成立 → 不可撤回', checkBatchWithdrawable(batchReq, [batchReq, { reqId: 'r2', batchId: 'B', initiatedBy: 't1', status: 'approved' }], []).code === 'BATCH_PARTLY_APPROVED');
 check('撤回依賴：同批其餘皆在途 → 列出要連帶撤回的申請', checkBatchWithdrawable(batchReq, [batchReq, { reqId: 'r2', batchId: 'B', initiatedBy: 't1', status: 'pending_approval' }], []).openSiblings.length === 1);
+
+// ---- P10：批次含自我調課紀錄時，撤回檢查排除自我調課 ----
+check('撤回依賴（P10）：同批只有自我調課成立的紀錄 → 可撤回，其餘在途申請列入連帶',
+    (() => { const r = checkBatchWithdrawable(batchReq, [batchReq, { reqId: 'r2', batchId: 'B', initiatedBy: 't1', status: 'pending_approval' }],
+        [{ recordId: 'self1', batchId: 'B', initiatedBy: 't1', isSelfSwap: true, status: 'approved' }]); return r.ok === true && r.openSiblings.length === 1; })());
+check('撤回依賴（P10）：自我調課以外另有核准成立的一般紀錄 → 仍不可撤回',
+    checkBatchWithdrawable(batchReq, [batchReq], [{ recordId: 'self1', batchId: 'B', initiatedBy: 't1', isSelfSwap: true }, { recordId: 'x', fromRequestId: 'r2', batchId: 'B', initiatedBy: 't1' }]).code === 'BATCH_PARTLY_APPROVED');
+
+// ---- P10：批次回滾的撤回筆數 ----
+{
+    // 模擬 cancelRequest：第一筆撤回連帶撤掉同批其餘，之後再撤回丟「找不到」
+    const open = new Set(['a', 'b', 'c']);
+    const fakeCancel = async (id) => {
+        if (!open.has(id)) throw new Error('找不到此請求（可能已被撤回）');
+        const cascaded = [...open].filter(x => x !== id);
+        open.clear();
+        return { cascaded };
+    };
+    const created = [{ reqId: 'a' }, { recordId: 'self' }, { reqId: 'b' }, { reqId: 'c' }];
+    const r = await rollbackBatchRequests(created, fakeCancel);
+    check('批次回滾：連帶撤回後的「找不到」計入已撤回（3 筆申請 → undone=3，failed=0）', r.undone === 3 && r.failed === 0, JSON.stringify(r));
+    const r2 = await rollbackBatchRequests([{ reqId: 'a' }, { reqId: 'b' }], async (id) => { if (id === 'a') throw new Error('此申請已核准成立，無法撤回'); return { cascaded: [] }; });
+    check('批次回滾：真正失敗（已核准）計入 failed，不算撤回', r2.undone === 1 && r2.failed === 1, JSON.stringify(r2));
+    const r3 = await rollbackBatchRequests([{ recordId: 'self' }], async () => { throw new Error('不該被呼叫'); });
+    check('批次回滾：只有自我調課（無 reqId）→ 不呼叫撤回', r3.undone === 0 && r3.failed === 0);
+}
 
 console.log(failed === 0 ? '\n全部通過' : `\n${failed} 項失敗`);
 process.exit(failed === 0 ? 0 : 1);

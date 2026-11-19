@@ -228,5 +228,24 @@ await suite.case('F13 歷史資料遷移（legacyMigrationService）：director 
     denied(r2.parent, '組長不可用 isLegacy 繞過學期鎖');
 });
 
+await suite.case('F14（P10）批次含自我調課：一般腿（pending）與自我調課（record）並存，批次回滾刪除在途腿 ALLOW，教師無法刪自我調課紀錄 DENY', async () => {
+    const batch = { id: String(Date.now()), size: 3 };
+    // 腿 1：一般調課 → pending
+    const rec1 = appSwapRecord({ teacherA: t1.name, teacherB: t2.name, idSuffix: '_p10a', batch, className: '7年1班' });
+    const built = buildPendingRequestDocs(writeV2Payload(rec1, idsFor(rec1), t1), semesterId, t1);
+    const r1 = await submitPending(t1, built);
+    allowed(r1.parent, '腿 1 父文件');
+    // 腿 2：自我調課 → 直接成立 record（同批、同發起人）
+    const rec2 = appSwapRecord({ teacherA: t1.name, teacherB: t1.name, self: true, idSuffix: '_p10b', batch });
+    const r2 = await submitRecord(t1, writeV2Payload(rec2, idsFor(rec2), t1), semesterId, { initiatedByRole: 'teacher' });
+    allowed(r2.parent, '腿 2 自我調課紀錄');
+    const selfId = r2.recordId;
+    // 回滾：撤回腿 1（前端 checkBatchWithdrawable 已排除自我調課，見 test-p6-services）
+    allowed(await deleteDoc(`${P.pending}/${built.reqId}`, as(t1)), '批次回滾：發起人撤回腿 1');
+    // 自我調課一旦成立教師端無法刪除（所以前端要保留並提示）
+    const del = await deleteDoc(`${P.records}/${selfId}`, as(t1));
+    denied(del, '教師不可刪除已成立的自我調課紀錄');
+});
+
 suite.print();
 process.exit(suite.failed ? 1 : 0);

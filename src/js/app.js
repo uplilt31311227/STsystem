@@ -15,7 +15,7 @@ import { formatLocalDate, parseLocalDate, todayLocal } from './modules/localDate
 import { mergeTeacherAttributes, findAmbiguousTeacherNames } from './modules/teacherMerge.js';
 import { periodIndex } from './modules/periods.js';
 import { friendlyErrorMessage } from './modules/errorText.js';
-import { requiresDocNumber } from './modules/leaveTypes.js';
+import { requiresDocNumber, leaveTypeDisplayName } from './modules/leaveTypes.js';
 import { grade9PendingLabel } from './modules/grade9Graduation.js';
 import {
     loadV1History, appendV1History, getRestorableSnapshot, makeSnapshot,
@@ -376,7 +376,9 @@ class SubstituteTeacherApp {
             const avatarFallback = document.getElementById('user-avatar-fallback');
             const showAvatarFallback = () => {
                 // UX-L2：破圖時改顯示姓名首字圓章（首字取自顯示名稱，沒有名稱就用 Email 第一個字）
-                const label = (userInfo?.displayName || userInfo?.email || '?').trim();
+                // V2 身分解析後，user-name-text 是教師檔姓名，優先於 Google 顯示名稱與 Email
+                const v2Name = document.getElementById('user-name')?.querySelector?.('.user-name-text')?.textContent;
+                const label = String(v2Name || userInfo?.displayName || userInfo?.email || '?').trim();
                 if (avatarFallback) avatarFallback.textContent = Array.from(label)[0] || '?';
                 avatarImg?.classList.add('hidden');
                 avatarFallback?.classList.remove('hidden');
@@ -3413,24 +3415,7 @@ ${lines.join(NL)}${more}
      * 取得假別名稱
      */
     getLeaveTypeName(leaveType) {
-        const leaveTypeNames = {
-            'official': '公假',
-            'longsick': '長期病假',
-            'funeral': '喪假',
-            'marriage': '婚假',
-            'maternity': '產假',
-            'paternity': '陪產假',
-            'injury': '公傷假',
-            'miscarriage': '流產假',
-            'family': '家庭照顧假',
-            'menstrual': '生理假',
-            'personal': '事假',
-            'sick': '病假',
-            'rest': '休假',
-            'other': '其他',
-            'swap': '調課'
-        };
-        return leaveTypeNames[leaveType] || leaveType;
+        return leaveTypeDisplayName(leaveType);
     }
 
     /**

@@ -1,5 +1,23 @@
 # 版本紀錄 (Changelog)
 
+## [2026-11-20] P10 code-review 修正（尚未部署，rules v2.19）
+
+**Bug 與安全**
+- **多重調課批次含自我調課時回滾撤不掉其他腿**：`checkBatchWithdrawable` 檢查「同批是否已有核准成立」時排除自我調課（`isSelfSwap`）直接成立的紀錄，其餘在途申請可撤回（回滾與教師手動撤回皆然）；自我調課之外另有核准成立的一般紀錄仍不可撤。
+- **批次回滾撤回筆數算錯**：新增 `rollbackBatchRequests`（`batchDependency.js`）。第一筆撤回已連帶撤掉整批，之後的「找不到」視為已撤回並以 Set 去重計入；只有真正失敗才算殘留。訊息依實際狀態顯示（全部已撤回／N 筆撤回失敗請至待辦確認），自我調課已成立者另行說明，不再誤報「請至待辦確認是否有殘留」。
+- **firestore.rules v2.19**：`config/{docId}` 的主任通用規則排除 `recordsLock` 與 `grade9`，主任與 platformAdmin 不能再把 seq 回退成任意值或不經白名單寫 grade9；兩者專屬規則對主任仍允許 seq +1 與白名單內 grade9。
+- **safeUrl**：判斷 scheme 前先移除 ASCII 控制字元與空白（0x00 到 0x20），`java` 夾 tab 的 javascript:、換行、開頭空白、大小寫混用皆擋下。
+
+**重構（行為不變，由測試鎖定）**
+- `app.js getLeaveTypeName` 改用 `leaveTypes.leaveTypeDisplayName`，不再內嵌對照表（14 個假別標籤與 swap 逐一與修前相同）。
+- `settlementCalculator.getMonthlyDetailRows` 節次排序改用 `periods.periodIndex`。
+- `getTeacherWeeklyHours` 與 `calculate()` 的每段每週節數共用 `addCourseToSlots`／`totalSlotUnits`；結算黃金值斷言未更動。
+
+**批次 D 建議**
+- V2 首字圓章改用教師姓名首字；auth 逾時後才回報時重畫遮罩；SDK 載入失敗時遮罩本身顯示原因；e2e-10 頁首案加校名斷言。
+
+**測試**：新增 `test/test-p10-refactor.mjs`；`test-p6-services`、`test-p6-guards`、`test-html-escape` 增案；emulator 的 `rules-records-lock`、`rules-p7-config`、`rules-workflows`（F14）增案。index.html 快取版本 app.js 1.14.10、v2-app.js 0.1.22。
+
 ## [2026-11-19] 資安審計 P9 批次 D（使用者體驗，尚未部署）
 
 **D1 文案與回饋**

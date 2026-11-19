@@ -74,6 +74,24 @@ err = null;
 try { await req.cancelRequest('c1'); } catch (e) { err = e; }
 check('批次撤回：同批已有核准成立者 → 不可單獨撤回剩下的', !!err && /已有申請核准成立/.test(err.message) && exists(P('c1')), String(err));
 
+// P10：批次內含自我調課（直接成立的紀錄）時，其餘在途申請仍可撤回
+reset(); asTeacher();
+putReq('s1', { batchId: 'B7', batchSize: 3 }); putReq('s2', { batchId: 'B7', batchSize: 3 });
+F.docs.set(`${SCHEMA_PATHS.substituteCol()}/self1`, { type: '調課', isSelfSwap: true, status: 'approved', batchId: 'B7', batchSize: 3, initiatedBy: 't_wang', originalTeacher: '王老師', swapTeacher: '王老師' });
+err = null;
+let cres = null;
+try { cres = await req.cancelRequest('s1'); } catch (e) { err = e; }
+check('P10 批次撤回：同批有自我調課紀錄 → 仍可撤回，其餘在途申請連帶撤回', !err && !exists(P('s1')) && !exists(P('s2')) && cres?.cascaded?.length === 1, String(err));
+check('P10 批次撤回：自我調課紀錄原封不動（只保留自我調課）', exists(`${SCHEMA_PATHS.substituteCol()}/self1`));
+
+reset(); asTeacher();
+putReq('s3', { batchId: 'B8', batchSize: 3 });
+F.docs.set(`${SCHEMA_PATHS.substituteCol()}/self2`, { type: '調課', isSelfSwap: true, status: 'approved', batchId: 'B8', initiatedBy: 't_wang' });
+F.docs.set(`${SCHEMA_PATHS.substituteCol()}/rec_normal`, { type: '調課', status: 'approved', batchId: 'B8', fromRequestId: 'gone', initiatedBy: 't_wang' });
+err = null;
+try { await req.cancelRequest('s3'); } catch (e) { err = e; }
+check('P10 批次撤回：自我調課之外另有核准成立的一般紀錄 → 仍不可撤回', !!err && /已有申請核准成立/.test(err.message) && exists(P('s3')), String(err));
+
 // ---- 批次：駁回連帶、核准依賴 ----
 reset(); asChief();
 putReq('d1', { batchId: 'B3', batchSize: 2 }); putReq('d2', { batchId: 'B3', batchSize: 2 });

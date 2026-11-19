@@ -1,6 +1,6 @@
 rules_version = '2';
 
-// STsystem V2 權限系統 Firestore 規則（v2.18（LC-L7／LF-M8：紀錄與申請的學期歸屬改依日期推算，寫入窗口放寬為目前學期＋相鄰學期）、v2.17（P9 批次 A2：初始主任白名單在學校有正式主任後失效、platformAdmin 為全系統最高管理員、核准者職務分離）、v2.16（P9 批次 A：組長改教師檔欄位白名單、主任不可刪自己的教師檔、approver／發起人可刪 private/detail）、v2.15（P7：config/settlement 增加逐人超鐘點門檻欄位、config/grade9 九年級畢業設定）、v2.14（含 v2.13-A／B、v2.14 成立紀錄序號鎖，皆已納入本檔，P5／P6 未部署）— 身分與授權修補 + 三層角色 + 敏感欄位私有化 + 學期唯讀鎖 + 封存生命週期 + schoolId 反查目錄 + 多租戶開通 + 月結算設定開放 approver + 主任不可改自己的 role + 課表匯入版本紀錄 + 組長可刪除目前學期紀錄 + 開新學期原子建立課表 + 課表版本號）
+// STsystem V2 權限系統 Firestore 規則（v2.19（P10 code-review：config 通用主任規則排除 recordsLock 與 grade9，兩者只走專屬規則）、v2.18（LC-L7／LF-M8：紀錄與申請的學期歸屬改依日期推算，寫入窗口放寬為目前學期＋相鄰學期）、v2.17（P9 批次 A2：初始主任白名單在學校有正式主任後失效、platformAdmin 為全系統最高管理員、核准者職務分離）、v2.16（P9 批次 A：組長改教師檔欄位白名單、主任不可刪自己的教師檔、approver／發起人可刪 private/detail）、v2.15（P7：config/settlement 增加逐人超鐘點門檻欄位、config/grade9 九年級畢業設定）、v2.14（含 v2.13-A／B、v2.14 成立紀錄序號鎖，皆已納入本檔，P5／P6 未部署）— 身分與授權修補 + 三層角色 + 敏感欄位私有化 + 學期唯讀鎖 + 封存生命週期 + schoolId 反查目錄 + 多租戶開通 + 月結算設定開放 approver + 主任不可改自己的 role + 課表匯入版本紀錄 + 組長可刪除目前學期紀錄 + 開新學期原子建立課表 + 課表版本號）
 //
 // 設計原則：
 //   1. 兩條根路徑物理隔離
@@ -1050,8 +1050,11 @@ service cloud.firestore {
         // v2.17（SB-L9）：config/main.directorEstablished 旗標只進不退——一旦為 true，任何 client（含主任、platformAdmin）
         // 都不可改回 false、改成非布林或把整個欄位拿掉（整份覆寫、merge 缺欄位皆算），也不可刪除 config/main
         // （刪掉再重建就能重開白名單）。旗標只可由 Admin 腳本（owner 憑證，不受 rules）重設。
-        allow create, update: if isDirector(schoolId) && docId != 'settlement' && directorFlagKept(docId);
-        allow delete: if isDirector(schoolId)
+        // v2.19：通用規則排除 recordsLock 與 grade9——這兩份文件有專屬規則（序號只能 +1、grade9 欄位白名單），
+        // 否則主任可經由本條把 seq 寫成任意值（含回退）或不經白名單寫 grade9。
+        allow create, update: if isDirector(schoolId) && docId != 'settlement' && docId != 'recordsLock' && docId != 'grade9' && directorFlagKept(docId);
+        // v2.19：delete 也排除 recordsLock，否則可「刪除再以 seq=1 重建」回退序號（前端沒有刪除 recordsLock 的路徑）。
+        allow delete: if isDirector(schoolId) && docId != 'recordsLock'
           && (docId != 'main' || resource.data.get('directorEstablished', false) != true);
         // v2.14（P6）：成立紀錄的序號鎖（見檔頭第 15 點，含涵蓋範圍與例外）。approver 可寫；seq 只能從無到 1、之後每次剛好加 1。
         // 本規則不檢查「新增紀錄是否同交易遞增 seq」，那是前端協定；教師自我調課、備份還原、舊資料遷移不遞增 seq。

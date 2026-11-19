@@ -118,6 +118,14 @@ emulator 模式（設了 `FIRESTORE_EMULATOR_HOST`）不需要帳號。`firestor
 
 為了防範點擊劫持（審計 L4），`src/js/v2-redirect.js` 在頁面被嵌入 `<iframe>` 時會嘗試把最上層導回本頁，導不了就把整份文件隱藏（`display: none`）。因此**本站無法被其他網站（含自己的其他頁面）以 iframe 內嵌**；若日後有內嵌需求（例如儀表板），必須先修改該檔的框架偵測邏輯。
 
+### rules v2.19（P10 code-review）：config 通用主任規則排除 recordsLock 與 grade9
+
+- **問題**：`config/{docId}` 的通用規則（`isDirector && docId != 'settlement' && directorFlagKept`）也比對到 `recordsLock` 與 `grade9`，主任（與 platformAdmin）因此可把序號鎖 `seq` 寫成任意值（含回退），或不經欄位白名單寫 `grade9`。
+- **修正**：通用規則再排除 `'recordsLock'` 與 `'grade9'`，這兩份文件只走各自專屬規則（approver 可寫；`seq` 只能 +1、首次必須為 1；`grade9` 五個欄位白名單與型別、長度檢查）。主任、組長、platformAdmin 的合法寫入（seq +1、白名單內 grade9）仍然允許。通用 delete 規則也排除 `recordsLock`，否則可「刪除再以 seq=1 重建」迂迴回退序號；前端沒有刪除 config 文件的路徑。`grade9` 仍可由主任刪除（刪後回到預設「不排除」，影響小，維持原狀）。前端沒有任何以非 +1 方式寫 `recordsLock` 的路徑（初始化走 create seq=1、備份還原與遷移不碰該文件）。
+- **部署順序**：與 v2.16–v2.18 一起上線，**前端與 rules 同時上線**（程序同 v2.13 起各版）。v2.19 只收緊 rules，不影響新舊前端的正常功能。
+- **上線後確認**：組長核准一筆申請（recordsLock seq +1 成功）；主任在設定頁儲存九年級設定成功。
+- **測試**：`test/emulator/rules-records-lock.mjs`（主任回退 DENY／刪除後重建 DENY／+1 ALLOW／platformAdmin 同）、`test/emulator/rules-p7-config.mjs`（主任寫 grade9 多餘欄位 DENY／合法 ALLOW）。
+
 ### rules v2.18（LC-L7／LF-M8）：紀錄與申請的學期歸屬改依日期推算
 
 使用者 2026-11-17 決定：`substituteRecords`／`pendingRequests` 的 `semesterId` 依該筆的 `date` 推算，不再取「建立（核准）當下的目前學期」。台灣學制固定切法：8/1–翌年 1/31 為上學期、2/1–7/31 為下學期（`semesterUtils.dateToSemesterId`）；正式資料目前沒有學期起訖日，所以沒有「寒暑假空檔」，每個日期都歸入某個學期。

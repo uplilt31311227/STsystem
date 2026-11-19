@@ -243,7 +243,8 @@ export async function run(browser) {
             await page.waitForSelector('#v2-submit-banner', { timeout: 10000 });
             ok(/前往待辦/.test(await page.innerText('#v2-submit-banner')), '持續性提示含「前往待辦」');
             // UX-M2：header 顯示「學校｜學期」
-            { const hc = (await page.innerText('#header-context')).trim(); ok(/^\S.*｜\d{3}-\d$/.test(hc), `header 顯示非空的學校｜學期（實際：${hc}）`); }
+            { const hc = (await page.innerText('#header-context')).trim(); ok(/^\S.*｜\d{3}-\d$/.test(hc), `header 顯示非空的學校｜學期（實際：${hc}）`);
+                ok(hc.includes('示範國民中學'), `#header-context 含校名（實際：${hc}）`); }
             await shot(page, '10-keyboard-substitute');
             { const bad = errs.filter(e => !/favicon|ERR_|Failed to load resource/i.test(String(e))); eq(bad.length, 0, `不應有頁面錯誤：${bad.join(' | ').slice(0, 300)}`); }
         } finally { await page.close(); }
@@ -427,6 +428,8 @@ export async function run(browser) {
                 return g && (g.querySelector('#v2-gate-google, #v2-gate-email') || /失敗|錯誤/.test(g.innerText));
             }, null, { timeout: 12000 });
             ok(!/載入中/.test(await page.innerText('#v2-auth-gate')), '遮罩不應仍顯示「載入中」');
+            ok(/登入服務載入失敗，請檢查網路後重新整理頁面/.test(await page.innerText('#v2-auth-gate')), '遮罩本身顯示失敗原因（不只靠 toast）');
+            ok(await page.isVisible('#v2-gate-reload'), '遮罩應有「重新整理」按鈕');
         } finally { await page.close(); }
     });
 
