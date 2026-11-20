@@ -18,11 +18,11 @@ jobs:
         with:
           node-version: '22'
 
-      # npm test 的情境測試會 import papaparse；package-lock.json 未進版控，
-      # 故用 npm install。--ignore-scripts 避免 playwright 在 CI 下載瀏覽器
+      # npm test 的情境測試會 import papaparse。package-lock.json 已進版控（2026-11-20），
+      # 用 npm ci 依鎖定版本安裝，測試環境可重現。--ignore-scripts 避免 playwright 在 CI 下載瀏覽器
       # （E2E 不在此 workflow 跑）。
       - name: Install dependencies
-        run: npm install --no-audit --no-fund --ignore-scripts
+        run: npm ci --no-audit --no-fund --ignore-scripts
 
       - name: Run unit tests
         run: npm test
