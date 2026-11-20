@@ -8,7 +8,7 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04   # Playwright（package-lock 鎖定版）尚不支援 ubuntu 26.04，固定版本
     steps:
       - name: Checkout
         uses: actions/checkout@v4
