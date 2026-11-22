@@ -131,7 +131,7 @@ export async function login(page, email, password = PASSWORD) {
             if (text) return { state: 'error', message: text };
         }
         const bodyText = await page.innerText('body').catch(() => '');
-        if (/尚未綁定任何學校|加入既有學校|申請開通新學校/.test(bodyText)) {
+        if (/尚未綁定任何學校|找學校|加入既有學校|申請開通新學校/.test(bodyText)) {
             return { state: 'needs-school', message: bodyText.slice(0, 200) };
         }
         if (await isSignedIn(page)) return { state: 'signed-in', message: '' };

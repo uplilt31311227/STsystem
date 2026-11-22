@@ -9,6 +9,17 @@ tags:
 
 ---
 
+## [2026-11-20] 找學校：教育部學校代碼搜尋（尚未部署）
+
+登入後尚未綁定學校的使用者，不必再手打學校代碼。
+- **資料**：新增 `scripts/fetch-school-codes.mjs`（`npm run update-school-codes`），從 teach.k12ea.gov.tw/qschool 抓全國學校代碼，只留國小、國中、高中，輸出 `src/data/school-codes.json`（簡寫鍵，欄位說明在腳本檔頭與檔內 `fields`）。同代碼的高中與附設國中合併成一筆（`l` 為學制陣列，高中校名為主名，其餘放 `a`）。抓到筆數低於 3500 時拒絕覆寫。
+- **純邏輯**：新增 `modules/v2/schoolCodes.js`（正規化：臺台同字、全形轉半形、去空白、不分大小寫；搜尋排序：代碼完全相符、代碼開頭、校名開頭、校名包含、縣市加校名；`schoolIdForCode`：別名表 `183511→inhu`，其餘為小寫代碼；`loadSchoolCodes` 同源載入含快取，fetch 可注入）。
+- **登入遮罩**：「加入既有學校」與「申請開通新學校」兩區合併為一個「找學校」搜尋框（ARIA combobox/listbox，上下鍵、Enter、Esc，輸入防抖，無結果顯示「找不到符合的學校」；`modules/v2/schoolPicker.js`）。選到已在使用的學校（別名命中或 schoolDirectory 已有）顯示「此校已在使用本系統」與「加入」鈕，沿用 `upsertUserDirectoryEntry` 後 reload；尚未使用則顯示申請表單，校名與代碼自動帶入且唯讀，`desiredSchoolId` 為學校代碼（小寫）。送出前再確認一次代碼是否已被開通。審核中／已核准／已駁回卡片與 email 驗證畫面不變。
+- **平台管理員審核**：待審申請顯示教育部資料（縣市、行政區、學制、校名）；代碼不在名單內顯示警告，不擋核准。
+- **未改動**：`firestore.rules`、申請文件欄位、CSP（`connect-src` 本來就含 `'self'`）。`.github/workflows/static.yml` 已複製整個 `src/`，`src/data/` 自動發布。
+- **驗收後修正**：`approveApplication` 拒絕別名代碼（如 183511→inhu，避免建出重複學校），審核頁對別名代碼明示「請駁回」；駁回原因在登入後第一眼顯示（不必先選學校）；搜尋正規化加入國民中學→國中、國民小學→國小、高級中學→高中，且每校比對字串只算一次；名單載入失敗有「重試」鈕，審核頁載入失敗明示「無法對照教育部名單」；抓取腳本逐列驗證（代碼格式、學制、縣市結尾）並在筆數比舊檔掉超過 10% 時拒寫。新增 `test/test-school-picker-dom.mjs`（候選清單 XSS、重試、鍵盤、失焦關閉）。打字後在防抖期間或首次載入期間 Tab 離開，清單不再重新展開；審核頁的別名警告改為先於「名單載入失敗」判斷。快取版本 CSS 2.8.3、v2-app.js 0.1.25。
+- **測試**：新增 `test/test-school-codes.mjs`（掛進 `npm test`）、`test/e2e/e2e-12-school-finder.mjs`；`test-p8-ui` 的學校代碼說明檢查、e2e-01 的遮罩文字斷言改為「找學校」。index.html 快取版本 CSS 2.8.2、v2-app.js 0.1.24。
+
 ## [2026-11-20] P10 code-review 修正（rules v2.19 與前端，尚未部署）
 
 整條分支（master...HEAD）跑 code-review 後修正，獨立驗收一輪有條件放行，補修後通過。細節見根目錄 `CHANGELOG.md`。

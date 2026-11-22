@@ -92,8 +92,11 @@ const featuresCss = read('src/css/features.css');
 
 /* ---- (3) 學校代碼說明 ---- */
 {
-    check('(3) 登入遮罩說明學校代碼是什麼與向誰取得', /學校代碼是本系統用來分辨各校的簡短英文代號，不是您的密碼/.test(v2) && /向學校的教學組長或教務主任詢問/.test(v2));
-    check('(3) 學校代碼輸入框有 label 與說明關聯', /for="v2-join-school-id"/.test(v2) && /aria-describedby="v2-join-school-hint"/.test(v2));
+    const picker = read('src/js/modules/v2/schoolPicker.js');
+    check('(3) 登入遮罩改為「找學校」搜尋（名稱或代碼），說明不必記系統代碼', /輸入學校名稱或教育部學校代碼即可搜尋，不必記得系統代碼/.test(v2));
+    check('(3) 找學校輸入框有 label 與 combobox／listbox 的 ARIA 關聯', /for="\$\{p\}-input"/.test(picker) && /role="combobox"/.test(picker) && /aria-controls=/.test(picker) && /role="listbox"/.test(picker));
+    check('(3) 駁回原因在 rejected 狀態登入後直接顯示（找學校之前），且 escape', /id="v2-gate-rejected-note"/.test(v2) && /rejectedNote \+\s*joinSection/.test(v2) && /escapeHtml\(app\.rejectReason\)/.test(v2));
+    check('(3) 審核頁：別名代碼警告與名單載入失敗提示', /對應既有學校「\$\{escapeHtml\(target\)\}」/.test(v2) && /無法對照教育部名單/.test(v2));
     const ann = read('docs/ANNOUNCEMENT-115-1.md');
     check('(3) 公告說明學校代碼（不寫出真實代碼）', /學校代碼/.test(ann) && /向教學組長或教務主任詢問/.test(ann));
     // 真實代碼不得出現在畫面文字或公告（程式內部常數不在此檢查範圍，只檢查使用者看得到的兩處）

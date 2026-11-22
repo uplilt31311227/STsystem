@@ -17,6 +17,7 @@
 import { getV2Firestore } from './firebaseV2.js';
 import { SCHEMA_PATHS } from './schemaConstants.js';
 import * as semesterUtils from './semesterUtils.js';
+import { schoolIdForCode } from './schoolCodes.js';
 
 export const APPLICATION_STATUS = Object.freeze({
     PENDING:  'pending',
@@ -373,6 +374,13 @@ export async function approveApplication(application, { reviewer, confirmedSkipF
     }
     if (!isValidSchoolIdFormat(desiredSchoolId)) {
         throw new Error(`approveApplication: 學校代碼「${desiredSchoolId}」格式不合法，請先駁回並請申請人更換代碼`);
+    }
+
+    // 教育部代碼若有別名（如 183511 → inhu）代表該校早已存在於另一個 schoolId；
+    // 直接核准會建出重複的學校（schools/183511），一律拒絕，請駁回並請申請人改用「找學校」加入。
+    const aliasTarget = schoolIdForCode(desiredSchoolId);
+    if (aliasTarget !== desiredSchoolId) {
+        throw new Error(`approveApplication: 代碼「${desiredSchoolId}」對應既有學校「${aliasTarget}」，不可重複建校，請駁回此申請並請申請人改用「找學校」加入既有學校`);
     }
 
     const fs = await getV2Firestore();

@@ -18,6 +18,8 @@ import * as requestSvc          from './modules/v2/pendingRequestService.js';
 import * as logger              from './modules/v2/operationLogger.js';
 import * as legacyMigration     from './modules/v2/legacyMigrationService.js';
 import * as schoolAppSvc        from './modules/v2/schoolApplicationService.js';
+import { loadSchoolCodes, schoolIdForCode, findSchoolById, levelsLabel, SCHOOL_ID_ALIASES } from './modules/v2/schoolCodes.js';
+import { renderSchoolPickerHtml, bindSchoolPicker } from './modules/v2/schoolPicker.js';
 import { rollbackBatchRequests } from './modules/v2/batchDependency.js';
 import { LOG_ACTIONS, LOG_TARGET_TYPES, ROLES, REQUEST_STATUS, REQUEST_TYPES, getActiveSchoolId, resetActiveSchoolId, DEFAULT_SCHOOL_ID } from './modules/v2/schemaConstants.js';
 import * as authMod from './modules/authService.js';
@@ -499,24 +501,17 @@ function renderApplyGateContent(state) {
 
     const app = state.application;
 
-    // opus 驗收 B1：「加入既有學校」——恆常顯示（不依賴 application 狀態），因為它與
-    // 「申請開通新學校」是互斥但並列的兩條路，不是同一個狀態機的分支。若正在申請審核中或
-    // 剛核准，也保留這個入口——使用者可能記錯自己該用哪個選項，不強行只顯示一種。
+    // 「找學校」：搜尋全國學校代碼（教育部名單），選定後依該校是否已使用本系統，
+    // 在下方面板顯示「加入」（既有學校）或「申請開通」（尚未使用，校名與代碼自動帶入、不可改）。
+    // 恆常顯示（不依賴 application 狀態）：加入既有學校與申請開通是並列的兩條路。
     const joinSection = `
         <div class="data-management-section" style="text-align:left;">
-            <strong id="v2-join-school-title">加入既有學校（第一次登入請輸入學校代碼）</strong>
-            <p class="hint">學校代碼是本系統用來分辨各校的簡短英文代號，不是您的密碼，也不需要保密。
-            第一次登入時，系統要靠它把您的帳號接到學校名單。</p>
-            <p class="hint">代碼請向學校的教學組長或教務主任詢問，或查看學校公告。
-            輸入一次即可，之後登入不會再問。</p>
-            <div style="display:flex;gap:0.5rem;align-items:flex-start;flex-wrap:wrap;margin-top:0.4rem;">
-                <label for="v2-join-school-id" class="sr-only">學校代碼</label>
-                <input type="text" id="v2-join-school-id" placeholder="請輸入學校提供的代碼" autocomplete="off" aria-describedby="v2-join-school-hint" style="flex:1;min-width:140px;">
-                <button id="v2-gate-join-school" class="btn btn-primary btn-sm">加入</button>
-            </div>
-            <span class="hint" id="v2-join-school-hint" role="status"></span>
+            <strong id="v2-join-school-title">找學校</strong>
+            <p class="hint">輸入學校名稱或教育部學校代碼即可搜尋，不必記得系統代碼。
+            學校已在使用本系統就加入；尚未使用則可送出開通申請（需平台管理者審核）。</p>
+            ${renderSchoolPickerHtml('v2-school-picker')}
+            <div id="v2-school-pick-panel"></div>
         </div>
-        <p style="text-align:center;color:var(--color-text-muted,#888);margin:0.6rem 0;">－ 或 －</p>
     `;
 
     if (app?.status === 'pending') {
@@ -551,33 +546,16 @@ function renderApplyGateContent(state) {
         );
     }
 
-    // app 為 null 或 status==='rejected'：顯示申請表單。
+    // app 為 null 或 status==='rejected'：申請表單由「找學校」面板在選到尚未使用的學校後顯示。
+    // 駁回原因要在登入後第一眼就看到（不能等到選了學校才出現）。
     const rejectedNote = app?.status === 'rejected'
-        ? `<p class="v2-gate-denied">上次申請已被駁回${app.rejectReason ? '：' + escapeHtml(app.rejectReason) : '。'}如仍需使用，請確認資訊後重新送出。</p>`
+        ? `<p class="v2-gate-denied" id="v2-gate-rejected-note">上次申請已被駁回${app.rejectReason ? '：' + escapeHtml(app.rejectReason) : '。'}如仍需使用，請用下方「找學校」確認資訊後重新送出。</p>`
         : '';
     return renderDefaultGateShell(
         `<p class="v2-gate-denied">🔒 帳號 ${escapeHtml(state.email)} 尚未綁定任何學校。</p>` +
-        joinSection + `
-        <div class="data-management-section" style="text-align:left;">
-            <strong>申請開通新學校（僅學校負責人使用）</strong>
-            <p class="hint">一般教師不需要填這一區，請用上方的學校代碼加入。若您的學校尚未開通，可在此送出申請；平台管理者審核通過後即可使用（一所學校僅需申請一次）。</p>
-            ${rejectedNote}
-            <div class="form-group">
-                <label for="v2-apply-school-name">學校名稱</label>
-                <input type="text" id="v2-apply-school-name" placeholder="例如：新竹市立內湖國民中學"
-                       value="${escapeHtml(app?.schoolName || '')}">
-            </div>
-            <div class="form-group">
-                <label for="v2-apply-school-id">學校代碼（僅小寫英數字、底線、連字號）</label>
-                <input type="text" id="v2-apply-school-id" placeholder="例如：newschool"
-                       value="${escapeHtml(app?.desiredSchoolId || '')}" aria-describedby="v2-apply-school-id-hint">
-                <span class="hint" id="v2-apply-school-id-hint"></span>
-            </div>
-            <div class="v2-auth-gate-actions" style="margin-top:0.6rem;">
-                <button id="v2-gate-submit-apply" class="btn btn-primary btn-sm">送出申請</button>
-            </div>
-        </div>
-        ${logoutBtn}`
+        rejectedNote +
+        joinSection +
+        logoutBtn
     );
 }
 
@@ -634,40 +612,7 @@ function bindApplyGateActions(gate) {
         }
     });
 
-    // opus 驗收 B1：加入既有學校——輸入代碼後直接嘗試自寫 userDirectory（見
-    // attemptJoinSchool()），不先用 schoolDirectory 探測是否存在。理由：既有 inhu 尚未回填進
-    // schoolDirectory（見 docs/STAGE4-DEPLOY.md「已知限制」），若拿 schoolDirectory 存在與否
-    // 當前置關卡，會誤擋 inhu 自己的新教師；規則的 configExists() 才是唯一權威，直接嘗試寫入
-    // 讓規則決定成敗，失敗給明確訊息即可。
-    gate.querySelector('#v2-gate-join-school')?.addEventListener('click', async (e) => {
-        const btn = e.currentTarget;
-        const idInput = gate.querySelector('#v2-join-school-id');
-        const hint = gate.querySelector('#v2-join-school-hint');
-        const code = (idInput?.value || '').trim();
-        if (!schoolAppSvc.isValidSchoolIdFormat(code)) {
-            if (hint) hint.textContent = '代碼格式不正確（僅限小寫英數字、底線、連字號，1-50 字）';
-            return;
-        }
-        btn.disabled = true;
-        btn.textContent = '加入中…';
-        if (hint) hint.textContent = '';
-        try {
-            await dataSvc.upsertUserDirectoryEntry(_v2ApplyState.uid, code);
-            notify(`已綁定學校代碼「${code}」，重新整理頁面套用…`, 'success', 3000);
-            // B1：寫入成功後必須重跑一次完整登入鏈（resolveSchoolIdForUid() 才能讀到剛寫入的
-            // 條目），用 reload 換乾淨狀態，比照 switchToNewSemester()／retry-login 的既有慣例。
-            setTimeout(() => window.location.reload(), 800);
-        } catch (err) {
-            console.error('[v2] 加入學校失敗:', err);
-            if (hint) {
-                hint.textContent = err?.code === 'permission-denied'
-                    ? '找不到此代碼對應的學校，請確認代碼是否正確（可向該校主任／組長確認）'
-                    : `加入失敗：${err?.message || err}`;
-            }
-            btn.disabled = false;
-            btn.textContent = '加入';
-        }
-    });
+    bindSchoolFinder(gate);
 
     gate.querySelector('#v2-gate-retry-login')?.addEventListener('click', async () => {
         const user = authMod.getCurrentUser();
@@ -678,56 +623,139 @@ function bindApplyGateActions(gate) {
         // switchToNewSemester() 檔頭註解）。
         window.location.reload();
     });
+}
 
-    const nameInput = gate.querySelector('#v2-apply-school-name');
-    const idInput   = gate.querySelector('#v2-apply-school-id');
-    const idHint    = gate.querySelector('#v2-apply-school-id-hint');
-    let idCheckToken = 0;
-    const checkIdAvailability = async () => {
-        if (!idInput || !idHint) return;
-        const val = idInput.value.trim();
-        if (!val) { idHint.textContent = ''; return; }
-        if (!schoolAppSvc.isValidSchoolIdFormat(val)) {
-            idHint.textContent = '格式不正確（僅限小寫英數字、底線、連字號，1-50 字）';
-            return;
-        }
-        const token = ++idCheckToken;
-        idHint.textContent = '確認可用性中…';
+/** 學校資料一行摘要：縣市 行政區・學制・代碼。 */
+function schoolMetaLine(s) {
+    return `${escapeHtml(s.ct)} ${escapeHtml(s.d)}・${escapeHtml(levelsLabel(s))}・代碼 ${escapeHtml(s.c)}`;
+}
+
+/**
+ * 「找學校」選定後的面板內容。status：
+ *   checking → 確認中；error → 讀取失敗；in-use → 已在使用（加入）；new → 尚未使用（申請表單）。
+ * 申請表單的校名與代碼取自教育部資料，欄位唯讀；canApply=false（已有申請審核中／已核准）時不顯示表單。
+ */
+function renderSchoolPickPanel(school, status, { canApply } = {}) {
+    const head = `<p style="margin:0.6rem 0 0.2rem;"><strong>${escapeHtml(school.n)}</strong><br><span class="hint">${schoolMetaLine(school)}</span></p>`;
+    if (status === 'checking') return head + `<p class="hint" role="status">確認此校是否已使用本系統…</p>`;
+    if (status === 'error') return head + `<p class="v2-gate-denied" role="alert">無法確認此校狀態，請檢查網路後重新選一次學校。</p>`;
+    if (status === 'in-use') {
+        return head + `
+            <p role="status"><strong>此校已在使用本系統</strong>，按「加入」即可綁定您的帳號（需該校名單內已有您的 email）。</p>
+            <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">
+                <button id="v2-gate-join-school" class="btn btn-primary btn-sm">加入</button>
+                <span class="hint" id="v2-join-school-hint" role="status"></span>
+            </div>`;
+    }
+    if (!canApply) {
+        return head + `<p class="hint" role="status">此校尚未使用本系統；但您已有一筆申請（見下方），無法再送出新的申請。</p>`;
+    }
+    return head + `
+        <p role="status"><strong>此校尚未使用本系統</strong>。可送出開通申請（僅學校負責人使用），平台管理者審核通過後即可使用。</p>
+        <div class="form-group">
+            <label for="v2-apply-school-name">學校名稱</label>
+            <input type="text" id="v2-apply-school-name" value="${escapeHtml(school.n)}" readonly>
+        </div>
+        <div class="form-group">
+            <label for="v2-apply-school-id">學校代碼</label>
+            <input type="text" id="v2-apply-school-id" value="${escapeHtml(schoolIdForCode(school.c))}" readonly aria-describedby="v2-apply-school-id-hint">
+            <span class="hint" id="v2-apply-school-id-hint" role="status"></span>
+        </div>
+        <div class="v2-auth-gate-actions" style="margin-top:0.6rem;">
+            <button id="v2-gate-submit-apply" class="btn btn-primary btn-sm">送出申請</button>
+        </div>`;
+}
+
+/** 綁定「找學校」搜尋框與選定後的面板（加入／申請）。 */
+function bindSchoolFinder(gate) {
+    const panel = gate.querySelector('#v2-school-pick-panel');
+    if (!panel || !_v2ApplyState) return;
+    const app = _v2ApplyState.application;
+    const canApply = !app || app.status === 'rejected';
+    let pickToken = 0;
+
+    const onSelect = async (school) => {
+        const my = ++pickToken;
+        const schoolId = schoolIdForCode(school.c);
+        panel.innerHTML = renderSchoolPickPanel(school, 'checking');
+        let inUse;
         try {
-            const taken = await schoolAppSvc.isSchoolIdTaken(val);
-            if (token !== idCheckToken) return; // 較新一次輸入已觸發，這次結果作廢
-            idHint.textContent = taken ? '⚠ 此代碼可能已被使用，建議更換' : '✓ 可使用';
+            // 別名命中（如 183511→inhu）＝既有正式校（inhu 尚未回填 schoolDirectory）；其餘看公開名錄。
+            inUse = Object.prototype.hasOwnProperty.call(SCHOOL_ID_ALIASES, school.c)
+                || await schoolAppSvc.isSchoolIdTaken(schoolId);
         } catch (e) {
-            if (token !== idCheckToken) return;
-            idHint.textContent = '';
-            console.warn('[v2] 檢查學校代碼可用性失敗：', e);
-        }
-    };
-    idInput?.addEventListener('blur', checkIdAvailability);
-
-    gate.querySelector('#v2-gate-submit-apply')?.addEventListener('click', async (e) => {
-        const btn = e.currentTarget;
-        const schoolName = nameInput?.value.trim() || '';
-        const desiredSchoolId = idInput?.value.trim() || '';
-        if (!schoolName) { notify('請填寫學校名稱', 'warning'); return; }
-        if (!schoolAppSvc.isValidSchoolIdFormat(desiredSchoolId)) {
-            notify('學校代碼格式不正確（僅限小寫英數字、底線、連字號，1-50 字）', 'warning');
+            if (my !== pickToken) return;
+            console.warn('[v2] 檢查學校是否已使用失敗:', e);
+            panel.innerHTML = renderSchoolPickPanel(school, 'error');
             return;
         }
-        btn.disabled = true;
-        btn.textContent = '送出中…';
-        try {
-            await schoolAppSvc.submitApplication({
-                uid: _v2ApplyState.uid, email: _v2ApplyState.email, schoolName, desiredSchoolId,
-            });
-            notify('申請已送出，請等待平台管理者審核', 'success', 5000);
-            await refreshApplyState();
-        } catch (err) {
-            notifyError(err, '送出申請');
-            btn.disabled = false;
-            btn.textContent = '送出申請';
-        }
-    });
+        if (my !== pickToken) return;
+        panel.innerHTML = renderSchoolPickPanel(school, inUse ? 'in-use' : 'new', { canApply });
+        bindPanelActions(school, schoolId);
+        panel.querySelector(inUse ? '#v2-gate-join-school' : '#v2-gate-submit-apply')?.focus?.();
+    };
+
+    const bindPanelActions = (school, schoolId) => {
+        // 加入既有學校：直接嘗試自寫 userDirectory，由規則的 configExists() 做唯一權威判斷
+        // （見 authGuardV2.js B1 註解）；寫入成功後 reload 重跑登入鏈。
+        panel.querySelector('#v2-gate-join-school')?.addEventListener('click', async (e) => {
+            const btn = e.currentTarget;
+            const hint = panel.querySelector('#v2-join-school-hint');
+            if (!schoolAppSvc.isValidSchoolIdFormat(schoolId)) {
+                if (hint) hint.textContent = '此學校代碼無法使用';
+                return;
+            }
+            btn.disabled = true;
+            btn.textContent = '加入中…';
+            if (hint) hint.textContent = '';
+            try {
+                await dataSvc.upsertUserDirectoryEntry(_v2ApplyState.uid, schoolId);
+                notify(`已綁定「${school.n}」，重新整理頁面套用…`, 'success', 3000);
+                setTimeout(() => window.location.reload(), 800);
+            } catch (err) {
+                console.error('[v2] 加入學校失敗:', err);
+                if (hint) {
+                    hint.textContent = err?.code === 'permission-denied'
+                        ? '無法加入：此校尚未建立，或您的 email 不在該校教師名單內，請向該校教學組長確認'
+                        : `加入失敗：${err?.message || err}`;
+                }
+                btn.disabled = false;
+                btn.textContent = '加入';
+            }
+        });
+
+        panel.querySelector('#v2-gate-submit-apply')?.addEventListener('click', async (e) => {
+            const btn = e.currentTarget;
+            const idHint = panel.querySelector('#v2-apply-school-id-hint');
+            if (!schoolAppSvc.isValidSchoolIdFormat(schoolId)) {
+                notify('此學校代碼無法使用', 'warning');
+                return;
+            }
+            btn.disabled = true;
+            btn.textContent = '送出中…';
+            try {
+                // 送出前再確認一次：代碼若已被學校使用（他人剛核准），改走「加入」。
+                if (await schoolAppSvc.isSchoolIdTaken(schoolId)) {
+                    if (idHint) idHint.textContent = '⚠ 此學校剛被開通，請重新選擇學校後按「加入」';
+                    btn.disabled = false;
+                    btn.textContent = '送出申請';
+                    return;
+                }
+                await schoolAppSvc.submitApplication({
+                    uid: _v2ApplyState.uid, email: _v2ApplyState.email,
+                    schoolName: school.n, desiredSchoolId: schoolId,
+                });
+                notify('申請已送出，請等待平台管理者審核', 'success', 5000);
+                await refreshApplyState();
+            } catch (err) {
+                notifyError(err, '送出申請');
+                btn.disabled = false;
+                btn.textContent = '送出申請';
+            }
+        });
+    };
+
+    bindSchoolPicker(gate, { idPrefix: 'v2-school-picker', loadList: loadSchoolCodes, onSelect });
 }
 
 /**
@@ -3160,6 +3188,24 @@ async function renderPlatformAdminReviewTab() {
     }
     if (isStaleRender(_gen)) return;
 
+    // 教育部學校代碼（供審核時對照縣市／行政區／學制）；載入失敗不阻擋審核。
+    let moeList = null;
+    let moeLoadFailed = false;
+    try { moeList = await loadSchoolCodes(); } catch (e) { moeLoadFailed = true; console.warn('[v2] 載入學校代碼對照失敗（審核照常）:', e); }
+    if (isStaleRender(_gen)) return;
+    const moeInfo = (app) => {
+        // 別名代碼（如 183511 → inhu）：該校早已存在，核准會被拒絕；明示請駁回。不依賴名單，故先於載入失敗判斷。
+        const target = schoolIdForCode(app.desiredSchoolId || '');
+        if (target !== (app.desiredSchoolId || '')) {
+            return `<br><strong class="v2-moe-warn">⚠ 此代碼對應既有學校「${escapeHtml(target)}」，不可重複建校（核准會被拒絕），請駁回並請申請人改用「找學校」加入。</strong>`;
+        }
+        if (moeLoadFailed) return `<br><strong class="v2-moe-warn">⚠ 無法對照教育部名單（載入失敗），請自行確認學校資料。</strong>`;
+        const m = findSchoolById(moeList, app.desiredSchoolId);
+        return m
+            ? `<br>教育部資料：${escapeHtml(m.ct)} ${escapeHtml(m.d)}・${escapeHtml(levelsLabel(m))}・${escapeHtml(m.n)}（代碼 ${escapeHtml(m.c)}）`
+            : `<br><strong class="v2-moe-warn">⚠ 此代碼不在教育部學校名單內（可能是舊申請的自訂代碼），請確認後再核准。</strong>`;
+    };
+
     const pendingRows = pending.length === 0
         ? `<p class="hint">目前沒有待審申請。</p>`
         : pending.map(app => `
@@ -3168,7 +3214,7 @@ async function renderPlatformAdminReviewTab() {
                 <p class="hint">
                     代碼：${escapeHtml(app.desiredSchoolId || '')}
                     申請人：${escapeHtml(app.applicantEmail || '')}
-                    送出時間：${escapeHtml(fmtDate(app.createdAt))}
+                    送出時間：${escapeHtml(fmtDate(app.createdAt))}${moeInfo(app)}
                 </p>
                 <div style="display:flex;gap:0.5rem;">
                     <button class="btn btn-primary btn-sm v2-app-approve-btn" data-uid="${escapeHtml(app.uid)}">核准</button>

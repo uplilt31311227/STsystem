@@ -884,6 +884,23 @@ body.v2-locked #v2-auth-gate {
     outline: 2px solid var(--focus-ring); outline-offset: 1px; border-color: var(--color-accent); box-shadow: var(--sh-focus);
 }
 
+/* 找學校（教育部學校代碼搜尋）：combobox + listbox */
+.v2-school-picker { position: relative; text-align: left; margin-top: var(--sp-2); }
+.v2-school-picker label { display: block; font-size: var(--fs-sm); font-weight: var(--fw-semibold); margin-bottom: 2px; }
+.v2-school-picker-list {
+    list-style: none; margin: 2px 0 0; padding: 0; max-height: 260px; overflow-y: auto;
+    border: var(--bd); border-radius: var(--r-sm); background: var(--color-surface);
+}
+.v2-school-picker-list li { padding: var(--sp-2) var(--sp-3); cursor: pointer; border-bottom: 1px solid var(--c-n-100); }
+.v2-school-picker-list li:last-child { border-bottom: none; }
+.v2-school-picker-list li:hover { background: var(--c-n-50); }
+.v2-school-picker-list li[aria-selected="true"] { background: var(--c-primary-100); color: var(--c-primary-800); }
+.v2-school-picker [hidden] { display: none; }
+.v2-sp-name { display: block; font-weight: var(--fw-semibold); }
+.v2-sp-meta { display: block; font-size: var(--fs-sm); color: var(--c-n-600); }
+.v2-auth-gate-card input[readonly] { background: var(--c-n-100); color: var(--c-n-700); }
+.v2-moe-warn { color: var(--c-danger-800); }
+
 .v2-roster-summary { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin: 0.8rem 0; }
 .v2-roster-stat { padding: 4px var(--sp-3); border-radius: var(--r-sm); font-size: var(--fs-sm); font-weight: var(--fw-semibold); background: var(--c-n-100); color: var(--c-n-700); }
 .v2-roster-stat.created { background: var(--c-success-100); color: var(--c-success-800); }

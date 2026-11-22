@@ -79,8 +79,8 @@ export async function run(browser) {
             const result = await login(page, ACCOUNTS.outsider);
             eq(result.state, 'needs-school', `應導向加入/申請流程（實際：${result.state}）`);
             const text = await bodyText(page);
-            includes(text, '加入既有學校', '應提供加入既有學校的入口');
-            includes(text, '申請開通新學校', '應提供申請開通新學校的入口');
+            includes(text, '找學校', '應提供「找學校」搜尋入口（加入既有學校／申請開通新學校共用）');
+            ok(await page.isVisible('#v2-school-picker-input'), '搜尋框應可見');
             await shot(page, '01-outsider-gate');
         } finally { await page.close(); }
     });
