@@ -13,8 +13,8 @@ tags:
 - **課表**：來源為教師總課表（直式 xlsx，教師為欄），以 `scripts/convert-teacher-grid-xlsx.py` 轉為人力資源網 CSV（去經費前綴 ●、*、薪、數、雙；外師欄與「間」「協同」格不匯入），由主任在 UI 匯入為 imports v3（316 節／11 班／24 位）。獨立驗收逐格比對 0 差異，合計時數列逐人核對相符（「間」計入合計但無班級，屬預期差 1 節）。
 - **名冊**：主任在 UI 刪除 12 筆（不在新課表的 8 位、3 個測試帳號、1 個佔位組長），匯入時自動新增 1 位；結果 24 位，與課表一致。
 - **調代課紀錄**：V2 正式庫自 2026-07-30 清除測試資料後一直是 0 筆；真實紀錄在 V1 個人雲端文件 `users/{uid}/data/substituteSystem`（不在 `firestore-backup.js` 備份範圍）。取出 115-1（date ≥ 2026-08-01）112 筆，以 Console 腳本覆寫 `legacyMigrationService.__testHooks` 後呼叫 `migrateLegacyRecords()` 寫入（isLegacy、semesterId 115-1、private/detail 112 筆）。114-2 的 100 筆依使用者決定不還原。原始資料保存於 `backups/v1-cloud-20261122/`（gitignore）。
-- **發現的弱點（未修）**：`migrateLegacyRecords()` 以 `getDocs` 讀名冊與既有紀錄，連線不穩時可能拿到殘缺快取，導致姓名對不到或冪等判斷失準而重複寫入（emulator 實際重現）。本次腳本改用 `getDocsFromServer` 繞過；UI 遷移卡片仍有此問題，待另案修。
-- **後續**：`firestore-backup.js` 應納入 `users/*/data/substituteSystem`，否則 V1 資料不在備份內。
+- **發現的弱點（已修，2026-11-23）**：`migrateLegacyRecords()` 以 `getDocs` 讀名冊與既有紀錄，連線不穩時可能拿到殘缺快取，導致姓名對不到或冪等判斷失準而重複寫入（emulator 實際重現）。已改為名冊與既有紀錄一律 `getDocsFromServer`，讀不到伺服器（重試 3 次）就在寫入前中止並顯示中文訊息；既有 key 含已軟刪除紀錄。見 CHANGELOG 2026-11-23。
+- **後續（已完成，2026-11-23）**：`firestore-backup.js` 已納入 `users/*/data/substituteSystem`（`v1UserData.json`，`--include-v1=false` 可略過；還原需 `--restore-v1`）。
 
 ## 2026-11-12 V1 寫入迴圈再次發生（來源：預覽站未修），已手動解除帳單綁定
 

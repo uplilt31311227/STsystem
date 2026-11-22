@@ -227,6 +227,18 @@ export async function listTeachers() {
     return snap.docs.map(d => ({ ...d.data(), teacherId: d.id }));
 }
 
+/**
+ * 只讀伺服器的教師名冊（getDocsFromServer）。給「寫入決策依賴名冊完整性」的流程用（例如舊資料遷移
+ * 以姓名對 teacherId）：getDocs 在連線不穩時可能靜默回傳殘缺的本機快取，讀不到伺服器就丟錯。
+ * 刻意另開函式，不動 listTeachers() 的行為（其他呼叫端要的是快取優先的即時列表）。
+ */
+export async function listTeachersFromServer() {
+    const fs   = await getV2Firestore();
+    const col  = fs.collection(fs.db, SCHEMA_PATHS.teachersCol());
+    const snap = await fs.getDocsFromServer(col);
+    return snap.docs.map(d => ({ ...d.data(), teacherId: d.id }));
+}
+
 export async function getTeacher(teacherId) {
     const fs   = await getV2Firestore();
     const ref  = fs.doc(fs.db, SCHEMA_PATHS.teacherDoc(teacherId));

@@ -86,6 +86,7 @@ emulator 模式（設了 `FIRESTORE_EMULATOR_HOST`）不需要帳號。`firestor
 
 ### 管理腳本（scripts/）的安全約定
 - 會寫入或刪除的腳本一律**預設 dry-run**，要實際執行必須明確加 `--apply`（舊旗標 `--yes` 仍相容；`--apply` 與 `--dry-run`／`--dry-run=true` 同時出現時以 dry-run 為準；`--dry-run=false` 只代表「未指定 dry-run」，不等於 `--apply`，唯一例外是 `bootstrap-platform-admin`）。涵蓋：`backfill-semester-id`、`backfill-user-directory`、`firestore-backfill-emailindex`、`migrate-schedule-to-semester`、`firestore-bootstrap-inhu`、`cleanup-operation-logs`、`cleanup-orphan-mappings`、`create-indexes`、`firestore-backup.js restore`、`bootstrap-platform-admin`（建議寫法為 `--apply`；`--dry-run=false` 為相容寫法，等同 `--apply`；但只要同時出現 `--dry-run` 或 `--dry-run=true` 就一律不寫入）。
+- **`firestore-backup.js` 的 V1 個人雲端資料**：`backup` 預設另以 collection group query 備份所有 `users/{uid}/data/substituteSystem`（存 `v1UserData.json`，只收該路徑、不分學校，並印出各份 `substituteRecords` 筆數；`--include-v1=false` 可略過）。`restore` 預設**不**寫回這份資料（避免覆寫使用者目前的 V1 資料），計畫只提示份數；確定要還原時加 `--restore-v1`。對應測試 `npm run test:scripts-firestore-backup`（emulator）。
 - 每支腳本啟動時先印「目標專案：<ID>（正式／非正式／emulator）」；唯讀腳本（`firestore-health-check`、`firestore-snapshot`、`firestore-backup.js` 備份）同樣印出。
 - 緊急止血 `emergency-brake.js`：`--status` 唯讀；拉煞車 `--brake --apply`、解除 `--restore --apply`（`--yes` 仍相容）；裸執行只印用法。啟動即印目標專案。
 - 對 emulator 驗證：設 `FIRESTORE_EMULATOR_HOST=127.0.0.1:8080` 後，上述腳本改打 emulator（專案固定 `demo-stsystem`、不呼叫 gcloud）；該變數只接受 127.0.0.1／localhost。

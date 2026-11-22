@@ -3,14 +3,17 @@
  * Firestore V2 完整備份 / 還原
  *
  * 用法：
- *   node scripts/firestore-backup.js backup [--school=<id>] [--project=<id>]
- *   node scripts/firestore-backup.js restore --dir=<備份資料夾> [--yes] [--dry-run]
+ *   node scripts/firestore-backup.js backup [--school=<id>] [--project=<id>] [--include-v1=false]
+ *   node scripts/firestore-backup.js restore --dir=<備份資料夾> [--yes] [--dry-run] [--restore-v1]
  *
  *   --school:   指定 schoolId，預設 inhu（正式資料所在）。
  *   --project:  目標 Firebase 專案，預設正式專案 stsystem-9d5fe；測試站專案傳 --project=<測試專案 id>。
  *   --dir:      restore 專用，指定要還原的備份資料夾（backup 產生的那個時間戳目錄）。
  *   --yes:      restore 專用，實際執行寫入。不帶此旗標只印還原計畫，不寫入任何資料。
  *   --dry-run:  restore 專用，即使帶了 --yes 也強制只印計畫、不寫入（測試用）。
+ *   --include-v1=false: backup 專用，不備份 V1 個人雲端文件（預設備份，見下）。
+ *   --restore-v1:       restore 專用，把 v1UserData.json 的文件一併寫回 users/{uid}/data/substituteSystem。
+ *                       預設不寫（只在計畫中提示筆數），避免覆寫使用者目前的 V1 資料。
  *
  * 備份內容（schools/{schoolId} 底下）：
  *   - schedules                             per-semester 課表（Stage 2 起的現行路徑）
@@ -19,6 +22,13 @@
  *   - substituteRecords（含子文件 private/detail） 調代課紀錄
  *   - pendingRequests（含子文件 private/detail）    待審請求
  *   - teachers / userMappings / config / operationLogs / archives / emailIndex / joinAttempts  完整快照
+ *
+ * 另備份（不屬於任何學校、與 --school 無關）：
+ *   - V1 個人雲端文件 users/{uid}/data/substituteSystem，存 v1UserData.json。2026-11-23 發現真實調代課
+ *     紀錄曾只存在這份文件，而備份原本只涵蓋 schools/{schoolId}。以 collection group query
+ *     （collectionId = data、allDescendants）取得所有 data 文件後，只收路徑完全符合
+ *     users/{uid}/data/substituteSystem 者（schools/ 底下同名 data 子集合的文件不收）。
+ *     備份時會印出每份文件的 substituteRecords 筆數（uid 只印前 6 碼）。
  *
  * 備份格式：直接存 Firestore REST 的原始 document 物件（{name, fields, createTime, updateTime}），
  * 不 unwrap 成一般 JS 值。這樣 restore 時可以把同一份 fields 原樣 PATCH 回去，無損還原
@@ -54,6 +64,10 @@ const SCHOOL_ID   = process.argv.find(a => a.startsWith('--school='))?.split('='
 const BASE        = `${safety.databaseBase(TARGET)}/documents`;
 const BACKUP_ROOT = path.join(__dirname, '..', 'backups', PROJECT === DEFAULT_PROJECT ? 'firestore' : `firestore-${PROJECT}`);
 
+const INCLUDE_V1  = (process.argv.find(a => a.startsWith('--include-v1='))?.split('=')[1] ?? 'true') !== 'false';
+const RESTORE_V1  = process.argv.includes('--restore-v1');
+const V1_PATH_RE  = /^users\/[^/]+\/data\/substituteSystem$/;
+
 const SUBCOMMAND = process.argv.slice(2).filter(a => !a.startsWith('--project=') && !a.startsWith('--account='))[0];
 
 // 會一併備份、但清除功能不會動到的集合（低成本，一併存成完整快照）
@@ -85,6 +99,34 @@ async function api(p) {
         throw new Error(`${res.status} ${p}\n${txt.slice(0, 300)}`);
     }
     return res.json();
+}
+
+/** POST :runQuery（collection group 用，回傳 [{document, ...}] 串流陣列）。 */
+async function runQuery(structuredQuery) {
+    const token = getToken();
+    const res   = await fetch(`${BASE}:runQuery`, {
+        method:  'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ structuredQuery }),
+    });
+    if (!res.ok) {
+        const txt = await res.text();
+        throw new Error(`runQuery 失敗 ${res.status}\n${txt.slice(0, 300)}`);
+    }
+    return res.json();
+}
+
+/** 列出所有 V1 個人雲端文件 users/{uid}/data/substituteSystem（原始 REST document 物件）。 */
+async function listV1UserData() {
+    const rows = await runQuery({ from: [{ collectionId: 'data', allDescendants: true }] });
+    // runQuery 可能在 HTTP 200 的串流陣列中夾帶 {error}；有就中止，避免備份不完整卻回報成功
+    const errRow = rows.find(r => r && r.error);
+    if (errRow) throw new Error(`V1 資料查詢失敗：${errRow.error.message || JSON.stringify(errRow.error)}`);
+    return rows.filter(r => r.document && V1_PATH_RE.test(relPathFromName(r.document.name))).map(r => r.document);
+}
+
+function v1RecordCount(doc) {
+    return doc?.fields?.substituteRecords?.arrayValue?.values?.length || 0;
 }
 
 async function getDoc(docPath) {
@@ -188,6 +230,21 @@ async function doBackup() {
     writeJson(dir, 'scheduleImports.json', { collectionPath: `schools/${SCHOOL_ID}/schedules/*/imports`, count: importItems.length, documents: importItems });
     console.log(`▶ schedules/*/imports：${importItems.length} 筆`);
 
+    if (INCLUDE_V1) {
+        const v1Docs = await listV1UserData();
+        writeJson(dir, 'v1UserData.json', {
+            collectionPath: 'users/*/data/substituteSystem', count: v1Docs.length,
+            documents: v1Docs.map(d => ({ document: d })),
+        });
+        console.log(`▶ users/*/data/substituteSystem（V1 個人雲端）：${v1Docs.length} 份`);
+        for (const d of v1Docs) {
+            const uid = relPathFromName(d.name).split('/')[1];
+            console.log(`    uid ${uid.slice(0, 6)}…：substituteRecords ${v1RecordCount(d)} 筆`);
+        }
+    } else {
+        console.log('▶ V1 個人雲端：已略過（--include-v1=false）');
+    }
+
     console.log(`\n✅ 備份完成：${dir}`);
     return dir;
 }
@@ -199,7 +256,7 @@ function planItemFromDoc(doc) {
 }
 
 /** 讀取備份資料夾，攤平成一份「每筆文件要 PATCH 回哪個路徑、帶什麼 fields」的還原計畫。 */
-function buildRestorePlan(dir) {
+function buildRestorePlan(dir, { includeV1 = false } = {}) {
     const plan = [];
 
     const scheduleFile = path.join(dir, 'schedule.json');
@@ -209,7 +266,7 @@ function buildRestorePlan(dir) {
         if (item) plan.push({ ...item, label: 'data/schedule' });
     }
 
-    for (const name of [...PRIVATE_DETAIL_COLLECTIONS, ...PLAIN_COLLECTIONS, 'scheduleImports']) {
+    for (const name of [...PRIVATE_DETAIL_COLLECTIONS, ...PLAIN_COLLECTIONS, 'scheduleImports', ...(includeV1 ? ['v1UserData'] : [])]) {
         const file = path.join(dir, `${name}.json`);
         if (!fs.existsSync(file)) continue;
         const data = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -246,7 +303,7 @@ async function doRestore() {
     safety.targetBanner(TARGET, { action: 'restore 還原備份', apply: wm.apply }).forEach(l => console.log(l));
 
     if (!dirArg) {
-        console.error('❌ 缺少 --dir=<備份資料夾>，用法：node scripts/firestore-backup.js restore --dir=<路徑> [--yes]');
+        console.error('❌ 缺少 --dir=<備份資料夾>，用法：node scripts/firestore-backup.js restore --dir=<路徑> [--yes] [--restore-v1]');
         process.exit(2);
     }
     const dir = path.resolve(dirArg);
@@ -258,13 +315,16 @@ async function doRestore() {
     console.log(`🏫 還原對象：schools/${SCHOOL_ID}（專案 ${PROJECT}）`);
     console.log(`📁 還原來源：${dir}\n`);
 
-    const plan = buildRestorePlan(dir);
+    const plan = buildRestorePlan(dir, { includeV1: RESTORE_V1 });
+    const v1File = path.join(dir, 'v1UserData.json');
+    const v1Count = fs.existsSync(v1File) ? (JSON.parse(fs.readFileSync(v1File, 'utf8')).documents || []).length : 0;
 
     // 依 label 分組列出筆數，方便人工核對
     const byLabel = new Map();
     for (const item of plan) byLabel.set(item.label, (byLabel.get(item.label) || 0) + 1);
     console.log('還原計畫：');
     for (const [label, count] of byLabel) console.log(`  - ${label}：${count} 筆`);
+    if (v1Count > 0 && !RESTORE_V1) console.log(`  （備份內有 v1UserData ${v1Count} 份，未帶 --restore-v1，不會寫回）`);
     console.log(`合計：${plan.length} 筆文件將被整份覆寫（PATCH，無 updateMask）\n`);
 
     const shouldExecute = yes && !dryRun;
@@ -302,8 +362,8 @@ async function doRestore() {
             process.exit(2);
         }
     } else {
-        console.error('用法：node scripts/firestore-backup.js backup [--school=<id>] [--project=<id>]');
-        console.error('      node scripts/firestore-backup.js restore --dir=<備份資料夾> [--yes] [--dry-run]');
+        console.error('用法：node scripts/firestore-backup.js backup [--school=<id>] [--project=<id>] [--include-v1=false]');
+        console.error('      node scripts/firestore-backup.js restore --dir=<備份資料夾> [--yes] [--dry-run] [--restore-v1]');
         process.exit(2);
     }
 })();

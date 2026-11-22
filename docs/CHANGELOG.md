@@ -9,6 +9,11 @@ tags:
 
 ---
 
+## [2026-11-23] 備份納入 V1 個人雲端資料；遷移舊資料防重複寫入（尚未部署）
+
+- **備份**：`scripts/firestore-backup.js backup` 預設多備份 `users/{uid}/data/substituteSystem`（V1 個人雲端文件，不屬於任何學校）為 `v1UserData.json`，用 collection group query（`runQuery`，collectionId `data`、allDescendants）取得後只收路徑完全符合者，格式與既有檔相同（原始 REST document）；印出每份文件的 `substituteRecords` 筆數（uid 只印前 6 碼）。`--include-v1=false` 可略過。`restore` 預設不寫回 V1（計畫只提示份數），需 `--restore-v1` 才還原，`--dry-run` 行為不變。新增 `test/emulator/scripts-firestore-backup.mjs`（掛進 `test:rules-all`）：2 份目標文件、1 份無關 `users/*/data/*`、1 份 `schools/*/data/substituteSystem` 同名誘餌，驗證只收正確路徑、預設不還原、帶旗標才還原且內容相同。
+- **遷移防重複**：`migrateLegacyRecords()` 的既有紀錄改用 `listAllSubstituteRecordsForClear()`、名冊改用新增的 `listTeachersFromServer()`（皆 `getDocsFromServer`），不再用可能回傳殘缺本機快取的 `getDocs`；`listTeachers()` 行為不變。讀不到伺服器重試 3 次，仍失敗就在寫入前丟出中文錯誤（「無法從伺服器讀取…遷移已中止、未寫入任何資料」），UI 沿用既有 `notifyError` 顯示。既有 key 集合包含已軟刪除紀錄（使用者刪掉的遷移紀錄不因重跑復活）。`test/test-legacy-migration.mjs` 新增案例：快取殘缺不影響結果、重跑冪等、軟刪除不復活、伺服器讀取失敗不寫入、重試成功、寫入中途失敗後重跑只補缺。
+
 ## [2026-11-20] 找學校：教育部學校代碼搜尋（尚未部署）
 
 登入後尚未綁定學校的使用者，不必再手打學校代碼。

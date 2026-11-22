@@ -35,11 +35,25 @@ function makeMockDataSvc(initialTeachers = [], initialRecords = []) {
     let seq = 1;
     const records = initialRecords.map(r => ({ ...r }));
     const calls = { createSubstituteRecord: 0 };
+    // 模擬連線不穩：getDocs（listTeachers/listSubstituteRecords）靜默回傳殘缺的本機快取；
+    // 只讀伺服器的函式（getDocsFromServer）回完整資料，或在 serverFail 時丟錯。
+    const mode = { serverFail: false, serverReads: 0, cacheReads: 0 };
     return {
         _records: records,
         _calls: calls,
-        async listTeachers() { return initialTeachers.map(t => ({ ...t })); },
-        async listSubstituteRecords() { return records.map(r => ({ ...r })); },
+        _mode: mode,
+        async listTeachers() { mode.cacheReads++; return []; },                       // 殘缺快取：名冊空
+        async listSubstituteRecords() { mode.cacheReads++; return []; },              // 殘缺快取：看不到任何既有紀錄
+        async listTeachersFromServer() {
+            mode.serverReads++;
+            if (mode.serverFail) throw new Error('offline: server unreachable');
+            return initialTeachers.map(t => ({ ...t }));
+        },
+        async listAllSubstituteRecordsForClear() {
+            mode.serverReads++;
+            if (mode.serverFail) throw new Error('offline: server unreachable');
+            return records.map(r => ({ ...r }));
+        },
         async createSubstituteRecord(record) {
             calls.createSubstituteRecord++;
             const now = new Date().toISOString();
@@ -76,6 +90,7 @@ function useMocks({ teachers = [], records = [], firestoreLegacy = null, localSt
     legacyMigration.__testHooks.dataSvc = dataSvc;
     legacyMigration.__testHooks.logger  = logger;
     legacyMigration.__testHooks.roleSvc = roleSvc;
+    legacyMigration.__testHooks.serverRead = { attempts: 3, delayMs: 0 };
     legacyMigration.__testHooks.readFirestoreLegacy    = async () => firestoreLegacy;
     legacyMigration.__testHooks.readLocalStorageLegacy = () => localStorageLegacy;
     return { dataSvc, logger, roleSvc };
@@ -280,6 +295,99 @@ function legacyRecord(overrides = {}) {
     eq(run2.created, 0, '冪等-第二次：新增 0 筆（硬性要求）');
     eq(run2.skipped, 3, '冪等-第二次：3 筆皆因 legacyKey 已存在而略過');
     eq(dataSvc._records.length, countAfterRun1, '冪等：兩次遷移後總筆數不變（未產生重複資料）');
+}
+
+/* ================= 6b. 防重複寫入：既有紀錄與名冊一律只讀伺服器（2026-11-23）=================
+ * 實際事故：UI 遷移用 getDocs，連線不穩時回傳殘缺快取 → existingKeys 不完整 → 重跑重複寫入。
+ * mock 的 listTeachers/listSubstituteRecords 一律回殘缺快取（空），只有 *FromServer / ForClear 回完整資料；
+ * 若實作誤用 getDocs 版本，下面各斷言會失敗。
+ */
+{
+    const legacy = [
+        legacyRecord({ date: '2026-05-04' }),
+        legacyRecord({ date: '2026-05-05', period: '第五節' }),
+    ];
+    const { dataSvc } = useMocks({
+        teachers: [{ teacherId: 'tch_1', name: '甲師' }, { teacherId: 'tch_2', name: '乙師' }],
+        firestoreLegacy: { substituteRecords: legacy, lastModified: '2026-06-01T00:00:00.000Z' },
+    });
+    const run1 = await legacyMigration.migrateLegacyRecords({});
+    eq(run1.created, 2, '防重複-第一次：新增 2 筆');
+    eq(run1.unmatchedNames, [], '防重複：名冊取自伺服器，姓名全數對得上（快取空名冊不影響）');
+    ok(dataSvc._records.every(r => r.originalTeacherId === 'tch_1' && r.substituteTeacherId === 'tch_2'), '防重複：寫入的紀錄帶正確 teacherId');
+    const run2 = await legacyMigration.migrateLegacyRecords({});
+    eq(run2.created, 0, '防重複-重跑：殘缺快取情境下仍新增 0 筆');
+    eq(run2.skipped, 2, '防重複-重跑：2 筆皆略過');
+    eq(dataSvc._records.length, 2, '防重複：總筆數維持 2');
+    eq(dataSvc._mode.cacheReads, 0, '防重複：完全沒有呼叫 getDocs 版（快取）讀取函式');
+}
+
+/* 軟刪除的遷移紀錄仍算「已存在」：使用者刪掉的紀錄不因重跑復活 */
+{
+    const lr = legacyRecord({ date: '2026-05-04' });
+    const key = ['2026-05-04', '第三節', '701', '甲師', '乙師'].join('|');
+    const { dataSvc } = useMocks({
+        records: [{ recordId: 'rec_x', date: '2026-05-04', period: '第三節', className: '701', originalTeacher: '甲師', substituteTeacher: '乙師', status: 'deleted', migratedFrom: { legacyKey: key } }],
+        firestoreLegacy: { substituteRecords: [lr] },
+    });
+    const r = await legacyMigration.migrateLegacyRecords({});
+    eq(r.created, 0, '軟刪除-已刪除的遷移紀錄不被重新建立');
+    eq(r.skipped, 1, '軟刪除-視為已存在而略過');
+    eq(dataSvc._calls.createSubstituteRecord, 0, '軟刪除-未呼叫寫入');
+}
+
+/* 伺服器讀取失敗（含重試）→ 丟出中文錯誤、不寫任何紀錄、不寫日誌 */
+for (const failing of ['records', 'teachers']) {
+    const { dataSvc, logger } = useMocks({
+        teachers: [{ teacherId: 'tch_1', name: '甲師' }],
+        firestoreLegacy: { substituteRecords: [legacyRecord(), legacyRecord({ date: '2026-05-05' })] },
+    });
+    const origRec = dataSvc.listAllSubstituteRecordsForClear, origTch = dataSvc.listTeachersFromServer;
+    let attempts = 0;
+    if (failing === 'records') dataSvc.listAllSubstituteRecordsForClear = async () => { attempts++; throw new Error('offline'); };
+    else dataSvc.listTeachersFromServer = async () => { attempts++; throw new Error('offline'); };
+    let err = null;
+    try { await legacyMigration.migrateLegacyRecords({}); } catch (e) { err = e; }
+    ok(err !== null, `讀取失敗-${failing}：丟出錯誤`);
+    ok(err && /無法從伺服器讀取/.test(err.message) && /未寫入任何資料/.test(err.message), `讀取失敗-${failing}：錯誤訊息為明確中文`);
+    eq(attempts, 3, `讀取失敗-${failing}：重試共 3 次`);
+    eq(dataSvc._calls.createSubstituteRecord, 0, `讀取失敗-${failing}：沒有寫入任何紀錄`);
+    eq(logger.entries.length, 0, `讀取失敗-${failing}：沒有寫操作日誌`);
+    dataSvc.listAllSubstituteRecordsForClear = origRec; dataSvc.listTeachersFromServer = origTch;
+}
+
+/* 暫時性失敗：第 1 次失敗、重試成功 → 正常遷移 */
+{
+    const { dataSvc } = useMocks({
+        teachers: [{ teacherId: 'tch_1', name: '甲師' }],
+        firestoreLegacy: { substituteRecords: [legacyRecord()] },
+    });
+    const orig = dataSvc.listAllSubstituteRecordsForClear;
+    let n = 0;
+    dataSvc.listAllSubstituteRecordsForClear = async () => { if (n++ === 0) throw new Error('flaky'); return orig(); };
+    const r = await legacyMigration.migrateLegacyRecords({});
+    eq(r.created, 1, '重試成功：遷移照常完成');
+}
+
+/* 寫入迴圈中途失敗 → 後續重跑仍冪等（已寫入的不重複、失敗的補上） */
+{
+    const { dataSvc } = useMocks({
+        teachers: [],
+        firestoreLegacy: { substituteRecords: [
+            legacyRecord({ date: '2026-05-04' }), legacyRecord({ date: '2026-05-05' }), legacyRecord({ date: '2026-05-06' }),
+        ] },
+    });
+    const origCreate = dataSvc.createSubstituteRecord;
+    let calls = 0;
+    dataSvc.createSubstituteRecord = async (r) => { if (++calls === 2) throw new Error('network dropped'); return origCreate(r); };
+    const r1 = await legacyMigration.migrateLegacyRecords({});
+    eq([r1.created, r1.errors.length], [2, 1], '中途失敗-第一次：成立 2、錯誤 1');
+    dataSvc.createSubstituteRecord = origCreate;
+    const r2 = await legacyMigration.migrateLegacyRecords({});
+    eq([r2.created, r2.skipped, r2.errors.length], [1, 2, 0], '中途失敗-重跑：只補失敗那筆，其餘略過');
+    const r3 = await legacyMigration.migrateLegacyRecords({});
+    eq(r3.created, 0, '中途失敗-再重跑：0 筆新增');
+    eq(dataSvc._records.length, 3, '中途失敗：最終恰 3 筆、無重複');
 }
 
 /* ================= 7. 姓名對不到帳號：仍要匯入，並收集 unmatchedNames ================= */

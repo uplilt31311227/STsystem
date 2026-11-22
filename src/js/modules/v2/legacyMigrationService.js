@@ -79,6 +79,8 @@ export const __testHooks = {
     dataSvc,
     logger,
     roleSvc,
+    /** 讀伺服器失敗後的重試設定（測試可把 delayMs 設為 0）。 */
+    serverRead: { attempts: 3, delayMs: 800 },
     async readFirestoreLegacy(uid) {
         if (!uid) return null;
         const fs   = await getV2Firestore();
@@ -178,6 +180,25 @@ export async function getLegacyBackupPayload() {
     };
 }
 
+/**
+ * 讀伺服器資料，失敗重試（__testHooks.serverRead），仍失敗就丟含中文說明的錯誤。
+ * 呼叫端必須在任何寫入之前呼叫，確保讀不到時什麼都不寫。
+ */
+async function readFromServerOrThrow(fn, label) {
+    const { attempts, delayMs } = __testHooks.serverRead;
+    let lastErr = null;
+    for (let i = 0; i < attempts; i++) {
+        try { return await fn(); }
+        catch (err) {
+            lastErr = err;
+            if (i < attempts - 1 && delayMs > 0) await new Promise(r => setTimeout(r, delayMs * (i + 1)));
+        }
+    }
+    const e = new Error(`無法從伺服器讀取${label}（網路不穩或離線），為避免重複寫入，遷移已中止、未寫入任何資料。請確認網路連線後再試。`);
+    e.cause = lastErr;
+    throw e;
+}
+
 /** 冪等鍵：date|period|className|originalTeacher|(substituteTeacher 或 swapTeacher) */
 function legacyKeyOf(r) {
     return [
@@ -219,7 +240,16 @@ export async function migrateLegacyRecords({ onProgress } = {}) {
 
     // 現況快照：existingKeys 同時收「既有紀錄自身欄位算出的 key」與「先前遷移留下的
     // migratedFrom.legacyKey」，兩者聯集才能同時涵蓋「已由別的管道存在同一格」與「已遷移過」。
-    const [existingRecords, teachers] = await Promise.all([svc.listSubstituteRecords(), svc.listTeachers()]);
+    //
+    // ⚠ 既有紀錄與名冊一律只讀伺服器（2026-11-23）：舊版用 getDocs（listSubstituteRecords/listTeachers），
+    // 連線不穩時會靜默回傳殘缺的本機快取，existingKeys 漏掉已遷移的紀錄就重複寫入（emulator 實測重跑
+    // created 16、skipped 96），名冊殘缺則姓名對不到 teacherId。讀不到伺服器（重試後）就丟錯、
+    // 在寫入任何紀錄之前中止。existingKeys 刻意包含已軟刪除（status 為 deleted 等）的紀錄：使用者刪掉的
+    // 遷移紀錄不應因重跑而復活；它們仍在集合內，key 命中即 skip。
+    const [existingRecords, teachers] = await Promise.all([
+        readFromServerOrThrow(() => svc.listAllSubstituteRecordsForClear(), '既有調代課紀錄'),
+        readFromServerOrThrow(() => svc.listTeachersFromServer(), '教師名冊'),
+    ]);
     const existingKeys = new Set();
     for (const r of existingRecords) {
         existingKeys.add(legacyKeyOf(r));
