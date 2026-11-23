@@ -9,7 +9,7 @@ tags:
 
 ---
 
-## [2026-11-23] 代課改為雙簽：教師發起代課須經代課教師同意（rules v2.20，尚未部署）
+## [2026-11-23] 代課改為雙簽：教師發起代課須經代課教師同意（rules v2.20，2026-11-24 已部署）
 
 規格（使用者確認）：主任與教學組長建立調代課直接成立（`adminCreate`，不變）；一般教師發起的代課、調課、多重調課都要對方同意，再經組長／主任核准才成立；全校紀錄與月結算只有組長、主任看得到（畫面限制，rules 層維持校內成員可讀父文件，衝堂檢查與代課推薦需要，假別與事由仍在私有明細）。
 - **流程**：代課（`substitute`）由 `create → pending_approval` 改為 `create → pending_swap_consent（代課教師同意）→ pending_approval → 核准`，沿用調課的 `consentRequest`。`createRequest` 以 `substituteTeacherId` 組成同意名單，缺代課教師或代課教師為發起人本人時丟錯。已在 `pending_approval` 的舊代課申請照常可核准。
