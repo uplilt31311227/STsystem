@@ -154,9 +154,16 @@ export async function run(browser) {
 
     /* ===== 完整流程：申請 → 待辦 → 核准 ===== */
 
-    await suite.case('教師送出代課申請後，組長在待辦看得到並可核准', async () => {
+    await suite.case('教師送出代課申請 → 代課教師同意 → 組長在待辦看得到並可核准（v2.20 代課雙簽）', async () => {
+        // 代課教師用 teacherB（有登入帳號才能按同意）；先取得其姓名
+        const { page: bPage0 } = await loginStable(browser, ACCOUNTS.teacherB, { needSchedule: true });
+        let subName;
+        try { subName = await waitForIdentityName(bPage0); } finally { await bPage0.close(); }
+        ok(subName && !/請選擇/.test(subName), `應能取得 teacherB 姓名（實際：${subName}）`);
+
         const { page: tPage } = await loginStable(browser, ACCOUNTS.teacherA, { needSchedule: true });
         let cPage = null;
+        let bPage = null;
         try {
             // 目前登入者的姓名取自畫面右上角的身份區（sub-teacher 的預設值可能是「請選擇教師」）。
             // 用輪詢等待而非固定等待——emulator 變慢時身份區可能還沒渲染完（見 helpers 的說明）。
@@ -164,15 +171,23 @@ export async function run(browser) {
             const me = await waitForIdentityName(tPage);
             ok(me && !/請選擇/.test(me), `應能取得目前登入教師姓名（實際：${me}）`);
 
-            const slot = await tPage.evaluate((name) => {
+            // 挑 teacherA 有課、且 teacherB 該節空堂的一節（週一～週五皆可），teacherB 才會出現在推薦清單
+            const WEEKDAYS = ['週一', '週二', '週三', '週四', '週五'];
+            const slot = await tPage.evaluate(({ name, sub, days }) => {
                 const sd = window.app?.dataManager?.scheduleData || [];
-                const mine = sd.filter(r => r.teacher === name && r.weekday === '週一');
+                const subBusy = new Set(sd.filter(r => r.teacher === sub).map(r => `${r.weekday}|${r.period}`));
+                const mine = sd.filter(r => r.teacher === name && days.includes(r.weekday) && !subBusy.has(`${r.weekday}|${r.period}`))
+                    .sort((a, b) => days.indexOf(a.weekday) - days.indexOf(b.weekday));
                 return mine.length ? { weekday: mine[0].weekday, period: mine[0].period, className: mine[0].className } : null;
-            }, me);
-            ok(slot, `${me} 在週一應有課可申請`);
+            }, { name: me, sub: subName, days: WEEKDAYS });
+            ok(slot, `${me} 應有一節課是 ${subName} 空堂的`);
+            // DATE_MON（2026-09-07）是週一，依星期幾往後推同一週的日期
+            const d = new Date(`${DATE_MON}T00:00:00Z`);
+            d.setUTCDate(d.getUTCDate() + WEEKDAYS.indexOf(slot.weekday));
+            const slotDate = d.toISOString().slice(0, 10);
 
             await tPage.selectOption('#sub-teacher', { label: me }).catch(() => {});
-            await tPage.fill('#sub-date', DATE_MON);
+            await tPage.fill('#sub-date', slotDate);
             await tPage.waitForTimeout(1200);
             await tPage.click(`.schedule-cell.schedule-course[data-weekday="${slot.weekday}"][data-period="${slot.period}"]`);
             await tPage.waitForTimeout(800);
@@ -181,14 +196,45 @@ export async function run(browser) {
             await tPage.waitForTimeout(1200);
 
             const recs = await recommendedTeachers(tPage);
-            ok(recs.length > 0, '應有可選的代課教師');
-            const sub = recs[0].name;
-            await pickSubstitute(tPage, sub);
+            ok(recs.some(r => r.name === subName), `推薦清單應包含 ${subName}（實際：${recs.slice(0, 8).map(r => r.name).join('、')}）`);
+            await pickSubstitute(tPage, subName);
             await tPage.click('#confirm-substitute-btn');
 
-            const submitted = await waitForText(tPage, /已送出|待審核|申請成功|已建立|等待/, 12000);
-            ok(submitted, `送出後應有回饋訊息（畫面：${(await bodyText(tPage)).slice(0, 150)}）`);
+            const submitted = await waitForText(tPage, /已送出給代課教師/, 12000);
+            ok(submitted, `送出後應提示需代課教師同意（畫面：${(await bodyText(tPage)).slice(0, 150)}）`);
             await shot(tPage, '02-submitted');
+
+            // 代課教師同意前，組長的「待我審核」不應出現這筆
+            const chief0 = await loginStable(browser, ACCOUNTS.sectionChief, { needSchedule: true });
+            try {
+                await gotoTab(chief0.page, 'v2-pending', 2500);
+                const before = await chief0.page.evaluate(() => {
+                    const hs = [...document.querySelectorAll('.v2-section-header')];
+                    const h = hs.find(x => /待我審核/.test(x.textContent));
+                    let t = '', n = h?.nextElementSibling;
+                    while (n && !n.classList.contains('v2-section-header')) { t += n.textContent; n = n.nextElementSibling; }
+                    return t;
+                });
+                ok(!before.includes(slot.className) || !before.includes(me), '代課教師同意前，組長待審核區不應出現此申請');
+            } finally { await chief0.page.close(); }
+
+            // 代課教師登入，在「待我同意」按同意
+            const b = await loginStable(browser, ACCOUNTS.teacherB, { needSchedule: true });
+            bPage = b.page;
+            await gotoTab(bPage, 'v2-pending', 2500);
+            const consentText = await bodyText(bPage);
+            includes(consentText, '代誰的課', '代課教師的同意卡片應顯示「代誰的課」');
+            includes(consentText, me, '同意卡片應顯示原任課教師');
+            const consentBtn = bPage.locator('.v2-consent-btn').first();
+            ok(await consentBtn.count() > 0, '代課教師應看得到同意按鈕');
+            await consentBtn.click();
+            await bPage.waitForTimeout(800);
+            // 同意可能跳確認框
+            const confirmBtn = bPage.getByRole('button', { name: /^(確定|確認|同意)$/ }).last();
+            if (await confirmBtn.count() > 0 && await confirmBtn.isVisible().catch(() => false)) await confirmBtn.click();
+            await bPage.waitForTimeout(2500);
+            await shot(bPage, '02-sub-consented');
+            eq(realErrors(bPage), [], '同意過程不應有 console 錯誤');
 
             // 換組長看待辦
             const chief = await loginStable(browser, ACCOUNTS.sectionChief, { needSchedule: true });
@@ -213,6 +259,7 @@ export async function run(browser) {
             eq(realErrors(cPage), [], '核准過程不應有 console 錯誤');
         } finally {
             await tPage.close();
+            if (bPage) await bPage.close();
             if (cPage) await cPage.close();
         }
     });

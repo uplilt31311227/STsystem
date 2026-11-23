@@ -1,6 +1,6 @@
 rules_version = '2';
 
-// STsystem V2 權限系統 Firestore 規則（v2.19（P10 code-review：config 通用主任規則排除 recordsLock 與 grade9，兩者只走專屬規則）、v2.18（LC-L7／LF-M8：紀錄與申請的學期歸屬改依日期推算，寫入窗口放寬為目前學期＋相鄰學期）、v2.17（P9 批次 A2：初始主任白名單在學校有正式主任後失效、platformAdmin 為全系統最高管理員、核准者職務分離）、v2.16（P9 批次 A：組長改教師檔欄位白名單、主任不可刪自己的教師檔、approver／發起人可刪 private/detail）、v2.15（P7：config/settlement 增加逐人超鐘點門檻欄位、config/grade9 九年級畢業設定）、v2.14（含 v2.13-A／B、v2.14 成立紀錄序號鎖，皆已納入本檔，P5／P6 未部署）— 身分與授權修補 + 三層角色 + 敏感欄位私有化 + 學期唯讀鎖 + 封存生命週期 + schoolId 反查目錄 + 多租戶開通 + 月結算設定開放 approver + 主任不可改自己的 role + 課表匯入版本紀錄 + 組長可刪除目前學期紀錄 + 開新學期原子建立課表 + 課表版本號）
+// STsystem V2 權限系統 Firestore 規則（v2.20（代課改雙簽：教師發起代課須經代課教師同意才進核准佇列）、v2.19（P10 code-review：config 通用主任規則排除 recordsLock 與 grade9，兩者只走專屬規則）、v2.18（LC-L7／LF-M8：紀錄與申請的學期歸屬改依日期推算，寫入窗口放寬為目前學期＋相鄰學期）、v2.17（P9 批次 A2：初始主任白名單在學校有正式主任後失效、platformAdmin 為全系統最高管理員、核准者職務分離）、v2.16（P9 批次 A：組長改教師檔欄位白名單、主任不可刪自己的教師檔、approver／發起人可刪 private/detail）、v2.15（P7：config/settlement 增加逐人超鐘點門檻欄位、config/grade9 九年級畢業設定）、v2.14（含 v2.13-A／B、v2.14 成立紀錄序號鎖，皆已納入本檔，P5／P6 未部署）— 身分與授權修補 + 三層角色 + 敏感欄位私有化 + 學期唯讀鎖 + 封存生命週期 + schoolId 反查目錄 + 多租戶開通 + 月結算設定開放 approver + 主任不可改自己的 role + 課表匯入版本紀錄 + 組長可刪除目前學期紀錄 + 開新學期原子建立課表 + 課表版本號）
 //
 // 設計原則：
 //   1. 兩條根路徑物理隔離
@@ -726,7 +726,16 @@ service cloud.firestore {
         && d.initiatedBy == me
         && d.get('swapConsents', {}).size() == 0
         && (
-          (d.requestType == 'substitute' && d.status == 'pending_approval')
+          // v2.20：代課改為雙簽——初始狀態必須是 pending_swap_consent，同意名單恰為代課教師一人，
+          // 且代課教師不可是發起人本人（封掉 create 就自帶 pending_approval 跳過代課教師同意）。
+          (
+            d.requestType == 'substitute'
+            && d.status == 'pending_swap_consent'
+            && d.get('substituteTeacherId', '') is string
+            && d.get('substituteTeacherId', '') != ''
+            && d.substituteTeacherId != d.initiatedBy
+            && d.pendingConsentTeacherIds == [d.substituteTeacherId]
+          )
           || (
             d.requestType in ['swap', 'multi_swap']
             && d.status == 'pending_swap_consent'
@@ -1449,7 +1458,7 @@ service cloud.firestore {
 
         // 建立：approver（代發，較寬但同樣不可自帶已核准欄位）；或發起人本人。
         // Phase 3 資安收緊（create 端）：發起人本人 create 必須符合狀態機初始狀態——
-        //   substitute → status 只能是 pending_approval；
+        //   substitute → status 只能是 pending_swap_consent，同意名單恰為代課教師（v2.20 起；原為 pending_approval）；
         //   swap / multi_swap → status 只能是 pending_swap_consent 且 pendingConsentTeacherIds 非空
         //   （封掉自帶 status='pending_approval' + 空同意名單跳過對方同意的路徑）；
         //   一律禁止 create 就自帶 approvedBy/approvedAt/approvedByName 或預填 swapConsents。

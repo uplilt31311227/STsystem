@@ -990,8 +990,8 @@ async function renderPendingTab() {
 
     if (isStaleRender(_gen)) return;   // 期間身份已切換 → 放棄回填，保持 reset 清空的狀態
     host.innerHTML = `
-        <div class="v2-section-header"><h3>待我同意・調課</h3></div>
-        ${pendingSourceError ? pendingErrorCard('待我同意') : renderList(consentSwap, 'incoming', '目前沒有等待您同意的調課請求', consentActions, null, renderConsentDetail)}
+        <div class="v2-section-header"><h3>待我同意・代課／調課</h3></div>
+        ${pendingSourceError ? pendingErrorCard('待我同意') : renderList(consentSwap, 'incoming', '目前沒有等待您同意的代課或調課請求', consentActions, null, renderConsentDetail)}
 
         <div class="v2-section-header" style="margin-top:2rem;"><h3>待我同意・多重調課</h3></div>
         ${pendingSourceError ? pendingErrorCard('待我同意') : renderList(consentMultiSwap, 'incoming', '目前沒有等待您同意的多重調課請求', consentActions, consentRemainMeta, renderConsentDetail)}
@@ -3786,7 +3786,7 @@ async function resolveApproverInfo(record, teachers = null, chooser = promptSele
         requiredApproverId   = null;
         requiredApproverName = null;
     } else if (record.type === '代課') {
-        // Phase 3：代課為單簽，不需代課教師本人同意，直接進入組長/主任核准佇列
+        // v2.20：代課改為雙簽，代課教師同意後才進入組長/主任核准佇列（同意名單由 createRequest 依 substituteTeacherId 組成）
         requiredApproverId   = substituteTeacherId;
         requiredApproverName = record.substituteTeacher || null;
         requestType          = REQUEST_TYPES.SUBSTITUTE;
@@ -4055,8 +4055,9 @@ function v2NeedsApproval(record) {
     if (!myName) return false;
 
     if (record.type === '代課') {
-        const target = record.substituteTeacher;
-        return !!target && target !== myName;
+        // v2.20：一般教師發起代課一律雙簽（代課教師同意 → 核准）。代課教師是本人時 createRequest 會擋下並報錯，
+        // 這裡也回 true，避免被當成「不需審核」而先在本機成立／產 PDF。
+        return !!record.substituteTeacher;
     }
     if (record.type === '調課') {
         const target = record.swapTeacher || record.substituteTeacher;
@@ -4219,7 +4220,7 @@ async function writeV2Record(record) {
     const extraCount = ids.additionalConsentTeacherIds.length;
     const isSub = ids.requestType === REQUEST_TYPES.SUBSTITUTE;
     const msg = isSub
-        ? `已送出，等待組長／主任核准。核准後才會正式成立並產生 PDF。`
+        ? `已送出給代課教師 ${ids.requiredApproverName || ''} 同意。對方同意並經組長／主任核准後才會正式成立並產生 PDF。`
         : `已送出給 ${ids.requiredApproverName}${extraCount ? ` 等 ${1 + extraCount} 位教師` : ''}同意。全員同意並經組長／主任核准後才會正式成立並產生 PDF。`;
     reportSubmitted(msg, isSub);   // 多節／批次送出時會合併成一則（UX-M7）
     return saved;

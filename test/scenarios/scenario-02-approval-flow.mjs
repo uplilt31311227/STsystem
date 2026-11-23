@@ -94,16 +94,62 @@ export async function run(ctx) {
         ...over,
     });
 
-    await suite.case('教師可為自己發起代課申請', async () => {
+    // v2.20：教師發起代課為雙簽——初始狀態 pending_swap_consent，同意名單恰為代課教師（t2）
+    const subReq = (over = {}) => baseReq({
+        status: 'pending_swap_consent',
+        pendingConsentTeacherIds: [t2.teacherId],
+        substituteTeacherId: t2.teacherId,
+        substituteTeacher: t2.name,
+        requiredApproverId: t2.teacherId,
+        ...over,
+    });
+    // 代課教師 t2 同意 → 轉 pending_approval（前端 consentRequest 的寫入形狀）
+    const consentAsT2 = async (id) => {
+        const now = new Date().toISOString();
+        allowed(await updateDoc(`${P.pending}/${id}`, {
+            status: 'pending_approval',
+            pendingConsentTeacherIds: [],
+            swapConsents: { [t2.teacherId]: { consentedAt: now } },
+            statusUpdatedAt: now,
+        }, { idToken: t2.idToken }), '前置：代課教師同意');
+    };
+
+    await suite.case('教師可為自己發起代課申請（v2.20：送代課教師同意）', async () => {
         allowed(
-            await createDoc(P.pending, 'zz_case_sub_ok', baseReq(), { idToken: t1.idToken }),
+            await createDoc(P.pending, 'zz_case_sub_ok', subReq(), { idToken: t1.idToken }),
             '教師自行發起代課'
         );
     });
 
+    await suite.case('v2.20：教師建立代課直接 pending_approval（跳過代課教師同意）被拒', async () => {
+        denied(
+            await createDoc(P.pending, 'zz_case_sub_skip', baseReq({
+                substituteTeacherId: t2.teacherId, substituteTeacher: t2.name,
+            }), { idToken: t1.idToken }),
+            '跳過代課教師同意的舊形狀'
+        );
+    });
+
+    await suite.case('v2.20：代課同意名單不是代課教師本人被拒', async () => {
+        denied(
+            await createDoc(P.pending, 'zz_case_sub_wrong_list', subReq({ pendingConsentTeacherIds: [t3.teacherId] }), { idToken: t1.idToken }),
+            '同意名單掛別人'
+        );
+    });
+
+    await suite.case('v2.20：代課教師同意後轉待核准；第三者同意被拒', async () => {
+        allowed(await createDoc(P.pending, 'zz_case_sub_consent', subReq(), { idToken: t1.idToken }), '前置：建立待同意的代課申請');
+        const now = new Date().toISOString();
+        denied(await updateDoc(`${P.pending}/zz_case_sub_consent`, {
+            status: 'pending_approval', pendingConsentTeacherIds: [],
+            swapConsents: { [t3.teacherId]: { consentedAt: now } }, statusUpdatedAt: now,
+        }, { idToken: t3.idToken }), '第三者代為同意代課');
+        await consentAsT2('zz_case_sub_consent');
+    });
+
     await suite.case('申請自帶 approvedBy 被拒（偽造已核准）', async () => {
         denied(
-            await createDoc(P.pending, 'zz_case_selfapprove', baseReq({
+            await createDoc(P.pending, 'zz_case_selfapprove', subReq({
                 approvedBy: chief.teacherId, approvedByName: chief.name, approvedAt: '2026-09-20T01:00:00.000Z',
             }), { idToken: t1.idToken }),
             '自帶核准欄位的申請'
@@ -131,7 +177,7 @@ export async function run(ctx) {
 
     await suite.case('教師代他人發起申請被拒', async () => {
         denied(
-            await createDoc(P.pending, 'zz_case_impersonate', baseReq({
+            await createDoc(P.pending, 'zz_case_impersonate', subReq({
                 initiatedBy: t2.teacherId, initiatedByName: t2.name,
             }), { idToken: t1.idToken }),
             '冒名他人發起'
@@ -140,7 +186,7 @@ export async function run(ctx) {
 
     await suite.case('對歷史學期發起申請被拒（學期唯讀鎖）', async () => {
         denied(
-            await createDoc(P.pending, 'zz_case_old_semester', baseReq({ semesterId: prevSem }), { idToken: t1.idToken }),
+            await createDoc(P.pending, 'zz_case_old_semester', subReq({ semesterId: prevSem }), { idToken: t1.idToken }),
             '歷史學期的新申請'
         );
     });
@@ -177,6 +223,7 @@ export async function run(ctx) {
     });
 
     await suite.case('組長可核准待核准的申請', async () => {
+        await consentAsT2('zz_case_sub_ok');
         allowed(await updateDoc(`${P.pending}/zz_case_sub_ok`, {
             status: 'approved',
             approvedBy: chief.teacherId,
@@ -188,8 +235,9 @@ export async function run(ctx) {
 
     await suite.case('一般教師核准他人申請被拒', async () => {
         // 同上，且這份文件還被下一個案例（組長竄改內容）沿用，前置失敗會讓兩個案例都空洞地通過
-        allowed(await createDoc(P.pending, 'zz_case_approve_by_teacher', baseReq(), { idToken: t1.idToken }),
-            '前置：建立待核准的代課申請');
+        allowed(await createDoc(P.pending, 'zz_case_approve_by_teacher', subReq(), { idToken: t1.idToken }),
+            '前置：建立待同意的代課申請');
+        await consentAsT2('zz_case_approve_by_teacher');
         denied(await updateDoc(`${P.pending}/zz_case_approve_by_teacher`, {
             status: 'approved',
             approvedBy: t3.teacherId,
@@ -201,8 +249,9 @@ export async function run(ctx) {
     await suite.case('組長竄改申請內容（日期）被拒', async () => {
         // 自己建立自己的前置文件，不依賴上一個案例的殘留——上一個案例若失敗，
         // 這裡對不存在的文件送 update 也會拿到 403，變成空洞地通過。
-        allowed(await createDoc(P.pending, 'zz_case_tamper', baseReq(), { idToken: t1.idToken }),
-            '前置：建立待核准的代課申請');
+        allowed(await createDoc(P.pending, 'zz_case_tamper', subReq(), { idToken: t1.idToken }),
+            '前置：建立待同意的代課申請');
+        await consentAsT2('zz_case_tamper');
         denied(await updateDoc(`${P.pending}/zz_case_tamper`, {
             date: '2026-09-30',
         }, { idToken: chief.idToken }), '核准者改動申請內容');

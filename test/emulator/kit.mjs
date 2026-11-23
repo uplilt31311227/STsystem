@@ -150,7 +150,8 @@ export function buildAffectedList(req) {
 export function buildPendingRequestDocs(payload, semesterId, me) {
     const requestType = payload.requestType || 'substitute';
     let status, pendingConsentTeacherIds = [];
-    if (requestType === 'substitute') status = 'pending_approval';
+    // v2.20：代課雙簽——初始 pending_swap_consent，同意名單為代課教師一人（對照 pendingRequestService.createRequest）
+    if (requestType === 'substitute') { status = 'pending_swap_consent'; pendingConsentTeacherIds = [payload.substituteTeacherId]; }
     else if (requestType === 'swap') { status = 'pending_swap_consent'; pendingConsentTeacherIds = [payload.swapTeacherId || payload.requiredApproverId]; }
     else {
         const rawIds = (Array.isArray(payload.consentTeacherIds) && payload.consentTeacherIds.length)

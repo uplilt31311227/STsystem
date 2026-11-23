@@ -274,16 +274,38 @@ function buildCases({ A, B, C, D, P }) {
         recAttack24:    zz('rec_attack24'),   // X24 allowedTeacherIds 型別錯誤
     };
     const cases = [];
+    // v2.20：代課雙簽——代課教師乙同意（移出名單、寫 swapConsents、轉 pending_approval）
+    const consentByB = (docPath) => ({
+        kind: 'patch', label: '(乙同意代課 → pending_approval)', docPath, expect: 'ALLOW', idToken: B.idToken,
+        data: { pendingConsentTeacherIds: [], swapConsents: { [B.teacherId]: { consentedAt: nowIso() } }, status: 'pending_approval', statusUpdatedAt: nowIso() },
+    });
 
     // ===================== 正向 12 案（皆應 ALLOW） =====================
 
     cases.push({
         id: 'P01', type: 'positive', actor: 'A(教師甲)', method: 'CREATE',
-        desc: '正向①教師甲 create 代課請求（status=pending_approval）',
+        desc: '正向①教師甲 create 代課請求（v2.20 雙簽：status=pending_swap_consent、同意名單=[代課教師乙]）',
         path: `${col.pending}/${docId.reqSub1}`, expect: 'ALLOW',
-        rulesRef: 'rules:213-225 自建請求（substitute 分支）',
+        rulesRef: 'isTeacherPendingCreate（substitute 分支：雙簽初始狀態）',
         steps: [{
             kind: 'create', label: 'create 代課請求', collectionPath: col.pending, docId: docId.reqSub1, expect: 'ALLOW', idToken: A.idToken,
+            data: {
+                requestType: 'substitute', status: 'pending_swap_consent',
+                initiatedBy: A.teacherId, initiatedByName: A.label,
+                pendingConsentTeacherIds: [B.teacherId], swapConsents: {}, createdAt: nowIso(),
+                type: '代課', date: '2026-08-03', period: '第一節', className: '7年1班',
+                originalTeacherId: A.teacherId, substituteTeacherId: B.teacherId,
+            },
+        }],
+    });
+
+    cases.push({
+        id: 'X-S1', type: 'attack', actor: 'A(教師甲)', method: 'CREATE', severity: 'critical',
+        desc: '攻擊 教師甲 create 代課請求自帶 status=pending_approval、空同意名單（舊形狀，跳過代課教師同意）',
+        path: `${col.pending}/${zz('req_attackS1')}`, expect: 'DENY',
+        rulesRef: 'isTeacherPendingCreate（substitute 分支：雙簽初始狀態）',
+        steps: [{
+            kind: 'create', label: 'create 代課請求舊形狀', collectionPath: col.pending, docId: zz('req_attackS1'), expect: 'DENY', idToken: A.idToken,
             data: {
                 requestType: 'substitute', status: 'pending_approval',
                 initiatedBy: A.teacherId, initiatedByName: A.label,
@@ -371,7 +393,7 @@ function buildCases({ A, B, C, D, P }) {
 
     cases.push({
         id: 'P06', type: 'positive', actor: 'C(組長丙)', method: 'CREATE+PATCH',
-        desc: '正向⑥組長丙 核准代課請求 → 建 substituteRecords',
+        desc: '正向⑥乙同意代課後，組長丙 核准代課請求 → 建 substituteRecords',
         path: `${col.pending}/${docId.reqSub1}`, expect: 'ALLOW',
         rulesRef: 'rules:178 approver create record + rules:245-262 approver 核准',
         steps: [
@@ -385,6 +407,7 @@ function buildCases({ A, B, C, D, P }) {
                     affectedTeacherIds: [A.teacherId, B.teacherId], createdAt: nowIso(),
                 },
             },
+            consentByB(`${col.pending}/${docId.reqSub1}`),
             {
                 kind: 'patch', label: '核准 reqSub1（status→approved）', docPath: `${col.pending}/${docId.reqSub1}`, expect: 'ALLOW', idToken: C.idToken,
                 data: { status: 'approved', approvedAt: nowIso(), approvedBy: C.teacherId, approvedByName: C.label, statusUpdatedAt: nowIso() },
@@ -401,13 +424,14 @@ function buildCases({ A, B, C, D, P }) {
             {
                 kind: 'create', label: '(建立待駁回請求)', collectionPath: col.pending, docId: docId.reqForReject1, expect: 'ALLOW', idToken: A.idToken,
                 data: {
-                    requestType: 'substitute', status: 'pending_approval',
+                    requestType: 'substitute', status: 'pending_swap_consent',
                     initiatedBy: A.teacherId, initiatedByName: A.label,
-                    pendingConsentTeacherIds: [], swapConsents: {}, createdAt: nowIso(),
+                    pendingConsentTeacherIds: [B.teacherId], swapConsents: {}, createdAt: nowIso(),
                     type: '代課', date: '2026-08-06', period: '第四節', className: '7年4班',
                     originalTeacherId: A.teacherId, substituteTeacherId: B.teacherId,
                 },
             },
+            consentByB(`${col.pending}/${docId.reqForReject1}`),
             {
                 kind: 'patch', label: '丙駁回 reqForReject1', docPath: `${col.pending}/${docId.reqForReject1}`, expect: 'ALLOW', idToken: C.idToken,
                 data: { status: 'rejected', rejectedAt: nowIso(), rejectedBy: C.teacherId, rejectedByName: C.label, rejectNote: '測試駁回', statusUpdatedAt: nowIso() },
@@ -555,9 +579,9 @@ function buildCases({ A, B, C, D, P }) {
             {
                 kind: 'create', label: '(setup 甲建立新的代課請求)', collectionPath: col.pending, docId: docId.reqPriv19, expect: 'ALLOW', idToken: A.idToken,
                 data: {
-                    requestType: 'substitute', status: 'pending_approval',
+                    requestType: 'substitute', status: 'pending_swap_consent',
                     initiatedBy: A.teacherId, initiatedByName: A.label,
-                    pendingConsentTeacherIds: [], swapConsents: {}, createdAt: nowIso(),
+                    pendingConsentTeacherIds: [B.teacherId], swapConsents: {}, createdAt: nowIso(),
                     type: '代課', date: '2026-08-14', period: '第二節', className: '7年3班',
                     originalTeacherId: A.teacherId, substituteTeacherId: B.teacherId,
                 },
@@ -614,9 +638,9 @@ function buildCases({ A, B, C, D, P }) {
         steps: [{
             kind: 'create', label: 'create 帶 approvedBy', collectionPath: col.pending, docId: docId.reqAttack4, expect: 'DENY', idToken: A.idToken,
             data: {
-                requestType: 'substitute', status: 'pending_approval',
+                requestType: 'substitute', status: 'pending_swap_consent',
                 initiatedBy: A.teacherId, initiatedByName: A.label, approvedBy: A.teacherId,
-                pendingConsentTeacherIds: [], swapConsents: {}, createdAt: nowIso(),
+                pendingConsentTeacherIds: [B.teacherId], swapConsents: {}, createdAt: nowIso(),
                 type: '代課', date: '2026-08-03', period: '第一節', className: '7年1班',
                 originalTeacherId: A.teacherId, substituteTeacherId: B.teacherId,
             },
@@ -749,13 +773,14 @@ function buildCases({ A, B, C, D, P }) {
             {
                 kind: 'create', label: '(setup 建立待核准請求)', collectionPath: col.pending, docId: docId.reqAttack11, expect: 'ALLOW', idToken: A.idToken,
                 data: {
-                    requestType: 'substitute', status: 'pending_approval',
+                    requestType: 'substitute', status: 'pending_swap_consent',
                     initiatedBy: A.teacherId, initiatedByName: A.label,
-                    pendingConsentTeacherIds: [], swapConsents: {}, createdAt: nowIso(),
+                    pendingConsentTeacherIds: [B.teacherId], swapConsents: {}, createdAt: nowIso(),
                     type: '代課', date: '2026-08-11', period: '第二節', className: '7年5班',
                     originalTeacherId: A.teacherId, substituteTeacherId: B.teacherId,
                 },
             },
+            consentByB(`${col.pending}/${docId.reqAttack11}`),
             {
                 kind: 'patch', label: '(setup 丙駁回)', docPath: `${col.pending}/${docId.reqAttack11}`, expect: 'ALLOW', idToken: C.idToken,
                 data: { status: 'rejected', rejectedAt: nowIso(), rejectedBy: C.teacherId, rejectedByName: C.label, rejectNote: 'setup', statusUpdatedAt: nowIso() },
@@ -1281,7 +1306,7 @@ function buildCases({ A, B, C, D, P }) {
     // ---- 必修 M3：驗收未做反證的 DENY 案例（能轉成 ALLOW 的才加對照）----
     addCtrl('X02', 'X02-ctrl', '同路徑同帳號，改成規則允許的欄位（updatedAt）而非 role', (c, s) => { s.data = { updatedAt: nowIso() }; });
     addCtrl('X11', 'X11-ctrl', '拿掉前置的「丙駁回」，丙直接核准 pending_approval 的請求', (c) => {
-        c.steps.splice(1, 2, c.steps[2]);   // 刪 (setup 丙駁回)，保留末步（丙核准）
+        c.steps.splice(2, 1);   // 刪 (setup 丙駁回)，保留乙同意與末步（丙核准）
     });
     addCtrl('X10', 'X10-ctrl', '同一份 legacy 請求，唯一差異是原狀態為 pending（尚未進入終態）——乙經 legacy 分支拒絕應允許', (c) => {
         c.steps[0].data.status = 'pending';

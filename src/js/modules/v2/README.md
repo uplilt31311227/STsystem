@@ -3,7 +3,7 @@
 > 此目錄為 `feature/permission-system` 分支專屬模組，提供：
 > - director（教務主任）／section_chief（教學組長）／teacher（一般教師）三層角色系統
 > - 教師 email 登入綁定
-> - 調課同意流程（pendingRequests → substituteRecords，代課單簽／調課雙簽／多重調課全員同意）
+> - 調課同意流程（pendingRequests → substituteRecords，代課雙簽（v2.20）／調課雙簽／多重調課全員同意）
 > - 完整操作日誌
 
 ## 架構隔離

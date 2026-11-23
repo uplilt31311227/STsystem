@@ -197,9 +197,13 @@ function detailLine(label, valueHtml) {
     return `<div class="v2-pending-detail-line"><span class="v2-pending-detail-label">${label}</span>${valueHtml}</div>`;
 }
 
-/** 「待我同意」卡片：顯示對方的時段 B（調課類才有）。 */
+/** 「待我同意」卡片：調課類顯示對方的時段 B；代課（v2.20 起也要代課教師同意）顯示要代誰的課。 */
 export function renderConsentDetail(r) {
-    if (!isSwapLike(r)) return '';
+    if (!isSwapLike(r)) {
+        if (r.requestType !== REQUEST_TYPES.SUBSTITUTE) return '';
+        const who = r.originalTeacher || r.initiatedByName || '';
+        return `<div class="v2-pending-detail">${detailLine('代誰的課', escapeHtml(who || '（未註明）'))}</div>`;
+    }
     const slotB = describeSlotB(r);
     if (!slotB && !r.swapTeacher) return '';
     const who = r.swapTeacher ? `（${escapeHtml(r.swapTeacher)} 的課）` : '';

@@ -158,7 +158,7 @@ export const VALID_ROLES = Object.freeze([ROLES.DIRECTOR, ROLES.SECTION_CHIEF, R
 
 /**
  * 三種異動類型，決定 pendingRequest 走哪一種審核流程：
- *   SUBSTITUTE 代課 — 單簽（教師A 申請 → 組長/主任核准）
+ *   SUBSTITUTE 代課 — 雙簽（v2.20：教師A 申請 → 代課教師同意 → 組長/主任核准）
  *   SWAP       調課 — 雙簽（教師A 申請 → 教師B 同意 → 組長/主任核准）
  *   MULTI_SWAP 多重調課 — 全員同意（所有相關教師均同意 → 組長/主任核准）
  */

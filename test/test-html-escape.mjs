@@ -214,7 +214,14 @@ checkRender('待辦卡片(核准＋私有明細欄位)', r => rows.renderPending
     check('(b) 核准明細：沒有事件處理屬性', !tokenize(html).tags.flatMap(t => t.attrs).some(a => /^on/i.test(a.name)));
     check('(P8) 核准明細：顯示時段 B、假別、事由、同批', /時段 B/.test(rows.renderApprovalDetail(swapBenign, detailBenign)) && />公假</.test(rows.renderApprovalDetail(swapBenign, detailBenign)) && />研習</.test(rows.renderApprovalDetail(swapBenign, detailBenign)) && /同批調課/.test(rows.renderApprovalDetail(swapBenign, detailBenign, { related: relatedBenign })));
     check('(P8) 核准明細：讀取明細失敗時明說，不顯示「未填」', /讀取失敗/.test(rows.renderApprovalDetail(swapBenign, null, { detailError: true })) && !/未填/.test(rows.renderApprovalDetail(swapBenign, null, { detailError: true })));
-    check('(P8) 同意卡片：代課申請不顯示時段 B', rows.renderConsentDetail({ ...reqBenign, requestType: 'substitute' }) === '');
+    check('(P8) 同意卡片：代課申請不顯示時段 B', !/時段 B/.test(rows.renderConsentDetail({ ...reqBenign, requestType: 'substitute' })));
+    // v2.20：代課也要代課教師同意，同意卡片顯示要代誰的課，且原任課教師姓名經跳脫
+    check('(v2.20) 同意卡片：代課顯示「代誰的課」與原任課教師', (() => { const h = rows.renderConsentDetail({ ...reqBenign, requestType: 'substitute', originalTeacher: '王老師' }); return h.includes('代誰的課') && h.includes('王老師'); })());
+    {
+        const atk = '"><img src=x onerror=alert(1)>';
+        const h = rows.renderConsentDetail({ ...reqBenign, requestType: 'substitute', originalTeacher: atk });
+        check('(v2.20) 同意卡片：代課的原任課教師姓名跳脫（沒有 <img>）', !tokenize(h).tags.some(t => t.name === 'img'), h);
+    }
     check('(P8) 同意卡片：調課顯示時段 B 日期、節次、科目與對象', (() => { const h = rows.renderConsentDetail(swapBenign); return h.includes('2026-11-12') && h.includes('週四第三節') && h.includes('數學') && h.includes('李'); })());
 
     // P8 驗收：假別／事由的四種狀態與父文件退回（實際呼叫 render 函式，非比對原始碼）

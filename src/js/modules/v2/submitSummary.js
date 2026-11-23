@@ -7,6 +7,6 @@ export function composeSubmitSummary(entries) {
     if (!entries || !entries.length) return '';
     if (entries.length === 1) return entries[0].msg;
     return entries.every(e => e.isSubstitute)
-        ? `已送出 ${entries.length} 節代課申請，等待組長／主任核准。核准後才會正式成立並產生 PDF。`
-        : `已送出 ${entries.length} 筆申請：調課類需對方教師同意，全員同意並經組長／主任核准後才會正式成立並產生 PDF。`;
+        ? `已送出 ${entries.length} 節代課申請，需代課教師同意並經組長／主任核准後才會正式成立並產生 PDF。`
+        : `已送出 ${entries.length} 筆申請：需對方教師同意，全員同意並經組長／主任核准後才會正式成立並產生 PDF。`;
 }

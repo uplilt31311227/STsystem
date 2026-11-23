@@ -71,13 +71,16 @@ function reject(user, reqId, note = '時間無法配合') {
 
 const idsFor = (rec, extra = []) => resolveApproverInfo(rec, nameToId, extra);
 
-await suite.case('F1 代課單簽：教師送申請 → 日誌 → 組長核准 → 紀錄成立 → 日誌', async () => {
+await suite.case('F1 代課雙簽：教師送申請 → 日誌 → 代課教師同意 → 組長核准 → 紀錄成立 → 日誌', async () => {
     const rec = appSubstituteRecord({ original: t1.name, substitute: t2.name });
     const payload = writeV2Payload(rec, idsFor(rec), t1);
     const built = buildPendingRequestDocs(payload, semesterId, t1);
     const r = await submitPending(t1, built);
     allowed(r.priv, '寫 private/detail'); allowed(r.parent, '寫申請父文件');
     allowed(await createDoc(P.logs, 'zz_log_f1a', logEntry(t1, semesterId, 'create_request', 'pendingRequest', built.reqId, { affectedTeacherIds: [t1.teacherId] }), as(t1)), '日誌（發起）');
+    eq(built.publicDoc.status, 'pending_swap_consent', '代課教師未同意前為 pending_swap_consent');
+    allowed(await consent(t2, built.reqId), '代課教師同意');
+    eq((await getDoc(`${P.pending}/${built.reqId}`)).data.status, 'pending_approval', '轉待核准');
     const recordId = await approve(chief, built.reqId);
     allowed(await createDoc(P.logs, 'zz_log_f1b', logEntry(chief, semesterId, 'approve', 'substituteRecord', recordId, { fromRequestId: built.reqId }), as(chief)), '日誌（核准）');
     eq((await getDoc(`${P.pending}/${built.reqId}`)).data.status, 'approved', '申請已核准');

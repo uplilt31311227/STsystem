@@ -2,7 +2,8 @@
  * V2 三種審核流程狀態機（Phase 3）
  *
  * 狀態流轉：
- *   代課（substitute）  create → pending_approval → approver 核准 → substituteRecord 成立
+ *   代課（substitute）  create → pending_swap_consent（代課教師同意）→ pending_approval → approver 核准 → 成立
+ *                       （v2.20 起；之前為 create 直接 pending_approval，舊資料照常可核准）
  *   調課（swap）        create → pending_swap_consent（對方同意）→ pending_approval → approver 核准 → 成立
  *   多重調課（multi_swap）create → pending_swap_consent（全員同意，逐一移出 pendingConsentTeacherIds）
  *                                → 全員同意後 pending_approval → approver 核准 → 成立
@@ -246,8 +247,12 @@ export async function createRequest(payload) {
     let pendingConsentTeacherIds = [];
 
     if (requestType === REQUEST_TYPES.SUBSTITUTE) {
-        // 代課：單簽，不需其他教師同意，直接進入組長/主任核准佇列。
-        status = REQUEST_STATUS.PENDING_APPROVAL;
+        // 代課（v2.20）：雙簽，代課教師同意後才進入組長/主任核准佇列（與調課同一套同意流程）。
+        const partner = payload.substituteTeacherId;
+        if (!partner) throw new Error('代課申請缺少代課教師 ID');
+        if (partner === (payload.initiatedBy || id.teacherId)) throw new Error('代課教師不可為發起人本人');
+        status = REQUEST_STATUS.PENDING_SWAP_CONSENT;
+        pendingConsentTeacherIds = [partner];
     } else if (requestType === REQUEST_TYPES.SWAP) {
         // 調課：雙簽，對方教師同意後才進入核准佇列。
         const partner = payload.swapTeacherId || payload.requiredApproverId;

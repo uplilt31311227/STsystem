@@ -113,5 +113,44 @@ await suite.case('L3 刪除時機：發起人可撤回在途申請與關閉駁�
     denied(await deleteDoc(path(other), as(t2)), '無關教師刪除他人申請');
 });
 
+/* ===================== v2.20 代課雙簽：教師建立代課申請必須先經代課教師同意 ===================== */
+const subDoc = (over = {}) => ({
+    requestType: 'substitute', status: 'pending_swap_consent',
+    initiatedBy: t1.teacherId, initiatedByName: t1.name,
+    pendingConsentTeacherIds: [t2.teacherId], swapConsents: {}, createdAt: iso(),
+    type: '代課', date: '2026-08-03', period: '第一節', className: '7年1班',
+    originalTeacherId: t1.teacherId, substituteTeacherId: t2.teacherId, semesterId, ...over,
+});
+const mkSub = (user, over) => createDoc(P.pending, `zz_sub_${++seq}`, subDoc(over), as(user));
+
+await suite.case('S-1 代課建立：舊形狀 pending_approval／空名單跳過代課教師同意 → DENY；雙簽形狀 → ALLOW（對照）', async () => {
+    denied(await mkSub(t1, { status: 'pending_approval', pendingConsentTeacherIds: [] }), '舊形狀 pending_approval＋空名單');
+    denied(await mkSub(t1, { status: 'pending_approval' }), 'pending_approval＋名單 [t2]');
+    allowed(await mkSub(t1, {}), '前端形狀：pending_swap_consent＋[代課教師]');
+});
+await suite.case('S-2 代課建立：名單為空／名單是別人／名單含兩人 → DENY（對照：名單恰為代課教師 → ALLOW）', async () => {
+    denied(await mkSub(t1, { pendingConsentTeacherIds: [] }), '名單為空');
+    denied(await mkSub(t1, { pendingConsentTeacherIds: [t3.teacherId] }), '名單是 t3，不是 substituteTeacherId');
+    denied(await mkSub(t1, { pendingConsentTeacherIds: [t2.teacherId, t3.teacherId] }), '名單含兩人');
+    denied(await mkSub(t1, { pendingConsentTeacherIds: [t3.teacherId, t2.teacherId] }), '名單含兩人（順序不同）');
+    allowed(await mkSub(t1, { pendingConsentTeacherIds: [t2.teacherId] }), '名單 [t2]＝substituteTeacherId');
+});
+await suite.case('S-3 代課建立：substituteTeacherId 為自己、名單 [自己]（自我同意）→ DENY；缺 substituteTeacherId → DENY', async () => {
+    denied(await mkSub(t1, { substituteTeacherId: t1.teacherId, pendingConsentTeacherIds: [t1.teacherId] }), '自己代自己、名單 [自己]');
+    denied(await mkSub(t1, { substituteTeacherId: '', pendingConsentTeacherIds: [''] }), '空 substituteTeacherId');
+    allowed(await mkSub(t1, { substituteTeacherId: t3.teacherId, pendingConsentTeacherIds: [t3.teacherId] }), '對照：換一位代課教師 t3 → ALLOW');
+});
+await suite.case('S-4 代課同意：代課教師同意 → pending_approval ALLOW；第三位教師、發起人自己同意 → DENY；同意後組長核准 → ALLOW', async () => {
+    const id = `zz_sub_${++seq}`;
+    allowed(await createDoc(P.pending, id, subDoc(), as(t1)), '建立');
+    denied(await updateDoc(path(id), consentPatch(t3, [], {}, 'pending_approval'), as(t3)), '非名單內的第三位教師同意');
+    denied(await updateDoc(path(id), consentPatch(t1, [], {}, 'pending_approval'), as(t1)), '發起人自己同意');
+    denied(await updateDoc(path(id), { status: 'approved', approvedBy: chief.teacherId, approvedByName: chief.name, approvedAt: iso(), statusUpdatedAt: iso() }, as(chief)), '代課教師未同意前組長直接核准');
+    eq((await getDoc(path(id))).data.status, 'pending_swap_consent', '狀態未被改動');
+    allowed(await updateDoc(path(id), consentPatch(t2, [], {}, 'pending_approval'), as(t2)), '代課教師同意 → pending_approval');
+    eq((await getDoc(path(id))).data.status, 'pending_approval', '轉待核准');
+    allowed(await updateDoc(path(id), { status: 'approved', approvedBy: chief.teacherId, approvedByName: chief.name, approvedAt: iso(), statusUpdatedAt: iso() }, as(chief)), '同意後組長核准');
+});
+
 suite.print();
 process.exit(suite.failed ? 1 : 0);

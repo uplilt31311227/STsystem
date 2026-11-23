@@ -10,7 +10,7 @@
  * 無法在 Node 驗證；這裡驗證的是「驗證函式對真實資料的判定」與「判定為衝突時沒有任何寫入」。
  */
 
-import { createDoc, getDoc, listDocs } from '../emulator/emu-client.mjs';
+import { createDoc, getDoc, listDocs, updateDoc } from '../emulator/emu-client.mjs';
 import { Suite, allowed, eq, ok, includes } from './harness.mjs';
 import {
     verifyNoAssignmentConflict, buildApprovalConflictMessage, pendingRequestsToOccupancyRecords,
@@ -31,16 +31,29 @@ export async function run(ctx) {
         pending: `schools/${schoolId}/pendingRequests`,
     };
 
-    const baseReq = (over = {}) => ({
-        type: '代課', date: '2026-10-20', weekday: '週二', period: '第三節', className: '801', subject: '數學',
-        requestType: 'substitute', status: 'pending_approval',
-        pendingConsentTeacherIds: [], swapConsents: {},
-        initiatedBy: t1.teacherId, initiatedByName: t1.name,
-        originalTeacherId: t1.teacherId, originalTeacher: t1.name,
-        substituteTeacherId: t2.teacherId, substituteTeacher: t2.name,
-        requiredApproverId: chief.teacherId, semesterId, createdAt: '2026-10-19T00:00:00.000Z',
-        ...over,
-    });
+    // v2.20：教師發起代課為雙簽，初始 pending_swap_consent、同意名單恰為代課教師（覆寫 substituteTeacherId 時名單跟著換）
+    const baseReq = (over = {}) => {
+        const d = {
+            type: '代課', date: '2026-10-20', weekday: '週二', period: '第三節', className: '801', subject: '數學',
+            requestType: 'substitute', status: 'pending_swap_consent',
+            swapConsents: {},
+            initiatedBy: t1.teacherId, initiatedByName: t1.name,
+            originalTeacherId: t1.teacherId, originalTeacher: t1.name,
+            substituteTeacherId: t2.teacherId, substituteTeacher: t2.name,
+            requiredApproverId: chief.teacherId, semesterId, createdAt: '2026-10-19T00:00:00.000Z',
+            ...over,
+        };
+        if (!('pendingConsentTeacherIds' in over)) d.pendingConsentTeacherIds = [d.substituteTeacherId];
+        return d;
+    };
+    /** 代課教師同意 → pending_approval（前端 consentRequest 的寫入形狀） */
+    const consentAs = async (id, teacher) => {
+        const now = new Date().toISOString();
+        allowed(await updateDoc(`${P.pending}/${id}`, {
+            status: 'pending_approval', pendingConsentTeacherIds: [],
+            swapConsents: { [teacher.teacherId]: { consentedAt: now } }, statusUpdatedAt: now,
+        }, { idToken: teacher.idToken }), `前置：代課教師 ${teacher.name} 同意`);
+    };
     const baseRecord = (over = {}) => ({
         id: 'zz05_rec', type: '代課', date: '2026-10-20', weekday: '週二', period: '第三節', className: '802', subject: '國語文',
         originalTeacher: t3.name, originalTeacherId: t3.teacherId,
@@ -61,7 +74,8 @@ export async function run(ctx) {
     /* ---- 案例 1：申請 A 待核准 → 另一筆紀錄先成立佔用 → 核准 A 被拒、紀錄未寫入 ---- */
 
     await suite.case('申請 A 待核准期間，另一筆紀錄先成立佔用同一教師同一節 → 核准前重驗回報衝突，且無紀錄寫入', async () => {
-        allowed(await createDoc(P.pending, 'zz05_reqA', baseReq(), { idToken: t1.idToken }), '前置：建立待核准的代課申請 A');
+        allowed(await createDoc(P.pending, 'zz05_reqA', baseReq(), { idToken: t1.idToken }), '前置：建立代課申請 A');
+        await consentAs('zz05_reqA', t2);
 
         // 申請 A 剛建立時沒有衝突
         const reqBefore = (await getDoc(`${P.pending}/zz05_reqA`, { idToken: chief.idToken })).data;
@@ -109,16 +123,22 @@ export async function run(ctx) {
         return [...recs, ...pendingRequestsToOccupancyRecords(open)];
     };
 
-    await suite.case('兩張待核准申請指派同一老師同一節 → 第二張送出時被攔，訊息標示（待核准中）', async () => {
+    await suite.case('兩張在途代課申請指派同一老師同一節 → 第二張送出時被攔；代課教師未同意時標示（待同意中），同意後標示（待核准中）', async () => {
         const first = baseReq({ date: '2026-10-27', substituteTeacherId: t3.teacherId, substituteTeacher: t3.name, className: '803' });
         eq(findAssignmentConflict(first, await occupancy()), null, '第一張送出時無衝突');
         allowed(await createDoc(P.pending, 'zz05_reqB1', first, { idToken: t1.idToken }), '第一張送出成功');
 
         const second = baseReq({ date: '2026-10-27', substituteTeacherId: t3.teacherId, substituteTeacher: t3.name, className: '804',
             originalTeacher: t2.name, originalTeacherId: t2.teacherId });
+        // v2.20：第一張還在等代課教師同意，也必須算佔用（否則同一節可被重複指派）
+        const hit0 = findAssignmentConflict(second, await occupancy());
+        ok(hit0, '代課教師尚未同意時，第二張也應被攔下');
+        eq(hit0.teacher, t3.name, '被攔的教師');
+        ok(describeAssignmentConflict(hit0).endsWith('（待同意中）'), `訊息應標示（待同意中）：${describeAssignmentConflict(hit0)}`);
+
+        await consentAs('zz05_reqB1', t3);
         const hit = findAssignmentConflict(second, await occupancy());
-        ok(hit, '第二張應被攔下');
-        eq(hit.teacher, t3.name, '被攔的教師');
+        ok(hit, '同意後第二張仍應被攔下');
         ok(describeAssignmentConflict(hit).endsWith('（待核准中）'), `訊息應標示（待核准中）：${describeAssignmentConflict(hit)}`);
     });
 
