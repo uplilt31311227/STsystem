@@ -119,6 +119,13 @@ emulator 模式（設了 `FIRESTORE_EMULATOR_HOST`）不需要帳號。`firestor
 
 為了防範點擊劫持（審計 L4），`src/js/v2-redirect.js` 在頁面被嵌入 `<iframe>` 時會嘗試把最上層導回本頁，導不了就把整份文件隱藏（`display: none`）。因此**本站無法被其他網站（含自己的其他頁面）以 iframe 內嵌**；若日後有內嵌需求（例如儀表板），必須先修改該檔的框架偵測邏輯。
 
+### rules v2.20：代課改為雙簽（教師發起代課須經代課教師同意）
+
+- **變更**：`isTeacherPendingCreate` 的 substitute 分支只接受 `status == 'pending_swap_consent'` 且 `pendingConsentTeacherIds == [substituteTeacherId]`、代課教師不可是發起人。
+- **部署順序**：新前端與 v2.20 **互相依賴**：新前端寫的形狀舊 rules 會拒絕，舊前端寫的形狀 v2.20 也會拒絕。**前端推送後立即發布 rules**（程序同 v2.13 起各版），空窗期間（加上靜態檔 `max-age=600`，最多約 10 分鐘）教師送代課可能出現權限錯誤，重新整理後再送即可。組長／主任直接建立、調課、核准都不受影響。
+- **上線後確認**：一般教師帳號送一筆代課 → 代課教師的待辦頁「待我同意・代課／調課」出現該筆並可同意 → 組長待審核出現並可核准（測試資料事後刪除）。
+- **回朔**：rules 指回 v2.19 ruleset `14f457c8-5c77-4f24-9e41-0c783591a7b2`，前端回上一個 commit。已用新形狀建立的在途代課申請，在 v2.19 下仍可被同意與核准（`isValidConsenterUpdate` 不看 requestType）。
+
 ### rules v2.19（P10 code-review）：config 通用主任規則排除 recordsLock 與 grade9
 
 - **問題**：`config/{docId}` 的通用規則（`isDirector && docId != 'settlement' && directorFlagKept`）也比對到 `recordsLock` 與 `grade9`，主任（與 platformAdmin）因此可把序號鎖 `seq` 寫成任意值（含回退），或不經欄位白名單寫 `grade9`。

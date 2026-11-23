@@ -1,5 +1,11 @@
 # 版本紀錄 (Changelog)
 
+## [2026-11-23] 代課改為雙簽：教師發起代課須經代課教師同意（rules v2.20，尚未部署）
+
+- 一般教師發起代課改為 `pending_swap_consent（代課教師同意）→ pending_approval → 核准`，與調課同一套同意流程；主任、組長直接建立不受影響。
+- rules v2.20：教師建代課必須是 `pending_swap_consent` 且同意名單恰為代課教師（不可為本人），舊形狀 DENY。
+- 待辦頁同意區改名「代課／調課」，代課同意卡片顯示「代誰的課」，送出訊息同步修改。詳見 `docs/CHANGELOG.md`。
+
 ## [2026-11-23] 備份納入 V1 個人雲端資料；遷移舊資料防重複寫入（尚未部署）
 
 - **備份**：`scripts/firestore-backup.js backup` 預設多備份 `users/{uid}/data/substituteSystem`（V1 個人雲端文件，不屬於任何學校）為 `v1UserData.json`，用 collection group query（`runQuery`，collectionId `data`、allDescendants）取得後只收路徑完全符合者，格式與既有檔相同（原始 REST document）；印出每份文件的 `substituteRecords` 筆數（uid 只印前 6 碼）。`--include-v1=false` 可略過。`restore` 預設不寫回 V1（計畫只提示份數），需 `--restore-v1` 才還原，`--dry-run` 行為不變。新增 `test/emulator/scripts-firestore-backup.mjs`（掛進 `test:rules-all`）：2 份目標文件、1 份無關 `users/*/data/*`、1 份 `schools/*/data/substituteSystem` 同名誘餌，驗證只收正確路徑、預設不還原、帶旗標才還原且內容相同。

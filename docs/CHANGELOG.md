@@ -9,6 +9,15 @@ tags:
 
 ---
 
+## [2026-11-23] 代課改為雙簽：教師發起代課須經代課教師同意（rules v2.20，尚未部署）
+
+規格（使用者確認）：主任與教學組長建立調代課直接成立（`adminCreate`，不變）；一般教師發起的代課、調課、多重調課都要對方同意，再經組長／主任核准才成立；全校紀錄與月結算只有組長、主任看得到（畫面限制，rules 層維持校內成員可讀父文件，衝堂檢查與代課推薦需要，假別與事由仍在私有明細）。
+- **流程**：代課（`substitute`）由 `create → pending_approval` 改為 `create → pending_swap_consent（代課教師同意）→ pending_approval → 核准`，沿用調課的 `consentRequest`。`createRequest` 以 `substituteTeacherId` 組成同意名單，缺代課教師或代課教師為發起人本人時丟錯。已在 `pending_approval` 的舊代課申請照常可核准。
+- **rules v2.20**：`isTeacherPendingCreate` 的 substitute 分支改為 `status == 'pending_swap_consent'`、`substituteTeacherId` 為非空字串且不等於發起人、`pendingConsentTeacherIds == [substituteTeacherId]`。舊形狀（直接 `pending_approval`、空名單）一律 DENY。
+- **畫面**：待辦頁「待我同意・調課」改為「待我同意・代課／調課」；代課的同意卡片顯示「代誰的課」；送出訊息改為「已送出給代課教師 ○○ 同意……」；多節代課合併通知文字同步修改。
+- **衝堂**：待同意中的代課申請本來就算佔用（標示「（待同意中）」），不會被重複指派；`scenario-05` 補上此案。
+- **測試**：`test-html-escape`（代課同意卡片內容與跳脫）、`scenario-02`／`scenario-05`（代課雙簽、跳過同意被拒、第三者同意被拒）、規則測試多支改用新形狀並新增攻擊案例、`e2e-02` 完整流程改為教師送出 → 代課教師同意 → 組長核准。
+
 ## [2026-11-23] 備份納入 V1 個人雲端資料；遷移舊資料防重複寫入（尚未部署）
 
 - **備份**：`scripts/firestore-backup.js backup` 預設多備份 `users/{uid}/data/substituteSystem`（V1 個人雲端文件，不屬於任何學校）為 `v1UserData.json`，用 collection group query（`runQuery`，collectionId `data`、allDescendants）取得後只收路徑完全符合者，格式與既有檔相同（原始 REST document）；印出每份文件的 `substituteRecords` 筆數（uid 只印前 6 碼）。`--include-v1=false` 可略過。`restore` 預設不寫回 V1（計畫只提示份數），需 `--restore-v1` 才還原，`--dry-run` 行為不變。新增 `test/emulator/scripts-firestore-backup.mjs`（掛進 `test:rules-all`）：2 份目標文件、1 份無關 `users/*/data/*`、1 份 `schools/*/data/substituteSystem` 同名誘餌，驗證只收正確路徑、預設不還原、帶旗標才還原且內容相同。
